@@ -46,7 +46,7 @@ export default async function TodayChecksPage() {
           <div className="card p-5">
             <p className="text-sm text-fg-muted">No checks yet today — yours could be the first.</p>
             <Link
-              href="/check"
+              href="/"
               className="mt-3 inline-block font-mono text-[13px] text-accent transition-colors hover:underline"
             >
               Check your app →
@@ -96,7 +96,7 @@ export default async function TodayChecksPage() {
         )}
 
         <p className="font-mono text-[13px] text-fg-faint">
-          <Link href="/check" className="text-accent hover:underline">
+          <Link href="/" className="text-accent hover:underline">
             Check your app →
           </Link>{" "}
           · {today.left > 0 ? `${today.left} free ${today.left === 1 ? "check" : "checks"} left today.` : "free checks open again at midnight UTC."}
