@@ -52,7 +52,18 @@ const MUST_LOG: [string, string][] = [
   // CHE-236: ending the team's analytics access. "Why did the funnel numbers
   // stop" must have a name and a date behind it, not a reconstruction.
   ["src/app/dashboard/actions.ts", "disconnectPostHog"],
+  // CHE-315: the app settings rules moved into a library function shared with
+  // the MCP update_app tool — the audit line moved with them, so an agent's
+  // change is traced exactly like one made on the settings page.
+  ["src/lib/app-settings.ts", "updateAppForTeam"],
 ];
+
+// An action that hands its whole change to a shared function logs through it.
+// Declared rather than inferred: the delegate must itself be on MUST_LOG, and
+// the action must actually call it.
+const DELEGATES: Record<string, string> = {
+  updateAppSettings: "updateAppForTeam",
+};
 
 function bodyOf(text: string, fn: string): string {
   const at = text.indexOf(`export async function ${fn}`);
@@ -63,11 +74,16 @@ function bodyOf(text: string, fn: string): string {
 
 for (const [file, fn] of MUST_LOG) {
   const body = bodyOf(read(file), fn);
+  const delegate = DELEGATES[fn];
+  const delegated =
+    delegate !== undefined &&
+    MUST_LOG.some(([, name]) => name === delegate) &&
+    new RegExp(`\\b${delegate}\\(`).test(body);
   check(`${fn} exists`, body.length > 0, file);
   check(
     `${fn} writes an audit line`,
-    /recordTeamEvent\(/.test(body),
-    body.length ? "" : "function not found",
+    /recordTeamEvent\(/.test(body) || delegated,
+    body.length ? (delegated ? `through ${delegate}` : "") : "function not found",
   );
 }
 

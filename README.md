@@ -135,23 +135,28 @@ proxied through the web worker; verdict permalinks are unguessable.
 
 ## MCP — checks from agentic frameworks
 
-`mcp/server.ts` is a stdio MCP server exposing CheckMyApp to any MCP client
-(Claude Code first). Tools: `start_check` (url + focus notes → run id),
-`wait_for_run` (block until the verdict — built for post-deploy hooks),
-`get_check_status` (poll), `get_verdict` (structured verdict by run id or
-domain: journeys, findings, cost — decide pass/fail).
+The agent is CheckMyApp's primary interface (CHE-315). A hosted, stateless
+Streamable-HTTP MCP server at `https://checkmyapp.dev/mcp` manages everything
+an owner does on the dashboard — apps, test logins, scenarios, checks,
+recurring checks, results — scoped to the API key's team:
 
 ```bash
-claude mcp add checkmyapp -- npx tsx mcp/server.ts
-# CHECKMYAPP_URL=https://checkmyapp.dev is the default target
-# CHECKMYAPP_API_KEY=cma_… runs as the owner (dashboard → API keys)
+claude mcp add --transport http checkmyapp https://checkmyapp.dev/mcp \
+  --header "Authorization: Bearer cma_…"
 ```
 
-The canonical post-merge loop: CI deploys → your agent calls
-`start_check{url, notes: "PR #123 touched checkout — verify it first"}` →
-`wait_for_run` → on `needs_attention`/`broken` verdict files the
-findings (or blocks the release). The same API is curl-able without MCP:
-`POST /api/checks`, `GET /api/runs/{id}`, `GET /api/runs/{id}/verdict`.
+Tools: `list_apps`, `create_app`, `update_app`, `start_check` (by `app_id` or
+`url`), `get_check_status`, `wait_for_run`, `wait_for_review`, `get_verdict`,
+`get_review`, `latest_results` (what is new since the previous check),
+`enable_watch`, `disable_watch`. `mcp/server.ts` is a stdio bridge to the same
+server for clients without HTTP transport. Details in
+[mcp/README.md](mcp/README.md).
+
+The canonical post-deploy loop: your agent calls
+`start_check{app_id, deploy_sha, notes: "PR #123 touched checkout — verify it first"}`
+→ `wait_for_run` (repeat while `timed_out`) → on a `needs_attention`/`broken`
+verdict, `get_review` and fix what it names. The same API is curl-able without
+MCP: `POST /api/checks`, `GET /api/runs/{id}`, `GET /api/runs/{id}/verdict`.
 
 App review on a PR preview — the agent-facing loop (`get_review` /
 `wait_for_review`, `ephemeral: true`) — ships as a Claude Code skill in

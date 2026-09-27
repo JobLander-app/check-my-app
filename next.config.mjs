@@ -27,6 +27,14 @@ const nextConfig = {
       },
     ];
   },
+  // CHE-315: the remote MCP server's public address is /mcp — the line people
+  // paste is `claude mcp add --transport http checkmyapp https://checkmyapp.dev/mcp`.
+  // The handler lives under /api so the route registry
+  // (scripts/verify-route-scopes.ts walks src/app/api) sees it like every
+  // other endpoint; a route outside /api would be invisible to that guard.
+  async rewrites() {
+    return [{ source: "/mcp", destination: "/api/mcp" }];
+  },
 };
 
 export default nextConfig;

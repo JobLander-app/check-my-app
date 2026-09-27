@@ -24,23 +24,24 @@ does it, and returns findings with evidence. You decide what to change.
 
 ## Setup
 
-The server runs over stdio from a checkout of the CheckMyApp repository, so the
-command carries the path to that checkout — not a relative path, which would
-resolve against whatever project you are working in:
+The server is hosted; no checkout is needed:
 
 ```bash
-claude mcp add checkmyapp -e CHECKMYAPP_API_KEY=cma_xxxxxxxx \
-  -- npx tsx /path/to/check-my-app/mcp/server.ts
+claude mcp add --transport http checkmyapp https://checkmyapp.dev/mcp \
+  --header "Authorization: Bearer cma_xxxxxxxx"
 ```
 
-Run `npm install` in that checkout once. A hosted endpoint that needs no
-checkout is being built; until it lands, this is the way in.
+(A client that only speaks stdio can run the bridge from a checkout of the
+CheckMyApp repository instead: `claude mcp add checkmyapp -e
+CHECKMYAPP_API_KEY=cma_xxxxxxxx -- npx tsx /path/to/check-my-app/mcp/server.ts`.)
 
 The key comes from the dashboard at https://checkmyapp.dev/dashboard → **API
 keys**, and is shown once. Every plan can create one, Free included; checks
-started with it count against the team's plan like any other. Without a
-key, `start_check` against production is refused (`turnstile_failed`), and
-`ephemeral: true` is refused (`ephemeral_requires_owner`).
+started with it count against the team's plan like any other. Every call needs
+it: the key names the team whose apps and plan the tools act on.
+
+The remote `wait_for_review` / `wait_for_run` answer within 45 seconds; while
+the run is still going they return `timed_out: true` — call again.
 
 To have this skill in every project, copy `.claude/skills/app-review/` from the
 checkout to `~/.claude/skills/app-review/`.
@@ -50,9 +51,11 @@ checkout to `~/.claude/skills/app-review/`.
 1. **Write the test plan first.** Turn the task or PR description into plain
    user steps: "add an item to the cart, check out with a test card, see the
    order in history." No selectors, no endpoints, no file names — steps a
-   person could follow. These tools carry no sign-in credentials, so write a
-   plan a signed-out visitor can follow; anything behind a login will come back
-   under `coverage.unverified`. Never put a password in `notes`.
+   person could follow. A check by `url` carries no sign-in credentials, so
+   write a plan a signed-out visitor can follow; anything behind a login will
+   come back under `coverage.unverified`. A saved app (`start_check{app_id}`)
+   signs in with the test login stored on it (`update_app` sets one). Never put
+   a password in `notes`.
 
 2. **`start_check`** with:
    - `url` — the preview or production URL.
@@ -68,8 +71,8 @@ checkout to `~/.claude/skills/app-review/`.
    A refusal comes back with `isError` and a `code`. On any `quota_*`, stop —
    do not retry; the `hint` says what unblocks it.
 
-3. **`wait_for_review{run_id}`** — one blocking call. If it returns
-   `timed_out: true`, call it again or poll `get_check_status`.
+3. **`wait_for_review{run_id}`** — if it returns `timed_out: true`, call it
+   again (or poll `get_check_status`) until the run finishes.
 
 4. **Act on the result**, in this order: `next_actions`, then `findings`, then
    `coverage`.

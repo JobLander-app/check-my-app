@@ -1,0 +1,267 @@
+// Creating and editing an App — one implementation behind the onboarding
+// wizard (src/app/onboarding/actions.ts), the app settings page
+// (src/app/dashboard/actions.ts) and the MCP tools create_app / update_app
+// (src/lib/mcp/tools.ts, CHE-315).
+//
+// Before CHE-315 these rules lived inside the two server actions, parsed out of
+// a FormData. An agent managing the product through MCP would have needed a
+// third copy of "the password is write-only", "test credentials are mirrored
+// onto the Watch" and "a cadence the plan does not allow is refused" — and a
+// third copy is the one that drifts. So the actions now parse their forms and
+// call these, and so does MCP.
+//
+// Business outcomes (plan cap, duplicate app, bad URL) are RETURNED as
+// `{ error }`, never thrown (CHE-84): each caller decides how to show a refusal.
+
+import type { PrismaClient } from "@/generated/prisma/client";
+import type { SafeParseReturnType } from "zod";
+import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import { assertCanAddWatch, watchTrialEnd } from "@/lib/plans";
+import { credentialFingerprint, encryptSecret } from "@/lib/crypto";
+import { appSlugFromUrl } from "@/lib/utils";
+import { createCheckSchema } from "@/lib/validation";
+import { extensionColumns, parseExtensionLink, type ExtensionOptions } from "@/lib/extension-target";
+import { recordTeamEvent } from "@/lib/team-events";
+import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+
+// The person acting and the team whose plan and apps they act on (CHE-253).
+export interface AppActor {
+  userId: string;
+  teamId: string;
+  plan: UserPlan;
+}
+
+type ExtensionParse = SafeParseReturnType<unknown, ExtensionOptions>;
+
+export interface CreateAppInput {
+  targetUrl: string;
+  // The onboarding wizard's extension tab says what it expects; a website
+  // link submitted there is refused rather than silently registered as a site.
+  expectExtension?: boolean;
+  extension?: ExtensionParse;
+  testEmail?: string | null;
+  testPassword?: string | null;
+  focusAreas?: string | null;
+  writeMode?: "read_only" | "create_cleanup";
+  scopeHints?: string | null;
+  userNotes?: string | null;
+  notifyEmail?: string | null;
+  frequency?: WatchFrequency;
+  pickupLabels?: string[];
+  repoLabel?: string | null;
+  urgentJourneys?: string[];
+}
+
+// The sentence is for a person; the code is for a machine caller, which should
+// branch on "the plan is spent" rather than parse English.
+export type AppRefusal = { error: string; code: "invalid_input" | "plan_limit" | "duplicate" | "not_found" };
+
+export const DUPLICATE_APP ="You already have this app — manage it from your dashboard.";
+
+export async function createAppForTeam(
+  db: PrismaClient,
+  actor: AppActor,
+  input: CreateAppInput,
+): Promise<{ ok: true; app: { id: string; appSlug: string; isExtension: boolean } } | AppRefusal> {
+  const target = createCheckSchema.shape.url.safeParse(input.targetUrl);
+  if (!target.success) return { error: "Enter your app URL or a Chrome Web Store extension link.", code: "invalid_input" };
+  const targetUrl = target.data;
+  const isExtension = Boolean(parseExtensionLink(targetUrl));
+  if (input.expectExtension && !isExtension) return { error: "Enter a Chrome Web Store extension link.", code: "invalid_input" };
+  const extension = input.extension;
+  if (isExtension && extension && !extension.success) return { error: extension.error.issues[0].message, code: "invalid_input" };
+  const appSlug = appSlugFromUrl(targetUrl);
+
+  const testEmail = input.testEmail?.trim() || null;
+  const testPasswordEnc = input.testPassword ? encryptSecret(input.testPassword) : null;
+  const frequency = input.frequency ?? "daily";
+
+  // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
+  const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
+    teamId: actor.teamId,
+    plan: actor.plan,
+    frequency,
+  });
+  if (!gate.ok) return { error: gate.reason, code: "plan_limit" };
+
+  // One App per (owner, slug). Pre-check for a clear message, and catch the
+  // unique-constraint race (D1 has no transactions, so a double-submit can slip
+  // past the check) rather than surfacing a raw 500.
+  const dupe = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
+    where: { ownerId_appSlug: { ownerId: actor.userId, appSlug } },
+    select: { id: true },
+  });
+  if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
+
+  try {
+    const app = await db.app.create({ ...alreadyScoped("created with its team"),
+      data: {
+        ownerId: actor.userId,
+        teamId: actor.teamId,
+        targetUrl,
+        ...extensionColumns(targetUrl, extension?.success ? extension.data : undefined),
+        appSlug,
+        testEmail,
+        testPasswordEnc,
+        scopeHints: input.scopeHints?.trim() || null,
+        userNotes: input.userNotes?.trim() || null,
+        focusAreas: input.focusAreas?.trim() || null,
+        // CHE-91: creation is opt-in AND only meaningful with a test account —
+        // the run-time gate enforces the second half, this records consent.
+        writeMode: input.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
+        watch: isExtension ? undefined : {
+          create: {
+            appSlug,
+            targetUrl,
+            frequency,
+            notifyEmail: input.notifyEmail?.trim() || null,
+            ownerId: actor.userId,
+            teamId: actor.teamId,
+            testEmail,
+            testPasswordEnc,
+            // CHE-54: a watch enabled on Free is a 7-day trial. Enabling from a
+            // verdict stamped it; adding the app here did not, so a Free team's
+            // one onboarded watch ran with no end at all.
+            trialEndsAt: watchTrialEnd(actor.plan),
+          },
+        },
+        policy: {
+          create: {
+            pickupLabels: JSON.stringify(input.pickupLabels ?? []),
+            repoLabel: input.repoLabel?.trim() || null,
+            priorityRule: JSON.stringify({ urgent: input.urgentJourneys ?? [] }),
+          },
+        },
+      },
+      select: { id: true, appSlug: true },
+    });
+    return { ok: true, app: { ...app, isExtension } };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Unique constraint")) return { error: DUPLICATE_APP, code: "duplicate" };
+    throw err;
+  }
+}
+
+// A partial edit: a field left `undefined` is not touched. The settings page
+// sends every field (so a blank there clears it, as it always did); MCP sends
+// only what the agent named.
+//
+// The password is write-only in both directions it can travel: `undefined`
+// keeps it, a non-empty string replaces it, and `null` or "" removes it — the
+// settings form maps its blank box to `undefined`, so a person saving other
+// settings never clears it by accident.
+export interface AppSettingsPatch {
+  testEmail?: string | null;
+  testPassword?: string | null;
+  focusAreas?: string | null;
+  writeMode?: "read_only" | "create_cleanup";
+  scopeHints?: string | null;
+  userNotes?: string | null;
+  notifyEmail?: string | null;
+  frequency?: WatchFrequency;
+  pickupLabels?: string[];
+  repoLabel?: string | null;
+  urgentJourneys?: string[];
+  extension?: ExtensionParse;
+}
+
+const orNull = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
+
+export async function updateAppForTeam(
+  db: PrismaClient,
+  actor: AppActor,
+  appId: string,
+  patch: AppSettingsPatch,
+): Promise<{ ok: true; app: { id: string; appSlug: string } } | AppRefusal> {
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(actor.teamId), id: appId, ownerId: actor.userId },
+    include: { watch: true, policy: true },
+  });
+  if (!app) return { error: "app not found", code: "not_found" };
+
+  // Cadence gate (CHE-34): editing an existing watch doesn't count against the
+  // per-plan cap, but the tier still can't select a faster cadence than allowed.
+  if (patch.frequency !== undefined && app.targetKind !== "extension") {
+    const gate = await assertCanAddWatch(db, {
+      teamId: actor.teamId,
+      plan: actor.plan,
+      frequency: patch.frequency,
+      existingWatchId: app.watch?.id ?? null,
+    });
+    if (!gate.ok) return { error: gate.reason, code: "plan_limit" };
+  }
+
+  if (app.targetKind === "extension" && patch.extension && !patch.extension.success) {
+    return { error: patch.extension.error.issues[0].message, code: "invalid_input" };
+  }
+  const extensionUpdate = app.targetKind === "extension" && patch.extension?.success
+    ? { extensionConfig: JSON.stringify(patch.extension.data) } : {};
+
+  const passwordUpdate =
+    patch.testPassword === undefined
+      ? {}
+      : { testPasswordEnc: patch.testPassword ? encryptSecret(patch.testPassword) : null };
+  if (patch.testPassword) {
+    console.log(`[settings] test password saved for app ${app.id}: ${credentialFingerprint(patch.testPassword)}`);
+  }
+  const testEmail = orNull(patch.testEmail);
+
+  // App — creds/scope/notes (source of record for test creds).
+  await db.app.update({ ...alreadyScoped("already read in this request"),
+    where: { id: app.id },
+    data: {
+      testEmail,
+      scopeHints: orNull(patch.scopeHints),
+      userNotes: orNull(patch.userNotes),
+      focusAreas: orNull(patch.focusAreas),
+      writeMode: patch.writeMode === undefined ? undefined : patch.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
+      ...passwordUpdate,
+      ...extensionUpdate,
+    },
+  });
+
+  // Watch — cadence + notify email; test creds mirrored here exactly as
+  // onboarding's nested create does (recurring runs read them off the Watch).
+  if (app.watch) {
+    await db.watch.update({ ...alreadyScoped("already read in this request"),
+      where: { id: app.watch.id },
+      data: { frequency: patch.frequency, notifyEmail: orNull(patch.notifyEmail), testEmail, ...passwordUpdate },
+    });
+  }
+
+  // TicketPolicy — the pickup contract with the owner's automation.
+  if (app.policy && (patch.pickupLabels || patch.repoLabel !== undefined || patch.urgentJourneys)) {
+    await db.ticketPolicy.update({
+      where: { appId: app.id },
+      data: {
+        pickupLabels: patch.pickupLabels ? JSON.stringify(patch.pickupLabels) : undefined,
+        repoLabel: orNull(patch.repoLabel),
+        priorityRule: patch.urgentJourneys ? JSON.stringify({ urgent: patch.urgentJourneys }) : undefined,
+      },
+    });
+  }
+
+  // CHE-264: one line for the settings, and a separate one for a credential —
+  // the credential change is the one an admin will most want to trace later,
+  // and it should not hide inside "settings changed".
+  await recordTeamEvent(db, {
+    teamId: actor.teamId,
+    actorUserId: actor.userId,
+    action: "app.settings_changed",
+    subject: app.appSlug,
+    summary: `changed settings for ${app.appSlug}`,
+  });
+  if (patch.testPassword !== undefined && (patch.testPassword || app.testPasswordEnc)) {
+    await recordTeamEvent(db, {
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "app.credentials_written",
+      subject: app.appSlug,
+      summary: patch.testPassword
+        ? `replaced the test password for ${app.appSlug}`
+        : `removed the test password for ${app.appSlug}`,
+    });
+  }
+
+  return { ok: true, app: { id: app.id, appSlug: app.appSlug } };
+}

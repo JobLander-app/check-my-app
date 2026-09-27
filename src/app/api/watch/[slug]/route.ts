@@ -3,8 +3,7 @@ import { getDbFromContext } from "@/lib/db";
 import { requireScope } from "@/lib/team-auth";
 import { getOptionalUser } from "@/lib/auth";
 import { optionalTeamContext } from "@/lib/auth";
-import { canUseFrequency } from "@/lib/plans";
-import type { UserPlan } from "@/lib/enums";
+import { configureWatch } from "@/lib/watch-enable";
 import { updateWatchSchema } from "@/lib/validation";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 import { alreadyScoped } from "@/lib/tenant-db";
@@ -41,29 +40,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ slug: 
   if (unauthorized) return refusal ?? NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!watch) return NextResponse.json({ error: "Watch not found" }, { status: 404 });
 
-  // Tier gate (CHE-34): a faster cadence (or reactivating) must fit the plan —
-  // otherwise the create-time gate is bypassable via update.
-  const targetFreq = parsed.data.frequency ?? watch.frequency;
-  if (
-    (parsed.data.frequency || parsed.data.active === true) &&
-    !canUseFrequency((team?.plan ?? "free") as UserPlan, targetFreq as "daily" | "every_6h" | "manual")
-  ) {
-    return NextResponse.json(
-      { error: `Your plan doesn't allow ${targetFreq} checks.` },
-      { status: 403 },
-    );
-  }
-
-  const data: Record<string, unknown> = { ...parsed.data };
-  if (parsed.data.frequency || parsed.data.active === true) {
-    const frequency = parsed.data.frequency ?? watch.frequency;
-    data.nextRunAt =
-      frequency === "manual"
-        ? null
-        : new Date(Date.now() + (frequency === "daily" ? 24 : 6) * 60 * 60 * 1000);
-  }
-
-  const updated = await db.watch.update({ ...alreadyScoped("already read in this request"), where: { id: watch.id }, data });
+  // CHE-315: the gate and the write are shared with the MCP watch tools
+  // (src/lib/watch-enable.ts), so resuming from here and from an agent pass the
+  // same plan check.
+  const result = await configureWatch(db, { teamId: team?.id ?? "", plan: team?.plan ?? "free" }, watch, parsed.data);
+  if (!result.ok) return NextResponse.json({ error: result.reason }, { status: 403 });
+  const updated = result.watch;
   return NextResponse.json({
     slug: updated.appSlug,
     active: updated.active,

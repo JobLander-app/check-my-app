@@ -44,6 +44,7 @@ import { POST as checkout } from "@/app/api/billing/checkout/route";
 import { POST as enableWatch } from "@/app/api/watch/route";
 import { PATCH as updateWatch, DELETE as cancelWatch } from "@/app/api/watch/[slug]/route";
 import { POST as exportSpecs } from "@/app/api/runs/[id]/export-specs/route";
+import { POST as mcp } from "@/app/api/mcp/route";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -126,6 +127,10 @@ const rows: Row[] = [
     path: "/api/watch/target.test", handler: cancelWatch as unknown as Handler, params: { slug: "target.test" } },
   { name: "POST /api/runs/{id}/export-specs", file: "src/app/api/runs/[id]/export-specs/route.ts", fn: "POST", method: "POST",
     path: "/api/runs/run_1/export-specs", handler: exportSpecs as unknown as Handler, params: { id: "run_1" }, next: true },
+  // CHE-315: the remote MCP server starts checks, adds apps and switches
+  // watches — every one of them a record our checker must never create.
+  { name: "POST /mcp", file: "src/app/api/mcp/route.ts", fn: "POST", method: "POST",
+    path: "/api/mcp", handler: mcp as unknown as Handler, params: {} },
 ];
 
 function makeRequest(row: Row, withHeader: boolean): Request {
