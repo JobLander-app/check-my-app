@@ -5,12 +5,12 @@ export const metadata = guideMetadata("connect-your-agent");
 
 // RE-VERIFY BEFORE THIS SHIPS: this page is written against the CHE-315
 // contract (remote MCP at https://checkmyapp.dev/mcp, Streamable HTTP, bearer
-// API key) and CHE-316 (API keys on every plan). Neither was merged when it
-// was written (2026-09-27). When they land, check every tool name and
-// argument below against the merged tool list, and that Dashboard → API keys
-// lets a Free/Starter/Growth team create a key.
+// API key), not merged when it was written (2026-09-27). When it lands, check
+// every tool name and argument below against the merged tool list.
 //
 // Verified independently of CHE-315:
+// - keys on every plan: CHE-316 (#179) — src/components/api-keys.tsx has no
+//   plan gate on the create form
 // - `claude mcp add --transport http <name> <url> --header "..."` syntax:
 //   `claude mcp add --help` (Claude Code CLI)
 // - Cursor config shape and paths (.cursor/mcp.json, ~/.cursor/mcp.json,
