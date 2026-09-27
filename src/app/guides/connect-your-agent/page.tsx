@@ -3,10 +3,10 @@ import { A, Bullets, Code, Example, GuidePage, Note, Section, Strong, guideMetad
 
 export const metadata = guideMetadata("connect-your-agent");
 
-// RE-VERIFY BEFORE THIS SHIPS: this page is written against the CHE-315
-// contract (remote MCP at https://checkmyapp.dev/mcp, Streamable HTTP, bearer
-// API key), not merged when it was written (2026-09-27). When it lands, check
-// every tool name and argument below against the merged tool list.
+// Tool names and arguments checked against the merged CHE-315 server
+// (src/lib/mcp/tools.ts, #184) and its production tools/list on 2026-09-27:
+// create_app takes url, scenarios, limits, notes, test_email, test_password —
+// no name (an app is named by its host).
 //
 // Verified independently of CHE-315:
 // - keys on every plan: CHE-316 (#179) — src/components/api-keys.tsx has no
@@ -37,12 +37,13 @@ const TOOLS: { name: string; what: string }[] = [
   { name: "list_apps", what: "The apps your team has added." },
   {
     name: "create_app",
-    what: "Add an app: address, name, scenarios, notes, and a test account (email and password).",
+    what: "Add an app: its address, scenarios, limits, notes, and a test account (email and password).",
   },
-  { name: "update_app", what: "Change an app’s scenarios, notes or test account." },
+  { name: "update_app", what: "Change an app’s scenarios, limits, notes or test account." },
   { name: "start_check", what: "Check an app you added, or any address." },
   { name: "get_check_status", what: "Where a running check is, without waiting." },
   { name: "wait_for_run", what: "Wait for a check to finish and return its verdict." },
+  { name: "wait_for_review", what: "Wait for a check to finish and return its findings, ready to fix." },
   {
     name: "get_review",
     what: "The findings in the shape you fix from: each symptom, its evidence, and how to know it is gone.",

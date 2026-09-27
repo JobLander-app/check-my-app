@@ -15,8 +15,9 @@ export const metadata = guideMetadata("scenarios");
 // - Stored as plain text (not encrypted): App.scopeHints/userNotes/focusAreas.
 // - Signup is walked to the final submit and not completed; payments, invites,
 //   messages are never made: instructions.ts credentialsBlock, onboarding copy.
-// - The agent path (create_app / update_app with `scenarios`, `notes`) follows
-//   the CHE-315 contract; RE-VERIFY against the merged MCP tool list.
+// - The agent path, checked against the merged CHE-315 tools (#184): MCP
+//   `scenarios` is App.focusAreas ("What worries you most?"), `limits` is
+//   scopeHints (Scope), `notes` is userNotes.
 export default function ScenariosGuide() {
   return (
     <GuidePage

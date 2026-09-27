@@ -3,11 +3,12 @@ import { A, Code, Example, GuidePage, Note, Section, Strong, guideMetadata } fro
 
 export const metadata = guideMetadata("results-in-your-agent");
 
-// RE-VERIFY BEFORE THIS SHIPS:
 // - "tells your agent at connection" is the per-connection MCP `instructions`
-//   of CHE-315, and `latest_results` is its tool — not merged when this was
-//   written (2026-09-27).
-// - the push is CHE-319 (a `checkmyapp` channel server, not built yet). The
+//   of CHE-315 (src/lib/mcp/instructions.ts); seen on production 2026-09-27
+//   as "example.com: mostly OK · Nothing new since the previous check".
+//   `latest_results` is its tool.
+// - the push is CHE-319 (a `checkmyapp` channel server, not built yet), so the
+//   section says "coming"; update it when CHE-319 ships. The
 //   flag and its preview status are Claude Code's own, verified on
 //   code.claude.com/docs/en/channels (2026-09-27): custom channels load only
 //   with --dangerously-load-development-channels during the research preview,
