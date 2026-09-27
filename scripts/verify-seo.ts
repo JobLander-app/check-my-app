@@ -13,7 +13,7 @@
 // Live part (when SEO_SITE is set, e.g. SEO_SITE=https://checkmyapp.dev): the
 // deployed site answers the way the source says it does. CI runs the static
 // part; the live part is the post-deploy dogfood step (CLAUDE.md rule 7).
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sitemap from "../src/app/sitemap";
@@ -71,6 +71,70 @@ function staticChecks() {
   }
   check("robots does not shut out verdicts (public by decision, 2026-09-05)", !disallow.some((d) => d.startsWith("/verdict")));
   check("robots points at the sitemap", r.sitemap === `${SITE}/sitemap.xml`);
+
+  // CHE-313: when /check was removed (#145) the two "Check your app →" links on
+  // /checks/today kept pointing at it, and nothing noticed until our own check
+  // of checkmyapp.dev found the 404 ten days later. Every literal internal link
+  // in the source must land on a route or a public file that exists.
+  for (const { file, href } of internalHrefs()) {
+    check(`link ${href} in ${file} lands on a route`, routeExists(href));
+  }
+}
+
+const APP_DIR = path.join(repoRoot, "src/app");
+
+function walk(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = path.join(dir, e.name);
+    return e.isDirectory() ? walk(p) : /\.tsx?$/.test(e.name) ? [p] : [];
+  });
+}
+
+function internalHrefs(): { file: string; href: string }[] {
+  const out: { file: string; href: string }[] = [];
+  for (const file of [...walk(APP_DIR), ...walk(path.join(repoRoot, "src/components"))]) {
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(/href=["'](\/[^"'#?]*)/g)) {
+      out.push({ file: path.relative(repoRoot, file), href: m[1] });
+    }
+  }
+  return out;
+}
+
+// Resolves a path against the App Router tree: route groups "(x)" are
+// transparent, "[x]" / "[...x]" / "[[...x]]" take any segment. A page, a route handler or a
+// file in public/ counts as existing.
+function routeExists(href: string): boolean {
+  if (existsSync(path.join(repoRoot, "public", href)) && href !== "/") return true;
+  const segments = href.split("/").filter(Boolean);
+  const isRoute = (dir: string) =>
+    ["page.tsx", "page.ts", "route.ts"].some((f) => existsSync(path.join(dir, f)));
+  const expand = (dir: string): string[] => [
+    dir,
+    ...readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && /^\(.+\)$/.test(e.name))
+      .flatMap((e) => expand(path.join(dir, e.name))),
+  ];
+  let dirs = expand(APP_DIR);
+  for (const seg of segments) {
+    const next: string[] = [];
+    for (const d of dirs) {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        if (e.name === seg || /^\[.+\]$/.test(e.name)) next.push(...expand(path.join(d, e.name)));
+      }
+    }
+    if (next.length === 0) return false;
+    dirs = next;
+  }
+  // An optional catch-all "[[...x]]" also matches zero segments (/sign-in).
+  return dirs.some(
+    (d) =>
+      isRoute(d) ||
+      readdirSync(d, { withFileTypes: true }).some(
+        (e) => e.isDirectory() && /^\[\[\.\.\..+\]\]$/.test(e.name) && isRoute(path.join(d, e.name)),
+      ),
+  );
 }
 
 async function head(url: string): Promise<{ status: number; location: string | null }> {
