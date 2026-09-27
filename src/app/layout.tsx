@@ -57,11 +57,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AnalyticsProvider />
           <header className="border-b border-ink-800">
             <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-              <Link href="/" className="group flex items-center gap-2.5">
+              <Link href="/" aria-label="CheckMyApp home" className="group flex items-center gap-2.5">
                 <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 font-mono text-[13px] font-semibold text-accent transition-colors group-hover:bg-accent/25">
                   ✓
                 </span>
-                <span className="font-mono text-sm font-medium tracking-tight text-fg">
+                <span className="hidden font-mono text-sm font-medium tracking-tight text-fg min-[480px]:inline">
                   checkmyapp
                 </span>
               </Link>
@@ -69,7 +69,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   it is a workspace, and the same links leave the owner with no
                   idea where they are or what else is here. Two different headers
                   for two different people. */}
-              <div className="flex items-center gap-4">
+              {/* With Guides (CHE-318) the signed-out links ran 15px past a
+                  375px screen. On phones the wordmark gives way (the ✓ mark
+                  stays and still goes home) and the gap tightens a step. */}
+              <div className="flex items-center gap-3 whitespace-nowrap sm:gap-4">
                 <Show when="signed-out">
                   <span className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint sm:inline">
                     product mirror · qa fallout
@@ -79,6 +82,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
                   >
                     Pricing
+                  </Link>
+                  <Link
+                    href="/guides"
+                    className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
+                  >
+                    Guides
                   </Link>
                   <Link
                     href="/faq"
@@ -123,6 +132,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
                   >
                     Check a link
+                  </Link>
+                  {/* CHE-318: an owner connecting their agent is signed in, so
+                      the guides belong in the workspace header too. Hidden
+                      on phones, where five links already fill the bar. */}
+                  <Link
+                    href="/guides"
+                    className="hidden font-mono text-[13px] text-fg-muted transition-colors hover:text-fg sm:inline"
+                  >
+                    Guides
                   </Link>
                   <Link
                     href="/settings/team"

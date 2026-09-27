@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createApiKey, revokeApiKey } from "@/app/dashboard/actions";
 
 // Dashboard "API keys" block (CHE-52). Create shows the raw key exactly once
@@ -29,9 +30,11 @@ export function ApiKeys({
           Let a coding agent (CI hook, MCP server) run checks as you:{" "}
           <code className="font-mono">Authorization: Bearer cma_…</code> on{" "}
           <code className="font-mono">POST /api/checks</code>. See{" "}
-          <code className="font-mono">mcp/README.md</code> in the repo. Included on every
-          plan; a check started with a key counts against your team&apos;s plan like any
-          other.
+          <Link href="/guides/connect-your-agent" className="text-accent hover:underline">
+            Connect your coding agent
+          </Link>
+          . Included on every plan; a check started with a key counts against your
+          team&apos;s plan like any other.
         </p>
 
         {newKey && (

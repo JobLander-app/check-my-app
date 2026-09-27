@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { GUIDES, GUIDES_PATH, guidePath } from "./guides";
 
 // CHE-108: link previews. The root layout defines the site-wide Open Graph
 // card; a page that says nothing inherits it whole, so /pricing, /faq and
@@ -23,7 +24,15 @@ export const TAGLINE =
 export const HOME_PATH = "/";
 
 // What the sitemap lists: every public page, each at its canonical address.
-export const PUBLIC_PATHS: `/${string}`[] = [HOME_PATH, "/checks/today", "/pricing", "/faq", "/about"];
+export const PUBLIC_PATHS: `/${string}`[] = [
+  HOME_PATH,
+  "/checks/today",
+  "/pricing",
+  "/faq",
+  "/about",
+  GUIDES_PATH,
+  ...GUIDES.map((g) => guidePath(g.slug)),
+];
 
 // Every public page names its own address. Without it Google picks a canonical
 // on its own, and http://, a trailing slash or a tracking parameter each become
