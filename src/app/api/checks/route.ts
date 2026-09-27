@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDbFromContext } from "@/lib/db";
 import { getOwnerFromRequest } from "@/lib/auth";
-import { optionalTeamContext } from "@/lib/auth";
-import { callerScope } from "@/lib/team-auth";
+import { callerScope, callerTeamContext } from "@/lib/team-auth";
 import { funnelAllows, refusal } from "@/lib/scopes";
 import { hashClientKey } from "@/lib/crypto";
 import { assertCanStartRun } from "@/lib/plans";
@@ -93,8 +92,9 @@ export async function POST(req: Request) {
   // client's allowance, and before the insert so a rejected run is never billed.
   const anonKeyHash = owner ? null : await hashClientKey(clientIp);
   // CHE-253: the quota is the team's, not the person's — inviting a colleague
-  // must not mint a second allowance.
-  const context = await optionalTeamContext(prisma, owner);
+  // must not mint a second allowance. CHE-316: a key caller spends its key's
+  // team, so a Free team's key meets quota_free exactly as the dashboard does.
+  const context = await callerTeamContext(prisma, req, auth);
   // CHE-265: a stranger is welcome here; somebody signed in is judged by their
   // own scope. A reader-scope key started a check in production before this
   // existed — authentication had made the caller LESS restricted, because

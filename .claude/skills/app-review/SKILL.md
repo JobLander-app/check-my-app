@@ -37,7 +37,8 @@ Run `npm install` in that checkout once. A hosted endpoint that needs no
 checkout is being built; until it lands, this is the way in.
 
 The key comes from the dashboard at https://checkmyapp.dev/dashboard → **API
-keys**, and is shown once. API access is on the Business plan today. Without a
+keys**, and is shown once. Every plan can create one, Free included; checks
+started with it count against the team's plan like any other. Without a
 key, `start_check` against production is refused (`turnstile_failed`), and
 `ephemeral: true` is refused (`ephemeral_requires_owner`).
 

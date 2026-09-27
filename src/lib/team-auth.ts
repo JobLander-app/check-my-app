@@ -20,7 +20,7 @@
 import { NextResponse } from "next/server";
 import { getOptionalUser, getOwnerFromRequest, requireUser } from "./auth";
 import { resolveApiKeyGrant } from "./apiKeys";
-import { activeTeamContext, type TeamRow } from "./teams";
+import { activeTeamContext, type TeamContext, type TeamRow } from "./teams";
 import { preferredTeamId } from "./auth";
 import { can, refusal, type TeamAction, type TeamScope } from "./scopes";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -92,6 +92,27 @@ export async function requireActionScope(action: TeamAction) {
   const { user, db, team, scope } = await requireUser();
   if (!can(scope, action)) throw new Error(refusal(scope, action) ?? "Not allowed");
   return { user, db, team, scope };
+}
+
+// CHE-316: which team a caller spends, for a route that also serves strangers
+// (POST /api/checks). A key acts for its OWN team, as requireScope already
+// answers — not for the minter's personal team, which is where a cookie-less
+// caller used to land. That mattered little while only Business teams could
+// mint keys; with a key on every plan it decides whether a Free team's key is
+// held to that team's quota or quietly spends a different team's plan.
+// A legacy key with no team falls back to the minter's context, as before.
+export async function callerTeamContext(
+  db: PrismaClient,
+  req: Request,
+  caller: { user: ScopeGrant["user"]; via: "clerk" | "api_key" } | null,
+): Promise<TeamContext | null> {
+  if (!caller) return null;
+  if (caller.via === "api_key") {
+    const grant = await resolveApiKeyGrant(db, req);
+    if (grant?.team) return { team: grant.team as TeamRow, scope: grant.scope as TeamScope };
+  }
+  const preferred = caller.via === "clerk" ? await preferredTeamId() : null;
+  return activeTeamContext(db, caller.user, preferred);
 }
 
 // CHE-265: who is calling, for a route that also serves strangers.
