@@ -13,7 +13,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { parseJson } from "./json";
-import { journeyPages } from "./journey-numbers";
+import { journeyPages, judgementBeside } from "./journey-numbers";
 import { movementOf, type MetricPoint, type Movement } from "./metric-movement";
 import { pathEndsOf } from "./posthog/measure";
 import { canMeasure } from "./posthog/oauth";
@@ -90,7 +90,9 @@ function entryPathOf(targetUrl: string | null): string {
 
 export async function numbersForJourneys(
   db: PrismaClient,
-  journeys: ReadonlyArray<{ id: string; appJourneyId: string | null }>,
+  // `status` is the journey's own status on this page: our estimate is shown
+  // only in a form that does not contradict it (CHE-321, `judgementBeside`).
+  journeys: ReadonlyArray<{ id: string; appJourneyId: string | null; status: string }>,
 ): Promise<Record<string, JourneyNumbers>> {
   const ids = journeys.map((j) => j.appJourneyId).filter((id): id is string => Boolean(id));
   if (ids.length === 0) return {};
@@ -164,7 +166,7 @@ export async function numbersForJourneys(
     const c = j.appJourneyId ? byId.get(j.appJourneyId) : undefined;
     if (!c) continue;
 
-    const ours: OurJudgement = { price: c.price, conversion: c.conversion };
+    const ours: OurJudgement = judgementBeside({ price: c.price, conversion: c.conversion }, j.status);
     const point = c.metricPoints[0];
 
     // What we show is the stages themselves, not a rate across them (CHE-287).

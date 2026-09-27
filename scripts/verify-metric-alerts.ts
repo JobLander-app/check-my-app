@@ -86,6 +86,7 @@ function build(specs: Spec[], survey: Survey = {}) {
     run: {
       findUnique: async () => ({
         snapshotId: survey.snapshotId === undefined ? "snap_1" : survey.snapshotId,
+        createdAt: day(20),
       }),
     },
     appSnapshot: {
@@ -106,13 +107,18 @@ function build(specs: Spec[], survey: Survey = {}) {
         specs.map((s, i) => ({
           order: i,
           status: s.status ?? "ok",
+          appJourneyId: `aj_${i}`,
           steps: (s.plan ?? []).map((label) => ({ label })),
           appJourney: {
             title: s.title,
             price: s.price ?? null,
             prevPrice: s.prevPrice ?? null,
             plan: JSON.stringify(s.prevPlan ?? []),
-            status: s.prevStatus ?? "ok",
+            // CHE-321: by the time the mail is composed, recordWalk has written
+            // THIS walk's status into the catalog row — so that is what the row
+            // holds here. The status before is the previous walk's own Journey
+            // row, served by findFirst below.
+            status: s.status ?? "ok",
             funnelStages: s.stages === undefined ? null : s.stages && JSON.stringify(s.stages),
             metricPoints: points(...s.convs).map((p) => ({
               ...p,
@@ -120,6 +126,10 @@ function build(specs: Spec[], survey: Survey = {}) {
             })),
           },
         })),
+      findFirst: async ({ where }: { where: { appJourneyId: string } }) => {
+        const s = specs[Number(where.appJourneyId.slice("aj_".length))];
+        return s ? { status: s.prevStatus ?? "ok" } : null;
+      },
     },
     finding: {
       findMany: async () =>

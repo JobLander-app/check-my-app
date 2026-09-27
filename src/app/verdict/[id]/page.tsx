@@ -199,7 +199,7 @@ export default async function VerdictPage({
   // will act on the wrong one.
   const journeyNumbers = await numbersForJourneys(
     prisma,
-    run.journeys.map((j) => ({ id: j.id, appJourneyId: j.appJourneyId })),
+    run.journeys.map((j) => ({ id: j.id, appJourneyId: j.appJourneyId, status: j.status })),
   );
   const carriedRunNumbers = Object.fromEntries(
     carriedRunIds.length

@@ -130,13 +130,21 @@ export function comparisonLine(ours: OurJudgement, theirs: TheirCompletion): str
   if (ours.conversion === null) return null;
   const gap = theirs.conversion - ours.conversion;
 
+  // CHE-321: each sentence opens by saying what we expected, and that opening
+  // has to be true of the estimate printed two lines above it. "We expected
+  // this to be hard going" under "Likely to finish: 65 of 100", or "we expected
+  // most people to get through" under 40 of 100, is the page contradicting
+  // itself. Where the opening would be false, the page says nothing.
+  const weExpectedMost = ours.conversion >= HEALTHY_CONVERSION;
+
   if (Math.abs(gap) < SHARP_DISAGREEMENT) {
-    return theirs.conversion >= HEALTHY_CONVERSION
+    return theirs.conversion >= HEALTHY_CONVERSION || weExpectedMost
       ? null
       : `We expected this to be hard going, and your own numbers agree: ${theirs.conversion}% of the ` +
           `${theirs.sample.toLocaleString("en-US")} people who reached ${theirs.from} got to ${theirs.to}.`;
   }
   if (gap < 0) {
+    if (!weExpectedMost) return null;
     return (
       `We expected most people to get through this. Of the ${theirs.sample.toLocaleString("en-US")} who ` +
       `reached ${theirs.from}, ${100 - theirs.conversion}% did not reach ${theirs.to}.`
@@ -228,11 +236,22 @@ export function pagesLine(p: JourneyPages, windowDays: number): NumberLine | nul
 
   const window = `last ${windowDays} days`;
   const people = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "person" : "people"}`;
+  // CHE-321: every count here is of people who got to this page having passed
+  // the earlier ones in order — including the entry page, which is dropped from
+  // the list but not from the count. Left unsaid, one verdict page printed
+  // "0 people reached /verdict/:id" under one journey and "then 1 to
+  // /verdict/:id" under the next (checkmyapp.dev, run #247), and "74 people
+  // reached /login" beside "then 6 to /login" (joblander.app, run #254): the
+  // same page, two numbers, each true of a different path. Naming where the
+  // path starts makes each number say which one. The entry page's own crowd
+  // stays out of it (CHE-287) — only its name is needed.
+  const reached = (s: WalkedStage) =>
+    `${people(s.count)} reached ${s.stage}${p.entry ? ` from ${p.entry.stage}` : ""}`;
 
   if (own.length === 1) {
     return {
       label: "Reached",
-      value: `${people(own[0].count)} reached ${own[0].stage}, ${window}`,
+      value: `${reached(own[0])}, ${window}`,
       source: "your analytics",
       sourceKind: "measured",
     };
@@ -247,7 +266,7 @@ export function pagesLine(p: JourneyPages, windowDays: number): NumberLine | nul
     .join(", then ");
   return {
     label: "Reached",
-    value: `${people(first.count)} reached ${first.stage}, then ${rest} — ${window}`,
+    value: `${reached(first)}, then ${rest} — ${window}`,
     source: "your analytics",
     sourceKind: "measured",
   };
@@ -275,7 +294,30 @@ export function ourLines(j: OurJudgement): NumberLine[] {
   return lines;
 }
 
+/** Journey statuses the page labels as working ("Works", "Works · partly verified"). */
+const WORKING_STATUSES = new Set(["ok", "partial"]);
+
 /**
+ * Our judgement as it may stand beside this journey's status (CHE-321).
+ *
+ * A conversion of 0 means one thing in the guide that produces it: "cannot be
+ * finished at all: it is blocked, broken, or the control does nothing". Printed
+ * under a journey the same page marks "✓ Works", it is the page contradicting
+ * itself — and it happened: "Check a website anonymously" on checkmyapp.dev
+ * read "✓ Works" and "Likely to finish: 0 of 100" on run #247, the zero
+ * standing on a note about our own inability to target a button (rule 8).
+ *
+ * The walk is the evidence and the zero is an opinion, so the opinion yields:
+ * the zero is withheld and the price, which says nothing about finishing,
+ * stays. Nothing stored changes; this decides only what may be shown together.
+ */
+export function judgementBeside(ours: OurJudgement, journeyStatus: string): OurJudgement {
+  if (ours.conversion === 0 && WORKING_STATUSES.has(journeyStatus)) {
+    return { ...ours, conversion: null };
+  }
+  return ours;
+}
+
 /**
  * The sentence for a journey with no measured number.
  *

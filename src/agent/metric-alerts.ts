@@ -62,6 +62,48 @@ async function changedPagesOf(env: AgentEnv, runId: string): Promise<string[]> {
   }
 }
 
+/**
+ * The status the previous walk of this journey came back with (CHE-321).
+ *
+ * The pairing used to read the "before" status from the catalog row. But
+ * `recordWalk` writes this run's status into that row the moment the walk
+ * ends, long before the mail is composed, so the pairing compared the walk
+ * with itself and a status change could never be said — while the sentence
+ * went on to state "Nothing changed in this flow". The previous walk's own
+ * Journey row is the before that is still there.
+ *
+ * Only walks of this journey that really happened and came before this run:
+ * a carried copy is not a walk, and an all-skipped one saw nothing. Null when
+ * there is none, and then no status change is claimed.
+ *
+ * Status only. The catalog's `plan` has the same flaw, and the previous walk's
+ * step labels are NOT the fix: each walk words its steps afresh ("Sign in with
+ * test account" / "Log in with test credentials" for the same click on
+ * joblander.app, runs #251 and #254), so diffing them would announce steps
+ * that appeared and vanished in a flow nobody changed. Comparing steps needs a
+ * stable identity for a step, which is journey work, and journey work is
+ * paused (owner, 2026-09-27). Filed as CHE-323.
+ */
+async function previousStatusOf(
+  env: AgentEnv,
+  appJourneyId: string,
+  runId: string,
+  before: Date,
+): Promise<string | null> {
+  const prev = await env.db.journey.findFirst({
+    where: {
+      appJourneyId,
+      runId: { not: runId },
+      carriedFromRunId: null,
+      status: { not: "skipped" },
+      run: { createdAt: { lt: before } },
+    },
+    orderBy: { run: { createdAt: "desc" } },
+    select: { status: true },
+  });
+  return prev?.status ?? null;
+}
+
 export interface MetricAlert {
   journeyTitle: string;
   /** The sentence the owner reads. Already rule-1 clean. */
@@ -88,6 +130,7 @@ export async function metricAlertsForRun(env: AgentEnv, runId: string): Promise<
         // because the two belong in one message.
         order: true,
         status: true,
+        appJourneyId: true,
         steps: { orderBy: { order: "asc" }, select: { label: true } },
         appJourney: {
           select: {
@@ -95,7 +138,6 @@ export async function metricAlertsForRun(env: AgentEnv, runId: string): Promise<
             price: true,
             prevPrice: true,
             plan: true,
-            status: true,
             // The pages this journey runs on, as the app holds them rather than
             // as this run happened to walk them (CHE-285).
             funnelStages: true,
@@ -132,6 +174,10 @@ export async function metricAlertsForRun(env: AgentEnv, runId: string): Promise<
     // Read once for the whole run: the survey's diff is the app's, not any one
     // journey's.
     const changedPages = await changedPagesOf(env, runId);
+    // "Before" means before this run, whatever has been walked since.
+    const runCreatedAt =
+      (await env.db.run.findUnique({ where: { id: runId }, select: { createdAt: true } }))?.createdAt ??
+      new Date();
 
     const alerts: MetricAlert[] = [];
     const seen = new Set<string>();
@@ -153,14 +199,17 @@ export async function metricAlertsForRun(env: AgentEnv, runId: string): Promise<
       // CHE-242: the pairing. The number moved AND this is what changed in the
       // flow — or, said outright, that nothing did. The stored plan is what the
       // journey looked like before this walk; this run's step labels are what
-      // it looks like now.
+      // it looks like now. The status before is the previous walk's own
+      // (CHE-321: not the catalog row, which this walk has already overwritten).
       const changes = flowChanges({
         price: aj.price,
         prevPrice: aj.prevPrice,
         plan: j.steps.map((s) => s.label).filter(Boolean),
         prevPlan: parseJson<string[]>(aj.plan) ?? [],
         status: j.status,
-        prevStatus: aj.status,
+        prevStatus: j.appJourneyId
+          ? await previousStatusOf(env, j.appJourneyId, runId, runCreatedAt)
+          : null,
         newFindings: (titlesByJourneyIndex.get(j.order) ?? []).slice(0, 2),
         // CHE-285: the survey's snapshot diff (CHE-132), asked about THIS
         // journey's pages. True only when we actually compared two snapshots
