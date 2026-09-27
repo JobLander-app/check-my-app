@@ -73,6 +73,12 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "POST /api/webhooks/stripe": { kind: "public", why: "signature-verified webhook" },
   "POST /api/webhooks/clerk": { kind: "public", why: "signature-verified webhook" },
 
+  // CHE-315: the remote MCP server. One URL, many actions: the API key names
+  // the team and the scope, and each tool asks the scope table for its own
+  // action (list_apps → read, start_check → run.start, enable_watch →
+  // watch.configure, …) in the file named here. Connecting at all needs `read`.
+  "POST /api/mcp": { kind: "row", decidedIn: "src/lib/mcp/tools.ts" },
+
   // Decided by the row: an anonymous run belongs to whoever holds its link.
   "POST /api/runs/[id]/recheck": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "PATCH /api/runs/[id]/lens": { kind: "row", decidedIn: "src/lib/auth.ts (canMutateOwned)" },

@@ -6,7 +6,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { assertCanAddWatch, watchTrialEnd } from "@/lib/plans";
-import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 
 export type EnableWatchResult =
   | { kind: "unauthenticated" }
@@ -66,7 +66,7 @@ export async function enableWatchForRun(
   // schedule a daily walk of a deploy that is about to disappear. Refused
   // before any row is written.
   if (run.ephemeral) return { kind: "ephemeral" };
-  if (run.targetKind === "extension") return { kind: "gated", reason: "Extension checks run on demand. Add this extension to your dashboard to run another check." };
+  if (run.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
 
   // Find-or-create the owner's App for this target. upsert is race-safe under
   // D1 (no transactions) vs a check-then-create double-submit window.
@@ -88,32 +88,79 @@ export async function enableWatchForRun(
     },
   });
 
-  // Tier gate (CHE-34): updating an existing watch is fine; a new one counts.
-  const existingWatch = await db.watch.findUnique({ ...alreadyScoped("the App was just scoped to this team"),
-    where: { appId: app.id },
-    select: { id: true },
-  });
-  const gate = await assertCanAddWatch(db, {
-    teamId: user.teamId,
-    plan: user.plan as UserPlan,
+  const enabled = await upsertWatch(db, user, app, {
     frequency: opts.frequency,
-    existingWatchId: existingWatch?.id ?? null,
+    notifyOnChangeOnly: opts.notifyOnChangeOnly,
+    seed: { notifyEmail: run.notifyEmail, testEmail: run.testEmail, testPasswordEnc: run.testPasswordEnc },
   });
-  if (!gate.ok) return { kind: "gated", reason: gate.reason };
+  if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
+  const watch = enabled.watch;
 
+  // Adopt the source run into the owner's app + watch (becomes the baseline).
+  await db.run.update({ ...alreadyScoped("already read in this request"),
+    where: { id: run.id },
+    data: { watchId: watch.id, ownerId: user.id, teamId: user.teamId, appId: app.id },
+  });
+
+  return { kind: "ok", slug: watch.appSlug };
+}
+
+// CHE-315: the gate every path that turns a watch ON asks — enabling from a
+// verdict, resuming from the watch settings, and the MCP enable_watch tool.
+//
+// Updating a watch that is already running does not count against the cap
+// (CHE-34). Resuming a PAUSED one does: a paused watch is not in the count
+// (assertCanAddWatch counts active rows), so treating its resume as a mere
+// update let a team pause, add a watch, and resume past its plan's cap. The
+// resume path used to check only the cadence for exactly that reason.
+async function watchGate(
+  db: PrismaClient,
+  team: { teamId: string; plan: string },
+  frequency: WatchFrequency,
+  existing: { id: string; active: boolean } | null,
+) {
+  return assertCanAddWatch(db, {
+    teamId: team.teamId,
+    plan: team.plan as UserPlan,
+    frequency,
+    existingWatchId: existing?.active ? existing.id : null,
+  });
+}
+
+// Create the app's watch, or switch its existing one on at `frequency`.
+async function upsertWatch(
+  db: PrismaClient,
+  user: { id: string; teamId: string; plan: string },
+  app: { id: string; appSlug: string; targetUrl: string; testEmail: string | null; testPasswordEnc: string | null },
+  opts: {
+    frequency: WatchFrequency;
+    notifyOnChangeOnly?: boolean;
+    // What a NEW watch starts with. Enabling from a verdict carries that run's
+    // inputs; enabling an app carries the app's own credentials.
+    seed?: { notifyEmail: string | null; testEmail: string | null; testPasswordEnc: string | null };
+  },
+) {
+  const existing = await db.watch.findUnique({ ...alreadyScoped("the App was just scoped to this team"),
+    where: { appId: app.id },
+    select: { id: true, active: true },
+  });
+  const gate = await watchGate(db, user, opts.frequency, existing);
+  if (!gate.ok) return { ok: false as const, reason: gate.reason };
+
+  const seed = opts.seed ?? { notifyEmail: null, testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc };
   const watch = await db.watch.upsert({ ...alreadyScoped("the App was just scoped to this team"),
     where: { appId: app.id },
     create: {
       appId: app.id,
       ownerId: user.id,
       teamId: user.teamId,
-      appSlug: run.appSlug,
-      targetUrl: run.targetUrl,
+      appSlug: app.appSlug,
+      targetUrl: app.targetUrl,
       frequency: opts.frequency,
-      notifyOnChangeOnly: opts.notifyOnChangeOnly,
-      notifyEmail: run.notifyEmail,
-      testEmail: run.testEmail,
-      testPasswordEnc: run.testPasswordEnc,
+      notifyOnChangeOnly: opts.notifyOnChangeOnly ?? true,
+      notifyEmail: seed.notifyEmail,
+      testEmail: seed.testEmail,
+      testPasswordEnc: seed.testPasswordEnc,
       nextRunAt: nextRunFrom(opts.frequency),
       // CHE-54: Free enables a 7-day trial watch; paid plans get null (no expiry).
       trialEndsAt: watchTrialEnd(user.plan as UserPlan),
@@ -127,12 +174,53 @@ export async function enableWatchForRun(
       nextRunAt: nextRunFrom(opts.frequency),
     },
   });
-
-  // Adopt the source run into the owner's app + watch (becomes the baseline).
-  await db.run.update({ ...alreadyScoped("already read in this request"),
-    where: { id: run.id },
-    data: { watchId: watch.id, ownerId: user.id, teamId: user.teamId, appId: app.id },
-  });
-
-  return { kind: "ok", slug: watch.appSlug };
+  return { ok: true as const, watch };
 }
+
+// Enable (or resume) the watch of an app the caller already has — the MCP
+// enable_watch tool (CHE-315). Same App lookup as the dashboard's settings:
+// the team's app, added by this person.
+export async function enableWatchForApp(
+  db: PrismaClient,
+  user: { id: string; teamId: string; plan: string },
+  appId: string,
+  opts: { frequency: WatchFrequency; notifyOnChangeOnly?: boolean },
+): Promise<EnableWatchResult> {
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(user.teamId), id: appId, ownerId: user.id },
+    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true },
+  });
+  if (!app) return { kind: "not_found" };
+  if (app.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
+  const enabled = await upsertWatch(db, user, app, opts);
+  if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
+  return { kind: "ok", slug: enabled.watch.appSlug };
+}
+
+// PATCH /api/watch/{slug} and the MCP disable_watch tool: frequency, notify
+// rule, pause/resume on a watch the caller has already resolved as theirs.
+export async function configureWatch(
+  db: PrismaClient,
+  team: { teamId: string; plan: string },
+  watch: { id: string; active: boolean; frequency: string },
+  patch: { frequency?: WatchFrequency; notifyOnChangeOnly?: boolean; active?: boolean },
+) {
+  // Tier gate (CHE-34): a faster cadence (or reactivating) must fit the plan —
+  // otherwise the create-time gate is bypassable via update.
+  const frequency = (patch.frequency ?? watch.frequency) as WatchFrequency;
+  const turningOn = patch.active === true || (patch.active === undefined && watch.active);
+  if (patch.frequency || patch.active === true) {
+    const gate = turningOn
+      ? await watchGate(db, team, frequency, watch)
+      : await assertCanAddWatch(db, { teamId: team.teamId, plan: team.plan as UserPlan, frequency, existingWatchId: watch.id });
+    if (!gate.ok) return { ok: false as const, reason: gate.reason };
+  }
+
+  const data: Record<string, unknown> = { ...patch };
+  if (patch.frequency || patch.active === true) data.nextRunAt = nextRunFrom(frequency);
+
+  const updated = await db.watch.update({ ...alreadyScoped("already read in this request"), where: { id: watch.id }, data });
+  return { ok: true as const, watch: updated };
+}
+
+const EXTENSION_ON_DEMAND = "Extension checks run on demand. Add this extension to your dashboard to run another check.";

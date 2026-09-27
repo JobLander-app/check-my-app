@@ -1,48 +1,14 @@
 import { NextResponse } from "next/server";
 import { getDbFromContext } from "@/lib/db";
-import { extensionReportPublished } from "@/lib/extension-target";
-import { publicRow } from "@/lib/tenant-db";
+import { loadVerdict } from "@/lib/run-read";
 
-// GET /api/runs/{publicId}/verdict — structured verdict for automation (the
-// MCP server, CI hooks). Same visibility as the verdict page: knowledge of the
-// unguessable publicId is the capability.
+// GET /api/runs/{publicId}/verdict — structured verdict for automation (CI
+// hooks, and the MCP tools through the same loader in src/lib/run-read.ts).
+// Same visibility as the verdict page: knowledge of the unguessable publicId is
+// the capability.
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const prisma = await getDbFromContext();
-  const run = await prisma.run.findUnique({ ...publicRow(),
-    where: { publicId: (await params).id },
-    include: {
-      journeys: { orderBy: { order: "asc" }, select: { title: true, status: true, summary: true } },
-      findings: {
-        orderBy: { number: "asc" },
-        select: { number: true, title: true, category: true, severity: true, mark: true },
-      },
-      llmUsage: true,
-    },
-  });
-  if (!run) return NextResponse.json({ error: "Run not found" }, { status: 404 });
-  if (!extensionReportPublished(run)) return NextResponse.json({ status: run.status, verdict: null, bottom_line: null, journeys: [], findings: [] });
-
-  const totalTokens = run.llmUsage.reduce(
-    (s, u) => s + u.inputTokens + u.cacheWriteTokens + u.cacheReadTokens + u.outputTokens,
-    0,
-  );
-
-  return NextResponse.json({
-    run_number: run.runNumber,
-    app: run.appSlug,
-    status: run.status,
-    verdict: run.verdict,
-    // Deploy identity (CHE-56): null when the run wasn't tied to a build, so a
-    // CI gate can tell "not a deploy check" from "a deploy check that passed".
-    deploy: run.deploySha ? { sha: run.deploySha, env: run.deployEnv } : null,
-    bottom_line: run.bottomLine,
-    // CHE-202: a preview run says when it will be gone; null on every other run.
-    ephemeral: run.ephemeral,
-    expires_at: run.expiresAt,
-    journeys: run.journeys,
-    findings: run.findings,
-    cost_usd: run.costUsd,
-    total_tokens: totalTokens || null,
-    completed_at: run.completedAt,
-  });
+  const verdict = await loadVerdict(prisma, (await params).id);
+  if (!verdict) return NextResponse.json({ error: "Run not found" }, { status: 404 });
+  return NextResponse.json(verdict);
 }

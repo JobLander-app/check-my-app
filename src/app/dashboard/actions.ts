@@ -10,9 +10,9 @@ import { isSelfCheckRequest, selfCheckRedirectPath } from "@/lib/self-check";
 import { requireUser } from "@/lib/auth";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
-import { credentialFingerprint, decryptSecret, encryptSecret } from "@/lib/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { assertCanAddWatch } from "@/lib/plans";
+import { updateAppForTeam } from "@/lib/app-settings";
 import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
@@ -177,103 +177,37 @@ export async function revokeApiKey(id: string): Promise<void> {
 // onboarding does), cadence + notify email on Watch, ticket params on
 // TicketPolicy. The password is write-only: a blank submission leaves
 // testPasswordEnc untouched on both records.
+//
+// CHE-315: the rules are in src/lib/app-settings.ts, shared with the MCP
+// update_app tool; this action reads its form. The form carries every field,
+// so each is passed — a blank box clears its field, as it always did — except
+// the password, whose blank box means "keep" (undefined), never "remove".
 export async function updateAppSettings(appId: string, formData: FormData) {
   const { user, db, team } = await requireActionScope("app.settings.write");
-  const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
-    include: { watch: true, policy: true },
+  const list = (name: string) =>
+    String(formData.get(name) ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, {
+    testEmail: String(formData.get("testEmail") ?? ""),
+    testPassword: String(formData.get("testPassword") ?? "") || undefined,
+    focusAreas: String(formData.get("focusAreas") ?? ""),
+    writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
+    scopeHints: String(formData.get("scopeHints") ?? ""),
+    userNotes: String(formData.get("userNotes") ?? ""),
+    notifyEmail: String(formData.get("notifyEmail") ?? ""),
+    frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
+    pickupLabels: list("pickupLabels"),
+    repoLabel: String(formData.get("repoLabel") ?? ""),
+    urgentJourneys: list("urgentJourneys"),
+    extension: extensionOptionsFromForm(formData),
   });
-  if (!app) throw new Error("app not found");
-
-  const testEmail = (String(formData.get("testEmail") ?? "").trim() || null) as string | null;
-  const testPassword = String(formData.get("testPassword") ?? "");
-  const focusAreas = (String(formData.get("focusAreas") ?? "").trim() || null) as string | null;
-  const writeMode = formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only";
-  const scopeHints = (String(formData.get("scopeHints") ?? "").trim() || null) as string | null;
-  const userNotes = (String(formData.get("userNotes") ?? "").trim() || null) as string | null;
-  const notifyEmail = (String(formData.get("notifyEmail") ?? "").trim() || null) as string | null;
-  const frequency = String(formData.get("frequency") ?? "daily") as WatchFrequency;
-
-  const pickupLabels = String(formData.get("pickupLabels") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const repoLabel = (String(formData.get("repoLabel") ?? "").trim() || null) as string | null;
-  const urgentJourneys = String(formData.get("urgentJourneys") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  // Cadence gate (CHE-34): editing an existing watch doesn't count against the
-  // per-plan cap, but the tier still can't select a faster cadence than allowed.
-  const gate = app.targetKind === "extension" ? { ok: true as const } : await assertCanAddWatch(db, {
-    teamId: team.id,
-    plan: team.plan as UserPlan,
-    frequency,
-    existingWatchId: app.watch?.id ?? null,
-  });
-  if (!gate.ok) throw new Error(gate.reason);
-
-  // Write-only password: only re-encrypt when a non-empty value is submitted.
-  const passwordUpdate = testPassword ? { testPasswordEnc: encryptSecret(testPassword) } : {};
-  if (testPassword) {
-    console.log(`[settings] test password saved for app ${app.id}: ${credentialFingerprint(testPassword)}`);
-  }
-
-  const extension = extensionOptionsFromForm(formData);
-  if (app.targetKind === "extension" && !extension.success) throw new Error(extension.error.issues[0].message);
-  const extensionUpdate = app.targetKind === "extension" && extension.success
-    ? { extensionConfig: JSON.stringify(extension.data) } : {};
-
-  // App — creds/scope/notes (source of record for test creds).
-  await db.app.update({ ...alreadyScoped("already read in this request"),
-    where: { id: app.id },
-    data: { testEmail, scopeHints, userNotes, focusAreas, writeMode, ...passwordUpdate, ...extensionUpdate },
-  });
-
-  // Watch — cadence + notify email; test creds mirrored here exactly as
-  // onboarding's nested create does (recurring runs read them off the Watch).
-  if (app.watch) {
-    await db.watch.update({ ...alreadyScoped("already read in this request"),
-      where: { id: app.watch.id },
-      data: { frequency, notifyEmail, testEmail, ...passwordUpdate },
-    });
-  }
-
-  // TicketPolicy — the pickup contract with the owner's automation.
-  if (app.policy) {
-    await db.ticketPolicy.update({
-      where: { appId: app.id },
-      data: {
-        pickupLabels: JSON.stringify(pickupLabels),
-        repoLabel,
-        priorityRule: JSON.stringify({ urgent: urgentJourneys }),
-      },
-    });
-  }
-
-  // CHE-264: one line for the settings, and a separate one for a credential —
-  // the credential change is the one an admin will most want to trace later,
-  // and it should not hide inside "settings changed".
-  await recordTeamEvent(db, {
-    teamId: team.id,
-    actorUserId: user.id,
-    action: "app.settings_changed",
-    subject: app.appSlug,
-    summary: `changed settings for ${app.appSlug}`,
-  });
-  if (testPassword) {
-    await recordTeamEvent(db, {
-      teamId: team.id,
-      actorUserId: user.id,
-      action: "app.credentials_written",
-      subject: app.appSlug,
-      summary: `replaced the test password for ${app.appSlug}`,
-    });
-  }
+  if ("error" in result) throw new Error(result.error);
 
   revalidatePath("/dashboard");
-  revalidatePath(`/dashboard/${app.id}`);
+  revalidatePath(`/dashboard/${result.app.id}`);
 }
 
 // Remove an app the owner no longer wants watched (CHE-95). Our own check
