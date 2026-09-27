@@ -45,6 +45,21 @@ export function clientConfig(key: string | null): string {
   );
 }
 
+// The first thing to say to the agent once it is connected (CHE-324). The
+// same example the guide gives (/guides/connect-your-agent, "Ask for what you
+// want"), with the person's own address in it when onboarding knows one — a
+// person who arrived from a verdict with ?url= should not retype it.
+export const EXAMPLE_APP_URL = "https://app.example.com";
+
+export function firstPrompt(url: string | null | undefined): string {
+  const address = url?.trim() && /^https?:\/\/\S+$/i.test(url.trim()) ? url.trim() : EXAMPLE_APP_URL;
+  return (
+    `Add my app ${address} to CheckMyApp with the test account qa@example.com — ` +
+    "the password is QA_PASSWORD in .env.test. Scenarios: a signed-in user can create an invoice " +
+    "and download it as a PDF; search finds an invoice by number. Then run a check and fix what it finds."
+  );
+}
+
 // Connected = a key of this team has actually been used. A key that was
 // created and never used is a person who stopped halfway, and the panel stays
 // in front of them until the agent makes its first call.

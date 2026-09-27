@@ -3,6 +3,7 @@ import Link from "next/link";
 import { SubmitForm } from "@/components/submit-form";
 import { TrackedLink } from "@/components/track";
 import { EXAMPLE_VERDICT_PATH } from "@/lib/example-verdict";
+import { CONNECT_GUIDE_PATH } from "@/lib/agent-connect";
 import { HOME_PATH, canonical } from "@/lib/site-metadata";
 import { viewerExtensionCheck } from "@/lib/viewer-flags";
 
@@ -41,6 +42,14 @@ export default async function Home({
         >
           See an example verdict →
         </TrackedLink>
+      </p>
+      {/* CHE-324: the coding agent is the interface (CHE-313). One line for
+          the visitor who would rather never open this page again. */}
+      <p className="mt-3 w-full max-w-xl text-center font-mono text-[13px] leading-6 text-fg-faint">
+        Prefer your coding agent?{" "}
+        <Link href={CONNECT_GUIDE_PATH} className="text-accent transition-colors hover:underline">
+          Connect it →
+        </Link>
       </p>
       {/* Owner decision, 2026-09-05: every anonymous check is public. Say so
           where the link is pasted, and make it the reason to sign in. */}

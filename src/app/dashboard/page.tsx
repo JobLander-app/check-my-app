@@ -188,8 +188,10 @@ export default async function DashboardPage({
           </Link>
           {/* CHE-320: behind the same flag as the home page's extension option. */}
           {extensionCheck && <Link href="/onboarding?type=extension" className="text-xs text-accent hover:underline">+ Add extension</Link>}
+          {/* CHE-324: the agent panel is already at the top of this page, so
+              "+ Add app" here means the form — not the onboarding chooser. */}
           <Link
-            href="/onboarding"
+            href="/onboarding?path=app"
             className="rounded-md bg-accent px-4 py-2 font-mono text-[13px] font-semibold text-ink-950 transition-opacity hover:opacity-90"
           >
             + Add app
@@ -200,7 +202,7 @@ export default async function DashboardPage({
       {apps.length === 0 ? (
         <div className="card p-8 text-center">
           <p className="text-fg-muted">No apps yet.</p>
-          <Link href="/onboarding" className="mt-2 inline-block text-accent hover:underline">
+          <Link href="/onboarding?path=app" className="mt-2 inline-block text-accent hover:underline">
             Add your first app →
           </Link>
         </div>
