@@ -10,6 +10,7 @@ import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { extensionColumns, parseExtensionLink } from "@/lib/extension-target";
 import { createCheckSchema, extensionOptionsFromForm } from "@/lib/validation";
 import { alreadyScoped } from "@/lib/tenant-db";
+import { extensionCheckFor } from "@/lib/viewer-flags";
 
 // Persist an onboarded App + its Watch + TicketPolicy in one nested write.
 // D1 has no transactions, but the spike (CHE-21) proved nested create works and
@@ -36,6 +37,12 @@ export async function createApp(
   const targetUrl = target.data;
   const isExtension = Boolean(parseExtensionLink(targetUrl));
   if (formData.get("targetKind") === "extension" && !isExtension) return { error: "Enter a Chrome Web Store extension link." };
+  // CHE-320: the form hides extension mode when the flag is off, but a pasted
+  // Web Store link would still become an extension here, since the kind is
+  // read from the link. Same flag, same answer as the page.
+  if (isExtension && !(await extensionCheckFor(user))) {
+    return { error: "Chrome Web Store links can't be added here yet. Enter your app's own URL." };
+  }
   const extension = extensionOptionsFromForm(formData);
   if (isExtension && !extension.success) return { error: extension.error.issues[0].message };
   const appSlug = appSlugFromUrl(targetUrl);
