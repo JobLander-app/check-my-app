@@ -16,15 +16,18 @@ export function OnboardingWizard({
   prefillUrl,
   defaultEmail = "",
   initialKind = "website",
+  extensionCheck = false,
 }: {
   prefillUrl: string;
   defaultEmail?: string;
   initialKind?: "website" | "extension";
+  /** PostHog flag `home-extension-check`, evaluated by the page (CHE-320). Off: no toggle, no extension mode. */
+  extensionCheck?: boolean;
 }) {
   const [url, setUrl] = useState(prefillUrl);
   const [kind, setKind] = useState(initialKind);
   const [extension, setExtension] = useState<ExtensionOptions>({});
-  const isExtension = kind === "extension" || Boolean(parseExtensionLink(url));
+  const isExtension = extensionCheck && (kind === "extension" || Boolean(parseExtensionLink(url)));
   const [showPassword, setShowPassword] = useState(false);
   // CHE-84: refusals come back as state instead of a thrown 500, and the action
   // is passed to <form> directly so a click that lands before hydration still
@@ -47,13 +50,13 @@ export function OnboardingWizard({
 
       {/* 1 — Site */}
       <section className="card space-y-3 p-5">
-        <div className="flex gap-1 font-mono text-xs">
+        {extensionCheck && <div className="flex gap-1 font-mono text-xs">
           {(["website", "extension"] as const).map(value => <button key={value} type="button"
             aria-pressed={value === (isExtension ? "extension" : "website")} onClick={() => setKind(value)}
             className={`rounded-md px-3 py-2 ${value === (isExtension ? "extension" : "website") ? "bg-accent/10 text-accent" : "text-fg-muted hover:text-fg"}`}>
             {value === "extension" ? "Chrome extension" : "Website"}
           </button>)}
-        </div>
+        </div>}
         <Input
           name="targetUrl"
           type="text"
