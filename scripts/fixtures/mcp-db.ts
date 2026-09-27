@@ -5,7 +5,7 @@
 // query compiler), which plain Node cannot load, and the verify registry must
 // pass with no arguments and no environment (AGENTS.md). So this implements
 // the slice of the Prisma API the MCP tools reach — findUnique / findFirst /
-// findMany / count / create / update / upsert with `where`, `select`,
+// findMany / count / create / update / updateMany / deleteMany / upsert with `where`, `select`,
 // `include`, `orderBy`, `take`, nested `create` and `increment` — over plain
 // arrays of rows.
 //
@@ -35,6 +35,8 @@ const RELATIONS: Record<string, Record<string, Relation>> = {
     watch: { model: "watch", local: "id", foreign: "appId", many: false },
     policy: { model: "ticketPolicy", local: "id", foreign: "appId", many: false },
     runs: { model: "run", local: "id", foreign: "appId", many: true },
+    // CHE-322: named test accounts.
+    testAccounts: { model: "testAccount", local: "id", foreign: "appId", many: true },
   },
   run: {
     findings: { model: "finding", local: "id", foreign: "runId", many: true },
@@ -212,6 +214,18 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
         if (!row) throw new Error(`stub db: ${name}.update found no row for ${JSON.stringify(args.where)}`);
         applyUpdate(row, args.data as Args);
         return project(name, row, args);
+      },
+      updateMany: async (args: Args) => {
+        calls.push(`${name}.updateMany`);
+        const rows = find(args);
+        for (const row of rows) applyUpdate(row, args.data as Args);
+        return { count: rows.length };
+      },
+      deleteMany: async (args: Args = {}) => {
+        calls.push(`${name}.deleteMany`);
+        const doomed = new Set(find(args));
+        tables[name] = table(name).filter((r) => !doomed.has(r));
+        return { count: doomed.size };
       },
       upsert: async (args: Args) => {
         calls.push(`${name}.upsert`);

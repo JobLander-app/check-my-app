@@ -3,10 +3,9 @@
 // hints/notes are authoritative text in the system prompt (recursion guard).
 
 import type { Browser } from "@cloudflare/playwright";
-import { decryptSecret } from "@/lib/crypto";
 import type { AppAnatomy } from "@/lib/types";
 import { runAgentLoop, finalizeStructured, type TranscriptEntry } from "./core";
-import { knownUrlsFrom, prepareAgentPage, type ToolEnv } from "./tools";
+import { accountRejected, knownUrlsFrom, prepareAgentPage, type ToolEnv } from "./tools";
 import { newAgentContext, newAgentPage, closeAgentContext } from "./browser";
 import { extensionBrowserFor } from "./extension-browser";
 import { shapeExtensionDiscovery } from "./extension-discovery";
@@ -21,7 +20,8 @@ import { discoveryLoopMode } from "./discovery-mode";
 import type { AppKnowledge } from "./knowledge";
 import type { RawMetric } from "./journey-metrics";
 import { emptyUsage, mergeUsage, type LlmConfig, type UsageTotals } from "./llm";
-import { credentialsAlreadyRejected, recordCredentialRejection } from "./credentials";
+import { credentialToolEnv } from "./credentials";
+import { DEFAULT_ACCOUNT_LABEL } from "@/lib/test-accounts";
 
 export interface RunInput {
   // CHE-100: present for every real run (the workflow spreads the Run row in).
@@ -31,6 +31,9 @@ export interface RunInput {
   targetUrl: string;
   testEmail: string | null;
   testPasswordEnc: string | null;
+  // CHE-322: the named accounts snapshotted onto the run (Run.testAccounts).
+  // Optional: a probe that builds a bare input has none.
+  testAccounts?: string | null;
   scopeHints: string | null;
   userNotes: string | null;
   // CHE-81: owner's priority concerns, verbatim.
@@ -157,16 +160,14 @@ export async function discoverApp(args: {
     visionScreenshots: mode.visionScreenshots,
     // Discovery only maps the app — creation belongs to the walk.
     writeAllowed: false,
-    testEmail: run.testEmail ?? undefined,
-    // Decrypted only here, in-memory; the LLM only ever sees {{TEST_PASSWORD}}.
-    testPassword: run.testPasswordEnc ? decryptSecret(run.testPasswordEnc) : undefined,
-    networkLog: [],
-    consoleLog: [],
+    // Decrypted only here, in-memory; the LLM only ever sees {{TEST_PASSWORD}}
+    // (and, CHE-322, {{TEST_PASSWORD:<label>}}).
     // CHE-100: discovery explores, and exploring reaches login forms. If the
     // credential we hold is turned away here, the walk must inherit that — the
     // one-attempt rule is per run, not per phase.
-    credentials: { rejected: await credentialsAlreadyRejected(env, run.id) },
-    onCredentialRejected: (signature) => recordCredentialRejection(env, run.id, signature),
+    ...(await credentialToolEnv(env, run)),
+    networkLog: [],
+    consoleLog: [],
     knownUrls: knownUrlsFrom(run.targetUrl, publishedUrls),
     onScreenshot: async (buffer) => {
       if (extension && !run.id) throw new Error("Extension evidence requires a run owner");
@@ -178,7 +179,7 @@ export async function discoverApp(args: {
   await prepareAgentPage(toolEnv);
 
   try {
-    if (extension?.identity.extensionId === "hafhjepjihcimcljkdphpinannbdmnhf" && toolEnv.testEmail && toolEnv.testPassword && !toolEnv.credentials?.rejected) {
+    if (extension?.identity.extensionId === "hafhjepjihcimcljkdphpinannbdmnhf" && toolEnv.testEmail && toolEnv.testPassword && !accountRejected(toolEnv.credentials, DEFAULT_ACCOUNT_LABEL)) {
       await extension.tool(toolEnv, "extension_account_preflight", {});
     }
     const result = await runAgentLoop({

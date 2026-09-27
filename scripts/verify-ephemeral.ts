@@ -492,6 +492,7 @@ async function main() {
       ticketPolicy: { deleteMany: async () => ({ count: 0 }) },
       trackerIntegration: { deleteMany: async () => ({ count: 0 }) },
       repoIntegration: { deleteMany: async () => ({ count: 0 }) },
+      testAccount: { deleteMany: async () => ({ count: 0 }) },
     };
     const { bucket, deleted } = stubBucket();
     const env = { db: janitorDb, bindings: { EVIDENCE: bucket } } as unknown as AgentEnv;

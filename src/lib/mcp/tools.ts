@@ -36,6 +36,25 @@ import { appSlugFromUrl } from "@/lib/utils";
 import { createCheckSchema, normalizeTargetUrl } from "@/lib/validation";
 import { configureWatch, enableWatchForApp } from "@/lib/watch-enable";
 import { teamOwned } from "@/lib/tenant-db";
+import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
+
+// CHE-322: an agent may send the default account as `test_email`/`test_password`
+// (as before) or as the entry labelled "default" in `test_accounts` — the same
+// account either way, since the App's own columns ARE the default. Split here,
+// once; naming it both ways at once is refused rather than guessed.
+function splitDefault<T extends { label: string; email?: string; password?: string }>(
+  accounts: T[] | undefined,
+  direct: { email?: string; password?: string },
+): { error: string } | { email?: string; password?: string; named: T[] } {
+  const all = accounts ?? [];
+  const named = all.filter((a) => normalizeAccountLabel(a.label) !== DEFAULT_ACCOUNT_LABEL);
+  const dflt = all.find((a) => normalizeAccountLabel(a.label) === DEFAULT_ACCOUNT_LABEL);
+  if (!dflt) return { email: direct.email, password: direct.password, named };
+  if (direct.email !== undefined || direct.password !== undefined) {
+    return { error: 'Give the default account once: either test_email/test_password or the "default" entry of test_accounts.' };
+  }
+  return { email: dflt.email, password: dflt.password, named };
+}
 
 // Who is calling: the person who minted the key (attribution), the team the
 // key acts for (tenancy, plan, quota) and the key's own scope (CHE-263).
@@ -78,6 +97,18 @@ const TERMINAL = TERMINAL_RUN_STATUSES as readonly string[];
 const frequency = z.enum(["daily", "every_6h", "manual"]);
 const runId = z.string().min(1).describe("Run id returned by start_check or latest_results");
 const appId = z.string().min(1).describe("App id from list_apps or create_app");
+// CHE-322: named test accounts. Shape is checked here; the label rules and the
+// final set are checked once, in src/lib/test-accounts.ts, for every caller.
+const accountLabel = z.string().min(1).max(40).describe('What this account is, e.g. "admin" or "free user"');
+const testAccounts = z
+  .array(
+    z.object({
+      label: accountLabel,
+      email: z.string().email().describe("Its sign-in email"),
+      password: z.string().min(1).max(500).describe("Its password. Stored encrypted and never returned"),
+    }),
+  )
+  .max(MAX_EXTRA_ACCOUNTS);
 
 export const toolSchemas = {
   list_apps: {},
@@ -90,8 +121,14 @@ export const toolSchemas = {
       .describe("What must keep working, in plain words — checked on every run, e.g. 'Checkout must never break.'"),
     limits: z.string().max(2000).optional().describe("Where the check may not go, e.g. 'Do not touch /admin.'"),
     notes: z.string().max(2000).optional().describe("Context for every check, e.g. 'Do not delete the test account.'"),
-    test_email: z.string().email().optional().describe("Sign-in email of a test account in the app"),
+    test_email: z.string().email().optional().describe("Sign-in email of a test account in the app (the \"default\" account)"),
     test_password: z.string().max(500).optional().describe("Its password. Stored encrypted and never returned"),
+    test_accounts: testAccounts
+      .optional()
+      .describe(
+        "More test accounts, each a different kind of user, e.g. [{label:'admin', …}, {label:'free user', …}]. " +
+          "A scenario that names one ('As admin: refunds work') is checked signed in as it.",
+      ),
     notify_email: z.string().email().optional().describe("Where verdict emails go"),
     frequency: frequency.optional().describe("How often it is checked; default daily"),
   },
@@ -102,6 +139,18 @@ export const toolSchemas = {
     notes: z.string().max(2000).optional().describe("Replaces the notes; \"\" clears them"),
     test_email: z.string().email().or(z.literal("")).optional().describe("Test account email; \"\" clears it"),
     test_password: z.string().max(500).optional().describe("New test password; \"\" removes the stored one"),
+    test_accounts: z
+      .array(
+        z.object({
+          label: accountLabel,
+          email: z.string().email().optional().describe("Required for a new account; omitted keeps the stored one"),
+          password: z.string().max(500).optional().describe("Required for a new account; omitted keeps the stored one"),
+        }),
+      )
+      .max(MAX_EXTRA_ACCOUNTS)
+      .optional()
+      .describe("Adds each named account, or updates the one already stored under that label. Others are kept"),
+    remove_test_accounts: z.array(accountLabel).max(MAX_EXTRA_ACCOUNTS).optional().describe("Labels of named accounts to delete"),
     notify_email: z.string().email().or(z.literal("")).optional().describe("Verdict email; \"\" clears it"),
   },
   start_check: {
@@ -246,6 +295,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           writeMode: true,
           testEmail: true,
           testPasswordEnc: true,
+          // CHE-322: label and email only. The password column is not selected,
+          // so no later edit to the mapping below can leak it.
+          testAccounts: { orderBy: { createdAt: "asc" }, select: { label: true, email: true } },
           watch: { select: { active: true, frequency: true, nextRunAt: true, trialEndsAt: true } },
           runs: {
             orderBy: { createdAt: "desc" },
@@ -273,6 +325,11 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             // is all an agent needs to know.
             has_test_account: Boolean(a.testEmail && a.testPasswordEnc),
             test_email: a.testEmail,
+            // CHE-322: every account a check can sign in as, the default first.
+            test_accounts: [
+              ...(a.testEmail ? [{ label: DEFAULT_ACCOUNT_LABEL, email: a.testEmail, has_password: Boolean(a.testPasswordEnc) }] : []),
+              ...a.testAccounts.map((t) => ({ label: t.label, email: t.email, has_password: true })),
+            ],
             watch: !a.watch
               ? { state: a.targetKind === "extension" ? "on_demand" : "off" }
               : {
@@ -296,11 +353,14 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       notes?: string;
       test_email?: string;
       test_password?: string;
+      test_accounts?: { label: string; email: string; password: string }[];
       notify_email?: string;
       frequency?: WatchFrequency;
     }): Promise<ToolResult> {
       const denied = deny("app.settings.write");
       if (denied) return denied;
+      const accounts = splitDefault(args.test_accounts, { email: args.test_email, password: args.test_password });
+      if ("error" in accounts) return fail("invalid_input", accounts.error);
       const result = await createAppForTeam(
         db,
         { userId: caller.user.id, teamId: team.id, plan },
@@ -309,8 +369,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           focusAreas: args.scenarios,
           scopeHints: args.limits,
           userNotes: args.notes,
-          testEmail: args.test_email,
-          testPassword: args.test_password,
+          testEmail: accounts.email,
+          testPassword: accounts.password,
+          testAccounts: accounts.named,
           notifyEmail: args.notify_email,
           frequency: args.frequency,
         },
@@ -339,18 +400,30 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       notes?: string;
       test_email?: string;
       test_password?: string;
+      test_accounts?: { label: string; email?: string; password?: string }[];
+      remove_test_accounts?: string[];
       notify_email?: string;
     }): Promise<ToolResult> {
       const denied = deny("app.settings.write");
       if (denied) return denied;
+      const accounts = splitDefault(args.test_accounts, { email: args.test_email, password: args.test_password });
+      if ("error" in accounts) return fail("invalid_input", accounts.error);
+      if (args.remove_test_accounts?.some((l) => normalizeAccountLabel(l) === DEFAULT_ACCOUNT_LABEL)) {
+        return fail("invalid_input", 'The default account is removed with test_email "" and test_password "".');
+      }
       const result = await updateAppForTeam(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_id, {
         focusAreas: args.scenarios,
         scopeHints: args.limits,
         userNotes: args.notes,
-        testEmail: args.test_email,
+        testEmail: accounts.email,
         // "" removes the stored password — the one way to clear it (the
         // settings page's blank box keeps it).
-        testPassword: args.test_password === undefined ? undefined : args.test_password || null,
+        testPassword: accounts.password === undefined ? undefined : accounts.password || null,
+        // CHE-322: keyed by label — an agent names the account, it has no ids.
+        testAccounts: {
+          set: accounts.named.map((a) => ({ match: { label: a.label }, ...a })),
+          remove: args.remove_test_accounts,
+        },
         notifyEmail: args.notify_email,
       });
       if ("error" in result) {
@@ -621,17 +694,20 @@ export type RemoteTools = ReturnType<typeof createRemoteTools>;
 
 const DESCRIPTIONS: Record<ToolName, string> = {
   list_apps:
-    "The team's apps: id, address, scenarios (what must keep working), limits, notes, whether a test login is " +
-    "stored (never the password), recurring-check state, and the last run. Start here.",
+    "The team's apps: id, address, scenarios (what must keep working), limits, notes, the test accounts a check " +
+    "signs in as (label and email — never a password), recurring-check state, and the last run. Start here.",
   create_app:
-    "Add an app. Pass its URL; scenarios, limits, notes and a test login are optional and can be changed later " +
-    "with update_app. A website gets a recurring check (daily by default) within the team's plan; the first one " +
-    "is scheduled automatically. isError with code plan_limit when the plan's app/watch allowance is used.",
+    "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
+    "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
+    "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. A " +
+    "website gets a recurring check (daily by default) within the team's plan; the first one is scheduled " +
+    "automatically. isError with code plan_limit when the plan's app/watch allowance is used.",
   update_app:
-    "Change a saved app: scenarios, limits, notes, test login, verdict email. Only the fields you pass change; " +
-    "\"\" clears a field (for test_password: removes the stored password).",
+    "Change a saved app: scenarios, limits, notes, test logins, verdict email. Only the fields you pass change; " +
+    "\"\" clears a field (for test_password: removes the stored password). test_accounts adds or updates named " +
+    "accounts by label; remove_test_accounts deletes them.",
   start_check:
-    "Start a check. With app_id: checks a saved app using its stored test login, scenarios and limits — the usual " +
+    "Start a check. With app_id: checks a saved app using its stored test logins, scenarios and limits — the usual " +
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +
     "shipped). With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
     "20–40 minutes; follow it with wait_for_run or get_check_status. Refusals carry a stable code " +

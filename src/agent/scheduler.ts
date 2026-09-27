@@ -9,6 +9,7 @@
 import { nextRunNumber } from "@/lib/db";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
 import { PLAN_LIMITS } from "@/lib/plans";
+import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { sendWatchTrialPaused } from "@/lib/email";
 import { shouldSkipWatch } from "@/lib/plans";
@@ -189,6 +190,13 @@ export async function runDueWatches(
           appSlug: watch.appSlug,
           testEmail: watch.testEmail,
           testPasswordEnc: watch.testPasswordEnc,
+          // CHE-322: the app's named accounts, read from the app itself — the
+          // Watch keeps a copy of the default login only (legacy), never these.
+          testAccounts: await snapshotAppAccounts(env.db, {
+            id: watch.appId,
+            teamId: watch.teamId,
+            targetKind: watch.app?.targetKind,
+          }),
           notifyEmail: watch.notifyEmail,
           scopeHints: watch.app?.scopeHints ?? null,
           userNotes: watch.app?.userNotes ?? null,

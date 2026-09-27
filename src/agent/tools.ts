@@ -27,6 +27,7 @@ import type { GapClass } from "./gap-classes";
 import type { ExtensionBrowser } from "./extension-browser";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionToolAllowed } from "./extension-contract";
+import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
 
 export interface ToolEnv {
   page: Page;
@@ -36,6 +37,14 @@ export interface ToolEnv {
   targetOrigin: string;
   testEmail?: string;
   testPassword?: string;
+  // CHE-322: the app's named accounts beyond the default one above, decrypted
+  // in memory like testPassword and reachable only through the placeholders
+  // {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}.
+  testAccounts?: AccountSecret[];
+  // CHE-322: the account whose placeholder was filled last. A sign-in that is
+  // turned away is attributed to it, and a sign-in click is refused only when
+  // IT is the account already turned away. Unset = the default account.
+  activeAccount?: string;
   networkLog: string[]; // rolling window of "METHOD url → status"
   consoleLog: string[]; // rolling window of console messages
   onScreenshot?: (buffer: Buffer) => Promise<string>; // returns storage URL
@@ -66,8 +75,11 @@ export interface ToolEnv {
   // Rejected so it survives a Workflow replay. Once true, the credential we hold
   // is known-bad: no further sign-in attempt is allowed and nothing behind that
   // login may be reported as the product's fault.
-  credentials?: { rejected: boolean };
-  onCredentialRejected?: (signature: string) => Promise<void>;
+  // CHE-322: `rejected` is "any account was", `accounts` says which ones, so a
+  // stale admin password stops the admin sign-in and nothing else. A bare
+  // { rejected: true } (a row from before named accounts) means the default.
+  credentials?: { rejected: boolean; accounts?: string[] };
+  onCredentialRejected?: (signature: string, account: string) => Promise<void>;
   // CHE-129: the machine actions that actually ran since the last report_step.
   // Only navigate/click/fill go here, and only after every refusal gate has let
   // them through and Playwright has done the thing — a refused or errored call
@@ -241,13 +253,107 @@ function recordUndriven(env: ToolEnv, hand: "fill" | "click", target: string, er
 // the persisted Step columns, even if the tested app echoes them.
 export function scrubSecrets(env: ToolEnv, text: string): string {
   let out = text;
-  for (const secret of [env.testPassword, env.testEmail]) {
+  // CHE-322: every account's values, not only the default's — an admin page
+  // echoing the admin's email is the same leak as the default one echoing its.
+  const accounts = (env.testAccounts ?? []).flatMap((a) => [a.password, a.email]);
+  // Longest first, so a password that contains an email is redacted whole.
+  const secrets = [env.testPassword, env.testEmail, ...accounts]
+    .filter((s): s is string => Boolean(s))
+    .sort((a, b) => b.length - a.length);
+  for (const secret of secrets) {
     if (secret && secret.length >= 3) {
       out = out.split(secret).join("[redacted]");
       out = out.split(encodeURIComponent(secret)).join("[redacted]");
     }
   }
   return out;
+}
+
+// ─── CHE-322: which account a placeholder names ───────────────────────────────
+//
+// {{TEST_EMAIL}} / {{TEST_PASSWORD}} are the default account, as they always
+// were; {{TEST_EMAIL:admin}} / {{TEST_PASSWORD:admin}} are the account labelled
+// admin. Labels are matched in their stored spelling (normalizeAccountLabel), so
+// "Admin" typed by the model is the same account.
+
+export interface AccountSecret {
+  label: string;
+  email?: string;
+  password?: string;
+}
+
+const PLACEHOLDER = /\{\{TEST_(EMAIL|PASSWORD)(?::([^{}]*))?\}\}/g;
+
+function placeholderLabel(raw: string | undefined): string {
+  if (raw === undefined) return DEFAULT_ACCOUNT_LABEL;
+  return normalizeAccountLabel(raw) ?? raw.trim();
+}
+
+/** The accounts a value's placeholders name, in order, each once. */
+export function placeholderLabels(value: string): string[] {
+  return [...new Set([...value.matchAll(PLACEHOLDER)].map((m) => placeholderLabel(m[2])))];
+}
+
+/** The account a label names on this run, or null when it has none by that name. */
+export function accountFor(env: Pick<ToolEnv, "testEmail" | "testPassword" | "testAccounts">, label: string): AccountSecret | null {
+  if (label === DEFAULT_ACCOUNT_LABEL) {
+    return env.testEmail || env.testPassword ? { label, email: env.testEmail, password: env.testPassword } : null;
+  }
+  return env.testAccounts?.find((a) => a.label === label) ?? null;
+}
+
+/** Every account this run can sign in as, by label — what a refusal can offer instead. */
+export function availableAccounts(env: Pick<ToolEnv, "testEmail" | "testPassword" | "testAccounts">): string[] {
+  return [
+    ...(env.testEmail && env.testPassword ? [DEFAULT_ACCOUNT_LABEL] : []),
+    ...(env.testAccounts ?? []).filter((a) => a.email && a.password).map((a) => a.label),
+  ];
+}
+
+/** Was THIS account turned away earlier in the run? */
+export function accountRejected(credentials: ToolEnv["credentials"], label: string): boolean {
+  if (!credentials?.rejected) return false;
+  if (!credentials.accounts?.length) return label === DEFAULT_ACCOUNT_LABEL;
+  return credentials.accounts.includes(label);
+}
+
+/**
+ * Record a rejection of `label` in memory. True the first time only, so the
+ * caller persists it once (CHE-100: one attempt per account, per run).
+ */
+export function markAccountRejected(env: Pick<ToolEnv, "credentials">, label: string): boolean {
+  if (!env.credentials || accountRejected(env.credentials, label)) return false;
+  // A bare { rejected: true } already stood for the default; keep saying so
+  // once a second label joins it.
+  const before = env.credentials.rejected && !env.credentials.accounts?.length ? [DEFAULT_ACCOUNT_LABEL] : (env.credentials.accounts ?? []);
+  env.credentials.rejected = true;
+  env.credentials.accounts = [...before, label];
+  return true;
+}
+
+/**
+ * Replace every placeholder with its account's value. `missing` lists the
+ * accounts a placeholder named that this run does not have (or has only half
+ * of) — the caller refuses rather than typing an empty string into a form.
+ */
+export function substituteCredentials(
+  env: Pick<ToolEnv, "testEmail" | "testPassword" | "testAccounts">,
+  value: string,
+): { value: string; missing: string[] } {
+  const missing = new Set<string>();
+  const out = value.replace(PLACEHOLDER, (_whole, field: string, raw: string | undefined) => {
+    const label = placeholderLabel(raw);
+    const secret = field === "EMAIL" ? accountFor(env, label)?.email : accountFor(env, label)?.password;
+    if (!secret) missing.add(label);
+    return secret ?? "";
+  });
+  return { value: out, missing: [...missing] };
+}
+
+// The account in the model's words: a named one by its label, the default one
+// as "the test account" — which is all it was called before there were others.
+function accountPhrase(label: string): string {
+  return label === DEFAULT_ACCOUNT_LABEL ? "the test account" : `the "${label}" test account`;
 }
 
 export interface ReportedStep {
@@ -298,13 +404,13 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "fill",
     description:
-      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials — never ask for or invent real credentials.",
+      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials.",
     input_schema: {
       type: "object",
       properties: {
         label: { type: "string", description: "Field label, placeholder or accessible name" },
         selector: { type: "string", description: "CSS selector fallback" },
-        value: { type: "string", description: "Text or {{TEST_EMAIL}} / {{TEST_PASSWORD}}" },
+        value: { type: "string", description: "Text, or {{TEST_EMAIL}} / {{TEST_PASSWORD}}, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}" },
       },
       required: ["value"],
     },
@@ -847,14 +953,16 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   }
   // CHE-100: five attempts with a stale password locked a customer's account
   // and refused a real user. One rejection is the whole answer for the run.
-  if (env.credentials?.rejected && label && SIGN_IN_LABEL.test(label)) {
-    console.warn(`[click] refused repeat sign-in after credential rejection: ${label}`);
+  // CHE-322: per account — the one whose credentials are in the form now.
+  const signingInAs = env.activeAccount ?? DEFAULT_ACCOUNT_LABEL;
+  if (label && SIGN_IN_LABEL.test(label) && accountRejected(env.credentials, signingInAs)) {
+    console.warn(`[click] refused repeat sign-in as "${signingInAs}" after credential rejection: ${label}`);
     return (
-      `Refused: the credential we hold was already rejected by this product's auth endpoint ` +
-      `earlier in this run. Trying again cannot succeed and repeated failures lock real ` +
-      `accounts. Report this step "skipped" with unverifiedReason "missing_access" and move ` +
-      `on to what can be checked signed out. Nothing behind this login is verifiable this run, ` +
-      `and none of it may be described as failing.`
+      `Refused: the credential we hold for ${accountPhrase(signingInAs)} was already rejected by ` +
+      `this product's auth endpoint earlier in this run. Trying again cannot succeed and repeated ` +
+      `failures lock real accounts. Report this step "skipped" with unverifiedReason ` +
+      `"missing_access" and move on to what can be checked without that account. Nothing behind ` +
+      `this login is verifiable as that account this run, and none of it may be described as failing.`
     );
   }
   if (label && STATE_TOGGLE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
@@ -985,18 +1093,24 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   const fresh = reaction.requests > 0 ? env.networkLog.slice(-reaction.requests) : [];
   const rejection = credentialRejection(fresh);
   if (rejection) {
-    if (env.credentials && !env.credentials.rejected) {
-      env.credentials.rejected = true;
-      await env.onCredentialRejected?.(rejection);
+    // CHE-322: the account whose credentials were just submitted is the one
+    // turned away — named, so the owner is asked for the right password.
+    if (markAccountRejected(env, signingInAs)) {
+      await env.onCredentialRejected?.(rejection, signingInAs);
     }
+    const others = availableAccounts(env).filter((l) => l !== signingInAs && !accountRejected(env.credentials, l));
     return (
-      `The credential we hold was REJECTED (${rejection}). An auth endpoint answering that to a ` +
-      `submitted password is the product working correctly — it is refusing bad input, which is ` +
-      `what it should do. This is our access problem, not a defect of theirs.\n` +
-      `Do NOT try again: repeated failures lock real accounts. Do NOT report the login, or ` +
-      `anything behind it, as broken or confusing. Report this step "skipped" with ` +
-      `unverifiedReason "missing_access", say plainly that the sign-in details we were given no ` +
-      `longer work, and spend the rest of this run on what a signed-out visitor can reach.`
+      `The credential we hold for ${accountPhrase(signingInAs)} was REJECTED (${rejection}). An ` +
+      `auth endpoint answering that to a submitted password is the product working correctly — it ` +
+      `is refusing bad input, which is what it should do. This is our access problem, not a defect ` +
+      `of theirs.\n` +
+      `Do NOT try again with that account: repeated failures lock real accounts. Do NOT report the ` +
+      `login, or anything behind it, as broken or confusing. Report this step "skipped" with ` +
+      `unverifiedReason "missing_access", say plainly that the sign-in details we were given for ` +
+      `${accountPhrase(signingInAs)} no longer work, and spend the rest of this run on what ` +
+      (others.length
+        ? `a signed-out visitor, or the other test account${others.length === 1 ? "" : "s"} (${others.map((l) => `"${l}"`).join(", ")}), can reach.`
+        : `a signed-out visitor can reach.`)
     );
   }
   // CHE-193: on our own hosts, a mutating request answered 403 — or a server
@@ -1058,7 +1172,8 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
 // The placeholder IS the value in every such case, so it is collapsed to the
 // bare placeholder before anything reads it. A placeholder next to other text
 // ("{{TEST_EMAIL}}x") is left alone: odd, but it is what the model meant.
-const PADDED_PLACEHOLDER = /^\s*(\{\{TEST_(?:EMAIL|PASSWORD)\}\})\s*$/;
+// CHE-322: a named account's placeholder is padded the same way.
+const PADDED_PLACEHOLDER = /^\s*(\{\{TEST_(?:EMAIL|PASSWORD)(?::[^{}]*)?\}\})\s*$/;
 
 export function normalizeFillValue(raw: string): string {
   const m = raw.match(PADDED_PLACEHOLDER);
@@ -1072,7 +1187,10 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   // intact, scrubbed once more in case the model pasted a real value it had
   // seen echoed by the page. The substituted value below is never written down.
   const recordedValue = scrubSecrets(env, value);
-  const usedSecret = /\{\{TEST_(EMAIL|PASSWORD)\}\}/.test(value);
+  // CHE-322: which accounts this value names — the default for a bare
+  // placeholder, the labelled one for {{TEST_PASSWORD:admin}}.
+  const accounts = placeholderLabels(value);
+  const usedSecret = accounts.length > 0;
   // Never type real credentials into an off-origin form (prompt-injection
   // exfiltration): the substituted value would be the decrypted password.
   if (usedSecret) {
@@ -1093,28 +1211,40 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   // CHE-100: the strongest half of the one-attempt rule. Refusing the click is
   // easy to route around (a different button, a keyboard Enter); refusing to put
   // the known-bad password into a field again is not.
-  if (usedSecret && env.credentials?.rejected) {
+  // CHE-322: per account — a stale admin password does not stop the free user.
+  const rejectedHere = accounts.find((l) => accountRejected(env.credentials, l));
+  if (rejectedHere) {
     return (
-      "Refused: this product's auth endpoint already rejected the credential we hold, earlier " +
-      "in this run. Filling it again cannot succeed and repeated failures lock real accounts. " +
-      'Report this step "skipped" with unverifiedReason "missing_access" and continue with what ' +
-      "a signed-out visitor can reach."
+      `Refused: this product's auth endpoint already rejected the credential we hold for ` +
+      `${accountPhrase(rejectedHere)}, earlier in this run. Filling it again cannot succeed and ` +
+      'repeated failures lock real accounts. Report this step "skipped" with unverifiedReason ' +
+      '"missing_access" and continue with what a signed-out visitor can reach.'
     );
   }
-  if (usedSecret) {
-    const haveEmail = value.includes("{{TEST_EMAIL}}") ? Boolean(env.testEmail) : true;
-    const havePwd = value.includes("{{TEST_PASSWORD}}") ? Boolean(env.testPassword) : true;
-    if (!haveEmail || !havePwd) {
-      return "No test credentials were provided for this run, so this field cannot be filled. Do NOT click the login/submit button on an empty form — a form that refuses empty input is working correctly. Report this step as \"skipped\" (no test credentials), never \"broken\" or \"confusing\".";
+  const substituted = usedSecret ? substituteCredentials(env, value) : { value, missing: [] };
+  if (substituted.missing.length) {
+    const unknown = substituted.missing.filter((l) => l !== DEFAULT_ACCOUNT_LABEL && !accountFor(env, l));
+    if (unknown.length) {
+      const offer = availableAccounts(env);
+      return (
+        `There is no test account called ${unknown.map((l) => `"${l}"`).join(", ")} for this run, so ` +
+        `this field cannot be filled. ` +
+        (offer.length
+          ? `The accounts this run can sign in as: ${offer.map((l) => (l === DEFAULT_ACCOUNT_LABEL ? "{{TEST_EMAIL}} / {{TEST_PASSWORD}}" : `"${l}" ({{TEST_EMAIL:${l}}} / {{TEST_PASSWORD:${l}}})`)).join(", ")}. `
+          : "") +
+        `If a scenario needs an account that is not provided, do NOT submit the form — report the ` +
+        `step "skipped" with unverifiedReason "missing_access" and name the account it needed.`
+      );
     }
+    return "No test credentials were provided for this run, so this field cannot be filled. Do NOT click the login/submit button on an empty form — a form that refuses empty input is working correctly. Report this step as \"skipped\" (no test credentials), never \"broken\" or \"confusing\".";
   }
-  value = value
-    .replaceAll("{{TEST_EMAIL}}", env.testEmail ?? "")
-    .replaceAll("{{TEST_PASSWORD}}", env.testPassword ?? "");
+  value = substituted.value;
+  if (usedSecret) env.activeAccount = accounts[accounts.length - 1];
   // Fingerprint only (sha256 prefix + length), never the value: lets a cred
   // mismatch be localized to save vs store vs fill without exposing anything.
-  if (usedSecret && env.testPassword) {
-    console.log(`[fill] substituting test password: ${credentialFingerprint(env.testPassword)}`);
+  for (const label of usedSecret ? accounts : []) {
+    const password = accountFor(env, label)?.password;
+    if (password) console.log(`[fill] substituting test password for "${label}": ${credentialFingerprint(password)}`);
   }
 
   const page = env.page;

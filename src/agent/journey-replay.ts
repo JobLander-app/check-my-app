@@ -22,9 +22,8 @@
 // without the model that knew how to delete it would leave junk behind.
 
 import type { Browser, BrowserContext } from "@cloudflare/playwright";
-import { decryptSecret } from "@/lib/crypto";
 import type { AgentEnv } from "./env";
-import { credentialsAlreadyRejected, recordCredentialRejection } from "./credentials";
+import { credentialToolEnv } from "./credentials";
 import { executeTool, prepareAgentPage, UNDRIVEN_INSTRUCTION, type RecordedAction, type ToolEnv } from "./tools";
 
 // The stable head of UNDRIVEN_INSTRUCTION — the tool text for a control our own
@@ -54,6 +53,8 @@ export interface ReplayRun {
   targetUrl: string;
   testEmail?: string | null;
   testPasswordEnc?: string | null;
+  // CHE-322: Run.testAccounts, so a step recorded as a named account replays as it.
+  testAccounts?: string | null;
   appId?: string | null;
 }
 
@@ -216,15 +217,13 @@ export async function replayJourney(
       // chaining because verify-replay-actions.ts drives this loop with a bare
       // env (db only); production always has bindings.
       selfCheckHosts: env.bindings?.SELF_CHECK_HOSTS,
-      testEmail: run.testEmail ?? undefined,
-      testPassword: run.testPasswordEnc ? decryptSecret(run.testPasswordEnc) : undefined,
+      // Same run, same rule: a credential the walk found rejected is not tried
+      // again, and a rejection met here is written to the run like any other.
+      // CHE-322: a recorded {{TEST_PASSWORD:admin}} replays as admin.
+      ...(await credentialToolEnv(env, run)),
       networkLog: [],
       consoleLog: [],
       writeAllowed: false,
-      // Same run, same rule: a credential the walk found rejected is not tried
-      // again, and a rejection met here is written to the run like any other.
-      credentials: { rejected: await credentialsAlreadyRejected(env, run.id) },
-      onCredentialRejected: (signature) => recordCredentialRejection(env, run.id, signature),
     };
     await prepareAgentPage(toolEnv);
 

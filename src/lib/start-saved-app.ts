@@ -5,6 +5,7 @@ import { nextRunNumber } from "./db";
 import { triggerRun } from "./trigger";
 import { effectiveSiteCap } from "./site-cap";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { snapshotAppAccounts } from "@/lib/test-accounts";
 
 // What one run of a saved app may add on top of the app's own settings. The
 // dashboard's button sends none of it; an agent starting the run after a deploy
@@ -56,6 +57,8 @@ export async function startSavedApp(
       targetUrl: app.targetUrl, appSlug: app.appSlug, targetKind: app.targetKind,
       extensionId: app.extensionId, extensionConfig: app.extensionConfig,
       testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc,
+      // CHE-322: and every named account, as they are right now.
+      testAccounts: await snapshotAppAccounts(db, app),
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
       forceFull: app.targetKind === "extension", status: "queued",

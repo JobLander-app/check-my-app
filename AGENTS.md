@@ -72,7 +72,7 @@ exist. A ticket number goes in a comment only after that ticket exists.
 **Times are UTC.** Do not introduce a named timezone; the owner reads UTC.
 
 **A tenant query says whose rows it may see.** Every query for an App, Run,
-Watch, ApiKey or SettledSignature in `src/app` and `src/lib` carries one of the
+Watch, ApiKey, SettledSignature or TestAccount in `src/app` and `src/lib` carries one of the
 five declarations in `src/lib/tenant-db.ts` — `teamOwned`, `alreadyScoped`,
 `publicRow`, `ownerScoped`, `systemWide` — and `scripts/verify-tenant-db.ts`
 fails the build for one that carries none (CHE-256). Write the declaration when

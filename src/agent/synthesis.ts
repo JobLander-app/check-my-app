@@ -12,6 +12,7 @@ import type { ProposedJourney } from "./discovery";
 import { cutUndrivenClaims } from "./findings-gate";
 import { knowledgeBlock } from "./instructions";
 import type { AppKnowledge } from "./knowledge";
+import { DEFAULT_ACCOUNT_LABEL, describeAccounts, parseRunAccounts, rejectedAccountLabels } from "@/lib/test-accounts";
 import {
   CUSTOMER_LANGUAGE_RULES,
   hasEnvironmentLeak,
@@ -138,8 +139,13 @@ export async function synthesizeVerdict(args: {
   // bottom line speaks to them explicitly.
   const runRow = await env.db.run.findUnique({
     where: { id: runId },
-    select: { focusAreas: true, credentialsRejected: true },
+    select: { focusAreas: true, credentialsRejected: true, rejectedAccounts: true, testAccounts: true },
   });
+  // CHE-322: which accounts were turned away, by the owner's own labels. With
+  // only the default account there is nothing to name, and the sentence stays
+  // what it always was.
+  const rejected = runRow ? rejectedAccountLabels(runRow) : [];
+  const named = rejected.length > 0 && (parseRunAccounts(runRow?.testAccounts).length > 0 || rejected.some((l) => l !== DEFAULT_ACCOUNT_LABEL));
 
   const journeys = await env.db.journey.findMany({
     where: { runId },
@@ -172,7 +178,7 @@ export async function synthesizeVerdict(args: {
     // fact about them. The product refused a bad password, which is the product
     // working; the signed-in half simply went unchecked, and the honest ask is
     // for a working credential — never a claim that their login is broken.
-    ...(runRow?.credentialsRejected
+    ...(rejected.length && !named
       ? {
           signInBlocked:
             "The sign-in details on file were rejected by this product's auth endpoint. That is " +
@@ -180,6 +186,17 @@ export async function synthesizeVerdict(args: {
             "bottom line that the signed-in part could not be checked because the sign-in " +
             "details we hold no longer work, and ask for updated ones. NEVER describe the " +
             "login, or anything behind it, as broken, confusing or failing.",
+        }
+      : {}),
+    ...(rejected.length && named
+      ? {
+          signInBlocked:
+            `The sign-in details on file for ${describeAccounts(rejected)} were rejected by this ` +
+            "product's auth endpoint. That is correct behaviour on their side and an access " +
+            "problem on ours. Say plainly in the bottom line WHICH test account's sign-in " +
+            "details no longer work, by that name, that what needed it could not be checked, " +
+            "and ask for updated ones for that account. Any other test account is unaffected. " +
+            "NEVER describe the login, or anything behind it, as broken, confusing or failing.",
         }
       : {}),
     pages: anatomy.pages,

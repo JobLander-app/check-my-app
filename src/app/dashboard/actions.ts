@@ -13,6 +13,7 @@ import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
 import { updateAppForTeam } from "@/lib/app-settings";
+import { testAccountsFromForm } from "@/lib/test-accounts";
 import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
@@ -193,6 +194,8 @@ export async function updateAppSettings(appId: string, formData: FormData) {
   const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, {
     testEmail: String(formData.get("testEmail") ?? ""),
     testPassword: String(formData.get("testPassword") ?? "") || undefined,
+    // CHE-322: the named accounts' rows, saved with everything else.
+    testAccounts: testAccountsFromForm(formData),
     focusAreas: String(formData.get("focusAreas") ?? ""),
     writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
     scopeHints: String(formData.get("scopeHints") ?? ""),
@@ -246,6 +249,9 @@ export async function deleteApp(
   await db.ticketPolicy.deleteMany({ where: { appId: app.id } });
   await db.trackerIntegration.deleteMany({ where: { appId: app.id } });
   await db.repoIntegration.deleteMany({ where: { appId: app.id } });
+  // CHE-322: the named test accounts' passwords go with the app, stated rather
+  // than left to the foreign key's cascade.
+  await db.testAccount.deleteMany({ where: { ...teamOwned(team.id), appId: app.id } });
   await db.app.delete({ ...alreadyScoped("already read in this request"), where: { id: app.id } });
   await recordTeamEvent(db, {
     teamId: team.id,

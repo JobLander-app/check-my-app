@@ -1,7 +1,8 @@
 import type { Browser, Page, Locator } from "@cloudflare/playwright";
 import type { AgentEnv } from "./env";
 import type { ToolEnv } from "./tools";
-import { prepareAgentPage, scrubSecrets, normalizeFillValue, UNDRIVEN_INSTRUCTION } from "./tools";
+import { accountRejected, markAccountRejected, placeholderLabels, prepareAgentPage, scrubSecrets, normalizeFillValue, UNDRIVEN_INSTRUCTION } from "./tools";
+import { DEFAULT_ACCOUNT_LABEL } from "@/lib/test-accounts";
 import { assertExtensionIdentity, extensionCleanupComplete, extensionToolAllowed, gateExtensionStep, type ExtensionIdentity, type ExtensionRunnerInput, type ExtensionSession } from "./extension-contract";
 import type { ExtensionRunner } from "./extension-runner";
 import { ExtensionRuntimeError, extensionOperation } from "./extension-error";
@@ -138,12 +139,17 @@ export class ExtensionBrowser {
             ? "Use extension_start_session to start interview assistance with its Stop limit."
             : "This scenario does not include starting interview assistance.";
         }
-        if (name === "extension_click" && env.credentials?.rejected && /log.?in|sign.?in/i.test(node.name)) return this.missingAccess("The saved credentials were already rejected. This step requires missing_access.");
+        // CHE-322: an extension signs in with the one default account — the
+        // runner's replay can reproduce no other (extension-replay.ts), and no
+        // named account is ever snapshotted onto an extension run.
+        const defaultRejected = accountRejected(env.credentials, DEFAULT_ACCOUNT_LABEL);
+        if (name === "extension_click" && defaultRejected && /log.?in|sign.?in/i.test(node.name)) return this.missingAccess("The saved credentials were already rejected. This step requires missing_access.");
         let value = normalizeFillValue(String(input.value ?? ""));
         const recordedValue = scrubSecrets(env, value);
-        const credential = name === "extension_fill" && /\{\{TEST_(EMAIL|PASSWORD)\}\}/.test(value);
+        const credential = name === "extension_fill" && placeholderLabels(value).length > 0;
         if (credential) {
-          if (env.credentials?.rejected) return this.missingAccess("The saved credentials were already rejected. This step requires missing_access.");
+          if (placeholderLabels(value).some(l => l !== DEFAULT_ACCOUNT_LABEL)) return this.missingAccess("Extension checks sign in with the default test account only. Use {{TEST_EMAIL}} / {{TEST_PASSWORD}}.");
+          if (defaultRejected) return this.missingAccess("The saved credentials were already rejected. This step requires missing_access.");
           if ((value.includes("{{TEST_EMAIL}}") && !env.testEmail) || (value.includes("{{TEST_PASSWORD}}") && !env.testPassword)) return this.missingAccess("Test credentials are missing. Skip this step with missing_access; do not submit an empty sign-in form.");
           // The runner binds this field to the exact installed extension URL;
           // URL.origin === 'null' must never authorize credential substitution.
@@ -166,11 +172,10 @@ export class ExtensionBrowser {
         if (preflight.passed) this.replayActions.push({ kind: "audio" });
       } else if (name === "extension_account_preflight") {
         if (this.popup) return "Close the native popup before opening the account balance.";
-        if (!env.testEmail || !env.testPassword || env.credentials?.rejected) return this.missingAccess("Valid test-account access is required for the balance and session history.");
+        if (!env.testEmail || !env.testPassword || accountRejected(env.credentials, DEFAULT_ACCOUNT_LABEL)) return this.missingAccess("Valid test-account access is required for the balance and session history.");
         result = await this.call("/account/preflight", { email: env.testEmail, password: env.testPassword });
         if ((result as { credentialRejected?: boolean }).credentialRejected) {
-          if (env.credentials) env.credentials.rejected = true;
-          await env.onCredentialRejected?.("account sign-in: explicit credential rejection");
+          if (markAccountRejected(env, DEFAULT_ACCOUNT_LABEL)) await env.onCredentialRejected?.("account sign-in: explicit credential rejection", DEFAULT_ACCOUNT_LABEL);
           return this.missingAccess("The saved test account credentials were rejected. Account access is required to continue.");
         }
         this.rememberProductRead(result);
@@ -269,8 +274,7 @@ export class ExtensionBrowser {
       .map(n => scrubSecrets(env, n.name)).filter(name => name && !name.includes("{{") && !name.includes("[existing document]")))];
     if (names.length) this.replayActions.push({ kind: "native-expect", names });
     if (this.credentialFilled && this.nodes.some(n => /invalid (?:login|credentials|password|email)|incorrect (?:email|password)|wrong password|too many (?:attempts|requests)|auth\/(?:invalid-credential|wrong-password|user-not-found)/i.test(n.name))) {
-      if (env.credentials) env.credentials.rejected = true;
-      await env.onCredentialRejected?.("native sign-in: explicit credential rejection");
+      if (markAccountRejected(env, DEFAULT_ACCOUNT_LABEL)) await env.onCredentialRejected?.("native sign-in: explicit credential rejection", DEFAULT_ACCOUNT_LABEL);
     }
     this.rememberProductRead({ surface: "native-popup", controls: this.nodes.map(n => ({
       role: n.role, name: scrubSecrets(env, n.name || n.placeholder || ""), editable: n.editable, protected: n.protected, enabled: n.enabled,

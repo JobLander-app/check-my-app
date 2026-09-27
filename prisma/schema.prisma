@@ -53,6 +53,11 @@ model Run {
   // unless an active Watch keeps them. They must never be logged or appear in evidence.
   testEmail            String?
   testPasswordEnc      String? // encrypted blob, not plaintext
+  // CHE-322: the app's named test accounts besides the default one above, as
+  // they were when this run was created — JSON [{label, email, passwordEnc}],
+  // passwords encrypted like testPasswordEnc and cleared with it after a
+  // one-off run (src/lib/test-accounts.ts clearedCredentials). Null = none.
+  testAccounts         String?
   scopeHints           String? // "don't touch /admin"
   userNotes            String? // "don't delete the test account"
   focusAreas           String? // CHE-81: owner's priority concerns
@@ -111,6 +116,12 @@ model Run {
   // sign-in attempt (five of them locked a customer's account once) and marks
   // everything behind that login missing_access rather than broken.
   credentialsRejected Boolean @default(false)
+  // CHE-322: WHICH accounts were turned away, JSON string[] of labels
+  // ("default" for testEmail above). credentialsRejected stays the "any of
+  // them" flag every reader already keys on; this is the name the verdict
+  // gives. Null on a row with credentialsRejected set means the one account
+  // that existed before named accounts did — the default.
+  rejectedAccounts    String?
   // CHE-132: the free page survey this run took before deciding its mode.
   // A plain id, no relation: snapshots are the app's history and must outlive
   // any one run.
@@ -663,6 +674,7 @@ model Team {
   apiKeys     ApiKey[]
   // CHE-236: the team's analytics connection, at most one.
   posthog     PostHogIntegration?
+  testAccounts TestAccount[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -854,8 +866,11 @@ model App {
   appSlug   String
 
   // Target test credentials retained for recurring runs (encrypted, never logged).
+  // CHE-322: this pair IS the test account labelled "default"; any others
+  // live in testAccounts, where that label is reserved — one place per account.
   testEmail       String?
   testPasswordEnc String?
+  testAccounts    TestAccount[]
   scopeHints      String?
   userNotes       String?
   // Priority concerns (CHE-81): what the owner is most worried about, in their
@@ -902,6 +917,33 @@ model App {
   // add an app and the two stop being the same sentence.
   @@unique([ownerId, appSlug])
   @@index([ownerId])
+  @@index([teamId])
+}
+
+// CHE-322: a named test account of an app — "admin", "free user" — beyond the
+// default one held on App.testEmail / App.testPasswordEnc. A scenario that says
+// "as admin: …" signs in as the row labelled admin; the model only ever sees
+// the label (src/lib/test-accounts.ts has the whole design).
+model TestAccount {
+  id     String @id @default(cuid())
+  app    App    @relation(fields: [appId], references: [id], onDelete: Cascade)
+  appId  String
+  // The team that owns the app, stamped so every query for a credential can
+  // say whose it is (CHE-256) without joining through the App.
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId String
+  // Normalized lower case (normalizeAccountLabel). "default" is never stored:
+  // it names the App's own columns.
+  label  String
+  email  String
+  // Encrypted like App.testPasswordEnc (src/lib/crypto). Write-only: no read
+  // path returns it, decrypted or not, outside the agent's fill tool.
+  passwordEnc String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appId, label])
   @@index([teamId])
 }
 
