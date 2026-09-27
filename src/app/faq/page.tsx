@@ -32,9 +32,13 @@ const FAQS: Faq[] = [
       <>
         Yes, on every plan, Free included. Create an API key on your dashboard and{" "}
         <Code>POST</Code> to <Code>/api/checks</Code> with{" "}
-        <Code>Authorization: Bearer cma_…</Code>. There&apos;s also an MCP server —{" "}
-        <Code>claude mcp add checkmyapp</Code> — see <Code>mcp/README.md</Code>. A check
-        started with a key counts against your plan exactly like one started from the site.
+        <Code>Authorization: Bearer cma_…</Code>. Agents that speak MCP can add apps, run
+        checks and read results directly — see{" "}
+        <Link href="/guides/connect-your-agent" className="text-accent hover:underline">
+          Connect your coding agent
+        </Link>
+        . A check started with a key counts against your plan exactly like one started from
+        the site.
       </>
     ),
   },
@@ -52,7 +56,11 @@ const FAQS: Faq[] = [
     a: (
       <>
         Encrypted at rest, never logged, never shown in evidence. Used only so the agent can
-        walk signed-in journeys.
+        walk signed-in journeys.{" "}
+        <Link href="/guides/login-and-test-accounts" className="text-accent hover:underline">
+          More on test accounts
+        </Link>
+        .
       </>
     ),
   },

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import sitemap from "../src/app/sitemap";
 import robots from "../src/app/robots";
 import { HOME_PATH, PUBLIC_PATHS, SITE, canonical, pageMetadata } from "../src/lib/site-metadata";
+import { GUIDES } from "../src/lib/guides";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -41,6 +42,18 @@ function staticChecks() {
   check("sitemap is exactly the public pages", urls.join(",") === PUBLIC_PATHS.map((p) => `${SITE}${p}`).join(","));
   check("no sitemap URL other than the root ends in a slash", urls.every((u) => u === `${SITE}/` || !u.endsWith("/")));
   check("home page has the top priority", entries.find((e) => e.url === `${SITE}/`)?.priority === 1);
+
+  // CHE-318: the guides are listed from one array; each entry must have its
+  // page and each page must name its own canonical, or the sitemap sends a
+  // crawler to a 404 or a page that calls itself something else.
+  for (const g of GUIDES) {
+    const file = path.join(repoRoot, "src/app/guides", g.slug, "page.tsx");
+    check(`guide ${g.slug} has a page`, existsSync(file));
+    if (existsSync(file)) {
+      check(`guide ${g.slug} names itself`, readFileSync(file, "utf8").includes(`guideMetadata("${g.slug}")`));
+    }
+  }
+  check("the guides index exists", existsSync(path.join(repoRoot, "src/app/guides/page.tsx")));
 
   const md = pageMetadata({ title: "T", description: "D", path: "/faq" });
   check("pageMetadata names its own canonical", md.alternates?.canonical === "/faq");
