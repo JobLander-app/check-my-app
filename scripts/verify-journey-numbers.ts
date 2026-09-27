@@ -65,8 +65,11 @@ function main() {
     check("every one of our lines is sourceKind 'ours'", ours.every((l) => l.sourceKind === "ours"));
 
     const theirs = pagesLine(journeyPages([{ stage: "/", count: 412 }, { stage: "/cart", count: 38 }, { stage: "/thanks", count: 7 }], "/"), 14);
+    // CHE-321: "from /" — the count starts at the front door even though the
+    // front door's own number is left out, and saying so is what keeps two
+    // journeys on one page from printing two different counts for one page.
     check("their line counts people on named pages of the customer's product",
-      theirs?.value === "38 people reached /cart, then 7 to /thanks — last 14 days",
+      theirs?.value === "38 people reached /cart from /, then 7 to /thanks — last 14 days",
       theirs?.value);
     check("…sourced to them, not to us", theirs?.source === "your analytics", theirs?.source);
     check("…and marked as a measurement", theirs?.sourceKind === "measured");

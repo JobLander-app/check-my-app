@@ -32,6 +32,8 @@
 // sentence about its own judgement, which is our machinery (rule 1). The price
 // MOVEMENT is a fact and is reported; the note explaining it stays where it is.
 
+import { STEP_STATUS_META } from "./status";
+
 export interface FlowSnapshot {
   /** Actions we judged it takes to finish. */
   price: number | null;
@@ -99,8 +101,24 @@ export function flowChanges(s: FlowSnapshot): FlowChange[] {
     out.push({ kind: "finding", text: `a problem on one of its steps: ${f}` });
   }
 
-  if (s.status && s.prevStatus && s.status !== s.prevStatus) {
-    out.push({ kind: "status", text: `this flow now reads as “${s.status}”, where it read “${s.prevStatus}”` });
+  // CHE-321: in the words the verdict page uses for the same journey, never the
+  // stored code — the mail said "partial" where the page the link opens says
+  // "Works · partly verified". And "ok" ↔ "partial" is not a change in the flow
+  // at all: both read "Works", and the difference is only how much of it we
+  // confirmed, which is ours to report elsewhere and not theirs to connect to
+  // a number that moved.
+  const working = (st: string) => st === "ok" || st === "partial";
+  if (
+    s.status &&
+    s.prevStatus &&
+    s.status !== s.prevStatus &&
+    !(working(s.status) && working(s.prevStatus))
+  ) {
+    const label = (st: string) => STEP_STATUS_META[st]?.label ?? st;
+    out.push({
+      kind: "status",
+      text: `this flow now reads as “${label(s.status)}”, where it read “${label(s.prevStatus)}”`,
+    });
   }
 
   if (s.pageChanged) {

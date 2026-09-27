@@ -158,21 +158,27 @@ export function movementSentence(
   m: Movement,
   path: MeasuredPath,
 ): string | null {
+  // CHE-321: the sentence prints both percentages rounded, so the gap it names
+  // is the gap between THOSE two numbers. Stated from the unrounded values it
+  // could read "36% … against 30% before — 5.2 points down", which is arithmetic
+  // a reader can see is wrong. `m.points` keeps its precision for the judgement
+  // above; this is only what the sentence may say.
+  if (m.kind !== "fell" && m.kind !== "rose") return null;
+  const now = Math.round(m.to.conversion);
+  const before = Math.round(m.from.conversion);
+  const gap = Math.abs(now - before);
   if (m.kind === "fell") {
     return (
       `“${journeyTitle}” — fewer people are getting from ${path.from} to ${path.to}: ` +
-      `${Math.round(m.to.conversion)}% of ${m.to.sample.toLocaleString("en-US")}, ` +
-      `against ${Math.round(m.from.conversion)}% before — ${points(Math.abs(m.points))} down.`
+      `${now}% of ${m.to.sample.toLocaleString("en-US")}, ` +
+      `against ${before}% before — ${points(gap)} down.`
     );
   }
-  if (m.kind === "rose") {
-    return (
-      `“${journeyTitle}” — more people are getting from ${path.from} to ${path.to}: ` +
-      `${Math.round(m.to.conversion)}% of ${m.to.sample.toLocaleString("en-US")}, ` +
-      `up ${points(m.points)} on its own recent average.`
-    );
-  }
-  return null;
+  return (
+    `“${journeyTitle}” — more people are getting from ${path.from} to ${path.to}: ` +
+    `${now}% of ${m.to.sample.toLocaleString("en-US")}, ` +
+    `up ${points(gap)} on its own recent average of ${before}%.`
+  );
 }
 
 /** Does this movement deserve the Watch's attention, or only its page? */
