@@ -1131,6 +1131,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           where: { id: runId },
           data: {
             status: "failed",
+            // Privacy, same rule as the "cleanup" step: a one-off run keeps the
+            // test password only while it runs. That step sits on the success
+            // path, so a run that failed kept the encrypted password forever —
+            // while the home form promises "deleted after the run" and
+            // /guides/login-and-test-accounts says it goes when the check
+            // finishes. A watch run keeps it for the next tick.
+            ...(run.watchId ? {} : { testPasswordEnc: null }),
             errorMessage: budget
               ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
               : msg,
