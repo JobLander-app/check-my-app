@@ -69,7 +69,7 @@ export function ApiKeys({
                       router.refresh();
                     })
                   }
-                  className="font-mono text-[13px] text-fg-faint hover:text-status-bad hover:underline"
+                  className="font-mono text-[13px] text-fg-faint hover:text-status-broken hover:underline"
                 >
                   revoke
                 </button>

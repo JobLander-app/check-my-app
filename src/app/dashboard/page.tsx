@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { setIntegrationEndpoints } from "./actions";
 import { ApiKeys } from "@/components/api-keys";
+import { ConnectAgent } from "@/components/connect-agent";
 import { AnalyticsConnection } from "@/components/analytics-connection";
 import { AppPostHogProject } from "@/components/app-posthog-project";
 import { teamProjects } from "@/lib/posthog/choices";
@@ -168,6 +169,10 @@ export default async function DashboardPage({
           </Link>
         </div>
       )}
+
+      {/* CHE-317: the agent is the interface. Onboarding ends on this screen,
+          so this is also the last thing onboarding says. */}
+      <ConnectAgent keys={apiKeys.map((k) => ({ lastUsedAt: k.lastUsedAt?.toISOString() ?? null }))} />
 
       <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
