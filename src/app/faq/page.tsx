@@ -10,7 +10,7 @@ export const metadata = pageMetadata({
 });
 
 // Public FAQ · /faq (CHE-63). Answers must stay accurate — no overpromising.
-// API access is a Business-tier feature; trackers are Linear-only today.
+// API keys and MCP come with every plan (CHE-316); trackers are Linear-only today.
 type Faq = {
   q: string;
   a: ReactNode;
@@ -30,10 +30,11 @@ const FAQS: Faq[] = [
     q: "Can my coding agent or CI run checks automatically?",
     a: (
       <>
-        Yes. Create an API key on your dashboard (Business plan) and{" "}
+        Yes, on every plan, Free included. Create an API key on your dashboard and{" "}
         <Code>POST</Code> to <Code>/api/checks</Code> with{" "}
         <Code>Authorization: Bearer cma_…</Code>. There&apos;s also an MCP server —{" "}
-        <Code>claude mcp add checkmyapp</Code> — see <Code>mcp/README.md</Code>.
+        <Code>claude mcp add checkmyapp</Code> — see <Code>mcp/README.md</Code>. A check
+        started with a key counts against your plan exactly like one started from the site.
       </>
     ),
   },

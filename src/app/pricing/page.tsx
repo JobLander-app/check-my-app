@@ -84,7 +84,6 @@ const PLANS: Plan[] = [
     priceNote: "/mo",
     blurb: "Compliance-grade checking, on your terms.",
     features: [
-      "API access — run checks from CI, MCP or your own tooling",
       "Checks every 6h, on the paths you nominate",
       "Re-check after a deploy, any time — 100 full re-checks a month",
       "SSO",
@@ -167,6 +166,16 @@ export default function PricingPage() {
             </div>
           ))}
         </div>
+
+        {/* CHE-316 (owner, 2026-09-27): the coding agent is the primary
+            interface, so an API key and MCP come with every plan, Free
+            included — one shared line rather than a Business-only bullet. The
+            plan's own quota still bounds what a key can start. */}
+        <p className="mx-auto max-w-2xl text-center text-sm text-fg-muted">
+          <span className="text-fg">Connect your coding agent (MCP) — every plan.</span> Run
+          checks from Claude Code, CI or your own tooling with an API key; checks started that
+          way count against your plan like any other.
+        </p>
 
         <p className="mx-auto max-w-2xl text-center font-mono text-[13px] leading-6 text-fg-faint">
           Launch pricing. The first check is free so you can judge a verdict before paying for

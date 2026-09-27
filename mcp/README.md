@@ -16,7 +16,8 @@ claude mcp add checkmyapp -e CHECKMYAPP_API_KEY=cma_xxxxxxxx -- npx tsx mcp/serv
 ```
 
 Create a key in the dashboard → **API keys** (https://checkmyapp.dev/dashboard).
-The raw key is shown once at creation; only its SHA-256 hash is stored.
+Every plan can create one, Free included. The raw key is shown once at
+creation; only its SHA-256 hash is stored.
 Revoking deletes the key immediately.
 
 ## Environment variables
@@ -24,7 +25,7 @@ Revoking deletes the key immediately.
 | Variable             | Default                  | Purpose |
 |----------------------|--------------------------|---------|
 | `CHECKMYAPP_URL`     | `https://checkmyapp.dev` | API base; point at staging/local to test |
-| `CHECKMYAPP_API_KEY` | —                        | Owner API key (`cma_…`). Runs are attributed to the owner and follow the owner's plan quota. **Required against production**: see below |
+| `CHECKMYAPP_API_KEY` | —                        | Owner API key (`cma_…`). Runs belong to the key's team and count against that team's plan quota, exactly as a check started from the dashboard (a Free team: 3 runs in total). **Required against production**: see below |
 
 **Why the key is required in production.** Anonymous submissions to
 `POST /api/checks` must carry a browser Turnstile token, and production has

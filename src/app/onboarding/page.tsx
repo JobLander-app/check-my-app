@@ -4,6 +4,7 @@ import { OnboardingWizard } from "@/components/onboarding-wizard";
 import { watchCapReason } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { ownerScoped } from "@/lib/tenant-db";
+import { extensionCheckFor } from "@/lib/viewer-flags";
 
 // Onboarding (protected by proxy.ts). requireUser() also lazily creates the D1
 // mirror row on first visit. Prefilled with ?url= when arriving from a verdict.
@@ -18,10 +19,15 @@ export default async function OnboardingPage({
   // after the owner had filled the whole form and pressed Save. Say it first.
   const activeWatches = await db.watch.count({ ...ownerScoped(), where: { ownerId: user.id, active: true } });
   const capReason = watchCapReason(team.plan as UserPlan, activeWatches);
+  // CHE-320: ?type=extension is a way into extension mode like the toggle on
+  // the home page, and answers to the same flag. Without it the page is the
+  // plain "add your app" form, whatever the link said.
+  const extensionCheck = await extensionCheckFor(user);
+  const kind = extensionCheck && type === "extension" ? "extension" : "website";
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-12">
-      {capReason && type !== "extension" && (
+      {capReason && kind !== "extension" && (
         <div className="card mb-6 border-status-confusing/40 bg-status-confusing/5 p-4">
           <p className="text-sm text-status-confusing">{capReason}</p>
           <p className="mt-1 text-xs text-fg-muted">
@@ -33,7 +39,7 @@ export default async function OnboardingPage({
           </p>
         </div>
       )}
-      <OnboardingWizard prefillUrl={url ?? ""} defaultEmail={user.email ?? ""} initialKind={type === "extension" ? "extension" : "website"} />
+      <OnboardingWizard prefillUrl={url ?? ""} defaultEmail={user.email ?? ""} initialKind={kind} extensionCheck={extensionCheck} />
     </main>
   );
 }

@@ -64,12 +64,18 @@ type LookupHit = {
 
 // Screen 1 — Submit. One field, one button; credentials/notes hidden behind a
 // single toggle so casual visitors aren't scared off.
-export function SubmitForm({ initialUrl = "" }: { initialUrl?: string }) {
+//
+// `extensionCheck` is the PostHog flag `home-extension-check`, evaluated by
+// the page on the server (CHE-320): off for the public, on for the owner and
+// test accounts. Off means no way into extension mode at all — no toggle, and
+// a pasted Web Store link (typed or arriving as ?url=) does not switch the
+// form over; it is refused in plain words instead of being sent as a website.
+export function SubmitForm({ initialUrl = "", extensionCheck = false }: { initialUrl?: string; extensionCheck?: boolean }) {
   const router = useRouter();
   const [url, setUrl] = useState(initialUrl);
   const [extension, setExtension] = useState<ExtensionOptions>({});
   const [selectedKind, setSelectedKind] = useState<"website" | "extension">("website");
-  const isExtension = Boolean(parseExtensionLink(url)) || selectedKind === "extension";
+  const isExtension = extensionCheck && (Boolean(parseExtensionLink(url)) || selectedKind === "extension");
   // The URL the hit was fetched for rides along so a stale card never renders.
   const [lookupState, setLookupState] = useState<{ forUrl: string; hit: LookupHit } | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -139,7 +145,10 @@ export function SubmitForm({ initialUrl = "" }: { initialUrl?: string }) {
 
   // Bare domains are fine — we assume https:// (mirrors normalizeTargetUrl on the server).
   const normalizedUrl = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
-  const valid = /^https?:\/\/.+\..+/.test(normalizedUrl) && (!(isExtension || isChromeStoreUrl(normalizedUrl)) || Boolean(parseExtensionLink(normalizedUrl)));
+  // A Web Store page is not a website we can check, and without the flag it
+  // is not an extension we will check from here either.
+  const storeLinkRefused = !extensionCheck && isChromeStoreUrl(normalizedUrl);
+  const valid = /^https?:\/\/.+\..+/.test(normalizedUrl) && !storeLinkRefused && (!(isExtension || isChromeStoreUrl(normalizedUrl)) || Boolean(parseExtensionLink(normalizedUrl)));
 
   // Domain-keyed cache (CHE-39): once the URL looks real, ask if we've already
   // checked this domain and offer the existing verdict instead of a cold start.
@@ -204,7 +213,7 @@ export function SubmitForm({ initialUrl = "" }: { initialUrl?: string }) {
     // apps. The button is live from the first paint; a bad URL gets the
     // inline message instead.
     if (!valid) {
-      track("check_rejected", { code: "invalid_url", ...describeInput(url, isExtension) });
+      track("check_rejected", { code: storeLinkRefused ? "extension_unavailable" : "invalid_url", ...describeInput(url, isExtension) });
       setAttempted(true);
       return;
     }
@@ -260,15 +269,17 @@ export function SubmitForm({ initialUrl = "" }: { initialUrl?: string }) {
         </h1>
       </div>
 
-      <div className="flex justify-center gap-1 font-mono text-xs" aria-label="Product type">
-        {(["website", "extension"] as const).map(kind => (
-          <button key={kind} type="button" aria-pressed={kind === (isExtension ? "extension" : "website")}
-            onClick={() => setSelectedKind(kind)}
-            className={`rounded-md px-4 py-2 transition-colors ${kind === (isExtension ? "extension" : "website") ? "bg-accent/10 text-accent" : "text-fg-muted hover:text-fg"}`}>
-            {kind === "extension" ? "Chrome extension" : "Website"}
-          </button>
-        ))}
-      </div>
+      {extensionCheck && (
+        <div className="flex justify-center gap-1 font-mono text-xs" aria-label="Product type">
+          {(["website", "extension"] as const).map(kind => (
+            <button key={kind} type="button" aria-pressed={kind === (isExtension ? "extension" : "website")}
+              onClick={() => setSelectedKind(kind)}
+              className={`rounded-md px-4 py-2 transition-colors ${kind === (isExtension ? "extension" : "website") ? "bg-accent/10 text-accent" : "text-fg-muted hover:text-fg"}`}>
+              {kind === "extension" ? "Chrome extension" : "Website"}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="card p-1.5">
         <div className="flex items-center gap-2">
@@ -290,7 +301,9 @@ export function SubmitForm({ initialUrl = "" }: { initialUrl?: string }) {
         </div>
       </div>
       {(url.length > 0 || attempted) && !valid && (
-        <p className="-mt-3 text-sm text-status-broken">Doesn&apos;t look like a working URL</p>
+        <p className="-mt-3 text-sm text-status-broken">
+          {storeLinkRefused ? <>Chrome Web Store links can&apos;t be checked here yet. Paste your app&apos;s own URL.</> : <>Doesn&apos;t look like a working URL</>}
+        </p>
       )}
 
       {isExtension && <ExtensionFields value={extension} onChange={next => { setExtension(next); if (next.allowSessions) setExpanded(true); }} />}

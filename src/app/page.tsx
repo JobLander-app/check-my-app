@@ -4,6 +4,7 @@ import { SubmitForm } from "@/components/submit-form";
 import { TrackedLink } from "@/components/track";
 import { EXAMPLE_VERDICT_PATH } from "@/lib/example-verdict";
 import { HOME_PATH, canonical } from "@/lib/site-metadata";
+import { viewerExtensionCheck } from "@/lib/viewer-flags";
 
 // The home page is the form. It lived at /check from the first scaffold
 // (2026-06-10, "no landing page in MVP — go straight to the submit screen")
@@ -22,9 +23,12 @@ export default async function Home({
   searchParams: Promise<{ url?: string }>;
 }) {
   const { url } = await searchParams;
+  // CHE-320: the Chrome-extension check is not for the public yet. Decided
+  // here, before the HTML is sent, so the option never flashes and vanishes.
+  const extensionCheck = await viewerExtensionCheck();
   return (
     <main className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center px-4 py-16">
-      <SubmitForm initialUrl={url ?? ""} />
+      <SubmitForm initialUrl={url ?? ""} extensionCheck={extensionCheck} />
       {/* Issue #9: someone deciding whether to paste their own link wants to
           see what they would get first. One quiet line, under the form, to a
           public verdict of someone else's product. */}

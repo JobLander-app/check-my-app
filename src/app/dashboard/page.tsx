@@ -15,11 +15,12 @@ import { AppPostHogProject } from "@/components/app-posthog-project";
 import { teamProjects } from "@/lib/posthog/choices";
 import { isStranded } from "@/lib/posthog/token";
 import { missingScopes } from "@/lib/posthog/oauth";
-import { watchTrialState, PLAN_LIMITS } from "@/lib/plans";
+import { watchTrialState } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { teamsOf } from "@/lib/teams";
 import { TeamSwitcher } from "@/components/team-switcher";
+import { extensionCheckFor } from "@/lib/viewer-flags";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -78,8 +79,7 @@ export default async function DashboardPage({
     orderBy: { createdAt: "desc" },
     select: { id: true, name: true, lastUsedAt: true, createdAt: true },
   });
-  // API key creation is a Business+ feature (CHE-62); mirrors the pricing page.
-  const apiAccess = PLAN_LIMITS[team.plan as UserPlan].apiAccess;
+  const extensionCheck = await extensionCheckFor(user);
 
   // For connected apps, pull the workspace teams so the owner can pick which one
   // tickets land in (best-effort — a transient Linear error just hides the picker).
@@ -181,7 +181,8 @@ export default async function DashboardPage({
           <Link href="/dashboard/accuracy" className="text-xs text-fg-muted hover:text-fg">
             Accuracy
           </Link>
-          <Link href="/onboarding?type=extension" className="text-xs text-accent hover:underline">+ Add extension</Link>
+          {/* CHE-320: behind the same flag as the home page's extension option. */}
+          {extensionCheck && <Link href="/onboarding?type=extension" className="text-xs text-accent hover:underline">+ Add extension</Link>}
           <Link
             href="/onboarding"
             className="rounded-md bg-accent px-4 py-2 font-mono text-[13px] font-semibold text-ink-950 transition-opacity hover:opacity-90"
@@ -355,7 +356,6 @@ export default async function DashboardPage({
       <AnalyticsConnection connection={posthog} />
 
       <ApiKeys
-        apiAccess={apiAccess}
         keys={apiKeys.map((k) => ({
           id: k.id,
           name: k.name,

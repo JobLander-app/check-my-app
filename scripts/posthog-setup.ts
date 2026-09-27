@@ -9,7 +9,11 @@
 //      Launching it is a deliberate act for when variant B ships (phase 2):
 //      pass --launch to set start_date now;
 //   3. three saved insights: the landing→checkout funnel, check_submitted by
-//      landing_variant, and the quota/one-check trend.
+//      landing_variant, and the quota/one-check trend;
+//   4. the boolean flag `home-extension-check` (CHE-320): off for everyone,
+//      on for the owner's e-mail and for test accounts. Read on the server by
+//      src/lib/viewer-flags.ts, which sends `email` and `is_test_account` as
+//      person properties, so the match does not wait for PostHog to learn them.
 //
 // Idempotent: looks each object up by key (flag) or exact name (experiment,
 // insights) before creating it, and prints ids and URLs either way. Reads
@@ -26,6 +30,7 @@
 // Usage: npm run posthog:setup [-- --launch]
 
 import "dotenv/config";
+import { HOME_EXTENSION_CHECK_FLAG } from "@/lib/feature-flags";
 
 const PROJECT_ID = 595090;
 const APP_HOST = "https://us.posthog.com";
@@ -75,6 +80,39 @@ async function ensureFlag(): Promise<Flag> {
           { key: "B", name: "First-time-visitor headline", rollout_percentage: 50 },
         ],
       },
+    },
+  });
+  console.log(`flag        created id=${created.id} key=${created.key} active=${created.active}`);
+  return created;
+}
+
+// ─── 1b. Extension-check flag (CHE-320) ─────────────────────────────────────
+//
+// Owner, 2026-09-27: the Chrome-extension option on the home page is not for
+// the public yet. Two release conditions, nothing else — no rollout
+// percentage, so no stranger lands in it by chance. The key is imported from
+// the file that reads it, so a rename cannot leave this script creating a
+// flag nobody evaluates.
+
+const EXTENSION_FLAG_OWNER_EMAILS = ["sorokinvj@gmail.com"];
+
+async function ensureExtensionFlag(): Promise<Flag> {
+  const found = (await api<Listed<Flag>>("GET", `/feature_flags/?search=${HOME_EXTENSION_CHECK_FLAG}&limit=50`)).results.find(
+    (f) => f.key === HOME_EXTENSION_CHECK_FLAG,
+  );
+  if (found) {
+    console.log(`flag        exists  id=${found.id} key=${found.key} active=${found.active}`);
+    return found;
+  }
+  const created = await api<Flag>("POST", "/feature_flags/", {
+    key: HOME_EXTENSION_CHECK_FLAG,
+    name: "Chrome-extension check on / and in onboarding (CHE-320). Off for the public; on for the owner and test accounts. Evaluated server-side in src/lib/viewer-flags.ts.",
+    active: true,
+    filters: {
+      groups: [
+        { properties: [{ key: "email", type: "person", operator: "exact", value: EXTENSION_FLAG_OWNER_EMAILS }], rollout_percentage: 100 },
+        { properties: [{ key: "is_test_account", type: "person", operator: "exact", value: ["true"] }], rollout_percentage: 100 },
+      ],
     },
   });
   console.log(`flag        created id=${created.id} key=${created.key} active=${created.active}`);
@@ -233,12 +271,14 @@ async function ensureInsight(spec: (typeof INSIGHTS)[number]): Promise<Insight> 
 
 async function main() {
   const flag = await ensureFlag();
+  const extensionFlag = await ensureExtensionFlag();
   const experiment = await ensureExperiment();
   const insights: Insight[] = [];
   for (const spec of INSIGHTS) insights.push(await ensureInsight(spec));
 
   console.log("\nsummary");
   console.log(`  flag        ${flag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${flag.id}`);
+  console.log(`  flag        ${extensionFlag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${extensionFlag.id}  (${HOME_EXTENSION_CHECK_FLAG})`);
   console.log(
     `  experiment  ${experiment.id}  ${APP_HOST}/project/${PROJECT_ID}/experiments/${experiment.id}  (${experiment.start_date ? "running" : "draft — run with --launch when variant B ships"})`,
   );
