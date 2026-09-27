@@ -15,7 +15,7 @@ import { AppPostHogProject } from "@/components/app-posthog-project";
 import { teamProjects } from "@/lib/posthog/choices";
 import { isStranded } from "@/lib/posthog/token";
 import { missingScopes } from "@/lib/posthog/oauth";
-import { watchTrialState, PLAN_LIMITS } from "@/lib/plans";
+import { watchTrialState } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { teamsOf } from "@/lib/teams";
@@ -78,8 +78,6 @@ export default async function DashboardPage({
     orderBy: { createdAt: "desc" },
     select: { id: true, name: true, lastUsedAt: true, createdAt: true },
   });
-  // API key creation is a Business+ feature (CHE-62); mirrors the pricing page.
-  const apiAccess = PLAN_LIMITS[team.plan as UserPlan].apiAccess;
 
   // For connected apps, pull the workspace teams so the owner can pick which one
   // tickets land in (best-effort — a transient Linear error just hides the picker).
@@ -355,7 +353,6 @@ export default async function DashboardPage({
       <AnalyticsConnection connection={posthog} />
 
       <ApiKeys
-        apiAccess={apiAccess}
         keys={apiKeys.map((k) => ({
           id: k.id,
           name: k.name,

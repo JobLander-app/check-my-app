@@ -12,7 +12,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { credentialFingerprint, decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { PLAN_LIMITS, assertCanAddWatch } from "@/lib/plans";
+import { assertCanAddWatch } from "@/lib/plans";
 import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
@@ -127,10 +127,9 @@ export async function createApiKey(
   // CHE-253: the plan is the team's, and so is the key — a CI hook does not
   // stop working because the person who minted it left. Who minted it stays on
   // ownerId as attribution.
+  // CHE-316: no plan check — every plan, Free included, may mint a key. Runs
+  // started with it spend the key's team's quota like any other run.
   const { user, db, team, scope } = await requireActionScope("apikey.manage");
-  if (!PLAN_LIMITS[team.plan as UserPlan].apiAccess) {
-    throw new Error("API access is available on the Business plan.");
-  }
   // CHE-263: a key carries a scope, and never one above its minter's — a member
   // who could mint an admin key would make the scope table a suggestion.
   const wanted = (TEAM_SCOPES as string[]).includes(keyScope) ? (keyScope as TeamScope) : "member";

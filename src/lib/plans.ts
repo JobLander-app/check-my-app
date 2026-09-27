@@ -11,9 +11,10 @@ export interface PlanLimits {
   // Most-frequent cadence allowed; null = no recurring checks.
   maxFrequency: WatchFrequency | null;
   trackerIntegration: boolean;
-  // API key creation. Mirrors the pricing page: "API access" is listed only
-  // under Business, so it's Business+ (business, enterprise) here.
-  apiAccess: boolean;
+  // No API flag here, on purpose (CHE-316, owner 2026-09-27): the coding agent
+  // is the primary interface, so every plan — Free included — can mint a key
+  // and connect MCP. What bounds a key's spending is what bounds the UI's: the
+  // run quota (assertCanStartRun), the watch cap and the daily budget below.
   // CHE-106: what one watched app may spend on agent work per day. Measured
   // reality is ~$0.44/tick, so these are budgets for roughly one deep check a
   // day plus room for a re-check when something is wrong. Beyond it, ticks
@@ -49,7 +50,6 @@ export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
     maxWatches: 1,
     maxFrequency: "daily",
     trackerIntegration: false,
-    apiAccess: false,
     // A trial should be able to show its best work once a day.
     dailyBudgetUsd: 1.2,
     fullRechecksPerMonth: 0,
@@ -59,7 +59,6 @@ export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
     maxWatches: 1,
     maxFrequency: "daily",
     trackerIntegration: true,
-    apiAccess: false,
     dailyBudgetUsd: 1.2,
     fullRechecksPerMonth: 5,
     includedSeats: 3,
@@ -68,7 +67,6 @@ export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
     maxWatches: 5,
     maxFrequency: "every_6h",
     trackerIntegration: true,
-    apiAccess: false,
     // $99/mo across 5 apps ≈ $0.66/day/app of revenue; one deep walk a day
     // plus smoke on the other ticks fits inside it.
     dailyBudgetUsd: 0.8,
@@ -79,7 +77,6 @@ export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
     maxWatches: 50,
     maxFrequency: "every_6h",
     trackerIntegration: true,
-    apiAccess: true,
     dailyBudgetUsd: 4,
     fullRechecksPerMonth: 100,
     includedSeats: 50,
@@ -88,7 +85,6 @@ export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
     maxWatches: Number.MAX_SAFE_INTEGER,
     maxFrequency: "every_6h",
     trackerIntegration: true,
-    apiAccess: true,
     dailyBudgetUsd: 10,
     fullRechecksPerMonth: null,
     includedSeats: null,
