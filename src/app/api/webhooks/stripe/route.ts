@@ -130,6 +130,10 @@ export async function POST(req: Request) {
       break;
     }
 
+    // `created` matters for subscriptions made outside checkout — a comped
+    // trial set up from the Stripe side (CHE-314) arrives only as `created`,
+    // and without this branch the team kept `free` until someone edited D1.
+    case "customer.subscription.created":
     case "customer.subscription.updated": {
       const sub = event.data.object;
       const team = await findTeamForSubscription(db, sub);
