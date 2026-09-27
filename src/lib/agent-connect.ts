@@ -6,6 +6,8 @@
 // checks them, so the command a person copies and the command we test are the
 // same string.
 
+import { CHANNEL_TARBALL_PATH } from "../../mcp/channel/watch";
+
 export const MCP_URL = "https://checkmyapp.dev/mcp";
 export const CONNECT_GUIDE_PATH = "/guides/connect-your-agent";
 
@@ -15,6 +17,19 @@ export const KEY_PLACEHOLDER = "<KEY>";
 
 export function installCommand(key: string | null): string {
   return `claude mcp add --transport http checkmyapp ${MCP_URL} --header "Authorization: Bearer ${key ?? KEY_PLACEHOLDER}"`;
+}
+
+// Daily Watch results pushed into a running Claude Code session (CHE-319):
+// the checkmyapp-watch channel, installed from a tarball on our own site. The
+// URL carries the channel's version (mcp/channel/watch.ts says why), so it is
+// read from there and never retyped.
+export const WATCH_CHANNEL_URL = `https://checkmyapp.dev${CHANNEL_TARBALL_PATH}`;
+
+export function watchChannelCommands(key: string | null): { add: string; start: string } {
+  return {
+    add: `claude mcp add checkmyapp-watch -e CHECKMYAPP_API_KEY=${key ?? KEY_PLACEHOLDER} -- npx -y ${WATCH_CHANNEL_URL}`,
+    start: "claude --dangerously-load-development-channels server:checkmyapp-watch",
+  };
 }
 
 // Cursor and the other clients that read an mcpServers JSON block.

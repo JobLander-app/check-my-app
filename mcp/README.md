@@ -52,6 +52,58 @@ since the check before, then what to do — if something is new, tell the person
 at the start of the session and offer to fix it with `get_review`. Under 1500
 characters, apps with news first.
 
+## Results pushed into a running session (channel)
+
+The server above answers when the agent asks. `checkmyapp-watch` is the
+other half: when a recurring check finishes, a running Claude Code session
+hears about it without anyone asking. It is a Claude Code
+[channel](https://code.claude.com/docs/en/channels-reference) — a
+**research preview**: a custom channel loads only with the development flag,
+and on Team and Enterprise plans an admin must enable channels
+(`channelsEnabled`) first.
+
+```bash
+claude mcp add checkmyapp-watch -e CHECKMYAPP_API_KEY=cma_xxxxxxxx \
+  -- npx -y https://checkmyapp.dev/mcp/checkmyapp-watch-1.0.0.tgz
+claude --dangerously-load-development-channels server:checkmyapp-watch
+```
+
+Add the `checkmyapp` server too (above): the channel only announces, and
+fixing goes through `get_review`.
+
+What it does, in `mcp/channel/`:
+
+- Polls `latest_results` on `/mcp` over HTTPS every `CHECKMYAPP_POLL_SECONDS`
+  (default 300, never under 60). It opens no port and has no tools.
+- When an app has a finished run it has not told the session about, it pushes
+  one event: `<channel source="checkmyapp-watch" app="…" run_id="…"
+  verdict="…">` with the host, the verdict, the bottom line, each **new**
+  finding (title and severity) and "call get_review with run_id …".
+- Opening a session replays nothing — except a result with new findings that
+  finished in the last 24 hours, which is pushed once: the watch ran
+  overnight, and the agent says so first.
+- Its instructions tell Claude to tell the person and offer to fix, never to
+  start changing anything because an event arrived.
+- A network error is logged to stderr and retried on the next tick; a refused
+  key (401/403) is one stderr line and exit 1. `claude --debug` shows its
+  stderr, including `connected: N app(s), … waiting` after the first poll.
+
+| Variable                  | Default                  | Purpose |
+|---------------------------|--------------------------|---------|
+| `CHECKMYAPP_API_KEY`      | —                        | Required; a reader key is enough |
+| `CHECKMYAPP_URL`          | `https://checkmyapp.dev` | Where `/mcp` is |
+| `CHECKMYAPP_POLL_SECONDS` | `300`                    | How often it looks; minimum 60 |
+
+**Distribution.** No npm registry: `npm run build:channel` bundles the channel
+and the MCP SDK into one dependency-free file and packs it as
+`public/mcp/checkmyapp-watch-<version>.tgz`, served by the site. The version
+is in the URL because `npx` installs a tarball URL once and reuses that
+install while the URL answers — a new tarball under the same URL never
+reaches someone who already has it, and a removed one breaks them. So a change
+to `mcp/channel/` bumps `CHANNEL_VERSION` (the build refuses to overwrite a
+published version), the guide and this README get the new URL, and old
+tarballs stay in `public/mcp/`.
+
 ## Tools
 
 Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
@@ -269,6 +321,12 @@ to `~/.claude/skills/app-review/`.
 - `npm run verify:mcp` — the stdio bridge with the remote handler on its far
   end: same tool list, calls and refusals pass through, the long wait loops
   with progress and stops at 45 minutes, no key → no start.
+- `npm run verify:all -- --only mcp-channel` (scripts/verify-mcp-channel.ts)
+  — the channel against the remote handler in-process: a quiet start pushes
+  nothing, a new finished run is one push with the right content and meta,
+  never twice, the waiting result on startup, a refused key; the committed
+  tarball is exactly what the source builds; and its bin, run as a process
+  over stdio against a local HTTP server, handshakes and pushes.
 - `npm run mcp:smoke` — the live smoke through the stdio bridge: **one**
   owner-attributed check of `https://checkmyapp.dev` (the target is fixed),
   then status, wait and verdict. Needs `CHECKMYAPP_API_KEY` in `.env`. Costs a

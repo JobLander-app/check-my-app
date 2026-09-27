@@ -64,6 +64,7 @@
     "verify:mcp": "tsx --tsconfig tsconfig.json scripts/verify-mcp.ts",
     "verify:mcp-remote": "tsx --tsconfig tsconfig.json scripts/verify-mcp-remote.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
+    "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",
     "verify:extension-targets": "tsx --tsconfig tsconfig.json scripts/verify-extension-targets.ts",
     "verify:extension-popup": "node scripts/verify-extension-popup.mjs",
