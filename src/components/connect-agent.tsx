@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createApiKey } from "@/app/dashboard/actions";
@@ -8,6 +8,7 @@ import {
   CONNECT_GUIDE_PATH,
   agentConnected,
   clientConfig,
+  firstPrompt,
   installCommand,
 } from "@/lib/agent-connect";
 
@@ -23,17 +24,31 @@ import {
 // drops it straight into the command, so there is nothing to assemble by hand.
 // The raw key lives only in this component's state: it is shown once, exactly
 // as in the API keys block.
-export function ConnectAgent({ keys }: { keys: { lastUsedAt: string | null }[] }) {
+//
+// CHE-324: onboarding opens on this same panel, before the person has added
+// anything by hand. What onboarding needs on top of the dashboard — the first
+// prompt and a way out without an app — comes in as children, so the words
+// and the key flow stay one component.
+export function ConnectAgent({
+  keys,
+  children,
+}: {
+  keys: { lastUsedAt: string | null }[];
+  children?: ReactNode;
+}) {
   if (agentConnected(keys)) {
     return (
-      <details className="mb-6 text-xs text-fg-faint">
-        <summary className="cursor-pointer hover:text-fg-muted">
-          <span className="text-status-ok">✓ Connected to your agent</span> · setup
-        </summary>
-        <div className="card mt-2 p-4">
-          <CreateAndInstall />
-        </div>
-      </details>
+      <div className="mb-6">
+        <details className="text-xs text-fg-faint">
+          <summary className="cursor-pointer hover:text-fg-muted">
+            <span className="text-status-ok">✓ Connected to your agent</span> · setup
+          </summary>
+          <div className="card mt-2 p-4">
+            <CreateAndInstall />
+          </div>
+        </details>
+        {children && <div className="card mt-3 p-4">{children}</div>}
+      </div>
     );
   }
 
@@ -51,7 +66,25 @@ export function ConnectAgent({ keys }: { keys: { lastUsedAt: string | null }[] }
       <div className="mt-5">
         <CreateAndInstall />
       </div>
+      {children && <div className="mt-6 border-t border-ink-700 pt-5">{children}</div>}
     </section>
+  );
+}
+
+// What to say to the agent first (CHE-324). The text is firstPrompt(), the
+// same string scripts/verify-onboarding-agent-path.ts reads.
+export function FirstPrompt({ url }: { url: string | null }) {
+  const prompt = firstPrompt(url);
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-fg-muted">Then tell your agent, in your own words — for example:</p>
+        <CopyButton text={prompt} />
+      </div>
+      <p className="mt-1 select-all rounded-md border border-ink-700 p-3 text-[13px] leading-relaxed text-fg">
+        {prompt}
+      </p>
+    </div>
   );
 }
 

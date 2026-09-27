@@ -101,6 +101,12 @@ export type AnalyticsEvents = {
    * the event has the same shape as the API's 403 body.
    */
   full_recheck_denied: { appSlug: string; remaining: number };
+  /**
+   * Which way in a person took from the first onboarding screen (CHE-324):
+   * `agent` — connected their coding agent and left for the dashboard
+   * without adding an app here; `app` — chose to fill in the form.
+   */
+  onboarding_path_chosen: { path: "agent" | "app" };
 };
 
 export type AnalyticsEvent = keyof AnalyticsEvents;
@@ -120,6 +126,7 @@ export const ANALYTICS_EVENTS = [
   "watch_enabled",
   "recheck_clicked",
   "full_recheck_denied",
+  "onboarding_path_chosen",
 ] as const satisfies readonly AnalyticsEvent[];
 
 /** Names PostHog treats specially. Everything else is sent verbatim. */
