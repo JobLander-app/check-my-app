@@ -33,7 +33,7 @@ export const GUIDES: Guide[] = [
     slug: "multiple-accounts",
     title: "Several accounts and roles",
     description:
-      "An admin and a regular user, a free and a paid plan: what works today for checking more than one account, and what is coming.",
+      "An admin and a regular user, a free and a paid plan: give one app several named test accounts, and say which one each scenario runs as.",
   },
   {
     slug: "connect-your-agent",

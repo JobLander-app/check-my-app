@@ -423,6 +423,7 @@ async function main(): Promise<void> {
       ticketPolicy: nothing,
       trackerIntegration: nothing,
       repoIntegration: nothing,
+      testAccount: nothing,
     };
     const result = await sweepTestAccounts({ db } as unknown as AgentEnv, now);
     check(

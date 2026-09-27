@@ -3,8 +3,9 @@ import { A, Bullets, GuidePage, Note, Section, Strong, guideMetadata } from "../
 export const metadata = guideMetadata("login-and-test-accounts");
 
 // Every claim here is backed by code; keep them in step:
-// - one test email + password per app: App.testEmail / App.testPasswordEnc
-//   (prisma/schema.prisma, model App)
+// - the main test email + password per app: App.testEmail / App.testPasswordEnc
+//   (prisma/schema.prisma, model App); named accounts beside it are TestAccount
+//   rows (CHE-322) — /guides/multiple-accounts
 // - encrypted at rest, AES-256-GCM: src/lib/crypto.ts encryptSecret; saved via
 //   src/app/onboarding/actions.ts and src/app/dashboard/actions.ts
 // - the password never reaches the model, transcripts or evidence: placeholders
@@ -38,8 +39,8 @@ export default function LoginGuide() {
         </p>
         <p>
           Sign-in with Google or another provider is not supported yet; use an email-and-password
-          account. Each app holds one test account today — for more than one role, see{" "}
-          <A href="/guides/multiple-accounts">Several accounts and roles</A>.
+          account. For more than one role — an admin and a regular user — an app can hold several
+          named accounts; see <A href="/guides/multiple-accounts">Several accounts and roles</A>.
         </p>
       </Section>
 

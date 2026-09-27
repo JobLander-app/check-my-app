@@ -6,7 +6,10 @@ export const metadata = guideMetadata("connect-your-agent");
 // Tool names and arguments checked against the merged CHE-315 server
 // (src/lib/mcp/tools.ts, #184) and its production tools/list on 2026-09-27:
 // create_app takes url, scenarios, limits, notes, test_email, test_password —
-// no name (an app is named by its host).
+// no name (an app is named by its host). CHE-322 added test_accounts
+// ([{label, email, password}]) to create_app and update_app, and
+// remove_test_accounts to update_app; list_apps returns each account's label
+// and email, never a password.
 //
 // Verified independently of CHE-315:
 // - keys on every plan: CHE-316 (#179) — src/components/api-keys.tsx has no
@@ -37,9 +40,9 @@ const TOOLS: { name: string; what: string }[] = [
   { name: "list_apps", what: "The apps your team has added." },
   {
     name: "create_app",
-    what: "Add an app: its address, scenarios, limits, notes, and a test account (email and password).",
+    what: "Add an app: its address, scenarios, limits, notes, and its test accounts — one, or several named ones such as “admin” and “free user”.",
   },
-  { name: "update_app", what: "Change an app’s scenarios, limits, notes or test account." },
+  { name: "update_app", what: "Change an app’s scenarios, limits, notes or test accounts." },
   { name: "start_check", what: "Check an app you added, or any address." },
   { name: "get_check_status", what: "Where a running check is, without waiting." },
   { name: "wait_for_run", what: "Wait for a check to finish and return its verdict." },

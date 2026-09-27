@@ -3,6 +3,7 @@ import type { AppAnatomy } from "@/lib/types";
 import type { ProposedJourney } from "./discovery";
 import type { AppKnowledge } from "./knowledge";
 import { JOURNEY_METRICS_GUIDE, metricLine, type JourneyMetric } from "./journey-metrics";
+import { usableRunAccounts } from "@/lib/test-accounts";
 
 // System-prompt assembly. The worker's contract is textual: the standing
 // mission + the client's own instructions (scope hints, notes) compose into the
@@ -19,6 +20,8 @@ type Run = {
   targetUrl: string;
   testEmail?: string | null;
   testPasswordEnc?: string | null;
+  // CHE-322: Run.testAccounts — read here for the LABELS only.
+  testAccounts?: string | null;
   // CHE-81: the owner's priority concerns, verbatim.
   focusAreas?: string | null;
   // CHE-90: CRUD lifecycle permission + the marker every created record carries.
@@ -213,23 +216,59 @@ click through them one by one.`;
 
 // Told to the model only as a fact of availability; values never enter the
 // prompt. Sign-up stays skipped — the account already exists.
-export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc">): string {
-  if (!run.testEmail || !run.testPasswordEnc) return "";
+//
+// CHE-322: an app may hold named accounts besides the default ("admin", "free
+// user"). The model is told their LABELS and nothing else — not even the email,
+// which scrubSecrets treats as a secret too — and signs in as one with
+// {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}. A scenario in the owner's
+// concerns that names an account ("as admin: …") is how the owner says which.
+export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts">): string {
+  const hasDefault = Boolean(run.testEmail && run.testPasswordEnc);
+  const named = accountLabels(run);
+  if (!hasDefault && named.length === 0) return "";
+  const lines: string[] = [];
+  if (hasDefault) {
+    lines.push(
+      `- To fill the login form, call fill with the literal placeholders {{TEST_EMAIL}}
+  and {{TEST_PASSWORD}}; the real values are substituted server-side and you
+  never see them.`,
+    );
+  }
+  if (named.length) {
+    lines.push(
+      `- The client also supplied these NAMED test accounts, each a different user of
+  the product:
+${named.map((l) => `    - "${l}": fill {{TEST_EMAIL:${l}}} and {{TEST_PASSWORD:${l}}}`).join("\n")}
+  When a scenario or concern names one of these accounts ("as ${named[0]}: …"),
+  sign in as THAT account for it and say in the step which account you used.${
+    hasDefault
+      ? " Anything that names no account uses the default {{TEST_EMAIL}} / {{TEST_PASSWORD}}."
+      : ` There is no default account: anything that names no account uses "${named[0]}".`
+  }
+  To switch accounts, sign out first. A scenario that names an account not in
+  this list cannot be checked: report it "skipped" with unverifiedReason
+  "missing_access" and name the account it needed.`,
+    );
+  }
   return `
 
-TEST CREDENTIALS ARE PROVIDED for this run: the client supplied a real test
-account for the target app. Use them — sign in and verify the authenticated
+TEST CREDENTIALS ARE PROVIDED for this run: the client supplied ${named.length ? "real test\naccounts" : "a real test\naccount"} for the target app. Use them — sign in and verify the authenticated
 part of the product:
-- To fill the login form, call fill with the literal placeholders {{TEST_EMAIL}}
-  and {{TEST_PASSWORD}}; the real values are substituted server-side and you
-  never see them.
+${lines.join("\n")}
 - The "no test credentials" skip rules above do NOT apply to signing in. Walk
   the sign-in flow to completion, submit it, and confirm the logged-in area
   actually loads.
 - Only enter these credentials on the target app's own login form, never on a
   third-party site.
-- Sign-UP is unchanged: the account already exists, so never create a new one —
+- Sign-UP is unchanged: the account${named.length ? "s" : ""} already exist${named.length ? "" : "s"}, so never create a new one —
   walk signup to the final submit and report it "skipped" as before.`;
+}
+
+// CHE-322: the labels a run can sign in as besides the default, from the
+// Run.testAccounts snapshot. Only accounts that still hold a password: a label
+// the model cannot fill is one it must not be offered.
+export function accountLabels(run: Pick<Run, "testAccounts">): string[] {
+  return usableRunAccounts(run.testAccounts).map((a) => a.label);
 }
 
 export function clientInstructionBlock(run: Pick<Run, "scopeHints" | "userNotes">): string {
@@ -476,9 +515,14 @@ When done, respond with ONLY a JSON object, no prose:
         " priority concerns above, with steps that verify it directly."
       : ""
   }${credentialsBlock(run)}${crudBlock(run)}${
-    run.testEmail && run.testPasswordEnc
+    (run.testEmail && run.testPasswordEnc) || accountLabels(run).length
       ? "\n\nBecause test credentials are provided, one of your proposed journeys MUST be" +
         " signing in with them and reaching the core authenticated flow."
+      : ""
+  }${
+    accountLabels(run).length
+      ? "\n\nEvery priority concern that names a test account needs a journey signed in as" +
+        ' that account, and its title must say which (e.g. "As admin: …").'
       : ""
   }${clientInstructionBlock(run)}${knowledgeTail(knowledge, "discovery")}`;
 }

@@ -10,7 +10,8 @@ import { assertCanStartRun, fullRecheckGate, fullRechecksUsed } from "@/lib/plan
 import { effectiveEphemeralTtlDays, effectiveSiteCap } from "@/lib/site-cap";
 import { ephemeralExpiry } from "@/lib/ephemeral";
 import { triggerRun } from "@/lib/trigger";
-import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
+import { snapshotAppAccounts } from "@/lib/test-accounts";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -70,6 +71,7 @@ export async function createRecheckRun(
       appSlug: true,
       testEmail: true,
       testPasswordEnc: true,
+      testAccounts: true,
       scopeHints: true,
       userNotes: true,
       focusAreas: true,
@@ -154,6 +156,16 @@ export async function createRecheckRun(
   const saved = prev.targetKind === "extension" && prev.appId && prev.ownerId
     ? await prisma.app.findFirst({ ...alreadyScoped("the previous run names its own app"), where: { id: prev.appId, ownerId: prev.ownerId, targetKind: "extension", extensionId: prev.extensionId },
       select: { testEmail: true, testPasswordEnc: true, extensionConfig: true, userNotes: true } }) : null;
+  // CHE-322: a re-check of a saved website's run signs in as the app does NOW —
+  // its default login and every named account. The run being re-checked lost
+  // its passwords when it ended (workflow.ts "cleanup") unless a watch kept
+  // them, so copying them forward re-checked a signed-in app signed out, and
+  // would carry no named account at all. Only the credentials come from the
+  // app: this run's notes and scope stay the ones it was started with.
+  const appLogin = !saved && prev.targetKind !== "extension" && prev.appId && prev.ownerId && prev.teamId
+    ? await prisma.app.findFirst({ where: { ...teamOwned(prev.teamId), id: prev.appId },
+      select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true } }) : null;
+  const login = saved ?? appLogin ?? prev;
   const run = await prisma.run.create({ ...alreadyScoped("created with its team"),
     data: {
       runNumber: await nextRunNumber(prisma),
@@ -162,8 +174,9 @@ export async function createRecheckRun(
       extensionId: prev.extensionId,
       extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
       appSlug: prev.appSlug,
-      testEmail: saved ? saved.testEmail : prev.testEmail,
-      testPasswordEnc: saved ? saved.testPasswordEnc : prev.testPasswordEnc,
+      testEmail: login.testEmail,
+      testPasswordEnc: login.testPasswordEnc,
+      testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
       scopeHints: prev.scopeHints,
       userNotes: saved ? saved.userNotes : prev.userNotes,
       focusAreas: prev.focusAreas,

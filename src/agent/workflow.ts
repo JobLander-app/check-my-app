@@ -72,6 +72,7 @@ import {
 import { deliverWebhook, type RunCompletedPayload } from "@/lib/notify/webhook";
 import { deliverSlack } from "@/lib/notify/slack";
 import { decryptSecret } from "@/lib/crypto";
+import { clearedCredentials } from "@/lib/test-accounts";
 import type { TranscriptEntry } from "./core";
 import {
   consoleSetAsideLine,
@@ -132,6 +133,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           appSlug: true,
           testEmail: true,
           testPasswordEnc: true,
+          testAccounts: true,
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
@@ -486,6 +488,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         targetUrl: run.targetUrl,
         testEmail: run.testEmail,
         testPasswordEnc: run.testPasswordEnc,
+        testAccounts: run.testAccounts,
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
@@ -1110,10 +1113,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       }
 
       // Privacy: clear test credentials after a terminal completion, unless a
-      // Watch retains them for recurring runs.
+      // Watch retains them for recurring runs. CHE-322: every named account's
+      // password with the default's — one function for both paths.
       await step.do("cleanup", async () => {
         if (!run.watchId) {
-          await env.db.run.update({ where: { id: runId }, data: { testPasswordEnc: null } });
+          await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
         }
       });
     } catch (err) {
@@ -1137,7 +1141,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             // while the home form promises "deleted after the run" and
             // /guides/login-and-test-accounts says it goes when the check
             // finishes. A watch run keeps it for the next tick.
-            ...(run.watchId ? {} : { testPasswordEnc: null }),
+            ...(run.watchId ? {} : clearedCredentials(run)),
             errorMessage: budget
               ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
               : msg,

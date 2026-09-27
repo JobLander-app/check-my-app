@@ -4,7 +4,6 @@
 // (GeneratedTest in D1 + spec copy in R2 — no Workers filesystem).
 
 import type { Browser } from "@cloudflare/playwright";
-import { decryptSecret } from "@/lib/crypto";
 import type { StepStatus } from "@/lib/enums";
 import { LlmBudgetError, runAgentLoop, finalizeJson, type TranscriptEntry } from "./core";
 import {
@@ -23,7 +22,7 @@ import type { AppKnowledge } from "./knowledge";
 import { harnessMode, putScreenshot, putText, walkImageWindow, type AgentEnv } from "./env";
 import { originOf, type ProposedJourney, type RunInput } from "./discovery";
 import { emptyUsage, mergeUsage, type LlmConfig, type UsageTotals } from "./llm";
-import { credentialsAlreadyRejected, recordCredentialRejection } from "./credentials";
+import { credentialToolEnv } from "./credentials";
 import { WALK_WRAP_UP_ITERATIONS, walkingIterationCap } from "./limits";
 import { walkingVision } from "./harness";
 import { deriveFunnel } from "@/lib/funnel";
@@ -234,14 +233,12 @@ export async function walkOneJourney(args: {
             : { cleanupNote: (r.note ?? "deletion failed").slice(0, 500) },
         });
       },
-      testEmail: run.testEmail ?? undefined,
-      testPassword: run.testPasswordEnc ? decryptSecret(run.testPasswordEnc) : undefined,
-      networkLog: [],
-      consoleLog: [],
       // CHE-100: read fresh per journey, because that is what makes the rule
       // hold across journeys — an earlier one may already have been told no.
-      credentials: { rejected: await credentialsAlreadyRejected(env, run.id) },
-      onCredentialRejected: (signature) => recordCredentialRejection(env, run.id, signature),
+      // CHE-322: every named account the run carries, not only the default.
+      ...(await credentialToolEnv(env, run)),
+      networkLog: [],
+      consoleLog: [],
       actionTrail,
       undrivenControls,
       // CHE-171: a 404 on an address outside this set is not a defect.

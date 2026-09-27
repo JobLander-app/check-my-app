@@ -114,18 +114,25 @@ Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
 - **`list_apps`** `{}` — the team's apps: `app_id`, `app`, `url`, `kind`,
   `scenarios` (what must keep working — checked on every run), `limits` (where
   the check may not go), `notes`, `may_create_test_records`,
-  `has_test_account` and `test_email` (the password is never returned),
-  `watch` (`state`: active / paused / trial_ended / off / on_demand,
-  `frequency`, `next_run_at`, `trial_days_left`), `last_run` (`run_id`,
-  `status`, `verdict`, `finished_at`).
+  `has_test_account` and `test_email`, `test_accounts` (`label`, `email`,
+  `has_password` for every account a check signs in as — the password itself
+  is never returned), `watch` (`state`: active / paused / trial_ended / off /
+  on_demand, `frequency`, `next_run_at`, `trial_days_left`), `last_run`
+  (`run_id`, `status`, `verdict`, `finished_at`).
 - **`create_app`** `{url, scenarios?, limits?, notes?, test_email?,
-  test_password?, notify_email?, frequency?}` — add an app, exactly as the
-  onboarding form does: the password is stored encrypted, and a website gets a
-  recurring check (daily by default) within the team's plan — the first one is
-  scheduled automatically.
+  test_password?, test_accounts?, notify_email?, frequency?}` — add an app,
+  exactly as the onboarding form does: passwords are stored encrypted, and a
+  website gets a recurring check (daily by default) within the team's plan —
+  the first one is scheduled automatically. `test_email`/`test_password` is the
+  `default` account; `test_accounts: [{label, email, password}]` adds named
+  ones (`admin`, `free user`), and a scenario that names one ("As admin:
+  refunds work") is checked signed in as it.
 - **`update_app`** `{app_id, scenarios?, limits?, notes?, test_email?,
-  test_password?, notify_email?}` — only the fields passed change; `""` clears
-  a field, and `test_password: ""` removes the stored password.
+  test_password?, test_accounts?, remove_test_accounts?, notify_email?}` —
+  only the fields passed change; `""` clears a field, and `test_password: ""`
+  removes the stored password. `test_accounts` adds a named account or updates
+  the one stored under that label (a password left out is kept);
+  `remove_test_accounts: ["admin"]` deletes one.
 
 **Checks**
 

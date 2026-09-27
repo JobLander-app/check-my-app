@@ -53,6 +53,8 @@ export async function sweepTestAccounts(env: AgentEnv, now: Date = new Date()): 
   await env.db.ticketPolicy.deleteMany({ where: { appId: { in: ids } } });
   await env.db.trackerIntegration.deleteMany({ where: { appId: { in: ids } } });
   await env.db.repoIntegration.deleteMany({ where: { appId: { in: ids } } });
+  // CHE-322: stored credentials never outlive the app they sign in to.
+  await env.db.testAccount.deleteMany({ where: { appId: { in: ids } } });
   await env.db.app.deleteMany({ where: { id: { in: ids } } });
 
   console.log(

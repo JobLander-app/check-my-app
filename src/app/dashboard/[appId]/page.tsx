@@ -17,6 +17,8 @@ import { switchTeamAction } from "@/app/team/switch-actions";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { AnalyticsProject } from "@/components/analytics-project";
 import { projectChoicesFor } from "@/lib/posthog/choices";
+import { listTestAccounts } from "@/lib/app-settings";
+import { MAX_EXTRA_ACCOUNTS } from "@/lib/test-accounts";
 
 // Per-app settings (CHE-64, redesigned CHE-81). Three meaning-first sections —
 // the page will keep growing, so hierarchy comes from sections, not from a pile
@@ -92,6 +94,8 @@ export default async function AppSettingsPage({
   })();
   const isExtension = app.targetKind === "extension";
   const frequency = app.watch?.frequency ?? "daily";
+  // CHE-322: label and email only — the password never reaches the page.
+  const testAccounts = await listTestAccounts(db, team.id, app.id);
 
   // CHE-137: full re-checks are an allowance per owner and UTC month (the
   // regular re-check after a deploy is not limited). Shown where the owner
@@ -187,6 +191,40 @@ export default async function AppSettingsPage({
               autoComplete="new-password"
             />
           </div>
+
+          {/* CHE-322: named accounts — one row each, saved with the rest of the
+              form. Passwords are write-only here exactly as above. */}
+          {!isExtension && (
+            <div className="card space-y-3 p-5">
+              <div>
+                <p className="text-sm font-medium text-fg">More test accounts</p>
+                <p className="text-xs text-fg-faint">
+                  A different kind of user — &ldquo;admin&rdquo;, &ldquo;free user&rdquo;. Name one in
+                  a concern above (&ldquo;As admin: refunds go through&rdquo;) and that concern is
+                  checked signed in as it; everything else uses the login above. Same encryption,
+                  same rule: a blank password keeps the current one.
+                </p>
+              </div>
+              {testAccounts.map((account) => (
+                <div key={account.id} className="grid gap-2 sm:grid-cols-[8rem_1fr_1fr_auto] sm:items-center">
+                  <Input name={`account:${account.id}:label`} defaultValue={account.label} aria-label="Account name" autoComplete="off" />
+                  <Input name={`account:${account.id}:email`} type="email" defaultValue={account.email} aria-label="Email" autoComplete="off" />
+                  <Input name={`account:${account.id}:password`} type="password" placeholder="•••••••• (kept)" aria-label="New password" autoComplete="new-password" />
+                  <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+                    <input type="checkbox" name={`account:${account.id}:remove`} value="1" className="h-4 w-4 rounded border-ink-600 bg-ink-900" />
+                    Remove
+                  </label>
+                </div>
+              ))}
+              {testAccounts.length < MAX_EXTRA_ACCOUNTS && (
+                <div className="grid gap-2 border-t border-ink-700 pt-3 sm:grid-cols-[8rem_1fr_1fr]">
+                  <Input name="newAccount:label" placeholder="admin" aria-label="New account name" autoComplete="off" />
+                  <Input name="newAccount:email" type="email" placeholder="admin@your-app.com" aria-label="New account email" autoComplete="off" />
+                  <Input name="newAccount:password" type="password" placeholder="••••••••" aria-label="New account password" autoComplete="new-password" />
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card space-y-3 p-5">
             <div>

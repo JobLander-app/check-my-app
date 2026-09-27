@@ -23,6 +23,12 @@ import { createCheckSchema } from "@/lib/validation";
 import { extensionColumns, parseExtensionLink, type ExtensionOptions } from "@/lib/extension-target";
 import { recordTeamEvent } from "@/lib/team-events";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import {
+  planAccountEdits,
+  writeAccountEdits,
+  type AccountChangeSummary,
+  type TestAccountsPatch,
+} from "@/lib/test-accounts";
 
 // The person acting and the team whose plan and apps they act on (CHE-253).
 export interface AppActor {
@@ -41,6 +47,8 @@ export interface CreateAppInput {
   extension?: ExtensionParse;
   testEmail?: string | null;
   testPassword?: string | null;
+  // CHE-322: named accounts besides the default one above.
+  testAccounts?: { label: string; email: string; password: string }[];
   focusAreas?: string | null;
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
@@ -51,6 +59,11 @@ export interface CreateAppInput {
   repoLabel?: string | null;
   urgentJourneys?: string[];
 }
+
+// CHE-322: the extension runner replays a sign-in with the one account it is
+// handed (src/agent/extension-replay.ts). A second login stored for an
+// extension would be one no run of it ever uses — refused, not kept silently.
+export const EXTENSION_ONE_ACCOUNT = "An extension check signs in with one test account. Set it with the test email and password.";
 
 // The sentence is for a person; the code is for a machine caller, which should
 // branch on "the plan is spent" rather than parse English.
@@ -75,6 +88,12 @@ export async function createAppForTeam(
   const testEmail = input.testEmail?.trim() || null;
   const testPasswordEnc = input.testPassword ? encryptSecret(input.testPassword) : null;
   const frequency = input.frequency ?? "daily";
+
+  // CHE-322: checked before the app exists, so a bad account refuses the whole
+  // create instead of leaving an app with half its logins.
+  const accounts = input.testAccounts?.length ? planAccountEdits([], { set: input.testAccounts }) : null;
+  if (accounts && isExtension) return { error: EXTENSION_ONE_ACCOUNT, code: "invalid_input" };
+  if (accounts && !accounts.ok) return { error: accounts.error, code: "invalid_input" };
 
   // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
   const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
@@ -135,6 +154,10 @@ export async function createAppForTeam(
       },
       select: { id: true, appSlug: true },
     });
+    if (accounts?.ok) {
+      const written = await writeAccountEdits(db, { id: app.id, teamId: actor.teamId }, accounts, []);
+      await recordAccountEvents(db, actor, app.appSlug, written);
+    }
     return { ok: true, app: { ...app, isExtension } };
   } catch (err) {
     if (err instanceof Error && err.message.includes("Unique constraint")) return { error: DUPLICATE_APP, code: "duplicate" };
@@ -153,6 +176,9 @@ export async function createAppForTeam(
 export interface AppSettingsPatch {
   testEmail?: string | null;
   testPassword?: string | null;
+  // CHE-322: add, rename, re-password or remove named accounts. Passwords here
+  // are write-only exactly like the default's.
+  testAccounts?: TestAccountsPatch;
   focusAreas?: string | null;
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
@@ -196,6 +222,18 @@ export async function updateAppForTeam(
   }
   const extensionUpdate = app.targetKind === "extension" && patch.extension?.success
     ? { extensionConfig: JSON.stringify(patch.extension.data) } : {};
+
+  // CHE-322: every account edit is checked against the final set before any
+  // row — accounts or settings — is written (D1 has no transactions).
+  const wantsAccounts = Boolean(patch.testAccounts?.set?.length || patch.testAccounts?.remove?.length);
+  const storedAccounts = wantsAccounts
+    ? await db.testAccount.findMany({ where: { ...teamOwned(actor.teamId), appId: app.id }, select: { id: true, label: true, email: true } })
+    : [];
+  const accountPlan = wantsAccounts ? planAccountEdits(storedAccounts, patch.testAccounts!) : null;
+  if (accountPlan && app.targetKind === "extension" && accountPlan.ok && (accountPlan.creates.length || accountPlan.updates.length)) {
+    return { error: EXTENSION_ONE_ACCOUNT, code: "invalid_input" };
+  }
+  if (accountPlan && !accountPlan.ok) return { error: accountPlan.error, code: "invalid_input" };
 
   const passwordUpdate =
     patch.testPassword === undefined
@@ -262,6 +300,34 @@ export async function updateAppForTeam(
         : `removed the test password for ${app.appSlug}`,
     });
   }
+  if (accountPlan?.ok) {
+    const written = await writeAccountEdits(db, { id: app.id, teamId: actor.teamId }, accountPlan, storedAccounts);
+    await recordAccountEvents(db, actor, app.appSlug, written);
+  }
 
   return { ok: true, app: { id: app.id, appSlug: app.appSlug } };
+}
+
+// CHE-264: a credential change is the one an admin most wants to trace later,
+// so each named account gets its own line, by label — never the password.
+async function recordAccountEvents(db: PrismaClient, actor: AppActor, appSlug: string, s: AccountChangeSummary) {
+  const lines = [
+    ...s.added.map((l) => `added the test account "${l}" for ${appSlug}`),
+    ...s.changed.map((l) => `changed the test account "${l}" for ${appSlug}`),
+    ...s.passwordsReplaced.map((l) => `replaced the password of the test account "${l}" for ${appSlug}`),
+    ...s.removed.map((l) => `removed the test account "${l}" from ${appSlug}`),
+  ];
+  for (const summary of lines) {
+    await recordTeamEvent(db, { teamId: actor.teamId, actorUserId: actor.userId, action: "app.credentials_written", subject: appSlug, summary });
+  }
+}
+
+// CHE-322: what the settings page and list_apps show of the named accounts —
+// label and email, never the password in any form.
+export async function listTestAccounts(db: PrismaClient, teamId: string, appId: string) {
+  return db.testAccount.findMany({
+    where: { ...teamOwned(teamId), appId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, label: true, email: true },
+  });
 }

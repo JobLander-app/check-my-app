@@ -35,6 +35,7 @@ import { FULL_RUN_MAX_AGE_DAYS, findLastWalkedRun } from "./replay";
 import { fullRunGate, gateInputFrom, surveySaysUnchanged, type SurveyOutcome } from "./snapshot";
 import { journeysForPlanning, recordCarry, type CatalogJourneyState } from "./journey-catalog";
 import { matchJourney } from "@/lib/journey-key";
+import { parseRunAccounts, usableRunAccounts } from "@/lib/test-accounts";
 import type { ProposedJourney } from "./discovery";
 
 // The only journey statuses worth carrying: "ok" (everything worked) and
@@ -306,11 +307,11 @@ export async function planPartialRun(
   const [currentCreds, baselineCreds] = await Promise.all([
     env.db.run.findUnique({
       where: { id: run.id },
-      select: { testEmail: true, testPasswordEnc: true },
+      select: { testEmail: true, testPasswordEnc: true, testAccounts: true },
     }),
     env.db.run.findUnique({
       where: { id: baseline.id },
-      select: { testEmail: true, testPasswordEnc: true },
+      select: { testEmail: true, testPasswordEnc: true, testAccounts: true },
     }),
   ]);
   const hasCreds = Boolean(currentCreds?.testEmail && currentCreds?.testPasswordEnc);
@@ -321,6 +322,18 @@ export async function planPartialRun(
       reason: baselineHadCreds
         ? "the test account changed since the last full walk — re-checking everything"
         : "test credentials were added since the last full walk — re-checking everything",
+    };
+  }
+  // CHE-322: the same holds per named account. A new "admin" login opens a
+  // part of the product no carried journey was walked as. Compared on label +
+  // email: the baseline's passwords are gone if it was a one-off run, and a
+  // watch run's are the same encrypted blob only by coincidence of re-use.
+  const walkedAs = new Set(parseRunAccounts(baselineCreds?.testAccounts).map((a) => `${a.label}\u0000${a.email}`));
+  const newAccounts = usableRunAccounts(currentCreds?.testAccounts).filter((a) => !walkedAs.has(`${a.label}\u0000${a.email}`));
+  if (newAccounts.length) {
+    return {
+      taken: false,
+      reason: `test account ${newAccounts.map((a) => `"${a.label}"`).join(", ")} ${newAccounts.length === 1 ? "is" : "are"} new since the last full walk — re-checking everything`,
     };
   }
 
