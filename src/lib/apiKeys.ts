@@ -49,8 +49,21 @@ export async function resolveApiKeyGrant(db: PrismaClient, req: Request) {
     include: { owner: true, team: true },
   });
   if (!key) return null;
-  await db.apiKey.update({ ...alreadyScoped("already read in this request"), where: { id: key.id }, data: { lastUsedAt: new Date() } });
+  const now = new Date();
+  if (shouldTouchLastUsed(key.lastUsedAt, now)) {
+    await db.apiKey.update({ ...alreadyScoped("already read in this request"), where: { id: key.id }, data: { lastUsedAt: now } });
+  }
   return { user: key.owner, team: key.team, scope: key.scope, keyId: key.id };
+}
+
+// lastUsedAt is written on the first use and then at most once an hour
+// (CHE-317). The dashboard reads it as "has an agent ever connected" and shows
+// it as a date, so an hour is exact enough — and an agent polling a run every
+// 30 seconds no longer costs a D1 write per poll.
+export const LAST_USED_TOUCH_MS = 60 * 60 * 1000;
+
+export function shouldTouchLastUsed(lastUsedAt: Date | null | undefined, now: Date): boolean {
+  return !lastUsedAt || now.getTime() - lastUsedAt.getTime() >= LAST_USED_TOUCH_MS;
 }
 
 // Back-compat for callers that only want the person. Kept so the change to the
