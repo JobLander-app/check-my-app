@@ -17,6 +17,7 @@ import { freshLinearToken } from "@/lib/tracker/token";
 import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
+import type { RouteRefusal } from "./llm";
 import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
 
@@ -433,6 +434,78 @@ export async function fileDeliveryGap(
     const text = err instanceof Error ? err.message : String(err);
     console.warn(`[delivery-gap] filing failed: ${text}`);
     return { icon: "warn", text: `Couldn't file our undelivered-verdict gap: ${text}` };
+  }
+}
+
+// ─── A model road that refused the verdict (CHE-330) ────────────────────────
+//
+// Synthesis now survives a refused road by asking over the next one, which is
+// exactly what would let the refusal go unseen: the run completes and nobody
+// learns that the first road is closed from where our Workflows run. So each
+// refusal files here, one ticket counted across every run, carrying the
+// provider's words and the location the request left from.
+
+const ROUTE_REFUSAL = {
+  label: "The verdict model refused us on its first route",
+  why:
+    "Every run that hits this pays for its walk and then depends on the fallback road to " +
+    "write the verdict. Runs #135, #197 and #258 were lost outright to it before the " +
+    "fallback existed.",
+};
+
+// Never throws: the run it reports on has already written its verdict.
+export async function fileRouteRefusal(
+  env: AgentEnv,
+  runId: string,
+  opts: { refusals: RouteRefusal[]; answeredBy: string },
+): Promise<string> {
+  const run = await env.db.run.findUnique({
+    where: { id: runId },
+    select: { runNumber: true, publicId: true, startedAt: true, appSlug: true },
+  });
+  if (!run) return `run ${runId} is gone`;
+  const board = await ourBoard(env);
+  if (!board) return "no tracker on our own app";
+  const { self, tracker, baseUrl } = board;
+
+  const finding: TicketFinding = {
+    runId,
+    number: 0,
+    title: ROUTE_REFUSAL.label,
+    category: "broken",
+    severity: "high",
+    detail: JSON.stringify({
+      // Fixed, so every refusal hashes to the same ticket.
+      where: "CheckMyApp verdict synthesis",
+      whatWeTried: [
+        ...opts.refusals.map(
+          (r) =>
+            `${r.model} answered ${r.error} (left from ${r.colo ?? "unknown location"}` +
+            `${r.loc ? `, country ${r.loc}` : ""}).`,
+        ),
+        `${opts.answeredBy} wrote the verdict instead.`,
+        `On: ${run.appSlug} (run #${run.runNumber}).`,
+      ],
+      whatHappened: "The first road to the verdict model refused the request; the run finished on the fallback.",
+      whyItMatters: `${ROUTE_REFUSAL.why} This ticket counts every refusal; it closes when the first road stops refusing.`,
+    }),
+    evidence: [],
+  };
+
+  try {
+    const outcome = await fileFindingTicket({
+      db: env.db,
+      tracker,
+      appId: self.id,
+      finding,
+      run: { runNumber: run.runNumber, publicId: run.publicId, startedAt: run.startedAt, appSlug: self.appSlug },
+      policy: selfPolicy(self, "[Checker gap] {verdict}"),
+      ownerId: self.ownerId,
+      verdictUrl: `${baseUrl}/verdict/${run.publicId}`,
+    });
+    return `${outcome.kind} ${outcome.identifier}`;
+  } catch (err) {
+    return `filing failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 

@@ -36,6 +36,19 @@ export interface LlmConfig {
   // type-checks; makeLlm always fills both.
   judgeClient?: Anthropic;
   judgeModel?: string;
+  // CHE-330: where synthesis may go when its first route refuses it. The first
+  // entry is always { synthClient, synthModel }; the rest are other ways to
+  // reach a model of the same standing. Optional for the same reason as the
+  // judge fields; synthRoutes() below reads it with that first entry as the
+  // default, so an LlmConfig without it behaves exactly as before.
+  synthRoutes?: ModelRoute[];
+}
+
+// One way to reach a model: the client that carries the request, and the id
+// that client knows the model by.
+export interface ModelRoute {
+  client: Anthropic;
+  model: string;
 }
 
 function clientFor(model: string, env: AgentBindings): Anthropic {
@@ -106,6 +119,112 @@ function warnFallback(envVar: string, value: string): string {
   return value;
 }
 
+// ─── Synthesis routes (CHE-330) ─────────────────────────────────────────────
+//
+// Runs #135, #197 and #258 walked every journey, paid for it, and then lost
+// the whole run in `writing`: six attempts in five minutes, each refused in
+// about a second with
+//   403 {"error":{"type":"forbidden","message":"Request not allowed"}}
+// The synthesis model is a plain "claude-*" id, so that call goes straight to
+// api.anthropic.com — OpenRouter's activity for those days carries no Claude
+// model at all, and OpenRouter's own refusals read {"error":{"message","code"}}.
+// The body above has neither Anthropic's {"type":"error"} envelope nor a
+// request_id: it is the edge refusing the request before the API sees it,
+// which is what api.anthropic.com answers a caller in a region it does not
+// serve. A Workflow's fetch leaves from whichever Cloudflare location runs it,
+// so the same code that passes at 17:54 is refused at 20:03 and passes again
+// at 23:26 (runs #257, #258, #259). Retrying from the same place cannot help;
+// asking by another road can. OpenRouter carries the same model and calls
+// Anthropic from its own servers.
+
+// "claude-opus-4-8" → "anthropic/claude-opus-4.8": the id OpenRouter lists the
+// same model under. Null for anything that is not a direct Claude id.
+export function openRouterTwin(model: string): string | null {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(model);
+  if (!m) return null;
+  return `anthropic/claude-${m[1]}-${m[2]}${m[3] ? `.${m[3]}` : ""}`;
+}
+
+// The roads to a synthesis model, first choice first. A direct Claude id falls
+// back to the same model through OpenRouter; an OpenRouter id falls back to
+// the recommended synthesis model on Anthropic directly. A road needs its key:
+// with no key there is no road, and the list is just the primary, as before.
+export function synthRoutesFor(synthModel: string, env: AgentBindings, primary: Anthropic): ModelRoute[] {
+  const routes: ModelRoute[] = [{ client: primary, model: synthModel }];
+  const twin = openRouterTwin(synthModel);
+  if (twin && env.OPENROUTER_API_KEY) {
+    routes.push({ client: clientFor(twin, env), model: twin });
+  } else if (synthModel.includes("/") && env.ANTHROPIC_API_KEY) {
+    const direct = RECOMMENDED_TIER.synthModel;
+    if (direct !== synthModel && !direct.includes("/")) routes.push({ client: clientFor(direct, env), model: direct });
+  }
+  return routes;
+}
+
+export function synthRoutes(llm: LlmConfig): ModelRoute[] {
+  return llm.synthRoutes?.length ? llm.synthRoutes : [{ client: llm.synthClient, model: llm.synthModel }];
+}
+
+// What a refusing road said, kept for our own board and never for a customer.
+export interface RouteRefusal {
+  model: string;
+  status: number;
+  error: string;
+  // The Cloudflare location the refused request left from, when the refusing
+  // host is behind Cloudflare: the cf-ray suffix, and the country its trace
+  // reports. This is the fact that names a region block for what it is.
+  colo: string | null;
+  loc: string | null;
+}
+
+// A 4xx that says "not from here, not like this" — the same request to the
+// same road will be refused again, so the next road is the only move left.
+// 402 is our credit (LlmBudgetError, CLAUDE.md rule 4) and must stay loud;
+// 408/409/429 are transient and the SDK and Workflow retries own them.
+export function isRouteRefusal(err: unknown): err is InstanceType<typeof Anthropic.APIError> {
+  if (!(err instanceof Anthropic.APIError)) return false;
+  const status = err.status ?? 0;
+  return status >= 400 && status < 500 && ![402, 408, 409, 429].includes(status);
+}
+
+async function refusalFacts(route: ModelRoute, err: InstanceType<typeof Anthropic.APIError>): Promise<RouteRefusal> {
+  const ray = err.headers?.get?.("cf-ray") ?? null;
+  const colo = ray?.split("-").pop() ?? null;
+  let loc: string | null = null;
+  try {
+    const res = await fetch(new URL("/cdn-cgi/trace", route.client.baseURL), { signal: AbortSignal.timeout(3_000) });
+    loc = /^loc=(\w+)$/m.exec(await res.text())?.[1] ?? null;
+  } catch {
+    // Best effort: the refusal is recorded whether or not the trace answers.
+  }
+  return { model: route.model, status: err.status ?? 0, error: err.message, colo, loc };
+}
+
+// messages.create over the roads in order. A refusal moves to the next road;
+// anything else — and a refusal on the last road — throws as it always did.
+export async function createOnRoutes(
+  routes: ModelRoute[],
+  params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
+): Promise<{ message: Anthropic.Message; model: string; refusals: RouteRefusal[] }> {
+  const refusals: RouteRefusal[] = [];
+  for (let i = 0; i < routes.length; i += 1) {
+    const route = routes[i];
+    try {
+      const message = await route.client.messages.create({ ...params, model: route.model });
+      return { message, model: route.model, refusals };
+    } catch (err) {
+      if (!isRouteRefusal(err) || i === routes.length - 1) throw err;
+      const facts = await refusalFacts(route, err);
+      refusals.push(facts);
+      console.warn(
+        `[llm] ${route.model} refused (${facts.status}, colo=${facts.colo ?? "?"}, loc=${facts.loc ?? "?"}): ` +
+          `${facts.error} — trying ${routes[i + 1].model}`,
+      );
+    }
+  }
+  throw new Error("createOnRoutes: no routes");
+}
+
 export function makeLlm(env: AgentBindings): LlmConfig {
   const navModel = env.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel);
   const synthModel =
@@ -115,9 +234,11 @@ export function makeLlm(env: AgentBindings): LlmConfig {
   // CHE-169: the judge defaults to the nav model on the nav client, so with
   // ANTHROPIC_JUDGE_MODEL unset no second provider or key is involved.
   const judgeModel = env.ANTHROPIC_JUDGE_MODEL?.trim() || navModel;
+  const synthClient = clientFor(synthModel, env);
   return {
     navClient,
-    synthClient: clientFor(synthModel, env),
+    synthClient,
+    synthRoutes: synthRoutesFor(synthModel, env, synthClient),
     navModel,
     synthModel,
     structClient: clientFor(structModel, env),

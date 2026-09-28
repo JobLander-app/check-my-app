@@ -57,7 +57,7 @@ import { parseActions, replayJourney, type ReplayResult } from "./journey-replay
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
-import { fileCapabilityGaps, fileDeliveryGap } from "./capability-gaps";
+import { fileCapabilityGaps, fileDeliveryGap, fileRouteRefusal } from "./capability-gaps";
 import { measureRunJourneys, measurementNote } from "./journey-measurement";
 import { GAP_CLASSES } from "./gap-classes";
 import { auditCreatedResources } from "./cleanup";
@@ -804,7 +804,18 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         const synth = structured ?? await synthesizeVerdict({ env, llm, runId, anatomy, knowledge }).catch(
           rethrowBudgetNonRetryable,
         );
-        if (!structured) await recordUsage(env, runId, "synthesis", llm.synthModel, synth.usage);
+        if (!structured) {
+          // CHE-330: the ledger names the model that actually wrote the
+          // verdict, so a fallback shows as its own model id on this run. The
+          // refusal goes to our board and the log — not to the run's events,
+          // which the customer reads (CLAUDE.md rules 1 and 10).
+          const written = "model" in synth ? synth : null;
+          await recordUsage(env, runId, "synthesis", written?.model ?? llm.synthModel, synth.usage);
+          if (written?.refusals.length) {
+            const filed = await fileRouteRefusal(env, runId, { refusals: written.refusals, answeredBy: written.model });
+            console.warn(`[synthesis] run ${runId} written on the fallback ${written.model}; our board: ${filed}`);
+          }
+        }
         // CHE-188: a finding whose only evidence is a skipped step is dropped
         // before it becomes a row (run #153 wrote one off a step our own fill
         // could not drive). Same journey/step order synthesis numbered its

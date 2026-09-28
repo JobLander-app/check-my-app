@@ -5,7 +5,17 @@
 import type { AppLens, AppAnatomy } from "@/lib/types";
 import type { Verdict, StepStatus } from "@/lib/enums";
 import type Anthropic from "@anthropic-ai/sdk";
-import { addUsage, costOf, emptyUsage, mergeUsage, type LlmConfig, type UsageTotals } from "./llm";
+import {
+  addUsage,
+  costOf,
+  createOnRoutes,
+  emptyUsage,
+  mergeUsage,
+  synthRoutes,
+  type LlmConfig,
+  type RouteRefusal,
+  type UsageTotals,
+} from "./llm";
 import { finalizeStructured } from "./core";
 import { harnessMode, type AgentEnv } from "./env";
 import type { ProposedJourney } from "./discovery";
@@ -131,6 +141,10 @@ export async function synthesizeVerdict(args: {
   findings: SynthesizedFinding[];
   costUsd: number;
   usage: UsageTotals;
+  // CHE-330: the model that wrote the verdict, and the roads that refused
+  // before it. Ours only: the ledger and our board.
+  model: string;
+  refusals: RouteRefusal[];
 }> {
   const { env, llm, runId, anatomy, knowledge } = args;
   const system = synthesisSystem(knowledge);
@@ -212,17 +226,20 @@ export async function synthesizeVerdict(args: {
     })),
   });
 
-  const message = await llm.synthClient.messages.create({
-    model: llm.synthModel,
+  // CHE-330: a refusal from the first road moves the call to the next one
+  // instead of losing a run whose walking is already paid for. Which road
+  // answered, and what refused, go back to the workflow for our own ledger
+  // and board — never into anything the customer reads.
+  const { message, model, refusals } = await createOnRoutes(synthRoutes(llm), {
     max_tokens: 8_000,
     thinking: { type: "adaptive" },
     system,
     messages: [{ role: "user", content: observation }],
   });
 
-  let costUsd = costOf(llm.synthModel, message.usage);
+  let costUsd = costOf(model, message.usage);
   const usage = emptyUsage();
-  addUsage(usage, llm.synthModel, message.usage);
+  addUsage(usage, model, message.usage);
   let parsed = parseAppLens(message);
 
   // The one-shot reply sometimes carries no parseable JSON, and the old silent
@@ -339,7 +356,7 @@ export async function synthesizeVerdict(args: {
   ) {
     verdict = "needs_attention";
   }
-  return { ...parsed, verdict, costUsd, usage };
+  return { ...parsed, verdict, costUsd, usage, model, refusals };
 }
 
 // The bottom line when nothing the model wrote about the product survived.
@@ -535,8 +552,7 @@ async function rewriteBottomLine(
   llm: LlmConfig,
   bottomLine: string,
 ): Promise<{ text: string; costUsd: number; usage: UsageTotals }> {
-  const message = await llm.synthClient.messages.create({
-    model: llm.synthModel,
+  const { message, model } = await createOnRoutes(synthRoutes(llm), {
     max_tokens: 600,
     system:
       `Rewrite a product verdict's bottom line so it never mentions how the check ` +
@@ -548,11 +564,11 @@ async function rewriteBottomLine(
     messages: [{ role: "user", content: bottomLine }],
   });
   const usage = emptyUsage();
-  addUsage(usage, llm.synthModel, message.usage);
+  addUsage(usage, model, message.usage);
   const text = message.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join(" ")
     .trim();
-  return { text, costUsd: costOf(llm.synthModel, message.usage), usage };
+  return { text, costUsd: costOf(model, message.usage), usage };
 }
