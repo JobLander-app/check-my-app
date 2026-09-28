@@ -1697,8 +1697,9 @@ export function coerceSelfCheck403(
   if (!isSelfTarget(env)) return;
   // An ok step is never rewritten, and it does not use up a refusal: the
   // model often reports "the form accepts input" before the step the refusal
-  // belongs to.
-  if (step.status === "ok" || step.status === "exposed") return;
+  // belongs to. Every other status — "exposed" included, a 403 of ours is no
+  // security finding — is decided below.
+  if (step.status === "ok") return;
   // Otherwise the refusals noted since the last report belong to this step
   // and to no later one, whatever is decided below — including the log lines
   // they came from, which stay in the rolling log and must not be read again
@@ -1708,8 +1709,10 @@ export function coerceSelfCheck403(
   for (const line of noted) attributed.add(line);
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
   // A server error or an exception is the product's own word; a 403 next to
-  // it is not the story.
+  // it is not the story — wherever the step carries it, its prose or the
+  // console/network excerpts it attached.
   if (/\b5\d{2}\b/.test(step.observed ?? "")) return;
+  if (/(?:→|->|:|\s)\s*5\d{2}\s*$/m.test(step.networkExcerpt ?? "") || CONSOLE_EVIDENCE.test(step.consoleExcerpt ?? "")) return;
   if (noted.length === 0) {
     const cited = FORBIDDEN.test(text);
     const unattributed = (env.networkLog ?? []).filter((line) => !attributed.has(line));

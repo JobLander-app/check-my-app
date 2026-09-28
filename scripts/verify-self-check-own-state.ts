@@ -199,6 +199,37 @@ async function stepChecks(): Promise<void> {
       env.reported[1]?.selfCheckRefused === true, JSON.stringify(env.reported[1]));
   }
   {
+    // Codex review of #205: "exposed" is not a way around the rule.
+    const env = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
+    await executeTool(env, "click", { role: "button", name: "Go" });
+    await executeTool(env, "report_step", { label: "Start a check", status: "exposed", attempted: "Pressed Go.", observed: "The API refuses with 403, leaking that checks need an account." });
+    check("an 'exposed' step resting on our guard is ours too", env.reported[0]?.selfCheckRefused === true, JSON.stringify(env.reported[0]));
+  }
+  {
+    // …and the product's own evidence in the excerpts keeps the step.
+    const env = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
+    await executeTool(env, "click", { role: "button", name: "Go" });
+    await executeTool(env, "report_step", {
+      label: "Start a check", status: "broken", attempted: "Pressed Go.", observed: "Nothing started.",
+      consoleExcerpt: "Uncaught TypeError: cannot read properties of undefined (reading 'id')",
+    });
+    check("a console exception in the step's excerpt keeps it as reported", env.reported[0]?.status === "broken" && !env.reported[0]?.selfCheckRefused);
+    const env2 = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
+    await executeTool(env2, "click", { role: "button", name: "Go" });
+    await executeTool(env2, "report_step", {
+      label: "Start a check", status: "broken", attempted: "Pressed Go.", observed: "Nothing started.",
+      networkExcerpt: `POST ${SELF}/api/checks → 403\nGET ${SELF}/api/runs/512 → 502`,
+    });
+    check("a 5xx in the step's network excerpt keeps it as reported", env2.reported[0]?.status === "broken" && !env2.reported[0]?.selfCheckRefused);
+    const env3 = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
+    await executeTool(env3, "click", { role: "button", name: "Go" });
+    await executeTool(env3, "report_step", {
+      label: "Start a check", status: "skipped", attempted: "Pressed Go.", observed: "Refused.",
+      networkExcerpt: `POST ${SELF}/api/runs/512 → 403`,
+    });
+    check("…but a 5 in a URL is not a 5xx", env3.reported[0]?.selfCheckRefused === true);
+  }
+  {
     // A skipped step that only says "forbidden", with nothing of ours in the
     // log or the trail, is not our guard.
     const env = stubEnv(SELF);
@@ -279,6 +310,32 @@ function summaryChecks(): void {
     check("a finding that retells our guard is not written", !r.findings.includes(guardFinding));
     check("a finding anchored on the refused step is not written", !r.findings.includes(anchored));
     check("a finding about the product stays", r.findings.includes(real) && r.findings.length === 1);
+  }
+  {
+    // Codex review of #205: every field the customer reads counts, when the
+    // finding has no anchor; a finding anchored on a step that stands is kept.
+    const inWhy: SynthesizedFinding = {
+      title: "The core promise cannot be tried",
+      category: "confusing",
+      severity: "medium",
+      detail: { whatHappened: "Nothing started.", whyItMatters: "The bot-check gate turns away signed-out visitors." },
+    };
+    const realForbidden: SynthesizedFinding = {
+      title: "The team settings page answers 403 for the account's own admin",
+      category: "broken",
+      severity: "high",
+      detail: { whatHappened: "GET /settings/team returned 403." },
+      stepRef: { journeyIndex: 0, stepIndex: 0 },
+    };
+    const r = ownGuardRefusals(refusedRun, null, [inWhy, realForbidden]);
+    check("an unanchored finding retelling our guard in whyItMatters is not written", !r.findings.includes(inWhy));
+    check("a 403 finding anchored on a step that stands is kept", r.findings.includes(realForbidden));
+  }
+  {
+    const r = walkSummaryOnly("The Previous Runs table loaded but showed the wrong status for run #12.", SELF);
+    check("a page called 'Previous Runs' is this walk, not history", r.cut.length === 0, r.text ?? "");
+    const h = walkSummaryOnly("Sign-in with the test account works; unlike in the last check, the dashboard now loads.", SELF);
+    check("'in the last check' is history and goes", h.text === "Sign-in with the test account works.", h.text ?? "");
   }
   {
     const customer = [{ steps: [{ unverifiedReason: null, observed: "POST /api/orders returned 403." }] }];

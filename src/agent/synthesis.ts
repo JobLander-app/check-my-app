@@ -358,9 +358,12 @@ export const BOTTOM_LINE_FALLBACK = "We checked what we could reach this run; so
 // CHE-334. Pure, exported for scripts/verify-self-check-own-state.ts. A run
 // whose steps carry no refusal of our own guard comes back untouched — the
 // words "403" and "refused" are real evidence on every other run. Where one
-// does: a finding anchored on a refused step, or whose title or account of
-// what happened retells a refusal, is not written; the bottom line loses the
-// sentences that retell it.
+// does, a finding is judged by its anchor first: anchored on a refused step,
+// it is not written; anchored on a step that stands (a real 403 elsewhere in
+// the run), it is kept whatever its words. Only a finding with no usable
+// anchor is judged by its words — every field the customer reads — and goes
+// if any of them retells a refusal. The bottom line loses the sentences that
+// retell it.
 export function ownGuardRefusals(
   journeys: Array<{ steps: Array<{ unverifiedReason?: string | null; observed?: string | null }> }>,
   bottomLine: string | null,
@@ -371,8 +374,15 @@ export function ownGuardRefusals(
   const kept = findings.filter((f) => {
     const ref = f.stepRef;
     const anchored = ref ? journeys[ref.journeyIndex]?.steps[ref.stepIndex] : undefined;
-    const retold = cutSelfCheckRefusalClaims(`${f.title}. ${f.detail?.whatHappened ?? ""}`).cut.length > 0;
-    if ((anchored && isSelfCheckRefusalStep(anchored)) || retold) {
+    const d = f.detail ?? {};
+    const words = [f.title, d.where, ...(Array.isArray(d.whatWeTried) ? d.whatWeTried : []), d.whatHappened, d.whyItMatters]
+      .filter((s): s is string => typeof s === "string" && s.length > 0)
+      .map((s) => (/[.!?]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`))
+      .join(" ");
+    const refused = anchored
+      ? isSelfCheckRefusalStep(anchored)
+      : cutSelfCheckRefusalClaims(words).cut.length > 0;
+    if (refused) {
       cut.push(`finding "${f.title}"`);
       return false;
     }
