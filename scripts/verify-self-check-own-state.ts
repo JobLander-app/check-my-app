@@ -221,6 +221,18 @@ async function stepChecks(): Promise<void> {
       networkExcerpt: `POST ${SELF}/api/checks → 403\nGET ${SELF}/api/runs/512 → 502`,
     });
     check("a 5xx in the step's network excerpt keeps it as reported", env2.reported[0]?.status === "broken" && !env2.reported[0]?.selfCheckRefused);
+    // Codex review of #205 (round 3): the mixed step keeps the 502 and loses the 403.
+    const env4 = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
+    await executeTool(env4, "click", { role: "button", name: "Go" });
+    await executeTool(env4, "report_step", {
+      label: "Start a check", status: "broken", attempted: "Pressed Go.",
+      observed: "The submission returned 403, then /api/runs/512 returned 502 and the page went blank.",
+    });
+    const mixedStep = env4.reported[0];
+    check("mixed step: status stands on the product's own 502", mixedStep?.status === "broken" && !mixedStep?.selfCheckRefused, JSON.stringify(mixedStep));
+    check("…its words keep the 502 and lose the 403",
+      /502/.test(mixedStep?.observed ?? "") && !/403/.test(mixedStep?.observed ?? ""), mixedStep?.observed);
+    check("…and the walk is told it met our guard", mixedStep?.selfCheckGuardSeen === true);
     const env3 = stubEnv(SELF, [`POST ${SELF}/api/checks → 403`]);
     await executeTool(env3, "click", { role: "button", name: "Go" });
     await executeTool(env3, "report_step", {
@@ -360,6 +372,11 @@ function summaryChecks(): void {
       detail: { whatHappened: "GET /settings/team returned 403." },
     };
     check("an unanchored finding about the standing 403 is kept", ownGuardRefusals(mixed, null, [unanchored]).findings.length === 1);
+  }
+  {
+    // Codex review of #205 (round 3): the outcome after "…, but" survives.
+    const r = walkSummaryOnly("JobLander is an interview coach, but the practice call crashed with a 500.", "https://joblander.app");
+    check("a description joined by ', but' keeps the outcome", r.text === "The practice call crashed with a 500.", r.text ?? "");
   }
   {
     const r = walkSummaryOnly("The Previous Runs table loaded but showed the wrong status for run #12.", SELF);

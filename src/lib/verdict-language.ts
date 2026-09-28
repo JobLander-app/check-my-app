@@ -667,9 +667,12 @@ const DESCRIPTION_OPENER =
   /^\s*["'“]?((?:[A-Za-z0-9][\w.'’-]*)(?:\s+[A-Za-z0-9][\w.'’-]*){0,2})["'”]?\s+is\s+(?:an?|the)\s+/;
 const GENERIC_PRODUCT_SUBJECT = /^(?:the|this)\s+(?:app|application|product|site|website|service|platform|tool|web\s*app)$/i;
 // The description ends where an independent clause starts: after a semicolon
-// or a dash, what follows is its own statement ("…; its sign-in works"). A
-// colon or a comma only continues the description.
-const DESCRIPTION_END = /;\s+|\s+[—–]\s+/;
+// or a dash, what follows is its own statement ("…; its sign-in works"), and
+// so after a comma with a conjunction ("…, but the practice call crashed with
+// a 500" — Codex review of #205). Not ", and": inside a description that is
+// the last item of a list ("…, ticket params, and test-record permissions"),
+// run #261's own shape. A colon or a bare comma only continues it.
+const DESCRIPTION_END = /;\s+|\s+[—–]\s+|,\s+(?:but|yet|so|while|though|although|however)\s+/i;
 
 function cutDescription(sentence: string, names: string[]): string | null {
   const m = DESCRIPTION_OPENER.exec(sentence);

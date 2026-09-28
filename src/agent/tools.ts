@@ -19,6 +19,7 @@ import {
   productProse,
   productStepLabel,
   SELF_CHECK_REFUSED_OBSERVED,
+  cutSelfCheckRefusalClaims,
   splitSentences,
   UNVERIFIABLE_FALLBACK,
 } from "@/lib/verdict-language";
@@ -388,6 +389,10 @@ export interface ReportedStep {
   // own guard refusing the self-check. It is written not_applicable and does
   // not count toward its journey's status (countsTowardJourney).
   selfCheckRefused?: boolean;
+  // CHE-334: the step met our own guard, refused or not (a step carrying the
+  // product's own 5xx/exception beside the refusal keeps its status). The walk
+  // reads it to gate its summary.
+  selfCheckGuardSeen?: boolean;
 }
 
 export const BROWSER_TOOLS: Anthropic.Tool[] = [
@@ -652,6 +657,7 @@ export async function executeTool(
         if (!valid.includes(step.status)) step.status = "confusing";
         // CHE-334: only coerceSelfCheck403 may say a step was our own guard.
         delete step.selfCheckRefused;
+        delete step.selfCheckGuardSeen;
         // CHE-171 first: a step it rewrites is already skipped/not_applicable
         // by the time classifyUnverified looks, and that one leaves a step
         // with a reason alone.
@@ -1710,9 +1716,23 @@ export function coerceSelfCheck403(
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
   // A server error or an exception is the product's own word; a 403 next to
   // it is not the story — wherever the step carries it, its prose or the
-  // console/network excerpts it attached.
-  if (/\b5\d{2}\b/.test(step.observed ?? "")) return;
-  if (/(?:→|->|:|\s)\s*5\d{2}\s*$/m.test(step.networkExcerpt ?? "") || CONSOLE_EVIDENCE.test(step.consoleExcerpt ?? "")) return;
+  // console/network excerpts it attached. The step keeps its status; when a
+  // refusal of ours was noted for it, the clauses retelling that refusal are
+  // cut from its words and the walk is told it met the guard (Codex review of
+  // #205: "submission returned 403, then /api/runs returned 502" must keep the
+  // 502 and lose the 403).
+  const ownEvidence =
+    /\b5\d{2}\b/.test(step.observed ?? "") ||
+    /(?:→|->|:|\s)\s*5\d{2}\s*$/m.test(step.networkExcerpt ?? "") ||
+    CONSOLE_EVIDENCE.test(step.consoleExcerpt ?? "") ||
+    (noted.length > 0 && PRODUCT_OWN_EVIDENCE.test(step.observed ?? ""));
+  if (ownEvidence) {
+    if (noted.length > 0) {
+      step.selfCheckGuardSeen = true;
+      step.observed = withoutGuardClauses(step.observed);
+    }
+    return;
+  }
   if (noted.length === 0) {
     const cited = FORBIDDEN.test(text);
     const unattributed = (env.networkLog ?? []).filter((line) => !attributed.has(line));
@@ -1728,8 +1748,6 @@ export function coerceSelfCheck403(
     } else if (!cited || !logged) {
       return;
     }
-  } else if (PRODUCT_OWN_EVIDENCE.test(step.observed ?? "")) {
-    return;
   }
   console.warn(
     `[report_step] "${step.label}": ${step.status} on our own self-check guard (${noted[0] ?? "a refusal in the step or the log"}) → skipped`,
@@ -1738,7 +1756,30 @@ export function coerceSelfCheck403(
   step.unverifiedReason = "not_applicable";
   step.gapClass = undefined;
   step.selfCheckRefused = true;
+  step.selfCheckGuardSeen = true;
   step.observed = SELF_CHECK_REFUSED_OBSERVED;
+}
+
+// A step that met our guard AND carries the product's own evidence: the
+// clauses retelling the refusal go, the ones with the evidence stay. Clause
+// boundaries are the ones every other cut in this file uses.
+const GUARD_CLAUSE_BREAK = /(,\s+(?:then|and|but|after\s+which|while)\s+|;\s+|\s+[—–]\s+|,\s+)/i;
+function withoutGuardClauses(observed: string): string {
+  const out: string[] = [];
+  for (const sentence of splitSentences(observed ?? "")) {
+    const parts = sentence.split(GUARD_CLAUSE_BREAK);
+    const kept: string[] = [];
+    for (let i = 0; i < parts.length; i += 2) {
+      const clause = parts[i];
+      if (cutSelfCheckRefusalClaims(clause).cut.length && !PRODUCT_OWN_EVIDENCE.test(clause)) continue;
+      kept.push(clause.trim());
+    }
+    const joined = kept.join(", ").replace(/[\s,;:—–-]+$/, "").trim();
+    if (!joined) continue;
+    const cap = joined.charAt(0).toUpperCase() + joined.slice(1);
+    out.push(/[.!?]$/.test(cap) ? cap : `${cap}.`);
+  }
+  return out.join(" ").trim() || PROBLEM_FALLBACK;
 }
 
 // CHE-334: a step our own guard refused is not part of what its journey says

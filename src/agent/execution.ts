@@ -293,7 +293,7 @@ export async function walkOneJourney(args: {
         // did) but is no part of the journey's status — the journey is judged
         // up to the guard.
         if (countsTowardJourney(step)) stepStatuses.push(step.status as StepStatus);
-        else metOwnGuard = true;
+        if (step.selfCheckGuardSeen) metOwnGuard = true;
         const trail = actionTrail.splice(0);
         // CHE-219: the same rows the summary below is judged against, kept as
         // they are written so the cut sees this journey's own evidence.
