@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
-import { enableWatchAction, fullRecheckRunAction, recheckRunAction } from "@/app/verdict/actions";
+import { enableWatchAction, fullRecheckRunAction, recheckRunAction, retryFailedRunAction } from "@/app/verdict/actions";
 import { track } from "@/lib/analytics";
 
 // Verdict header/footer actions: enable Daily Watch (Loop B) and re-check now
@@ -87,6 +87,19 @@ export function FullRecheckButton({ runId, appSlug }: { runId: string; appSlug: 
         label="Full re-check"
         title="Walks every journey from scratch — it costs more than a regular re-check, which re-walks only what changed"
       />
+    </form>
+  );
+}
+
+// CHE-329: the one way forward from a check that didn't finish. Same form
+// around a server action as RecheckButton, for the same pre-hydration reason.
+export function RetryFailedRunButton({ runId, appSlug }: { runId: string; appSlug: string }) {
+  return (
+    <form
+      action={retryFailedRunAction.bind(null, runId)}
+      onSubmit={() => track("recheck_clicked", { kind: "retry_failed", appSlug })}
+    >
+      <RecheckSubmit label="Run it again" />
     </form>
   );
 }

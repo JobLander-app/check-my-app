@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { appSlugFromUrl } from "@/lib/utils";
-import { parseExtensionLink, readExtensionOptions, publicRunError } from "@/lib/extension-target";
+import { parseExtensionLink, readExtensionOptions } from "@/lib/extension-target";
+import { FAILED_RUN_LINE, publicRunError } from "@/lib/failed-run";
 import { createCheckSchema, extensionOptionsSchema } from "@/lib/validation";
 import { startCheck } from "@/lib/start-check";
 import { startPaidCheck } from "@/lib/one-check";
@@ -10,8 +11,9 @@ import { createRecheckRun } from "@/lib/recheck";
 import { enableWatchForRun } from "@/lib/watch-enable";
 
 async function main() {
-assert.equal(publicRunError('extension', 'The owned executor disconnected'), null);
-assert.equal(publicRunError('website', 'Existing website error'), 'Existing website error');
+// CHE-329: no public payload carries the raw failure — extension or website.
+assert.equal(publicRunError('failed'), FAILED_RUN_LINE);
+assert.equal(publicRunError('walking'), null);
 const id = "hafhjepjihcimcljkdphpinannbdmnhf";
 const url = `https://chromewebstore.google.com/detail/joblander/${id}`;
 const alias = `https://chrome.google.com/webstore/detail/renamed/${id}?hl=en`;

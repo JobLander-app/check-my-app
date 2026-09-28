@@ -51,9 +51,21 @@ function classOf(g: {
   });
 }
 
+// The Linear team our own defects are filed onto — the "Check My App" team,
+// key CHE. The identity of our board, not a preference: see ourApp.
+export const OUR_BOARD_TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af";
+
 // Our own app row (the one watching checkmyapp.dev) owns the tracker connection
 // the gaps are filed through, and namespaces their dedup keys.
-async function ourApp(env: AgentEnv) {
+//
+// CHE-329: found by the board it files to, not by hostname alone. Any account
+// may save checkmyapp.dev as an app — the self-check account did on
+// 2026-09-28, and as the newest row it made this return an app with no tracker,
+// so any gap filed while that row lived found no board — and a customer who did the same and
+// connected their own tracker would have received our raw failure messages
+// from every app. Only the row whose tracker points at our own Linear team is
+// ours; nobody outside our workspace can connect to that team.
+export async function ourApp(env: AgentEnv) {
   const host = (() => {
     try {
       return new URL(env.bindings.APP_URL ?? "https://checkmyapp.dev").host;
@@ -62,7 +74,7 @@ async function ourApp(env: AgentEnv) {
     }
   })();
   return env.db.app.findFirst({
-    where: { appSlug: host },
+    where: { appSlug: host, tracker: { is: { teamId: OUR_BOARD_TEAM_ID } } },
     include: { tracker: true, policy: true },
     orderBy: { createdAt: "desc" },
   });
@@ -81,8 +93,9 @@ export interface GapBoard {
 }
 
 // Null when the CheckMyApp app has no tracker connected yet — callers say so
-// out loud rather than swallowing it.
-async function ourBoard(env: AgentEnv): Promise<GapBoard | null> {
+// out loud rather than swallowing it. Exported for run-failures.ts (CHE-329),
+// which files onto the same board.
+export async function ourBoard(env: AgentEnv): Promise<GapBoard | null> {
   const self = await ourApp(env);
   if (!self?.tracker?.teamId) return null;
   const tracker = new LinearTracker(
@@ -140,7 +153,7 @@ async function unpricedJourneys(env: AgentEnv, runId: string): Promise<string[]>
 // The ticket policy for anything we file against ourselves — the owner's own
 // policy when the CheckMyApp app has one, otherwise the same defaults autofile
 // falls back to, with the title prefix swapped.
-function selfPolicy(self: OurApp, titleFormat: string) {
+export function selfPolicy(self: OurApp, titleFormat: string) {
   return self.policy
     ? { ...self.policy, titleFormat }
     : {
@@ -452,6 +465,21 @@ const ROUTE_REFUSAL = {
     "write the verdict. Runs #135, #197 and #258 were lost outright to it before the " +
     "fallback existed.",
 };
+
+// CHE-329: when every road refused and the run is failing, the failure path
+// must know whether THIS run's refusal reached our board — the error object
+// (and the refusals riding on it) does not cross the step boundary, and a
+// filing that failed must fall back to the run-failure ticket rather than be
+// assumed. So a filed refusal is written into the message the run fails with:
+// Run.errorMessage is internal, and the prefix is a per-run fact, not an
+// inference from the status code and the phase.
+export const ROUTE_REFUSAL_FILED = "internal: route refusal filed as ";
+
+// The identifier fileRouteRefusal filed onto, or null when it did not file.
+// A suppressed signature counts as settled: the owner ruled on it.
+export function routeRefusalFiledAs(result: string): string | null {
+  return /^(?:created|commented|suppressed) (\S+)$/.exec(result)?.[1] ?? null;
+}
 
 // Never throws, and nothing in it can: it runs inside the `writing` step, and
 // a tracker or database hiccup here must not turn a verdict the fallback just

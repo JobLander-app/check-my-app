@@ -13,7 +13,8 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { parseJson } from "@/lib/json";
 import type { RunEvent } from "@/lib/types";
-import { extensionReportPublished, publicRunError } from "@/lib/extension-target";
+import { extensionReportPublished } from "@/lib/extension-target";
+import { publicRunState } from "@/lib/failed-run";
 import { publicRow } from "@/lib/tenant-db";
 
 export async function loadRunStatus(db: PrismaClient, publicId: string) {
@@ -27,13 +28,15 @@ export async function loadRunStatus(db: PrismaClient, publicId: string) {
       status: true,
       verdict: true,
       events: true,
-      errorMessage: true,
       startedAt: true,
       completedAt: true,
     },
   });
   if (!run) return null;
-  return { ...run, errorMessage: publicRunError(run.targetKind, run.errorMessage), events: parseJson<RunEvent[]>(run.events) };
+  // CHE-329: Run.errorMessage is not even read — the raw message is ours, and
+  // the caller gets one plain sentence; a failed run's verdict and feed stay
+  // unpublished (src/lib/failed-run.ts).
+  return { ...run, ...publicRunState({ ...run, events: parseJson<RunEvent[]>(run.events) }) };
 }
 
 export type RunStatusPayload = NonNullable<Awaited<ReturnType<typeof loadRunStatus>>>;

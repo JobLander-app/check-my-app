@@ -29,6 +29,16 @@ export async function recheckRunAction(publicId: string): Promise<void> {
   return doRecheck(publicId, false);
 }
 
+// CHE-329: "Run it again" on a check that didn't finish. The same re-check,
+// with the same gates; only the way back differs — a refusal is read on the
+// failed run's own page, since a failed run has no verdict page to land on.
+// (Our own checker is still turned away first; its bounce to /verdict/{id}
+// lands on the run page, where a failed run's verdict URL now leads.)
+export async function retryFailedRunAction(publicId: string): Promise<void> {
+  await refuseSelfCheck(publicId);
+  return doRecheck(publicId, false, `/run/${publicId}`);
+}
+
 // CHE-74: walk everything from scratch — partial/smoke skip themselves.
 export async function fullRecheckRunAction(publicId: string): Promise<void> {
   await refuseSelfCheck(publicId);
@@ -72,15 +82,15 @@ export async function enableWatchAction(publicId: string): Promise<void> {
   }
 }
 
-async function doRecheck(publicId: string, full: boolean): Promise<void> {
+async function doRecheck(publicId: string, full: boolean, back = `/verdict/${publicId}`): Promise<void> {
   const prisma = await getDbFromContext();
   const anonKeyHash = await hashClientKey((await headers()).get("cf-connecting-ip"));
   const result = await createRecheckRun(prisma, publicId, { full, anonKeyHash });
   if (result.kind === "unauthorized") {
-    redirect(`/sign-in?redirect_url=${encodeURIComponent(`/verdict/${publicId}`)}`);
+    redirect(`/sign-in?redirect_url=${encodeURIComponent(back)}`);
   }
   if (result.kind === "not_found") {
-    redirect(`/verdict/${publicId}?recheck=notfound`);
+    redirect(`${back}?recheck=notfound`);
   }
   // CHE-94: anonymous callers get the fresh verdict they already have, or a
   // plain explanation for the owner-only full walk — never a silent no-op.
@@ -91,7 +101,7 @@ async function doRecheck(publicId: string, full: boolean): Promise<void> {
     // CHE-327: an empty balance comes back with a flag, so the page shows the
     // two ways out next to the sentence.
     const balance = isBalanceExhausted(result.code) ? "&balance=1" : "";
-    redirect(`/verdict/${publicId}?recheck=${encodeURIComponent(result.reason)}${balance}`);
+    redirect(`${back}?recheck=${encodeURIComponent(result.reason)}${balance}`);
   }
   if (result.kind === "ok") {
     redirect(`/run/${result.publicId}`);

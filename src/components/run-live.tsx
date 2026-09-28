@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PHASE_LABELS, PHASE_ORDER, type RunEvent, type RunPhase } from "@/lib/types";
+import { RunFailed } from "@/components/run-failed";
 
 interface Snapshot {
   status: string;
   events: RunEvent[] | null;
   verdict: string | null;
-  errorMessage: string | null;
   currentAction: string | null;
   liveScreenshotUrl: string | null;
 }
@@ -61,10 +61,10 @@ export function RunLive({
       if (status === "completed" || status === "partial") {
         router.push(`/verdict/${publicId}`);
       } else {
-        // failed — re-fetch once so the failure card renders with the error
-        fetch(`/api/runs/${publicId}`)
-          .then((r) => r.json() as Promise<Partial<Snapshot>>)
-          .then((run) => setSnap((s) => ({ ...(s as Snapshot), ...run })));
+        // CHE-329: failed or canceled — the server page renders the ending
+        // (src/components/run-failed.tsx), with the price and the retry it
+        // alone can decide.
+        router.refresh();
       }
     });
     es.addEventListener("error", () => es.close());
@@ -82,22 +82,9 @@ export function RunLive({
   const fmt = (d: Date) =>
     d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
-  if (snap?.status === "failed") {
-    return (
-      <div className="card mx-auto max-w-xl space-y-3 p-8 text-center">
-        <p className="text-2xl">{isExtension ? "◌" : "🪦"}</p>
-        <p className="text-lg font-medium">{isExtension ? "Check interrupted" : "Something broke on our side."}</p>
-        <p className="text-sm text-fg-muted">
-          {isExtension ? "The check ended without a result." : "We're looking at it. You'll get an email with a retry link."}
-        </p>
-        {!isExtension && snap.errorMessage && (
-          <p className="mono rounded-lg bg-ink-900 p-3 text-left text-status-broken/80">
-            {snap.errorMessage}
-          </p>
-        )}
-      </div>
-    );
-  }
+  // The moment between the stream saying "failed" and the refreshed page
+  // arriving: the same card, saying only what is true of every failed run.
+  if (snap?.status === "failed") return <RunFailed free={false} retry={null} />;
 
   return (
     <div className="stagger space-y-5">

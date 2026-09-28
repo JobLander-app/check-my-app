@@ -64,12 +64,14 @@ export function readExtensionOptions(raw: string | null | undefined): ExtensionO
     };
   } catch { return {}; }
 }
-// Runtime diagnostics stay in the run record; a public progress response must
-// not expose native executor failures as descriptions of the extension.
-export function publicRunError(targetKind: string, internalMessage: string | null): string | null {
-  return targetKind === "extension" ? null : internalMessage;
-}
-
+// Whether a run's report may be read by anyone outside. CHE-329: a run that
+// ended failed publishes nothing, whatever its kind (rule 4), and nothing
+// written on its row before it died may be served as a result beside "this
+// check didn't finish". (A step that throws AFTER the verdict was written
+// leaves the run finished instead — workflow.ts "fail" — since the verdict
+// may already have been delivered.) Every public loader (the verdict page,
+// loadVerdict, loadReview, latest results) reads its answer here.
 export function extensionReportPublished(run: { targetKind: string; status: string; verdict: string | null }): boolean {
+  if (run.status === "failed") return false;
   return run.targetKind !== "extension" || Boolean(run.verdict && ["completed", "partial"].includes(run.status));
 }

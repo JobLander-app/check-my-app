@@ -92,8 +92,9 @@ export type AnalyticsEvents = {
    * A re-check button on a verdict was pressed (CHE-137). `regular` is the
    * re-check after a deploy (re-walks what changed); `full` walks every
    * journey from scratch. Both spend the team's balance (CHE-327).
+   * `retry_failed` is "Run it again" on a check that didn't finish (CHE-329).
    */
-  recheck_clicked: { kind: "regular" | "full"; appSlug: string };
+  recheck_clicked: { kind: "regular" | "full" | "retry_failed"; appSlug: string };
   /**
    * CHE-327: a top-up checkout was opened for `amountUsd`. The server's
    * `balance_topped_up` records the payment; the two together are the
