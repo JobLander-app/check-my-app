@@ -575,13 +575,67 @@ export function isSelfCheckRefusalStep(step: { unverifiedReason?: string | null;
 const SELF_CHECK_REFUSAL_CLAIM =
   /\b403\b|\bforbidden\b|\brefus(?:ed|es|al|ing)\b|\brejected\b|\bdenied\b|\bblocked\b|\bbot[- ]?(?:check|gate|protection)\b|\bnot available to (?:this|the|our) account\b|\bout of reach\b|\bself_check=read_only\b|\bread-only\b/i;
 
+// A step as the refusal gates see it: the row, or the walk's copy of it.
+export type RefusalContextStep = {
+  label?: string | null;
+  attempted?: string | null;
+  observed?: string | null;
+  status?: string | null;
+  unverifiedReason?: string | null;
+};
+
+// What a sentence points at: the paths and quoted names it cites, and its
+// content words. Codex review of #205: a keyword alone cannot tell our refusal
+// from a real 403 elsewhere in the same run ("Settings are blocked by a 403"),
+// so a claim sentence is matched to the steps it talks about.
+const REF_PATH = /(?:^|[\s"'`(])(\/[a-z0-9][\w\-./]*)/gi;
+const REF_QUOTED = /["'“‘]([^"'”’]{3,60})["'”’]/g;
+const CLAIM_WORDS = new Set([
+  "403", "forbidden", "refused", "refuses", "refusal", "refusing", "rejected", "denied", "blocked", "check",
+  "gate", "bot-check", "account", "this", "that", "with", "from", "returns", "returned", "reach", "when",
+  "were", "was", "the", "and", "for", "but", "not", "available", "only", "read-only", "page", "button",
+]);
+function refsOf(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(REF_PATH)) out.add(`path:${m[1].toLowerCase().replace(/[.,;:]+$/, "")}`);
+  for (const m of text.matchAll(REF_QUOTED)) out.add(`name:${m[1].trim().toLowerCase()}`);
+  for (const w of text.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []) if (!CLAIM_WORDS.has(w)) out.add(`word:${w}`);
+  return out;
+}
+function overlap(a: Set<string>, b: Set<string>): number {
+  let score = 0;
+  for (const r of a) if (b.has(r)) score += r.startsWith("word:") ? 1 : 3;
+  return score;
+}
+
+// Does this claim sentence rest on a step that stands — a real problem the
+// run saw somewhere our guard did not answer — more than on a refused one?
+// Only then is it the product's words and kept. With no step context, or no
+// standing problem step at all, every claim sentence is the refusal retold.
+function restsOnStandingStep(sentence: string, steps: readonly RefusalContextStep[]): boolean {
+  const refs = refsOf(sentence);
+  let refused = 0;
+  let standing = 0;
+  for (const s of steps) {
+    const text = [s.label, s.attempted, s.observed].filter(Boolean).join(" ");
+    if (isSelfCheckRefusalStep(s)) refused = Math.max(refused, overlap(refs, refsOf(`${s.label ?? ""} ${s.attempted ?? ""}`)));
+    else if (s.status && s.status !== "ok" && SELF_CHECK_REFUSAL_CLAIM.test(text)) standing = Math.max(standing, overlap(refs, refsOf(text)));
+  }
+  return standing > 0 && standing > refused;
+}
+
 // The sentences that retell our own refusal go; the rest stays as written.
-// Null when nothing survives, so the caller writes its fixed sentence.
-export function cutSelfCheckRefusalClaims(text: string | null | undefined): { text: string | null; cut: string[] } {
+// Null when nothing survives, so the caller writes its fixed sentence. With
+// `steps`, a claim sentence that points at a standing problem step more than
+// at a refused one is the product's own evidence and stays.
+export function cutSelfCheckRefusalClaims(
+  text: string | null | undefined,
+  steps: readonly RefusalContextStep[] = [],
+): { text: string | null; cut: string[] } {
   if (!text) return { text: text ?? null, cut: [] };
   const cut: string[] = [];
   const kept = splitSentences(text).filter((s) => {
-    if (!SELF_CHECK_REFUSAL_CLAIM.test(s)) return true;
+    if (!SELF_CHECK_REFUSAL_CLAIM.test(s) || restsOnStandingStep(s, steps)) return true;
     cut.push(s);
     return false;
   });

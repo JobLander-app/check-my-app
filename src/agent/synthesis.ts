@@ -19,6 +19,7 @@ import {
   hasEnvironmentLeak,
   hasHomework,
   isSelfCheckRefusalStep,
+  type RefusalContextStep,
   stripEnvironmentLeak,
   stripHomework,
 } from "@/lib/verdict-language";
@@ -363,13 +364,17 @@ export const BOTTOM_LINE_FALLBACK = "We checked what we could reach this run; so
 // the run), it is kept whatever its words. Only a finding with no usable
 // anchor is judged by its words — every field the customer reads — and goes
 // if any of them retells a refusal. The bottom line loses the sentences that
-// retell it.
+// retell it. Both word tests are matched against the run's steps (Codex
+// review of #205): a sentence that points at a standing problem step more
+// than at a refused one — "the /settings/team page answers 403" next to a
+// refused "Show me my app" — is the product's own evidence and stays.
 export function ownGuardRefusals(
-  journeys: Array<{ steps: Array<{ unverifiedReason?: string | null; observed?: string | null }> }>,
+  journeys: Array<{ steps: RefusalContextStep[] }>,
   bottomLine: string | null,
   findings: SynthesizedFinding[],
 ): { bottomLine: string | null; findings: SynthesizedFinding[]; cut: string[] } {
   if (!journeys.some((j) => j.steps.some(isSelfCheckRefusalStep))) return { bottomLine, findings, cut: [] };
+  const allSteps = journeys.flatMap((j) => j.steps);
   const cut: string[] = [];
   const kept = findings.filter((f) => {
     const ref = f.stepRef;
@@ -381,14 +386,14 @@ export function ownGuardRefusals(
       .join(" ");
     const refused = anchored
       ? isSelfCheckRefusalStep(anchored)
-      : cutSelfCheckRefusalClaims(words).cut.length > 0;
+      : cutSelfCheckRefusalClaims(words, allSteps).cut.length > 0;
     if (refused) {
       cut.push(`finding "${f.title}"`);
       return false;
     }
     return true;
   });
-  const line = cutSelfCheckRefusalClaims(bottomLine);
+  const line = cutSelfCheckRefusalClaims(bottomLine, allSteps);
   cut.push(...line.cut);
   return {
     bottomLine: line.cut.length ? (line.text ?? BOTTOM_LINE_FALLBACK) : bottomLine,

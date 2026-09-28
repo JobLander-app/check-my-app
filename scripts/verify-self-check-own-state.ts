@@ -332,6 +332,36 @@ function summaryChecks(): void {
     check("a 403 finding anchored on a step that stands is kept", r.findings.includes(realForbidden));
   }
   {
+    // Codex review of #205 (round 2): a real 403 elsewhere in a guarded run
+    // keeps its sentences; only the ones about the refused step go.
+    const mixed = [
+      {
+        steps: [
+          { label: "Submit the check via 'Show me my app'", attempted: RUN_260_SUBMIT.attempted, status: "skipped", unverifiedReason: "not_applicable", observed: SELF_CHECK_REFUSED_OBSERVED },
+          { label: "Open team settings", attempted: "Opened /settings/team as the admin.", status: "broken", unverifiedReason: null, observed: "GET /settings/team returned 403 for the team's own admin." },
+        ],
+      },
+    ];
+    const line =
+      "Settings are blocked by a 403 for the team's own admin. An anonymous 'Show me my app' submission was refused with 403. Pricing and FAQ load cleanly.";
+    const r = ownGuardRefusals(mixed, line, []);
+    check("guarded run: the real settings 403 stays in the bottom line", r.bottomLine?.includes("Settings are blocked by a 403") === true, r.bottomLine ?? "");
+    check("…the refused 'Show me my app' sentence goes", r.bottomLine?.includes("Show me my app") === false, r.bottomLine ?? "");
+    check("…the rest stays", r.bottomLine?.includes("Pricing and FAQ load cleanly.") === true);
+    const s = cutSelfCheckRefusalClaims(
+      "The /settings/team page answers 403 for its own admin. \"Show me my app\" returns 403 for this account.",
+      mixed[0].steps,
+    );
+    check("guarded walk summary: the same split", s.text === "The /settings/team page answers 403 for its own admin.", s.text ?? "");
+    const unanchored: SynthesizedFinding = {
+      title: "Team settings are blocked for the admin",
+      category: "broken",
+      severity: "high",
+      detail: { whatHappened: "GET /settings/team returned 403." },
+    };
+    check("an unanchored finding about the standing 403 is kept", ownGuardRefusals(mixed, null, [unanchored]).findings.length === 1);
+  }
+  {
     const r = walkSummaryOnly("The Previous Runs table loaded but showed the wrong status for run #12.", SELF);
     check("a page called 'Previous Runs' is this walk, not history", r.cut.length === 0, r.text ?? "");
     const h = walkSummaryOnly("Sign-in with the test account works; unlike in the last check, the dashboard now loads.", SELF);

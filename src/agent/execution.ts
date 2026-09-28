@@ -429,7 +429,7 @@ export async function walkOneJourney(args: {
       // CHE-334: what happened on this walk — not a description of the
       // product, not our own history, and not our own guard retold as theirs.
       const walkOnly = walkSummaryOnly(claimed, run.targetUrl);
-      const guarded = metOwnGuard ? cutSelfCheckRefusalClaims(walkOnly.text) : { text: walkOnly.text, cut: [] };
+      const guarded = metOwnGuard ? cutSelfCheckRefusalClaims(walkOnly.text, walkedSteps) : { text: walkOnly.text, cut: [] };
       const ownWords = [...walkOnly.cut, ...guarded.cut];
       if (ownWords.length) {
         console.warn(`[walk] summary cut ${ownWords.length} sentence(s) not about this walk: ${ownWords.join(" / ")}`);
