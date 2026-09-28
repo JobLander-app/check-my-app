@@ -210,7 +210,7 @@ function sourceChecks() {
   // and that helper is `if (isSelfCheckRequest(await headers())) redirect(...)`.
   const actionsFile = "src/app/verdict/actions.ts";
   const actions = readFileSync(path.join(repoRoot, actionsFile), "utf8");
-  for (const fn of ["recheckRunAction", "fullRecheckRunAction", "enableWatchAction"]) {
+  for (const fn of ["recheckRunAction", "fullRecheckRunAction", "retryFailedRunAction", "enableWatchAction"]) {
     const first = firstStatement(actions, fn);
     check(`${actionsFile} ${fn}(): the guard is the first statement`,
       first === "await refuseSelfCheck(publicId)", first ?? "function not found");

@@ -2,7 +2,7 @@ import { getDbFromContext } from "@/lib/db";
 import { parseJson } from "@/lib/json";
 import { isTerminal } from "@/lib/status";
 import type { RunEvent } from "@/lib/types";
-import { publicRunError } from "@/lib/extension-target";
+import { publicRunState } from "@/lib/failed-run";
 import { publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +27,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
             targetKind: true,
             events: true,
             verdict: true,
-            errorMessage: true,
             currentAction: true,
             liveScreenshotUrl: true,
           },
@@ -39,9 +38,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         }
         const serialized = JSON.stringify({
           ...run,
-          errorMessage: publicRunError(run.targetKind, run.errorMessage),
           liveScreenshotUrl: run.targetKind === "extension" ? null : run.liveScreenshotUrl,
-          events: parseJson<RunEvent[]>(run.events),
+          // CHE-329: never the raw message, and nothing of a failed run's
+          // verdict or feed — see src/lib/failed-run.ts.
+          ...publicRunState({ ...run, events: parseJson<RunEvent[]>(run.events) }),
         });
         if (serialized !== lastSerialized) {
           lastSerialized = serialized;

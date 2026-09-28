@@ -114,6 +114,8 @@ export default async function VerdictPage({
     },
   });
   if (!run) notFound();
+  // CHE-329: includes every failed run — a check that didn't finish has no
+  // verdict to show, and its page is the run page, which says so in one line.
   if (!extensionReportPublished(run)) redirect(`/run/${run.publicId}`);
 
   const verdictMeta = run.verdict ? VERDICT_META[run.verdict] : null;

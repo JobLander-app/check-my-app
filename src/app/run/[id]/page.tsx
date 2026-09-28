@@ -1,14 +1,23 @@
 import { notFound, redirect } from "next/navigation";
 import { getDbFromContext } from "@/lib/db";
 import { RunLive } from "@/components/run-live";
+import { RunFailed } from "@/components/run-failed";
 import { isTerminal } from "@/lib/status";
 import { extensionDisplayName } from "@/lib/extension-target";
+import { failedRunWasFree } from "@/lib/failed-run";
+import { canMutateOwned } from "@/lib/auth";
 import { publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
 
 // Screen 2 — In-progress · /run/{id}
-export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function RunPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ recheck?: string; balance?: string }>;
+}) {
   const prisma = await getDbFromContext();
   const run = await prisma.run.findUnique({ ...publicRow(),
     where: { publicId: (await params).id },
@@ -22,6 +31,9 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       runNumber: true,
       startedAt: true,
       notifyEmail: true,
+      ownerId: true,
+      teamId: true,
+      priceUsd: true,
     },
   });
   if (!run) notFound();
@@ -29,6 +41,25 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   // If it already finished, jump straight to the verdict.
   if (isTerminal(run.status) && run.status !== "failed") {
     redirect(`/verdict/${run.publicId}`);
+  }
+
+  // CHE-329: a check that didn't finish. Rendered here, on the server, because
+  // what it may say depends on the row — the price, and whether this viewer
+  // may start another — and the live screen refreshes into it when a run
+  // fails in front of someone.
+  if (run.status === "failed") {
+    const { recheck, balance } = await searchParams;
+    const canRetry = await canMutateOwned(prisma, run.ownerId);
+    return (
+      <main className="mx-auto max-w-5xl px-4 py-10">
+        <RunFailed
+          free={failedRunWasFree(run)}
+          retry={canRetry ? { runId: run.publicId, appSlug: run.appSlug } : null}
+          notice={recheck === "notfound" ? "That run no longer exists." : (recheck ?? null)}
+          balanceRefused={balance === "1" && typeof recheck === "string"}
+        />
+      </main>
+    );
   }
 
   return (

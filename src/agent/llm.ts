@@ -187,7 +187,14 @@ export interface RouteRefusal {
 // 408/409/429 are transient and the SDK and Workflow retries own them.
 export function isRouteRefusal(err: unknown): err is InstanceType<typeof Anthropic.APIError> {
   if (!(err instanceof Anthropic.APIError)) return false;
-  const status = err.status ?? 0;
+  return isRefusalStatus(err.status ?? 0);
+}
+
+// The status half of the rule above, on its own so run-failures.ts (CHE-329)
+// can tell from a failed run's stored message that the refusal was already
+// filed by fileRouteRefusal — the error object itself does not survive the
+// step boundary.
+export function isRefusalStatus(status: number): boolean {
   return status >= 400 && status < 500 && ![402, 408, 409, 429].includes(status);
 }
 

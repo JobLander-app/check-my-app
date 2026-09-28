@@ -139,6 +139,10 @@ export async function fileFindingTicket(opts: {
   // CHE-101: who the settlement belongs to. The App row can be deleted and
   // re-created; the owner's answer about a signature must survive that.
   ownerId?: string | null;
+  // CHE-329: what this occurrence adds, appended to the recurrence comment —
+  // a failed run's link and its own message, so the count on our board comes
+  // with the runs behind it rather than a bare "still present in run #N".
+  recurrenceDetail?: string;
 }): Promise<FilingOutcome> {
   const { db, tracker, appId, finding, run, policy, ownerId } = opts;
   const draft = draftForFinding(finding, run, policy, opts.verdictUrl);
@@ -190,6 +194,7 @@ export async function fileFindingTicket(opts: {
         ? `\nEscalating: this is occurrence ${occurrences} and the issue is still open — ` +
           `past the ${policy?.escalateAfterRuns ?? 3}-run threshold this app was configured with.`
         : "",
+      opts.recurrenceDetail ? `\n\n${opts.recurrenceDetail}` : "",
     ]
       .join("")
       .trim();

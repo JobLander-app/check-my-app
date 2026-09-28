@@ -58,6 +58,7 @@ import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
 import { fileCapabilityGaps, fileDeliveryGap, fileRouteRefusal } from "./capability-gaps";
+import { fileRunFailure } from "./run-failures";
 import { measureRunJourneys, measurementNote } from "./journey-measurement";
 import { GAP_CLASSES } from "./gap-classes";
 import { auditCreatedResources } from "./cleanup";
@@ -1211,27 +1212,51 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
       });
     } catch (err) {
-      await step.do("fail", async () => {
-        const msg = err instanceof Error ? err.message : String(err);
-        // CHE-76: our own LLM budget dying is an internal outage, not a fact
-        // about the customer's app. Mark the run failed with an internal
-        // reason (no verdict/findings/email were published — the throw
-        // happened before synthesis) and retry the watch soon.
-        const budget =
-          err instanceof LlmBudgetError ||
-          (err instanceof Error &&
-            (err.name === "LlmBudgetError" || /available credits|payment_required/i.test(msg)));
+      const msg = err instanceof Error ? err.message : String(err);
+      // CHE-76: our own LLM budget dying is an internal outage, not a fact
+      // about the customer's app. Mark the run failed with an internal
+      // reason (no verdict/findings/email were published — the throw
+      // happened before synthesis) and retry the watch soon.
+      const budget =
+        err instanceof LlmBudgetError ||
+        (err instanceof Error &&
+          (err.name === "LlmBudgetError" || /available credits|payment_required/i.test(msg)));
+      // Returns the phase the run died in (Run.status until this write), for
+      // the ticket below.
+      const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean }> => {
+        const before = await env.db.run.findUnique({ where: { id: runId }, select: { status: true } });
+        // Privacy, same rule as the "cleanup" step: a one-off run keeps the
+        // test password only while it runs. That step sits on the success
+        // path, so a run that failed kept the encrypted password forever —
+        // while the home form promises "deleted after the run" and
+        // /guides/login-and-test-accounts says it goes when the check
+        // finishes. A watch run keeps it for the next tick.
+        const cleared = run.watchId ? {} : clearedCredentials(run);
+        // CHE-329 (Codex on #204): the verdict was already written — a later
+        // step (price, cleanup) threw after the webhook, Slack or the email may
+        // have gone out. Flipping the run to failed now would hide a verdict
+        // the customer was already told about and zero the price of a check
+        // that did its job. The run stays finished; the throw is ours, kept on
+        // the row and filed on our board below. Credentials are still cleared:
+        // the step that clears them may be the one that threw.
+        if (before?.status === "completed" || before?.status === "partial") {
+          await env.db.run.update({
+            where: { id: runId },
+            data: {
+              ...cleared,
+              errorMessage: `internal: after the verdict was written: ${msg}`.slice(0, 500),
+            },
+          });
+          await priceRun(env.db, runId).catch((e) =>
+            console.warn(`[balance] pricing finished run ${runId} did not happen: ${e instanceof Error ? e.message : String(e)}`),
+          );
+          return { phase: `${before.status}, after the verdict was written`, afterVerdict: true };
+        }
         await env.db.run.update({
           where: { id: runId },
           data: {
             status: "failed",
-            // Privacy, same rule as the "cleanup" step: a one-off run keeps the
-            // test password only while it runs. That step sits on the success
-            // path, so a run that failed kept the encrypted password forever —
-            // while the home form promises "deleted after the run" and
-            // /guides/login-and-test-accounts says it goes when the check
-            // finishes. A watch run keeps it for the next tick.
-            ...(run.watchId ? {} : clearedCredentials(run)),
+            ...cleared,
             errorMessage: budget
               ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
               : msg,
@@ -1259,11 +1284,14 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
         if (budget) {
           console.error(`[budget] run ${runId} aborted: LLM provider refused for credit state`);
+          // CHE-329: the feed is public (the live page, get_check_status's
+          // recent_events) — it says what happened to the check, not which of
+          // our providers did it. The retry is promised only where it exists.
           await appendEvent(env, runId, "connecting", {
             icon: "warn",
             text:
-              "Internal error on our side (LLM provider budget) — this run published no " +
-              "verdict and sent no notifications. The watch retries automatically in ~2h.",
+              "This check stopped on our side before it finished — nothing was published." +
+              (run.watchId ? " The watch tries again in about two hours." : ""),
           });
           if (run.watchId) {
             await env.db.watch
@@ -1274,6 +1302,15 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               .catch(() => {});
           }
         }
+        return { phase: before?.status ?? null, afterVerdict: false };
+      });
+      // CHE-329: on our own board within the same minute, not discovered by
+      // the owner a day later on the customer's page. Its own step, so a
+      // retried "fail" cannot count one failure twice; never throws.
+      await step.do("file-failure", async () => {
+        const note = await fileRunFailure(env, runId, { message: msg, budget, ...ended });
+        if (note) console.log(`[run-failure] ${note.text}`);
+        return note?.text ?? null;
       });
       throw err;
     }
