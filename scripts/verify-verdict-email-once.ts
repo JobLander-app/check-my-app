@@ -38,6 +38,18 @@ async function main() {
   check("key: two long addresses that share a prefix still get different keys (no truncation collision)",
     keyFor("pub_1", longA) !== keyFor("pub_1", longB) && keyFor("pub_1", longA).length <= 256);
   check("key: a long address's key is still stable across attempts", keyFor("pub_1", longA) === keyFor("pub_1", longA));
+  // A header value must be a ByteString; an internationalized address in it
+  // makes fetch throw and the verdict would never be sent.
+  const idn = keyFor("pub_1", "пользователь@пример.рф");
+  check("key: an internationalized address gives a printable-ASCII key", /^[\x20-\x7e]+$/.test(idn), idn);
+  check("key: the address itself is not in the key", !keyFor("pub_1", "a@x.test").includes("a@x.test"));
+  let headerOk = true;
+  try {
+    new Headers({ "Idempotency-Key": idn });
+  } catch {
+    headerOk = false;
+  }
+  check("key: it is accepted as a fetch header value", headerOk);
 
   const seen: Seen[] = [];
   let reply: () => Response = () => new Response(JSON.stringify({ id: "msg_1" }), { status: 200 });

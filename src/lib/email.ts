@@ -136,13 +136,13 @@ export async function sendVerdictReady({
 // CHE-328: one verdict mail per run and recipient, however many times the step
 // that sends it runs. Stable across attempts, distinct per recipient.
 export function verdictIdempotencyKey(publicId: string, to: string): string {
-  const key = `verdict-ready/${publicId}/${to.toLowerCase()}`;
-  if (key.length <= 256) return key;
-  // Resend caps keys at 256 characters. Cutting the tail would let two long
-  // addresses on one run share a key — and the second recipient's 409 would
-  // then read as "already sent" while they got nothing. A digest of the whole
-  // address keeps them apart (Codex P2 on #199).
-  return `verdict-ready/h${fnv1a64(`${publicId}/${to.toLowerCase()}`)}`;
+  // The address itself never goes into the header, only its digest: a header
+  // value must be a ByteString, so an internationalized address would make
+  // fetch throw and the verdict would not be sent at all; a raw address could
+  // also run past Resend's 256-character cap, where cutting it would let two
+  // recipients share a key (Codex, #199). The run id is an ASCII cuid.
+  const key = `verdict-ready/${publicId}/${fnv1a64(to.toLowerCase())}`;
+  return key.length <= 256 ? key : `verdict-ready/${fnv1a64(`${publicId}/${to.toLowerCase()}`)}`;
 }
 
 // 64-bit FNV-1a as hex: synchronous, the same in workerd and Node, and ample
