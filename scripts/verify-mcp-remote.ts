@@ -515,6 +515,25 @@ async function main() {
       /Every tool above works on every plan/.test(html) && html.includes('href="/pricing"'));
   }
 
+  // 10 — create_app on a balance that cannot pay does not promise a check
+  // (seen live 2026-09-28: $0 left, "the first one is scheduled automatically").
+  // Last, because it frees the Free team's one watch slot the sections above rely on.
+  {
+    await call(free, "disable_watch", { app_id: "app_f1" });
+    const zero = await call(free, "create_app", { url: "https://zero-balance.test" });
+    const hint = String(zero.out.hint ?? "");
+    check("create_app on an empty balance: saved, says it waits for a top-up, carries buy_url and upgrade_url",
+      // Free's credit never renews, so the hint must not promise a next credit.
+      zero.out.ok === true && /waits until a top-up\./.test(hint) && !/next credit/.test(hint) &&
+        !/scheduled automatically/.test(hint) &&
+        zero.out.buy_url === `${ORIGIN}/dashboard#balance` && zero.out.upgrade_url === `${ORIGIN}/pricing`,
+      JSON.stringify(zero.out));
+    const paid = await call(a, "create_app", { url: "https://paid-team.test" });
+    check("create_app on a balance that covers a check: the scheduled-automatically hint, no top-up links",
+      paid.out.ok === true && /scheduled automatically/.test(String(paid.out.hint)) && !("buy_url" in paid.out),
+      JSON.stringify(paid.out));
+  }
+
   for (const c of [a, b, reader, free, last]) await c.close();
   console.log(failures === 0 ? "\nverify-mcp-remote: all checks passed" : `\nverify-mcp-remote: ${failures} check(s) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
