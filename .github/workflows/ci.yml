@@ -91,3 +91,20 @@ jobs:
         run: npx opennextjs-cloudflare build
       - if: steps.creds.outputs.ready == 'true'
         run: npx opennextjs-cloudflare deploy
+      # CHE-326: rewrite the owner's plans & limits page in Notion from the code
+      # that just shipped (src/lib/plans.ts + src/lib/plan-catalog.ts). After
+      # the deploy, so the page says what production does. Notion being down
+      # must never fail a deploy that already succeeded: the step is
+      # continue-on-error, and a failure is logged as a warning on the run.
+      - name: Sync plans page to Notion
+        if: steps.creds.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: |
+          if [ -z "$NOTION_TOKEN" ]; then
+            echo "::warning::NOTION_TOKEN not set — plans page in Notion not synced."
+            exit 0
+          fi
+          npx tsx --tsconfig tsconfig.json scripts/sync-plans-notion.ts \
+            || { echo "::warning::Notion plans page sync failed — the deploy is fine, the page is stale until the next one."; exit 1; }
