@@ -397,6 +397,9 @@ function summaryChecks(): void {
     check("'previously-reported … failures are fixed' is history and goes", hy.text === "The dashboard lists every app.", hy.text ?? "");
     const plain = walkSummaryOnly("Two checkout failures were shown to the user as a blank page.", "https://shop.example.org");
     check("failures this walk saw are not history", plain.cut.length === 0, plain.text ?? "");
+    // Codex review of #208: resolved on THIS walk is evidence, not history.
+    const now = walkSummaryOnly("Two upload failures were resolved by retrying during this walk.", "https://shop.example.org");
+    check("failures resolved during this walk stay", now.cut.length === 0, now.text ?? "");
   }
   {
     const customer = [{ steps: [{ unverifiedReason: null, observed: "POST /api/orders returned 403." }] }];
