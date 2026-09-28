@@ -37,7 +37,7 @@ import { journeysForPlanning, recordCarry, type CatalogJourneyState } from "./jo
 import { matchJourney } from "@/lib/journey-key";
 import { parseRunAccounts, usableRunAccounts } from "@/lib/test-accounts";
 import type { ProposedJourney } from "./discovery";
-import { summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
+import { cutSelfCheckRefusalClaims, isSelfCheckRefusalStep, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 
 // The only journey statuses worth carrying: "ok" (everything worked) and
 // "partial" (everything attempted worked, some steps went unverified). Anything
@@ -744,7 +744,13 @@ export async function carryJourney(
   // cmuln3zoo00031g1o0bd577bx, journey 5).
   const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
   const walkOnly = run ? walkSummaryOnly(source.summary, run.targetUrl) : { text: source.summary, cut: [] };
-  const summary = walkOnly.cut.length ? (walkOnly.text ?? summaryFallback(source.status)) : source.summary;
+  // And, as on a fresh walk, where the carried steps show our own guard
+  // refused us, the sentences retelling that refusal as a product fact go too
+  // (Codex review of #206).
+  const metOwnGuard = source.steps.some(isSelfCheckRefusalStep);
+  const guarded = metOwnGuard ? cutSelfCheckRefusalClaims(walkOnly.text, source.steps) : { text: walkOnly.text, cut: [] };
+  const ownWords = [...walkOnly.cut, ...guarded.cut];
+  const summary = ownWords.length ? (guarded.text ?? summaryFallback(source.status)) : source.summary;
 
   await env.db.journey.deleteMany({ where: { runId, order: entry.order } });
   const journey = await env.db.journey.create({

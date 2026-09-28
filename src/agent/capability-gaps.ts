@@ -168,7 +168,9 @@ export async function fileCapabilityGaps(
   if (!run) return [];
 
   const gaps = await env.db.step.findMany({
-    where: { unverifiedReason: "our_capability", journey: { runId } },
+    // Carried journeys keep their steps' reasons for the page (CHE-334), but
+    // this run did not walk them: their gaps were filed by the run that did.
+    where: { unverifiedReason: "our_capability", journey: { runId, carriedFromRunId: null } },
     select: {
       label: true,
       attempted: true,
