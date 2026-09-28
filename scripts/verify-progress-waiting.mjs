@@ -13,6 +13,12 @@
 import assert from 'node:assert/strict';
 import { waitForProgress } from '../extension-runner/progress.mjs';
 
+// The satisfying timer below starts before waitForProgress starts its own
+// clock, so `result.ms` can read a few ms under the timer's delay (seen in CI,
+// 2026-09-28: 349 against 350). What these cases prove is that the wait went
+// far past idleMs because the page kept working — not the timer's exactness.
+const TIMER_SLACK_MS = 30;
+
 // A page double: records handlers, lets a test emit activity, and serves the
 // DOM-mutation counter progress.mjs reads back through evaluate().
 function fakePage({ domMutations = () => 0 } = {}) {
@@ -52,7 +58,7 @@ function fakePage({ domMutations = () => 0 } = {}) {
   setTimeout(() => { satisfied = true; }, 400);
   const result = await waitForProgress(page, async () => satisfied, { idleMs: 100, ceilingMs: 5000, pollMs: 10 });
   clearInterval(beat);
-  assert.ok(result.ms >= 400, 'A live page is waited on for as long as it keeps working');
+  assert.ok(result.ms >= 400 - TIMER_SLACK_MS, 'A live page is waited on for as long as it keeps working');
   assert.ok(result.requests > 0, 'Responses count as progress');
 }
 
@@ -66,7 +72,7 @@ function fakePage({ domMutations = () => 0 } = {}) {
   setTimeout(() => { satisfied = true; }, 350);
   const result = await waitForProgress(page, async () => satisfied, { idleMs: 100, ceilingMs: 5000, pollMs: 10 });
   clearInterval(beat);
-  assert.ok(result.ms >= 350);
+  assert.ok(result.ms >= 350 - TIMER_SLACK_MS, 'Mutations keep the wait alive well past idleMs');
   assert.ok(result.mutations > 0, 'DOM changes count as progress without any network traffic');
 }
 
