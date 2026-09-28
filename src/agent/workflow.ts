@@ -767,27 +767,26 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // covered is only known once each walk has resolved its identity; the
       // copies themselves are written after the verdict is decided (below), so
       // none of their old evidence enters this run's findings or pill.
-      // Best-effort like every catalog read — a failure costs the list, never
-      // the run — but the failure is kept: an empty list that means "could not
-      // read" must not pass for "walked everything known", because fix
-      // verification reads a run with no carried rows as a full walk.
+      // NOT best-effort, unlike the catalog writes: a read that failed and
+      // returned nothing would publish exactly the truncated verdict this
+      // exists to prevent. The step retries, and a D1 that stays down fails
+      // the run as ours (rule 4) — it could not have written the verdict
+      // either.
       const known = await step.do(
         "known-journeys-plan",
         async (): Promise<{ listed: CarriedJourney[]; complete: boolean }> => {
           if (!run.appId || isExtension) return { listed: [], complete: true };
-          try {
-            const planned = await planKnownJourneys(env, {
-              runId,
-              appId: run.appId,
-              startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
-            });
-            // A known journey whose walk is gone was not covered either; it
-            // just has nothing to show.
-            return { listed: planned.listed, complete: planned.omitted.length === 0 };
-          } catch (err) {
-            console.warn(`[known-journeys] not listed: ${err instanceof Error ? err.message : String(err)}`);
-            return { listed: [], complete: false };
+          const planned = await planKnownJourneys(env, {
+            runId,
+            appId: run.appId,
+            startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
+          });
+          // A known journey whose walk is gone was not covered either; it
+          // just has nothing to show, and fix verification must know that.
+          if (planned.omitted.length) {
+            console.warn(`[known-journeys] no walk to show for: ${planned.omitted.join(" · ")}`);
           }
+          return { listed: planned.listed, complete: planned.omitted.length === 0 };
         },
       );
       const listed = known.listed;
@@ -1100,8 +1099,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // and can never be mistaken for a verified fix. Links still "fixed" whose
       // signature stayed away — in a walk that actually covered their journey —
       // get the "verified fixed in prod" comment and status "resolved".
-      // CHE-331: not when the known-journeys list is incomplete — the read
-      // failed, or a known journey's walk is gone. verifyFixedLinks treats a
+      // CHE-331: not when the known-journeys list is incomplete — a known
+      // journey's walk is gone. verifyFixedLinks treats a
       // run with no carried rows as a walk of the whole app, and such a run may
       // carry none only because we could not show what it missed — a fix is
       // confirmed by a walk of its journey, never by our own blind spot.
