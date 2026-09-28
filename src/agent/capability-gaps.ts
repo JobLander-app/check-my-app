@@ -453,11 +453,26 @@ const ROUTE_REFUSAL = {
     "fallback existed.",
 };
 
-// Never throws: the run it reports on has already written its verdict.
+// Never throws, and nothing in it can: it runs inside the `writing` step, and
+// a tracker or database hiccup here must not turn a verdict the fallback just
+// wrote into a failed step that pays for synthesis again. answeredBy is null
+// when no road answered and the run is failing anyway.
 export async function fileRouteRefusal(
   env: AgentEnv,
   runId: string,
-  opts: { refusals: RouteRefusal[]; answeredBy: string },
+  opts: { refusals: RouteRefusal[]; answeredBy: string | null },
+): Promise<string> {
+  try {
+    return await fileRouteRefusalOrThrow(env, runId, opts);
+  } catch (err) {
+    return `filing failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function fileRouteRefusalOrThrow(
+  env: AgentEnv,
+  runId: string,
+  opts: { refusals: RouteRefusal[]; answeredBy: string | null },
 ): Promise<string> {
   const run = await env.db.run.findUnique({
     where: { id: runId },
@@ -483,30 +498,28 @@ export async function fileRouteRefusal(
             `${r.model} answered ${r.error} (left from ${r.colo ?? "unknown location"}` +
             `${r.loc ? `, country ${r.loc}` : ""}).`,
         ),
-        `${opts.answeredBy} wrote the verdict instead.`,
+        opts.answeredBy ? `${opts.answeredBy} wrote the verdict instead.` : "No road answered; the run failed.",
         `On: ${run.appSlug} (run #${run.runNumber}).`,
       ],
-      whatHappened: "The first road to the verdict model refused the request; the run finished on the fallback.",
+      whatHappened: opts.answeredBy
+        ? "The first road to the verdict model refused the request; the run finished on the fallback."
+        : "Every road to the verdict model refused the request, and a run whose walk was paid for published nothing.",
       whyItMatters: `${ROUTE_REFUSAL.why} This ticket counts every refusal; it closes when the first road stops refusing.`,
     }),
     evidence: [],
   };
 
-  try {
-    const outcome = await fileFindingTicket({
-      db: env.db,
-      tracker,
-      appId: self.id,
-      finding,
-      run: { runNumber: run.runNumber, publicId: run.publicId, startedAt: run.startedAt, appSlug: self.appSlug },
-      policy: selfPolicy(self, "[Checker gap] {verdict}"),
-      ownerId: self.ownerId,
-      verdictUrl: `${baseUrl}/verdict/${run.publicId}`,
-    });
-    return `${outcome.kind} ${outcome.identifier}`;
-  } catch (err) {
-    return `filing failed: ${err instanceof Error ? err.message : String(err)}`;
-  }
+  const outcome = await fileFindingTicket({
+    db: env.db,
+    tracker,
+    appId: self.id,
+    finding,
+    run: { runNumber: run.runNumber, publicId: run.publicId, startedAt: run.startedAt, appSlug: self.appSlug },
+    policy: selfPolicy(self, "[Checker gap] {verdict}"),
+    ownerId: self.ownerId,
+    verdictUrl: `${baseUrl}/verdict/${run.publicId}`,
+  });
+  return `${outcome.kind} ${outcome.identifier}`;
 }
 
 // ─── A rejected ticket is a defect report against us (CHE-99) ───────────────

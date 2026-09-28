@@ -200,6 +200,15 @@ async function refusalFacts(route: ModelRoute, err: InstanceType<typeof Anthropi
   return { model: route.model, status: err.status ?? 0, error: err.message, colo, loc };
 }
 
+// When every road refused, the error that fails the run is still the
+// provider's own (its message is what the run records), and the refusals
+// travel beside it here so the caller can put them on our board.
+const refusedBy = new WeakMap<object, RouteRefusal[]>();
+
+export function refusalsOf(err: unknown): RouteRefusal[] {
+  return typeof err === "object" && err !== null ? (refusedBy.get(err) ?? []) : [];
+}
+
 // messages.create over the roads in order. A refusal moves to the next road;
 // anything else — and a refusal on the last road — throws as it always did.
 export async function createOnRoutes(
@@ -213,9 +222,13 @@ export async function createOnRoutes(
       const message = await route.client.messages.create({ ...params, model: route.model });
       return { message, model: route.model, refusals };
     } catch (err) {
-      if (!isRouteRefusal(err) || i === routes.length - 1) throw err;
+      if (!isRouteRefusal(err)) throw err;
       const facts = await refusalFacts(route, err);
       refusals.push(facts);
+      if (i === routes.length - 1) {
+        refusedBy.set(err, refusals);
+        throw err;
+      }
       console.warn(
         `[llm] ${route.model} refused (${facts.status}, colo=${facts.colo ?? "?"}, loc=${facts.loc ?? "?"}): ` +
           `${facts.error} — trying ${routes[i + 1].model}`,

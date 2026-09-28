@@ -16,7 +16,8 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-synthesis-fallback.ts
 
 import Anthropic from "@anthropic-ai/sdk";
-import { makeLlm, openRouterTwin, synthRoutesFor } from "@/agent/llm";
+import { makeLlm, openRouterTwin, refusalsOf, synthRoutesFor } from "@/agent/llm";
+import { fileRouteRefusal } from "@/agent/capability-gaps";
 import { synthesizeVerdict } from "@/agent/synthesis";
 import type { AgentBindings, AgentEnv } from "@/agent/env";
 
@@ -194,13 +195,36 @@ async function main() {
   // (4) Every road refuses: the run fails as before — nothing is invented.
   {
     stubNetwork({ "api.anthropic.com": refuse, "openrouter.ai": { status: 403, body: '{"error":{"message":"no","code":403}}' } });
-    let threw = false;
+    let caught: unknown = null;
     try {
       await synth();
+    } catch (err) {
+      caught = err;
+    }
+    check(
+      "every road refused: synthesis throws the last road's own error",
+      caught instanceof Error && caught.message.startsWith("403 ") && caught.message.includes('"code":403'),
+      String(caught),
+    );
+    const refused = refusalsOf(caught).map((r) => `${r.model}:${r.status}`);
+    check(
+      "every road refused: both refusals travel with the error, for our board",
+      refused.join(" | ") === "claude-opus-4-8:403 | anthropic/claude-opus-4.8:403",
+      refused.join(" | "),
+    );
+  }
+
+  // (4b) Filing the refusal cannot fail the step that just wrote a verdict.
+  {
+    const broken = { ...env, db: { run: { findUnique: async () => { throw new Error("D1 unavailable"); } } } } as unknown as AgentEnv;
+    let threw = false;
+    let said = "";
+    try {
+      said = await fileRouteRefusal(broken, "run_stub", { refusals: [], answeredBy: "anthropic/claude-opus-4.8" });
     } catch {
       threw = true;
     }
-    check("every road refused: synthesis throws", threw);
+    check("a database outage while filing is reported, not thrown", !threw && said.includes("D1 unavailable"), said);
   }
 
   // (5) A road needs its key: without OpenRouter there is only the primary.

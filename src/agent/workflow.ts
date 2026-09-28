@@ -32,7 +32,7 @@ import { parseJson } from "@/lib/json";
 import { readExtensionOptions } from "@/lib/extension-target";
 import type { RunEvent, RunPhase } from "@/lib/types";
 import { discoveryMemoryEnabled, makeAgentEnv, putText, type AgentBindings, type AgentEnv } from "./env";
-import { makeLlm, type UsageTotals } from "./llm";
+import { makeLlm, refusalsOf, type UsageTotals } from "./llm";
 import { launchAgentBrowser, closeAgentBrowser, newAgentContext, surfaceScan } from "./browser";
 import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
@@ -802,7 +802,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await transition(env, runId, "writing", { icon: "info", text: "Writing your verdict" });
         const structured = extensionEvidence ? await prepareExtensionPublication(env, runId, extensionEvidence) : null;
         const synth = structured ?? await synthesizeVerdict({ env, llm, runId, anatomy, knowledge }).catch(
-          rethrowBudgetNonRetryable,
+          async (err: unknown) => {
+            // CHE-330: every road refused. The run fails as it always did; the
+            // refusals, with where they left from, still reach our board.
+            const refusals = refusalsOf(err);
+            if (refusals.length) {
+              const filed = await fileRouteRefusal(env, runId, { refusals, answeredBy: null });
+              console.warn(`[synthesis] run ${runId}: every road refused; our board: ${filed}`);
+            }
+            return rethrowBudgetNonRetryable(err);
+          },
         );
         if (!structured) {
           // CHE-330: the ledger names the model that actually wrote the
