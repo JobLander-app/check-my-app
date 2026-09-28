@@ -691,7 +691,9 @@ function cutDescription(sentence: string, names: string[]): string | null {
 // ticket of ours is settled is decided elsewhere (src/agent/reconcile.ts).
 const HISTORY_CLAIM = new RegExp(
   [
-    String.raw`\b(?:previously|earlier|formerly|last\s+time|before)\s+(?:\w+\s+){0,2}(?:reported|flagged|noted|found|seen|filed|observed|identified|described)\b`,
+    // "previously reported" and "previously-reported" (run
+    // cmulp9pxt0003ri1o8wptwzo8, a carried summary) are the same claim.
+    String.raw`\b(?:previously|earlier|formerly|last\s+time|before)[\s-]+(?:\w+\s+){0,2}(?:reported|flagged|noted|found|seen|filed|observed|identified|described)\b`,
     // "in the last check", "since the previous run" — the noun alone is not
     // history: "The Previous Runs table loaded" is this walk's page.
     String.raw`\b(?:in|from|on|since|than|as\s+in|during|after)\s+(?:the\s+|a\s+|an\s+|our\s+|your\s+)?(?:previous|prior|earlier|last|past|older)\s+(?:runs?|checks?|reports?|verdicts?|walks?|visits?)\b`,

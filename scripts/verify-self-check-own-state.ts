@@ -389,6 +389,17 @@ function summaryChecks(): void {
     check("a page called 'Previous Runs' is this walk, not history", r.cut.length === 0, r.text ?? "");
     const h = walkSummaryOnly("Sign-in with the test account works; unlike in the last check, the dashboard now loads.", SELF);
     check("'in the last check' is history and goes", h.text === "Sign-in with the test account works.", h.text ?? "");
+    // Run cmulp9pxt0003ri1o8wptwzo8, carried journey 8, verbatim opening.
+    const hy = walkSummaryOnly(
+      "The previously-reported sign-in failures are fixed: the email/password flow renders, authenticates via Clerk, and lands on a populated dashboard. The dashboard lists every app.",
+      SELF,
+    );
+    check("'previously-reported … failures are fixed' is history and goes", hy.text === "The dashboard lists every app.", hy.text ?? "");
+    const plain = walkSummaryOnly("Two checkout failures were shown to the user as a blank page.", "https://shop.example.org");
+    check("failures this walk saw are not history", plain.cut.length === 0, plain.text ?? "");
+    // Codex review of #208: resolved on THIS walk is evidence, not history.
+    const now = walkSummaryOnly("Two upload failures were resolved by retrying during this walk.", "https://shop.example.org");
+    check("failures resolved during this walk stay", now.cut.length === 0, now.text ?? "");
   }
   {
     const customer = [{ steps: [{ unverifiedReason: null, observed: "POST /api/orders returned 403." }] }];
