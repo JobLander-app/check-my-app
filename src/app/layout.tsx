@@ -74,7 +74,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   stays and still goes home) and the gap tightens a step. */}
               <div className="flex items-center gap-3 whitespace-nowrap sm:gap-4">
                 <Show when="signed-out">
-                  <span className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint sm:inline">
+                  {/* The tagline is not a menu item; owner 2026-09-28: set it
+                      apart from the links rather than let it read as one. It
+                      appears from md, not sm: at 640px it already pushed the
+                      page 20px wider than the screen (measured, 660 vs 640),
+                      and 768px holds it with the gap. */}
+                  <span className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint md:mr-8 md:inline lg:mr-12">
                     product mirror · qa fallout
                   </span>
                   <Link
