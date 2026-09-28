@@ -781,7 +781,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               appId: run.appId,
               startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
             });
-            return { listed: planned, complete: true };
+            // A known journey whose walk is gone was not covered either; it
+            // just has nothing to show.
+            return { listed: planned.listed, complete: planned.omitted.length === 0 };
           } catch (err) {
             console.warn(`[known-journeys] not listed: ${err instanceof Error ? err.message : String(err)}`);
             return { listed: [], complete: false };
@@ -1098,12 +1100,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // and can never be mistaken for a verified fix. Links still "fixed" whose
       // signature stayed away — in a walk that actually covered their journey —
       // get the "verified fixed in prod" comment and status "resolved".
-      // CHE-331: not when the known-journeys read failed. verifyFixedLinks
-      // treats a run with no carried rows as a walk of the whole app, and that
-      // run carries none only because we could not tell what it missed — a fix
-      // is confirmed by a walk of its journey, never by our own blind spot.
+      // CHE-331: not when the known-journeys list is incomplete — the read
+      // failed, or a known journey's walk is gone. verifyFixedLinks treats a
+      // run with no carried rows as a walk of the whole app, and such a run may
+      // carry none only because we could not show what it missed — a fix is
+      // confirmed by a walk of its journey, never by our own blind spot.
       if (run.watchId && !known.complete) {
-        console.warn("[reconcile] fix verification skipped — the known-journeys read failed this run");
+        console.warn("[reconcile] fix verification skipped — this run's known-journeys list is incomplete");
       }
       if (run.watchId && known.complete) {
         await step.do("reconcile-verify", async () => {

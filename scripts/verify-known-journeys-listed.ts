@@ -153,7 +153,10 @@ const day = (d: string) => new Date(`${d}T23:50:00.000Z`);
 async function main() {
   const partial = (await import("@/agent/partial")) as Record<string, unknown>;
   const planKnownJourneys = partial.planKnownJourneys as
-    | ((env: unknown, args: { runId: string; appId: string; startOrder: number }) => Promise<Array<Record<string, unknown>>>)
+    | ((
+        env: unknown,
+        args: { runId: string; appId: string; startOrder: number },
+      ) => Promise<{ listed: Array<Record<string, unknown>>; omitted: string[] }>)
     | undefined;
   const fullBottomLine = partial.fullBottomLine as
     | ((planned: number, synthesized: string | null, walked: number, listed: unknown[]) => string | null)
@@ -297,7 +300,8 @@ async function main() {
   const k = walkedBy261.length;
 
   // ─── The path the workflow takes after the walks ───────────────────────────
-  const listed = await planKnownJourneys(env, { runId: "run-261", appId: APP, startOrder: k });
+  const planned = await planKnownJourneys(env, { runId: "run-261", appId: APP, startOrder: k });
+  const listed = planned.listed;
   const bottomLine = fullBottomLine(k, "Signing in works; the verdict page is hard to read.", k, listed);
   for (const entry of listed) await carryJourney(env, "run-261", entry, 261);
 
@@ -338,6 +342,7 @@ async function main() {
   check("a retired journey is not listed", !titles.includes("dashboard") && !titles.includes("support"), titles.join());
   check("a journey nothing has walked is not listed", !titles.includes("web"), titles.join());
   check("no journey is listed twice", new Set(titles).size === titles.length, titles.join());
+  check("with every walk present, nothing is reported omitted", planned.omitted.length === 0, planned.omitted.join());
 
   console.log("\nA copy never takes a walked journey's place, and copies the walk itself");
   const rows261 = tables.journey.filter((j) => j.runId === "run-261");
@@ -431,7 +436,11 @@ async function main() {
     );
     t2.journey.push({ id: "src-a", runId: "r1", order: 0, title: "a", status: "ok", appJourneyId: "aj-a", carriedFromRunId: null });
     const got = await planKnownJourneys({ db: db2 }, { runId: "r2", appId: "A", startOrder: 0 });
-    check("the journey with a walk is listed, the one without is left off", got.map((g) => g.title).join() === "a", JSON.stringify(got));
+    check("the journey with a walk is listed, the one without is left off", got.listed.map((g) => g.title).join() === "a", JSON.stringify(got.listed));
+    // The workflow reads a non-empty `omitted` as incomplete coverage and skips
+    // fix verification: a run whose unwalked journeys all lost their walks
+    // carries no rows, and must not pass for a walk of the whole app.
+    check("…and is reported omitted, so the run is not read as covering the app", got.omitted.join() === "b", JSON.stringify(got.omitted));
   }
 }
 

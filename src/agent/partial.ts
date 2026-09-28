@@ -616,11 +616,16 @@ export function knownJourneysToList(args: {
  * enters this run's adjudication — the workflow writes these after the verdict,
  * the findings and the pill are decided from what this run walked (rule 8: a
  * claim about the product rests on this run's evidence).
+ *
+ * `omitted` names the known journeys that could not be shown because their
+ * walk is gone. The run still did not cover them, and the caller must not let
+ * their absence read as "nothing left to list" — fix verification treats a run
+ * with no carried rows as a walk of the whole app.
  */
 export async function planKnownJourneys(
   env: AgentEnv,
   args: { runId: string; appId: string; startOrder: number },
-): Promise<CarriedJourney[]> {
+): Promise<{ listed: CarriedJourney[]; omitted: string[] }> {
   const [catalog, rows] = await Promise.all([
     journeysForPlanning(env, args.appId),
     env.db.journey.findMany({ where: { runId: args.runId }, select: { appJourneyId: true, order: true } }),
@@ -629,7 +634,7 @@ export async function planKnownJourneys(
     catalog,
     present: rows.map((r) => r.appJourneyId).filter((id): id is string => Boolean(id)),
   });
-  if (due.length === 0) return [];
+  if (due.length === 0) return { listed: [], omitted: [] };
 
   const walkedRunIds = [...new Set(due.map((j) => j.lastWalkedRunId as string))];
   const [sourceJourneys, sourceRuns] = await Promise.all([
@@ -656,14 +661,16 @@ export async function planKnownJourneys(
 
   let order = Math.max(args.startOrder, ...rows.map((r) => r.order + 1));
   const listed: CarriedJourney[] = [];
+  const omitted: string[] = [];
   for (const j of due) {
     const sourceJourneyId = rowFor.get(`${j.lastWalkedRunId}:${j.appJourneyId}`);
     const sourceRunNumber = runNumberOf.get(j.lastWalkedRunId as string);
     if (!sourceJourneyId || sourceRunNumber === undefined) {
       // The catalog names a walk that is not there to show (a pruned run, an
       // ephemeral sweep). Undateable evidence is unusable evidence — this one
-      // journey is left off rather than shown without its proof.
+      // journey is left off rather than shown without its proof, and said.
       console.warn(`[known-journeys] no walk to show for "${j.title}" (run ${j.lastWalkedRunId})`);
+      omitted.push(j.title);
       continue;
     }
     listed.push({
@@ -675,7 +682,7 @@ export async function planKnownJourneys(
       walkedAt: (j.lastWalkedAt as Date).toISOString(),
     });
   }
-  return listed;
+  return { listed, omitted };
 }
 
 // ─── Carrying journeys forward ───────────────────────────────────────────────
