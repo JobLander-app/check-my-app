@@ -50,7 +50,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkProvider>
+    // Owner 2026-09-28: signing in lands in the workspace, not back on the
+    // marketing page. The fallback applies whenever no redirect_url is given;
+    // flows that sign in for a purpose (enable a watch on a verdict, export
+    // specs) still pass their own and come back to it.
+    <ClerkProvider signInFallbackRedirectUrl="/dashboard" signUpFallbackRedirectUrl="/dashboard">
       <html lang="en" className={`${sans.variable} ${mono.variable}`}>
         <body className="min-h-screen">
           {/* Product analytics (PostHog) — renders nothing; see src/lib/analytics.ts. */}

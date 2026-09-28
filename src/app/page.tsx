@@ -5,6 +5,7 @@ import { TrackedLink } from "@/components/track";
 import { EXAMPLE_VERDICT_PATH } from "@/lib/example-verdict";
 import { CONNECT_GUIDE_PATH } from "@/lib/agent-connect";
 import { HOME_PATH, canonical } from "@/lib/site-metadata";
+import { PLAN_LIMITS } from "@/lib/plans";
 import { viewerExtensionCheck } from "@/lib/viewer-flags";
 
 // The home page is the form. It lived at /check from the first scaffold
@@ -62,12 +63,12 @@ export default async function Home({
         <TrackedLink
           event="sign_in_clicked"
           props={{ from: "home" }}
-          href="/sign-in?redirect_url=%2F"
+          href="/sign-in"
           className="text-accent transition-colors hover:underline"
         >
           Sign in
         </TrackedLink>{" "}
-        to keep yours unlisted and get 3 free checks.
+        to keep yours unlisted and get ${PLAN_LIMITS.free.creditUsd} of free checks.
       </p>
     </main>
   );
