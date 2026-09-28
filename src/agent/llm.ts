@@ -210,7 +210,8 @@ export function refusalsOf(err: unknown): RouteRefusal[] {
 }
 
 // messages.create over the roads in order. A refusal moves to the next road;
-// anything else — and a refusal on the last road — throws as it always did.
+// anything else — and a refusal on the last road — throws as it always did,
+// with the refusals so far attached (refusalsOf).
 export async function createOnRoutes(
   routes: ModelRoute[],
   params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
@@ -222,13 +223,16 @@ export async function createOnRoutes(
       const message = await route.client.messages.create({ ...params, model: route.model });
       return { message, model: route.model, refusals };
     } catch (err) {
-      if (!isRouteRefusal(err)) throw err;
+      // Whatever ends the ladder carries the refusals seen before it: a 500 on
+      // the fallback does not make the first road's 403 any less real.
+      const terminal = (): never => {
+        if (refusals.length && typeof err === "object" && err !== null) refusedBy.set(err, refusals);
+        throw err;
+      };
+      if (!isRouteRefusal(err)) return terminal();
       const facts = await refusalFacts(route, err);
       refusals.push(facts);
-      if (i === routes.length - 1) {
-        refusedBy.set(err, refusals);
-        throw err;
-      }
+      if (i === routes.length - 1) return terminal();
       console.warn(
         `[llm] ${route.model} refused (${facts.status}, colo=${facts.colo ?? "?"}, loc=${facts.loc ?? "?"}): ` +
           `${facts.error} — trying ${routes[i + 1].model}`,

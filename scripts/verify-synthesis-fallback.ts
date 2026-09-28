@@ -48,7 +48,8 @@ interface Seen {
 }
 
 // Installs a fetch that answers by host, and returns what it was asked.
-function stubNetwork(byHost: Record<string, Answer>): Seen[] {
+// A list answers successive calls in order, and its last entry repeats.
+function stubNetwork(byHost: Record<string, Answer | Answer[]>): Seen[] {
   const seen: Seen[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -62,7 +63,8 @@ function stubNetwork(byHost: Record<string, Answer>): Seen[] {
     }
     seen.push({ host: url.host, path: url.pathname, model });
     if (url.pathname === "/cdn-cgi/trace") return new Response("colo=HKG\nloc=HK\n", { status: 200 });
-    const a = byHost[url.host];
+    const entry = byHost[url.host];
+    const a = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
     if (!a) return new Response('{"error":{"message":"unexpected host"}}', { status: 599 });
     return new Response(a.body, {
       status: a.status,
@@ -72,7 +74,7 @@ function stubNetwork(byHost: Record<string, Answer>): Seen[] {
   return seen;
 }
 
-function ok(model: string): Answer {
+function ok(model: string, text: string = JSON.stringify(VERDICT)): Answer {
   return {
     status: 200,
     body: JSON.stringify({
@@ -80,7 +82,7 @@ function ok(model: string): Answer {
       type: "message",
       role: "assistant",
       model,
-      content: [{ type: "text", text: JSON.stringify(VERDICT) }],
+      content: [{ type: "text", text }],
       stop_reason: "end_turn",
       stop_sequence: null,
       usage: { input_tokens: 100, output_tokens: 50, cost: 0.02 },
@@ -211,6 +213,35 @@ async function main() {
       "every road refused: both refusals travel with the error, for our board",
       refused.join(" | ") === "claude-opus-4-8:403 | anthropic/claude-opus-4.8:403",
       refused.join(" | "),
+    );
+  }
+
+  // (4a) The fallback fails some other way (a 500): the first road's refusal
+  // still travels with whatever error ends the run.
+  {
+    stubNetwork({ "api.anthropic.com": refuse, "openrouter.ai": { status: 500, body: '{"error":{"message":"upstream","code":500}}' } });
+    let caught: unknown = null;
+    try {
+      await synth();
+    } catch (err) {
+      caught = err;
+    }
+    const refused = refusalsOf(caught).map((r) => `${r.model}:${r.status}`);
+    check("fallback 500: the first road's 403 is still attached to the error", refused.join(" | ") === "claude-opus-4-8:403", refused.join(" | ") || String(caught));
+  }
+
+  // (4c) The bottom-line rewrite rides the same roads: its refusal is kept too.
+  {
+    const leaky = JSON.stringify({ ...VERDICT, bottomLine: "The signup button did nothing in our test browser." });
+    stubNetwork({
+      "api.anthropic.com": refuse,
+      "openrouter.ai": [ok("anthropic/claude-opus-4.8", leaky), ok("anthropic/claude-opus-4.8", "Sign-up could not be confirmed this run.")],
+    });
+    const r = (await synth()) as Awaited<ReturnType<typeof synth>> & { refusals?: unknown[] };
+    check(
+      "rewrite on the fallback: both refusals (synthesis and rewrite) are returned",
+      r.refusals?.length === 2 && r.bottomLine === "Sign-up could not be confirmed this run.",
+      `${r.refusals?.length} refusals, bottom line: ${r.bottomLine}`,
     );
   }
 

@@ -11,6 +11,7 @@ import {
   createOnRoutes,
   emptyUsage,
   mergeUsage,
+  refusalsOf,
   synthRoutes,
   type LlmConfig,
   type RouteRefusal,
@@ -320,10 +321,16 @@ export async function synthesizeVerdict(args: {
     }
     if (hasEnvironmentLeak(bottomLine)) {
       console.warn(`[synthesis] bottom line leaked our environment — rewriting: ${bottomLine}`);
-      const rewritten = await rewriteBottomLine(llm, bottomLine!).catch(() => null);
+      // CHE-330: the rewrite rides the same roads, so its refusals are ours
+      // to file too — whether it recovered on the fallback or gave up.
+      const rewritten = await rewriteBottomLine(llm, bottomLine!).catch((err: unknown) => {
+        refusals.push(...refusalsOf(err));
+        return null;
+      });
       if (rewritten) {
         costUsd += rewritten.costUsd;
         mergeUsage(usage, rewritten.usage);
+        refusals.push(...rewritten.refusals);
       }
       bottomLine =
         rewritten && !hasEnvironmentLeak(rewritten.text)
@@ -551,8 +558,8 @@ function placeholderLens(): AppLens {
 async function rewriteBottomLine(
   llm: LlmConfig,
   bottomLine: string,
-): Promise<{ text: string; costUsd: number; usage: UsageTotals }> {
-  const { message, model } = await createOnRoutes(synthRoutes(llm), {
+): Promise<{ text: string; costUsd: number; usage: UsageTotals; refusals: RouteRefusal[] }> {
+  const { message, model, refusals } = await createOnRoutes(synthRoutes(llm), {
     max_tokens: 600,
     system:
       `Rewrite a product verdict's bottom line so it never mentions how the check ` +
@@ -570,5 +577,5 @@ async function rewriteBottomLine(
     .map((b) => b.text)
     .join(" ")
     .trim();
-  return { text, costUsd: costOf(model, message.usage), usage };
+  return { text, costUsd: costOf(model, message.usage), usage, refusals };
 }
