@@ -16,6 +16,7 @@ export function JourneyStrips({
   numbers,
   emptyNote,
   carriedRunNumbers,
+  carriedRunDays,
 }: {
   journeys: JourneyWithSteps[];
   // CHE-240: our estimate and their measurement, keyed by journey id.
@@ -27,6 +28,8 @@ export function JourneyStrips({
   // Journey.carriedFromRunId → that run's number, for the "carried · Run #N"
   // chip on a partial run's carried journeys (CHE-57).
   carriedRunNumbers?: Record<string, number>;
+  // …and the day that run walked it ("Sep 23", UTC), CHE-331.
+  carriedRunDays?: Record<string, string>;
 }) {
   if (journeys.length === 0) {
     return (
@@ -66,6 +69,7 @@ export function JourneyStrips({
           carriedRunNumber={
             journey.carriedFromRunId ? carriedRunNumbers?.[journey.carriedFromRunId] : undefined
           }
+          carriedDay={journey.carriedFromRunId ? carriedRunDays?.[journey.carriedFromRunId] : undefined}
         />
       ))}
     </section>
@@ -80,11 +84,13 @@ function JourneyCard({
   journey,
   collapsedByDefault,
   carriedRunNumber,
+  carriedDay,
   numbers,
 }: {
   journey: JourneyWithSteps;
   collapsedByDefault: boolean;
   carriedRunNumber?: number;
+  carriedDay?: string;
   numbers?: JourneyNumbersProps;
 }) {
   const [open, setOpen] = useState(!collapsedByDefault);
@@ -114,6 +120,7 @@ function JourneyCard({
           {journey.carriedFromRunId && (
             <span className="rounded-full border border-ink-600 px-2.5 py-1 font-mono text-xs text-fg-faint">
               carried{carriedRunNumber ? ` · Run #${carriedRunNumber}` : ""}
+              {carriedDay ? ` · ${carriedDay}` : ""}
             </span>
           )}
           <span

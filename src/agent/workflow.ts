@@ -104,9 +104,12 @@ import {
 } from "./snapshot";
 import {
   carryJourney,
+  fullBottomLine,
   fullRunQueue,
   partialBottomLine,
+  planKnownJourneys,
   planPartialRun,
+  type CarriedJourney,
   type PartialDecision,
 } from "./partial";
 
@@ -756,6 +759,29 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       }
       assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
 
+      // CHE-331: the app's other known journeys, as of their last real walk.
+      // Only a partial run used to carry anything, so a full check or any
+      // on-demand check listed the handful it walked and the verdict silently
+      // lost the rest (checkmyapp.dev: #247 showed 10, #261 showed 3 of 12
+      // live). Planned here, after the walks, because which journeys this run
+      // covered is only known once each walk has resolved its identity; the
+      // copies themselves are written after the verdict (below), so none of
+      // their old evidence enters this run's findings or pill. Best-effort like
+      // every catalog read: a failure costs the list, never the run.
+      const listed = await step.do("known-journeys-plan", async (): Promise<CarriedJourney[]> => {
+        if (!run.appId || isExtension) return [];
+        try {
+          return await planKnownJourneys(env, {
+            runId,
+            appId: run.appId,
+            startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
+          });
+        } catch (err) {
+          console.warn(`[known-journeys] not listed: ${err instanceof Error ? err.message : String(err)}`);
+          return [];
+        }
+      });
+
       // Phase 5 — Anatomy (merge deterministic scan signals into the LLM map).
       // A partial run reuses the baseline's anatomy: nothing re-mapped the app
       // this run, so writing a fresh-looking map would be an invention.
@@ -867,16 +893,17 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // Coverage before opinion: a partial run's pill covers journeys nobody
         // walked today, so the bottom line says which is which before it says
         // anything else. The re-walk count comes from the rows that landed, so
-        // an aborted walk shrinks the claim instead of inflating it.
-        const carriedAware = plan.taken
-          ? partialBottomLine(
-              plan,
-              checked.bottomLine,
-              await env.db.journey.count({
+        // an aborted walk shrinks the claim instead of inflating it. CHE-331:
+        // the same holds for any run that lists journeys it did not walk.
+        const walkedHere =
+          plan.taken || listed.length > 0
+            ? await env.db.journey.count({
                 where: { runId, carriedFromRunId: null, status: { not: "skipped" } },
-              }),
-            )
-          : checked.bottomLine;
+              })
+            : 0;
+        const carriedAware = plan.taken
+          ? partialBottomLine(plan, checked.bottomLine, walkedHere, listed)
+          : fullBottomLine(walkList.length, checked.bottomLine, walkedHere, listed);
 
         // CHE-107: discovery writes down what it found; the walk writes down
         // where it went. A page in the first list and not the second is a part
@@ -914,6 +941,36 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         });
         return checked.verdict;
       });
+
+      // CHE-331: the known journeys this run did not walk go onto its verdict
+      // now that the verdict has been decided without them. Each copy keeps the
+      // run and the date of the walk it came from, and the bottom line above
+      // already counts them. Per journey, so one missing source costs that one
+      // line rather than the list.
+      if (listed.length > 0) {
+        await step.do("list-known-journeys", async () => {
+          for (const entry of listed) {
+            try {
+              await carryJourney(env, runId, entry, run.runNumber);
+            } catch (err) {
+              console.warn(
+                `[known-journeys] "${entry.title}" not listed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+          await appendEvent(env, runId, "writing", {
+            icon: "info",
+            text:
+              `Also listed as of their last check: ${listed.length} journey` +
+              `${listed.length === 1 ? "" : "s"} not walked this run — ` +
+              listed
+                .slice(0, 6)
+                .map((l) => `${l.title} (Run #${l.sourceRunNumber})`)
+                .join(" · ") +
+              (listed.length > 6 ? ` and ${listed.length - 6} more` : ""),
+          });
+        });
+      }
 
       // CHE-327: the check is done — price it on the team's balance. Its own
       // step, after the verdict is written, so a retry of pricing never

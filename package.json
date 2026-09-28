@@ -66,6 +66,7 @@
     "verify:verdict-email-once": "tsx --tsconfig tsconfig.json scripts/verify-verdict-email-once.ts",
     "verify:cost-never-shown": "tsx --tsconfig tsconfig.json scripts/verify-cost-never-shown.ts",
     "verify:test-accounts": "tsx --tsconfig tsconfig.json scripts/verify-test-accounts.ts",
+    "verify:known-journeys-listed": "tsx --tsconfig tsconfig.json scripts/verify-known-journeys-listed.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",
