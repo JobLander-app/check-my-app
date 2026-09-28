@@ -90,17 +90,16 @@ export type AnalyticsEvents = {
   watch_enabled: { appSlug: string };
   /**
    * A re-check button on a verdict was pressed (CHE-137). `regular` is the
-   * re-check after a deploy (re-walks what changed, not limited on paid
-   * plans); `full` walks every journey from scratch and is metered per plan.
+   * re-check after a deploy (re-walks what changed); `full` walks every
+   * journey from scratch. Both spend the team's balance (CHE-327).
    */
   recheck_clicked: { kind: "regular" | "full"; appSlug: string };
   /**
-   * The verdict page rendered the refusal of a full re-check: the month's
-   * allowance is used up, or the plan carries none. `remaining` is what the
-   * plan still allows this month, so it is 0 here — kept as a property so
-   * the event has the same shape as the API's 403 body.
+   * CHE-327: a top-up checkout was opened for `amountUsd`. The server's
+   * `balance_topped_up` records the payment; the two together are the
+   * conversion from an empty balance.
    */
-  full_recheck_denied: { appSlug: string; remaining: number };
+  topup_opened: { amountUsd: number };
   /**
    * Which way in a person took from the first onboarding screen (CHE-324):
    * `agent` — connected their coding agent and left for the dashboard
@@ -125,7 +124,7 @@ export const ANALYTICS_EVENTS = [
   "sign_in_clicked",
   "watch_enabled",
   "recheck_clicked",
-  "full_recheck_denied",
+  "topup_opened",
   "onboarding_path_chosen",
 ] as const satisfies readonly AnalyticsEvent[];
 

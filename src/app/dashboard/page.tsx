@@ -16,7 +16,10 @@ import { AppPostHogProject } from "@/components/app-posthog-project";
 import { teamProjects } from "@/lib/posthog/choices";
 import { isStranded } from "@/lib/posthog/token";
 import { missingScopes } from "@/lib/posthog/oauth";
-import { watchTrialState } from "@/lib/plans";
+import { TOPUP_AMOUNTS_USD, spendByApp, teamBalance, usd, watchTrialState } from "@/lib/plans";
+import { appCanRun } from "@/lib/plan-status";
+import { can } from "@/lib/scopes";
+import { TopUpCta } from "@/components/topup-cta";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { teamsOf } from "@/lib/teams";
@@ -59,10 +62,10 @@ async function analyticsConnection(
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string; added?: string; extensionAdded?: string }>;
+  searchParams: Promise<{ integration?: string; added?: string; extensionAdded?: string; topped_up?: string }>;
 }) {
-  const { integration, added, extensionAdded } = await searchParams;
-  const { user, db, team } = await requireUser();
+  const { integration, added, extensionAdded, topped_up: toppedUp } = await searchParams;
+  const { user, db, team, scope } = await requireUser();
   // CHE-261: the TEAM's apps. Filtering by ownerId here would show each member
   // a different dashboard of the same team — the exact thing teams remove.
   const apps = await db.app.findMany({
@@ -97,6 +100,21 @@ export default async function DashboardPage({
       }
     }),
   );
+
+  // CHE-327: the balance headline — what is left, what this period's checks
+  // were priced at and where that went, per app — and, per watched app,
+  // whether its next tick can run (the scheduler's own gate).
+  const plan = team.plan as UserPlan;
+  const balance = await teamBalance(db, { id: team.id, plan });
+  const spend = await spendByApp(db, { id: team.id, plan });
+  const canRun = new Map(
+    await Promise.all(
+      apps
+        .filter((a) => a.watch?.active)
+        .map(async (a) => [a.id, (await appCanRun(db, { id: team.id, plan }, balance, a.appSlug)).ok] as const),
+    ),
+  );
+  const mayBill = can(scope, "billing.manage");
 
   const posthog = await analyticsConnection(db, team.id);
   // CHE-237: the projects this team's connection can see, listed ONCE for the
@@ -170,6 +188,53 @@ export default async function DashboardPage({
         </div>
       )}
 
+      {/* CHE-327: the balance is the plan. Headline = what is left and what
+          this period's checks came to, with where it went; each check's own
+          price lives on its verdict, next to the work it paid for. */}
+      <section id="balance" className="card mb-6 space-y-3 p-5">
+        {toppedUp && (
+          <p className="text-sm text-status-ok">
+            ✓ Payment received — your balance goes up by ${toppedUp} as soon as the payment settles.
+          </p>
+        )}
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <p className="section-label">balance</p>
+            <p className="text-2xl font-semibold tracking-tight text-fg">
+              {balance.balanceUsd === null ? "Unlimited" : usd(balance.balanceUsd)}
+            </p>
+            <p className="text-xs text-fg-muted">
+              {usd(balance.spentUsd)} spent {balance.window === "month" ? "this month" : "so far"}
+              {balance.renewsOn && balance.creditUsd !== null
+                ? ` · your plan adds ${usd(balance.creditUsd)} on ${balance.renewsOn}`
+                : ""}
+              {balance.topupUsd > 0 ? ` · ${usd(balance.topupUsd)} of it topped up` : ""}
+            </p>
+          </div>
+          <Link href="/pricing" className="text-xs text-accent hover:underline">
+            Upgrade →
+          </Link>
+        </div>
+        {spend.length > 0 && (
+          <ul className="space-y-0.5 text-xs text-fg-muted">
+            {spend.slice(0, 5).map((s) => (
+              <li key={s.appSlug} className="flex justify-between gap-4 font-mono">
+                <span className="truncate">
+                  {s.appSlug} · {s.checks} check{s.checks === 1 ? "" : "s"}
+                </span>
+                <span>{usd(s.spentUsd)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {balance.balanceUsd !== null &&
+          (mayBill ? (
+            <TopUpCta amounts={TOPUP_AMOUNTS_USD} />
+          ) : (
+            <p className="text-xs text-fg-faint">Top-ups are made by this team&apos;s admins.</p>
+          ))}
+      </section>
+
       {/* CHE-317: the agent is the interface. Onboarding ends on this screen,
           so this is also the last thing onboarding says. */}
       <ConnectAgent keys={apiKeys.map((k) => ({ lastUsedAt: k.lastUsedAt?.toISOString() ?? null }))} />
@@ -237,11 +302,26 @@ export default async function DashboardPage({
                   <p className="text-xs text-fg-faint">
                     {isExtension ? "Chrome extension · on demand" : !app.watch?.active
                       ? "paused"
-                      : trial.kind === "ended"
+                      : trial.kind === "ended" || canRun.get(app.id) === false
                         ? "paused"
                         : `watching · ${app.watch.frequency}`}
                     {labels && ` · labels: ${labels}`}
                   </p>
+                  {/* CHE-327: the scheduler skips this app's ticks while the
+                      balance cannot cover a check; say so, with both doors. */}
+                  {app.watch?.active && trial.kind !== "ended" && canRun.get(app.id) === false && (
+                    <p className="text-xs text-status-confusing">
+                      paused: the balance is used —{" "}
+                      <a href="#balance" className="text-accent hover:underline">
+                        top up
+                      </a>{" "}
+                      or{" "}
+                      <Link href="/pricing" className="text-accent hover:underline">
+                        upgrade
+                      </Link>
+                      ; it resumes on its own
+                    </p>
+                  )}
                   {trial.kind === "ended" ? (
                     <p className="text-xs text-status-confusing">
                       trial ended — daily watch paused ·{" "}

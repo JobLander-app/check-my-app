@@ -3,16 +3,18 @@
 // CheckRunWorkflow — the same two steps the web app does in /api/checks, minus
 // the HTTP hop (here the workflow binding is the worker's own).
 //
-// Cost is bounded twice over: at most MAX_PER_TICK runs start per tick, and a
-// Watch whose previous run is still moving is skipped entirely.
+// Cost is bounded three times over: at most MAX_PER_TICK runs start per tick, a
+// Watch whose previous run is still moving is skipped entirely, and every run
+// spends its team's balance (CHE-327) — a team whose balance is used is paused.
 
 import { nextRunNumber } from "@/lib/db";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
-import { PLAN_LIMITS } from "@/lib/plans";
+import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
-import { sendWatchTrialPaused } from "@/lib/email";
-import { shouldSkipWatch } from "@/lib/plans";
+import { sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
+import { captureServer } from "@/lib/analytics-server";
+import { captureBalanceExhausted } from "@/lib/balance-events";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -143,6 +145,22 @@ export async function runDueWatches(
         select: { id: true },
       });
 
+      // CHE-327: a watch is a schedule that spends the team's balance. The
+      // tick is admitted by the same gate every other start goes through, so
+      // what the dashboard and the agent are told is left is what the
+      // scheduler spends from. A legacy ownerless watch (teamId NULL) has no
+      // balance and is left as it always ran.
+      const plan = (watch.team?.plan ?? "free") as UserPlan;
+      if (watch.teamId) {
+        const admitted = await admitTeamCheck(env.db, { id: watch.teamId, plan }, watch.appSlug, now);
+        if (!admitted.ok) {
+          skipped++;
+          console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — ${admitted.reason}`);
+          await pauseBalanceUsedUp(env, bindings, { ...watch, teamId: watch.teamId, plan, reason: admitted.reason }, now);
+          continue;
+        }
+      }
+
       // Claim before running: with nextRunAt already pushed forward, an
       // overlapping tick (or a retry of this one) can't start the same watch
       // twice. Crashing after the claim costs a skipped cycle, not a double spend.
@@ -151,65 +169,7 @@ export async function runDueWatches(
         where: { id: watch.id },
         data: { lastRunAt: now, nextRunAt: new Date(now.getTime() + hours * 60 * 60 * 1000) },
       });
-
-      // CHE-106: an app's agent budget for the day. Beyond it the tick still
-      // happens — as a smoke pass, which still notices the app going down —
-      // and the deep walk resumes tomorrow. Without this, Growth (5 apps on a
-      // 6-hourly cadence) costs ~$264/mo against $99 of revenue.
-      // The LIMIT is the team's plan; the SUM below stays keyed on appId. A
-      // team with five apps must not share one app's daily budget — that would
-      // be a pricing change nobody decided, visible only as apps quietly
-      // dropping to smoke passes (CHE-260).
-      const budget = PLAN_LIMITS[(watch.team?.plan ?? "free") as UserPlan].dailyBudgetUsd;
-      const dayStart = new Date(now);
-      dayStart.setUTCHours(0, 0, 0, 0);
-      const spentToday = watch.appId
-        ? ((
-            await env.db.run.aggregate({
-              where: { appId: watch.appId, createdAt: { gte: dayStart } },
-              _sum: { costUsd: true },
-            })
-          )._sum.costUsd ?? 0)
-        : 0;
-      const smokeOnly = spentToday >= budget;
-      if (smokeOnly) {
-        console.log(
-          `[scheduler] watch ${watch.id} (${watch.appSlug}) over budget: ` +
-            `$${spentToday.toFixed(2)} of $${budget.toFixed(2)} today — smoke-only tick`,
-        );
-      }
-
-      const run = await env.db.run.create({
-        data: {
-          runNumber: await nextRunNumber(env.db),
-          smokeOnly,
-          targetUrl: watch.targetUrl,
-          targetKind: watch.app?.targetKind ?? "website",
-          extensionId: watch.app?.extensionId ?? null,
-          extensionConfig: watch.app?.extensionConfig ?? null,
-          appSlug: watch.appSlug,
-          testEmail: watch.testEmail,
-          testPasswordEnc: watch.testPasswordEnc,
-          // CHE-322: the app's named accounts, read from the app itself — the
-          // Watch keeps a copy of the default login only (legacy), never these.
-          testAccounts: await snapshotAppAccounts(env.db, {
-            id: watch.appId,
-            teamId: watch.teamId,
-            targetKind: watch.app?.targetKind,
-          }),
-          notifyEmail: watch.notifyEmail,
-          scopeHints: watch.app?.scopeHints ?? null,
-          userNotes: watch.app?.userNotes ?? null,
-          focusAreas: watch.app?.focusAreas ?? null,
-          watchId: watch.id,
-          baselineRunId: baseline?.id ?? null,
-          appId: watch.appId,
-          ownerId: watch.ownerId,
-          teamId: watch.teamId,
-          status: "queued",
-        },
-        select: { id: true },
-      });
+      const run = await createWatchRun(env, watch, baseline?.id ?? null);
 
       await bindings.CHECK_RUN.create({ params: { runId: run.id } });
       started.push(run.id);
@@ -223,6 +183,128 @@ export async function runDueWatches(
   }
 
   return { started, skipped };
+}
+
+type DueWatch = {
+  id: string;
+  appSlug: string;
+  targetUrl: string;
+  notifyEmail: string | null;
+  testEmail: string | null;
+  testPasswordEnc: string | null;
+  appId: string | null;
+  ownerId: string | null;
+  teamId: string | null;
+  app: {
+    scopeHints: string | null;
+    userNotes: string | null;
+    focusAreas: string | null;
+    targetKind: string;
+    extensionId: string | null;
+    extensionConfig: string | null;
+  } | null;
+};
+
+async function createWatchRun(
+  env: AgentEnv,
+  watch: DueWatch,
+  baselineRunId: string | null,
+): Promise<{ id: string }> {
+  return env.db.run.create({
+    data: {
+      runNumber: await nextRunNumber(env.db),
+      startedVia: "watch",
+      targetUrl: watch.targetUrl,
+      targetKind: watch.app?.targetKind ?? "website",
+      extensionId: watch.app?.extensionId ?? null,
+      extensionConfig: watch.app?.extensionConfig ?? null,
+      appSlug: watch.appSlug,
+      testEmail: watch.testEmail,
+      testPasswordEnc: watch.testPasswordEnc,
+      // CHE-322: the app's named accounts, read from the app itself — the
+      // Watch keeps a copy of the default login only (legacy), never these.
+      testAccounts: await snapshotAppAccounts(env.db, {
+        id: watch.appId,
+        teamId: watch.teamId,
+        targetKind: watch.app?.targetKind,
+      }),
+      notifyEmail: watch.notifyEmail,
+      scopeHints: watch.app?.scopeHints ?? null,
+      userNotes: watch.app?.userNotes ?? null,
+      focusAreas: watch.app?.focusAreas ?? null,
+      watchId: watch.id,
+      baselineRunId,
+      appId: watch.appId,
+      ownerId: watch.ownerId,
+      teamId: watch.teamId,
+      status: "queued",
+    },
+    select: { id: true },
+  });
+}
+
+// CHE-327: a watch whose team's balance is too low for another check. Like an
+// ended trial, the pause is a consequence of the balance, not a state we
+// write: the watch stays active, and the next tick after a top-up or the
+// plan's next credit runs it. The team hears it once per window
+// (balanceNoticeSentAt), not once per tick — by mail, because a watch that
+// quietly stops is the one nobody notices until the thing it was watching
+// breaks.
+async function pauseBalanceUsedUp(
+  env: AgentEnv,
+  bindings: AgentBindings,
+  watch: {
+    id: string;
+    appSlug: string;
+    notifyEmail: string | null;
+    ownerId: string | null;
+    teamId: string;
+    plan: UserPlan;
+    reason: string;
+  },
+  now: Date,
+): Promise<void> {
+  // Same reason as TRIAL_RECHECK_HOURS: out of the head of the due queue, so
+  // a paused team cannot starve every paying watch behind it. A top-up is
+  // picked up within the hour.
+  await env.db.watch.update({
+    where: { id: watch.id },
+    data: { nextRunAt: new Date(now.getTime() + TRIAL_RECHECK_HOURS * 60 * 60 * 1000) },
+  });
+
+  const team = await env.db.team.findUnique({ where: { id: watch.teamId }, select: { balanceNoticeSentAt: true } });
+  // Free's credit never renews, so its notice goes once ever; a paid team's
+  // once per UTC month.
+  const windowStart = watch.plan === "free" ? new Date(0) : utcMonthStart(now);
+  if (team?.balanceNoticeSentAt && team.balanceNoticeSentAt >= windowStart) return;
+
+  try {
+    // Counted once per window like the mail, so the event reads "a team's
+    // watches ran dry this month", not "a tick happened".
+    await captureBalanceExhausted(captureServer, {
+      distinctId: watch.ownerId,
+      teamId: watch.teamId,
+      plan: watch.plan,
+      source: "watch",
+    });
+    if (watch.notifyEmail) {
+      await sendBalanceUsedUp({
+        to: watch.notifyEmail,
+        appSlug: watch.appSlug,
+        reason: watch.reason,
+        apiKey: bindings.EMAIL_API_KEY,
+        from: bindings.EMAIL_FROM,
+        baseUrl: bindings.APP_URL,
+      });
+    }
+    // Stamped only after a successful send, like the trial notice — a
+    // transient mail failure costs a retry next tick, not the notice.
+    await env.db.team.update({ where: { id: watch.teamId }, data: { balanceNoticeSentAt: now } });
+  } catch (err) {
+    console.warn(
+      `[scheduler] balance-used-up email for watch ${watch.id} failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 // Housekeeping for a watch the trial gate just declined to run (CHE-54). The row

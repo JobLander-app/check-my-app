@@ -18,6 +18,7 @@ import {
   type StripeEnv,
 } from "@/lib/stripe";
 import { isPaidOneCheck, startPaidCheck } from "@/lib/one-check";
+import { creditTopUp, paidTopUp } from "@/lib/topup";
 import { personalTeamId } from "@/lib/teams";
 import { captureServer } from "@/lib/analytics-server";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -89,6 +90,19 @@ export async function POST(req: Request) {
         if (pendingCheckId && isPaidOneCheck(session)) {
           await startPaidCheck(db, pendingCheckId, session.id);
         }
+        // CHE-327: a top-up of a team's balance. Credited once per session
+        // however many times Stripe delivers it (src/lib/topup.ts); the event
+        // is recorded only by the delivery that moved the balance.
+        const topUp = paidTopUp(session);
+        if (topUp && (await creditTopUp(db, topUp))) {
+          const team = await db.team.findUnique({ where: { id: topUp.teamId }, select: { plan: true } });
+          const who = session.client_reference_id ?? `team:${topUp.teamId}`;
+          await captureServer("balance_topped_up", who, {
+            plan: team?.plan ?? "unknown",
+            amountUsd: topUp.amountUsd,
+            teamId: topUp.teamId,
+          });
+        }
         break;
       }
 
@@ -126,7 +140,8 @@ export async function POST(req: Request) {
       // The buyer is a signed-in person and the browser identified with the
       // same Clerk id, so this joins their own events without a cookie. The
       // plan is the team's; the event is still theirs.
-      if (userId) await captureServer("checkout_completed", userId, { plan: plan ?? "unknown" });
+      // teamId (CHE-327) joins an upgrade to the team's balance_exhausted.
+      if (userId) await captureServer("checkout_completed", userId, { plan: plan ?? "unknown", teamId: team.id });
       break;
     }
 

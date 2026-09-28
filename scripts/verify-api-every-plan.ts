@@ -3,10 +3,10 @@
 // Owner decision, 2026-09-27 (launch epic CHE-313): the coding agent is the
 // primary interface, so every plan — Free included — can mint a key and connect
 // MCP. What keeps that from being an open tap is not a gate on the key; it is
-// the same run quota, watch cap and daily budget the UI is held to. This script
-// asserts both halves, and the second one behaviourally: a Free team's key that
-// has spent its lifetime runs is refused with `quota_free`, exactly like the
-// dashboard form.
+// the same balance the UI is held to (CHE-327). This script asserts both
+// halves, and the second one behaviourally: a Free team's key that has spent
+// its one-time credit is refused with `quota_free`, exactly like the dashboard
+// form.
 //
 // The second half had a hole before this ticket. POST /api/checks answered "which
 // team" for a key caller from the minter's PERSONAL team (no cookie → personal),
@@ -19,7 +19,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { FREE_RUNS_LIFETIME, PLAN_LIMITS, assertCanStartRun } from "@/lib/plans";
+import { PLAN_LIMITS, assertCanStartRun } from "@/lib/plans";
+
+const FREE_CREDIT = PLAN_LIMITS.free.creditUsd ?? 0;
 import { USER_PLANS, type UserPlan } from "@/lib/enums";
 import { generateApiKey } from "@/lib/apiKeys";
 import { personalTeamId } from "@/lib/teams";
@@ -98,10 +100,14 @@ const db = {
       { teamId: FREE_TEAM.id, team: FREE_TEAM, scope: "member", createdAt: new Date(1) },
     ],
   },
+  // CHE-327: the Free team has spent its one-time credit.
   run: {
-    count: async ({ where }: { where: { teamId?: string } }) =>
-      where.teamId === FREE_TEAM.id ? FREE_RUNS_LIFETIME : 0,
+    aggregate: async ({ where }: { where: { teamId?: string } }) => ({
+      _sum: { priceUsd: where.teamId === FREE_TEAM.id ? FREE_CREDIT : 0, priceFromTopupUsd: 0 },
+    }),
+    findMany: async () => [],
   },
+  team: { findUnique: async () => ({ topupUsd: 0 }) },
 } as unknown as PrismaClient;
 
 const req = new Request("https://checkmyapp.dev/api/checks", {
@@ -128,11 +134,14 @@ async function main() {
 
   // A Free key under its allowance still runs: the key is available, not decorative.
   const fresh = await assertCanStartRun(
-    { run: { count: async () => FREE_RUNS_LIFETIME - 1 } } as unknown as PrismaClient,
+    {
+      run: { aggregate: async () => ({ _sum: { priceUsd: 0, priceFromTopupUsd: 0 } }), findMany: async () => [] },
+      team: { findUnique: async () => ({ topupUsd: 0 }) },
+    } as unknown as PrismaClient,
     { id: FREE_TEAM.id, plan: "free" },
     null,
   );
-  check("a Free team's key with runs left is let through", fresh.ok);
+  check("a Free team's key with credit left is let through", fresh.ok);
 
   if (typeof resolveTeam !== "function") {
     check("a key caller's team is the key's team", false, "callerTeamContext does not exist");
@@ -150,7 +159,7 @@ async function main() {
     null,
   );
   check(
-    `a Free team's key is refused with quota_free after ${FREE_RUNS_LIFETIME} lifetime runs, like the dashboard form`,
+    "a Free team's key is refused with quota_free once its credit is spent, like the dashboard form",
     !gate.ok && gate.code === "quota_free",
     gate.ok ? "allowed" : gate.code,
   );

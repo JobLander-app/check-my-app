@@ -6,7 +6,9 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan } from "@/lib/enums";
 import { nextRunNumber } from "@/lib/db";
 import { canMutateOwned } from "@/lib/auth";
-import { assertCanStartRun, fullRecheckGate, fullRechecksUsed } from "@/lib/plans";
+import { assertCanStartRun } from "@/lib/plans";
+import { captureServer } from "@/lib/analytics-server";
+import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { effectiveEphemeralTtlDays, effectiveSiteCap } from "@/lib/site-cap";
 import { ephemeralExpiry } from "@/lib/ephemeral";
 import { triggerRun } from "@/lib/trigger";
@@ -16,12 +18,12 @@ import { snapshotAppAccounts } from "@/lib/test-accounts";
 export type RecheckResult =
   | { kind: "not_found" }
   | { kind: "unauthorized" }
-  | { kind: "quota"; reason: string }
+  // `code` is the gate's (src/lib/plans.ts RunGate), so a caller can tell an
+  // empty balance — which gets the top-up and upgrade links — from the
+  // anonymous funnel's caps.
+  | { kind: "quota"; reason: string; code?: string }
   | { kind: "reused"; publicId: string }
-  // `remaining` is set only for an owner's FULL re-check: how many full
-  // re-checks the plan still allows this month after this one (null =
-  // unlimited). A regular (ladder) re-check carries no allowance (CHE-137).
-  | { kind: "ok"; publicId: string; remaining?: number | null };
+  | { kind: "ok"; publicId: string };
 
 // The pieces of createRecheckRun that reach outside the database (Clerk, the
 // Workflow binding, the worker env). Production callers pass none and get the
@@ -35,13 +37,17 @@ export interface RecheckDeps {
   // CHE-202: a re-check of an ephemeral run is ephemeral too, with its own
   // fresh expiry — the preview is still up, the verdict is still about it.
   ephemeralTtlDays: () => number;
+  // CHE-327: where an empty-balance refusal is counted (balance_exhausted).
+  // Absent in a verify script's deps → nothing is sent.
+  capture?: typeof captureServer;
+  source?: "ui" | "api";
 }
 
 // How long an anonymous visitor gets the existing verdict instead of a new run
 // (CHE-94). A verdict page URL is public by design, so an unguarded re-check
 // button is an open tap on our LLM spend: one shared link, one bot, unlimited
-// $0.30-$2.30 runs. Owners are unaffected — they may re-check whenever they
-// like; the full walk is metered per plan (CHE-137).
+// $0.30-$2.30 runs. Owners are unaffected — they may re-check whenever their
+// team's balance allows (CHE-327).
 const ANON_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export async function createRecheckRun(
@@ -57,6 +63,8 @@ export async function createRecheckRun(
     siteCap: effectiveSiteCap,
     now: () => new Date(),
     ephemeralTtlDays: effectiveEphemeralTtlDays,
+    capture: captureServer,
+    source: "ui",
     ...overrides,
   },
 ): Promise<RecheckResult> {
@@ -97,17 +105,29 @@ export async function createRecheckRun(
   // CHE-94. Everything below is about the ANONYMOUS path: the caller proved
   // nothing except that they have the link.
   const isAnonymous = !prev.ownerId;
-  if (prev.targetKind === "extension" && prev.ownerId && !opts.full) {
-    // Extension checks always open a fresh installed product. They cannot use
-    // the unmetered website survey path to bypass the on-demand allowance.
+  // CHE-327: an owner's re-check — regular or full, website or extension —
+  // spends the team's balance like any other check. There is no separate
+  // allowance for full re-checks any more: a full walk simply costs what it
+  // walks, and the price says so.
+  if (prev.ownerId && prev.teamId) {
     const gate = await assertCanStartRun(
       prisma,
       // CHE-260: the run's TEAM pays for it, whoever pressed the button.
-      prev.teamId ? { id: prev.teamId, plan: (prev.team?.plan ?? "free") as UserPlan } : null,
+      { id: prev.teamId, plan: (prev.team?.plan ?? "free") as UserPlan },
       null,
-      { siteCap: deps.siteCap() },
+      { siteCap: deps.siteCap(), appSlug: prev.appSlug, now: deps.now() },
     );
-    if (!gate.ok) return { kind: "quota", reason: gate.reason };
+    if (!gate.ok) {
+      if (isBalanceExhausted(gate.code)) {
+        await captureBalanceExhausted(deps.capture, {
+          distinctId: prev.ownerId,
+          teamId: prev.teamId,
+          plan: prev.team?.plan ?? "free",
+          source: deps.source ?? "ui",
+        });
+      }
+      return { kind: "quota", reason: gate.reason, code: gate.code };
+    }
   }
   if (isAnonymous) {
     // A full walk is the expensive mode and exists for owners who just shipped
@@ -136,19 +156,7 @@ export async function createRecheckRun(
     const gate = await assertCanStartRun(prisma, null, opts.anonKeyHash ?? null, {
       siteCap: deps.siteCap(),
     });
-    if (!gate.ok) return { kind: "quota", reason: gate.reason };
-  }
-
-  // CHE-137: the owner's full re-check is metered per plan and UTC month. The
-  // regular re-check (the ladder) is not gated here — it is the product's
-  // "re-check after a deploy", and it costs what the survey says changed.
-  let remaining: number | null | undefined;
-  if (opts.full && prev.ownerId) {
-    const plan = (prev.team?.plan ?? "free") as UserPlan;
-    const used = await fullRechecksUsed(prisma, prev.teamId ?? "", deps.now());
-    const gate = fullRecheckGate(plan, used, deps.now());
-    if (!gate.ok) return { kind: "quota", reason: gate.reason };
-    remaining = gate.remaining;
+    if (!gate.ok) return { kind: "quota", reason: gate.reason, code: gate.code };
   }
 
   // On-demand runs discard their password after completion. Only the same
@@ -187,8 +195,8 @@ export async function createRecheckRun(
       teamId: prev.teamId,
       baselineRunId: prev.id,
       // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
-      // The same flag is what the monthly allowance counts (CHE-137).
       forceFull: opts.full ?? false,
+      startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
       // Anonymous re-checks count against the same daily allowance as
       // anonymous submissions (CHE-97).
       anonKeyHash: prev.ownerId ? null : (opts.anonKeyHash ?? null),
@@ -203,7 +211,5 @@ export async function createRecheckRun(
   });
 
   await deps.trigger(run.id);
-  return remaining === undefined
-    ? { kind: "ok", publicId: run.publicId }
-    : { kind: "ok", publicId: run.publicId, remaining };
+  return { kind: "ok", publicId: run.publicId };
 }

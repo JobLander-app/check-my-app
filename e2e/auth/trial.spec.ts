@@ -69,9 +69,10 @@ test.describe("trial rules", () => {
     expect(denied).toMatch(/upgrade/i);
     expect(denied).toContain(`${WATCH_TRIAL_DAYS}-day trial`);
 
-    // Paid tiers keep their own caps (Growth watches five apps — CHE-62).
-    expect(watchCapReason("growth", 4)).toBeNull();
-    expect(watchCapReason("growth", 5)).not.toBeNull();
+    // Paid plans have no watch cap: every watch spends the team's balance
+    // (CHE-327).
+    expect(watchCapReason("growth", 5)).toBeNull();
+    expect(watchCapReason("growth", 500)).toBeNull();
   });
 
   test("dashboard trial state tracks the same rule as the scheduler", () => {

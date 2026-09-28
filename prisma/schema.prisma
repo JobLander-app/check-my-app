@@ -109,8 +109,33 @@ model Run {
   // scratch — replay/partial planning skip themselves when set.
   forceFull     Boolean @default(false)
   // CHE-106: today's agent budget for this app is spent — run a smoke pass
-  // (still catches an app going down) instead of a paid walk.
+  // instead of a paid walk. CHE-327 replaced the per-app daily budget with the
+  // team's balance, so nothing writes or reads this any more. The column stays
+  // for exactly one deploy: CI applies migrations BEFORE it deploys the
+  // workers, and the worker still running at that moment selects it in
+  // "load-run" — dropping it in the same change would fail every run that
+  // loads in that window. Dropped by the next migration after this ships,
+  // together with its one historical reader, scripts/cost-trend.mjs.
   smokeOnly     Boolean @default(false)
+  // CHE-327: what the customer paid for this check, in USD — what it cost us
+  // × the plan's multiplier (src/lib/plans.ts priceRun), set when the run
+  // finishes. 0 for a run that failed (our failure is free, rule 4); null
+  // while in flight, and on anonymous runs, which belong to no balance.
+  priceUsd          Float?
+  // The part of priceUsd that came off the team's bought balance because the
+  // plan's credit for the window could not cover it. The window's plan
+  // spending is sum(priceUsd - priceFromTopupUsd) — no counter to keep in sync.
+  priceFromTopupUsd Float   @default(0)
+  // How many pages a quick check (nothing changed, nothing walked) opened —
+  // the work its few-cent price paid for, said next to the price
+  // (src/lib/check-price.ts). Null on every other run.
+  quickPagesOpened  Int?
+  // CHE-327: which door started this check — "watch" (the scheduler), "mcp"
+  // (the coding agent), "api" (a key over REST), "ui" (the dashboard, a
+  // verdict's re-check, onboarding) or "anon" (the free/paid public form).
+  // The balance is one pool on purpose; this is how we learn what it is spent
+  // on (scripts/measure/pricing-hypotheses.ts). Internal; null before CHE-327.
+  startedVia        String?
   // CHE-100: an auth endpoint rejected the credential we hold. Set the first
   // time it happens and never cleared within the run — it stops any further
   // sign-in attempt (five of them locked a customer's account once) and marks
@@ -174,6 +199,7 @@ model Run {
   @@index([appId])
   @@index([ownerId])
   @@index([teamId])
+  @@index([teamId, createdAt])
   @@index([anonKeyHash])
   @@index([ephemeral, expiresAt])
 }
@@ -665,6 +691,19 @@ model Team {
   stripeCustomerId     String? @unique
   stripeSubscriptionId String?
 
+  // CHE-327: balance the team bought (USD) and has not spent yet. Spent only
+  // after the plan's credit for the window; never expires, never resets. May
+  // sit slightly below zero after a check that finished above what was left —
+  // which blocks the next start until a top-up or the plan's next credit.
+  // Credited by the Stripe webhook (BalanceTopUp is the receipt that makes the
+  // credit happen once), taken by priceRun, given back by voidRunPrice.
+  topupUsd Float @default(0)
+  // CHE-327: when the "balance is used, recurring checks paused" mail last
+  // went out, so the scheduler (every 15 minutes) sends it once per window
+  // rather than once per tick.
+  balanceNoticeSentAt DateTime?
+
+  topUps BalanceTopUp[]
   memberships Membership[]
   invites     TeamInvite[]
   events      TeamEvent[]
@@ -678,6 +717,24 @@ model Team {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// CHE-327: one paid top-up of a team's balance. The Checkout Session id is
+// unique, so Stripe retrying a webhook (or delivering it twice) can create the
+// receipt only once; `credited` is claimed before the team's balance is
+// incremented, so a retry after a crash between the two finishes the credit
+// instead of repeating it. D1 has no transactions — the unique key and the
+// claim are the locks.
+model BalanceTopUp {
+  id                String   @id @default(cuid())
+  checkoutSessionId String   @unique
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId            String
+  amountUsd         Float
+  credited          Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  @@index([teamId])
 }
 
 /// CHE-236 — the analytics connection, made once for the team.

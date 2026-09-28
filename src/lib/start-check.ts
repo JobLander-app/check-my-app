@@ -13,7 +13,6 @@ import { captureServer, serverDistinctId } from "@/lib/analytics-server";
 import type { CreateCheckInput } from "@/lib/validation";
 import { extensionColumns } from "@/lib/extension-target";
 import { alreadyScoped } from "@/lib/tenant-db";
-
 export interface StartCheckOptions {
   // The validated submission (createCheckSchema output).
   input: CreateCheckInput;
@@ -22,6 +21,8 @@ export interface StartCheckOptions {
   // CHE-253: the team whose plan pays for this run. Null exactly when ownerId
   // is — an anonymous check belongs to nobody and is billed to nobody.
   teamId?: string | null;
+  // CHE-327: which door started it (Run.startedVia) — measurement only.
+  startedVia?: "ui" | "api" | "mcp" | "anon";
   anonKeyHash: string | null;
   // A paid one-off check: the Stripe Checkout Session that paid for it. The
   // column is unique, so a second start on the same payment fails at the
@@ -64,10 +65,8 @@ export async function startCheck(
   // a check OF THAT APP — the dashboard's "check now", the API, the app-review
   // skill. Until this, only the scheduler set `appId`, so those runs walked the
   // app's journeys and updated none of their history (30 runs of it by the time
-  // it was noticed). Attaching them also puts their cost inside the app's daily
-  // agent budget (scheduler.ts), which is the honest reading: it is the same
-  // app's spend, whoever pressed the button. An ephemeral run stays app-less —
-  // a PR preview is not the app (CHE-202).
+  // it was noticed). An ephemeral run stays app-less — a PR preview is not the
+  // app (CHE-202).
   const appId =
     opts.ownerId && !opts.ephemeral
       ? ((
@@ -94,6 +93,7 @@ export async function startCheck(
       deployEnv: input.deploy?.env || null,
       ownerId: opts.ownerId,
       teamId: opts.teamId ?? null,
+      startedVia: opts.startedVia ?? (opts.ownerId ? "ui" : "anon"),
       anonKeyHash: opts.anonKeyHash,
       paidCheckoutSessionId: opts.paid?.checkoutSessionId ?? null,
       ephemeral: Boolean(opts.ephemeral),

@@ -37,13 +37,18 @@ const triggered: string[] = [];
 let serial = 0;
 const pending = { id: "pending", targetUrl: url, extensionConfig: JSON.stringify(config), checkoutSessionId: "fixture-payment", runId: null, testPasswordEnc: null };
 const app = { id: "app", ownerId: "owner", appSlug: appSlugFromUrl(url), targetUrl: url, targetKind: "extension", extensionId: id, extensionConfig: JSON.stringify(config), testPasswordEnc: null };
+// CHE-327: the start gate reads the team's balance (nothing spent here).
+const noSpend = { aggregate: async () => ({ _sum: { priceUsd: 0, priceFromTopupUsd: 0 } }), findMany: async () => [] };
+const team = { findUnique: async () => ({ topupUsd: 0 }) };
 const db = {
   counter: { upsert: async () => ({value: ++serial}) },
   run: {
+    ...noSpend,
     findUnique: async () => null,
     findFirst: async () => null,
     create: async ({data}: {data: Record<string, unknown>}) => {rows.push(data); return {id: `r${serial}`, publicId: `p${serial}`};},
   },
+  team,
   pendingCheck: { findUnique: async () => pending, update: async () => pending },
   app: { findFirst: async ({where}: {where: {ownerId: string}}) => where.ownerId === "owner" ? app : null },
 } as unknown as PrismaClient;
@@ -71,7 +76,8 @@ const rechecked: Record<string, unknown>[] = [];
 let savedReads = 0;
 const previous = { ...app, id: 'old-run', appId: 'app', ownerId: 'owner', testPasswordEnc: null, targetKind: 'extension', extensionId: id, extensionConfig: JSON.stringify(config), teamId: 'team_owner', team: { plan: 'business' }, ephemeral: false };
 const recheckDb = {
-  run: { findUnique: async ({where}: {where: {publicId?: string}}) => where.publicId ? previous : null,
+  team,
+  run: { ...noSpend, findUnique: async ({where}: {where: {publicId?: string}}) => where.publicId ? previous : null,
     create: async ({data}: {data: Record<string, unknown>}) => { rechecked.push(data); return { id: 'new-run', publicId: 'new-public' }; } },
   app: { findFirst: async ({where}: {where: Record<string, unknown>}) => {
     assert.deepEqual(where, { id: 'app', ownerId: 'owner', targetKind: 'extension', extensionId: id }); savedReads++;
@@ -86,8 +92,9 @@ assert.equal(rechecked[0].userNotes, 'Saved permission');
 assert.equal((await createRecheckRun(recheckDb, 'old-public', {}, { ...recheckDeps, canMutate: async () => false })).kind, 'unauthorized');
 assert.equal(savedReads, 1, 'A stranger cannot even read saved extension credentials');
 previous.team.plan = 'free';
-recheckDb.run.count = (async () => 1000) as typeof recheckDb.run.count;
-assert.equal((await createRecheckRun(recheckDb, 'old-public', {}, recheckDeps)).kind, 'quota', 'An installed-product recheck must respect the on-demand allowance');
+// CHE-327: the Free team's one-time credit is spent.
+recheckDb.run.aggregate = (async () => ({ _sum: { priceUsd: 5, priceFromTopupUsd: 0 } })) as unknown as typeof recheckDb.run.aggregate;
+assert.equal((await createRecheckRun(recheckDb, 'old-public', {}, recheckDeps)).kind, 'quota', 'An installed-product recheck must respect the balance');
 assert.equal(rechecked.length, 1);
 assert.equal(savedReads, 1, 'Quota refusal precedes reading credentials or creating a run');
 console.log("Extension targets: stable identity, validation, public/paid/dashboard starts and ownership verified");

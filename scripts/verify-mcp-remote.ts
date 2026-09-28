@@ -20,20 +20,21 @@
 //   6. start_check {app_id} runs the saved app with its stored credentials and
 //      scenarios (the dashboard's startSavedApp), binds deploy_sha, and a
 //      second start while one runs returns that run marked already_running;
-//   7. plan rules apply: a Free team past its runs gets quota_free, a reader
-//      key cannot start anything, resuming a paused watch past the plan's cap
-//      is refused;
+//   7. plan rules apply: a Free team whose credit is spent gets quota_free, a
+//      reader key cannot start anything, resuming a paused watch past Free's
+//      one is refused;
 //   8. latest_results tells a new finding from one the previous run already had
 //      (same signature, different run), and wait_for_run gives up inside its
 //      budget with timed_out rather than holding the request;
-//   9. the plan is said before it is spent (CHE-325): a Free team's
-//      instructions name the plan, the free checks left, the watch cap and the
-//      trial, the upgrade link, and the rule to warn before the last free
-//      check; list_apps and latest_results carry the same `plan` block; every
-//      quota_free / plan_limit refusal (run quota, watch cap, cadence, trial
-//      ended) carries upgrade_url; turning back on a watch past its trial is
-//      refused rather than answered "on"; and the numbers
-//      /guides/connect-your-agent shows are PLAN_LIMITS'.
+//   9. the plan is said before it is spent (CHE-325, a balance since CHE-327):
+//      a Free team's instructions name the plan, the balance left, the typical
+//      price, the one watch and the trial, the top-up and upgrade links, and
+//      the rule to warn before the balance runs out; list_apps and
+//      latest_results carry the same `plan` block; every quota_free /
+//      plan_limit refusal carries upgrade_url, and the balance refusals
+//      buy_url too; turning back on a watch past its trial is refused rather
+//      than answered "on"; and the numbers /guides/connect-your-agent shows
+//      are PLAN_LIMITS'.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-mcp-remote.ts
 
@@ -48,7 +49,10 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { handleMcpRequest, UNAUTHORIZED_MESSAGE } from "@/lib/mcp/handler";
 import { MAX_INSTRUCTIONS_CHARS } from "@/lib/mcp/instructions";
 import { WAIT_BUDGET_MS, type McpDeps } from "@/lib/mcp/tools";
-import { FREE_RUNS_LIFETIME, PLAN_LIMITS, WATCH_TRIAL_DAYS } from "@/lib/plans";
+import { PLAN_LIMITS, WATCH_TRIAL_DAYS, typicalPriceRange, usd } from "@/lib/plans";
+
+const FREE_CREDIT = PLAN_LIMITS.free.creditUsd ?? 0;
+const BUY = "https://checkmyapp.dev/dashboard#balance";
 import type { UserPlan } from "@/lib/enums";
 import ConnectAgentGuide from "@/app/guides/connect-your-agent/page";
 import { createStubDb } from "./fixtures/mcp-db";
@@ -134,15 +138,17 @@ async function seed() {
       { id: "r_b1", publicId: "pub_b1", runNumber: 3, appId: "app_b", teamId: "team_b", ownerId: "u_b", appSlug: "secret-b.test",
         targetUrl: "https://secret-b.test", targetKind: "website", status: "completed", verdict: "all_good",
         bottomLine: "All good.", startedAt: day(11), completedAt: day(11), createdAt: day(11) },
-      // The Free team has spent its three lifetime runs.
+      // CHE-327: the Free team has spent its one-time credit — three checks
+      // priced $1 each.
       ...[1, 2, 3].map((i) => ({ id: `r_f${i}`, publicId: `pub_f${i}`, runNumber: 10 + i, appId: "app_f1", teamId: "team_f",
         ownerId: "u_f", appSlug: "free-one.test", targetUrl: "https://free-one.test", targetKind: "website",
-        status: "failed", startedAt: day(i), completedAt: day(i), createdAt: day(i) })),
-      // The last-check team has spent all but one.
-      ...Array.from({ length: FREE_RUNS_LIFETIME - 1 }, (_, i) => ({ id: `r_g${i}`, publicId: `pub_g${i}`, runNumber: 20 + i,
+        status: "completed", verdict: "all_good", priceUsd: FREE_CREDIT / 3, startedAt: day(i), completedAt: day(i), createdAt: day(i) })),
+      // The last-check team has $1.00 left: enough for one more check, which
+      // on Free typically starts at typicalPriceRange("free").low.
+      ...[1, 2].map((i) => ({ id: `r_g${i}`, publicId: `pub_g${i}`, runNumber: 20 + i,
         appId: "app_g1", teamId: "team_g", ownerId: "u_g", appSlug: "last-one.test", targetUrl: "https://last-one.test",
-        targetKind: "website", status: "completed", verdict: "all_good", startedAt: day(i + 1), completedAt: day(i + 1),
-        createdAt: day(i + 1) })),
+        targetKind: "website", status: "completed", verdict: "all_good", priceUsd: (FREE_CREDIT - 1) / 2, startedAt: day(i), completedAt: day(i),
+        createdAt: day(i) })),
     ],
     finding: [
       // The same regression on both runs — worded differently, same failing request.
@@ -371,7 +377,7 @@ async function main() {
   {
     const before = triggered.length;
     const quota = await call(free, "start_check", { url: "https://free-one.test" });
-    check("quota: a Free team past its lifetime runs → quota_free, nothing started",
+    check("quota: a Free team whose credit is spent → quota_free, nothing started",
       quota.isError && quota.out.code === "quota_free" && triggered.length === before, JSON.stringify(quota.out));
     const byApp = await call(free, "start_check", { app_id: "app_f1" });
     check("quota: the same by app_id → quota_free (the dashboard's gate)",
@@ -424,43 +430,48 @@ async function main() {
 
   // 9 — the plan, said before it is spent (CHE-325).
   {
+    // CHE-327: the plan is a balance; the agent is told it, and the typical
+    // price, before it spends.
     const t = free.getInstructions() ?? "";
-    check("plan: a Free team's instructions name the plan and the free checks left",
-      t.includes("Plan: Free.") && t.includes(`Free checks left: 0 of ${FREE_RUNS_LIFETIME}.`), t);
-    check("plan: …the watch cap in use and the trial's days left",
-      t.includes(`Watched apps: 1 of ${PLAN_LIMITS.free.maxWatches} (free-one.test: trial, 3 days left).`), t);
-    check("plan: …that full re-checks are not on the plan", t.includes("Full re-checks: not on this plan."), t);
-    check("plan: …the upgrade link, built from the request origin", t.includes(`Upgrade: ${PRICING}`), t);
-    check("plan: …and the rule: warn before the last free check, never surprise",
-      /Before starting a check that uses the last free check/.test(t) && /never let a limit surprise them/.test(t), t);
+    const freeRange = typicalPriceRange("free");
+    check("plan: a Free team's instructions name the plan and the balance left",
+      t.includes("Plan: Free.") && t.includes("Balance: $0.00 (the free credit does not renew)."), t);
+    check("plan: …what a check typically costs, as a price",
+      t.includes(`typically ${usd(freeRange.low)}–${usd(freeRange.high)}`), t);
+    check("plan: …the one watch in use and the trial's days left",
+      t.includes("Watched apps: 1 of 1 (free-one.test: trial, 3 days left)."), t);
+    check("plan: …the top-up and upgrade links, built from the request origin",
+      t.includes(`Top up: ${BUY}`) && t.includes(`Upgrade: ${PRICING}`), t);
+    check("plan: …and the rule: warn before the balance runs out, never surprise",
+      /Before starting a check the balance may not cover/.test(t) && /never let a limit surprise them/.test(t), t);
     check(`plan: a Free team's instructions stay under ${MAX_INSTRUCTIONS_CHARS} characters`,
       t.length <= MAX_INSTRUCTIONS_CHARS, String(t.length));
 
     const l = last.getInstructions() ?? "";
-    check("plan: one check left is said as one left, and a watch past its trial as not running",
-      l.includes(`Free checks left: 1 of ${FREE_RUNS_LIFETIME}.`) && l.includes("(last-one.test: trial ended, not running)"), l);
+    check("plan: what is left is said as dollars, and a watch past its trial as not running",
+      l.includes("Balance: $1.00") && l.includes("(last-one.test: trial ended, not running)"), l);
 
     const paid = a.getInstructions() ?? "";
-    check("plan: a paid team hears its plan, uncounted checks and its full re-checks — and no Free warning",
-      paid.includes("Plan: Business.") && paid.includes("Checks: unlimited.") &&
-        paid.includes(`Full re-checks left this month: ${PLAN_LIMITS.business.fullRechecksPerMonth} of ${PLAN_LIMITS.business.fullRechecksPerMonth}.`) &&
-        !/last free check/.test(paid), paid);
+    check("plan: a paid team hears its plan, its balance and when the credit renews",
+      paid.includes("Plan: Business.") &&
+        paid.includes(`the plan adds ${usd(PLAN_LIMITS.business.creditUsd ?? 0)} on`) &&
+        !/full re-check/i.test(paid), paid);
 
     for (const tool of ["list_apps", "latest_results"]) {
       const r = await call(free, tool);
       const p = r.out.plan as Record<string, Record<string, unknown> | string> | undefined;
-      const fc = p?.free_checks as Record<string, unknown> | undefined;
+      const bal = p?.balance as Record<string, unknown> | undefined;
       const w = p?.watches as Record<string, unknown> | undefined;
       const trial = p?.watch_trial as Record<string, unknown> | undefined;
-      check(`plan: ${tool} carries the plan block — checks left, watches, trial, upgrade_url`,
-        p?.plan === "free" && fc?.left === 0 && fc?.limit === FREE_RUNS_LIFETIME && w?.used === 1 &&
-          w?.limit === PLAN_LIMITS.free.maxWatches && trial?.days_left === 3 && p?.upgrade_url === PRICING,
+      check(`plan: ${tool} carries the plan block — balance, watches, trial, buy_url, upgrade_url`,
+        p?.plan === "free" && bal?.usd === 0 && bal?.plan_credit_usd === FREE_CREDIT && w?.active === 1 &&
+          w?.limit === 1 && trial?.days_left === 3 && p?.upgrade_url === PRICING && p?.buy_url === BUY,
         JSON.stringify(p));
     }
 
     const refusals: Array<[string, Awaited<ReturnType<typeof call>>]> = [
-      ["start_check {url} past the Free runs (quota_free)", await call(free, "start_check", { url: "https://free-one.test" })],
-      ["start_check {app_id} past the Free runs (quota_free)", await call(free, "start_check", { app_id: "app_f1" })],
+      ["start_check {url} past the Free credit (quota_free)", await call(free, "start_check", { url: "https://free-one.test" })],
+      ["start_check {app_id} past the Free credit (quota_free)", await call(free, "start_check", { app_id: "app_f1" })],
       ["enable_watch past the watch cap (plan_limit)", await call(free, "enable_watch", { app_id: "app_f2", frequency: "daily" })],
       ["enable_watch at a cadence the plan lacks (plan_limit)", await call(free, "enable_watch", { app_id: "app_f1", frequency: "every_6h" })],
     ];
@@ -470,6 +481,10 @@ async function main() {
       check(`upgrade: ${label} carries upgrade_url`,
         r.isError && (r.out.code === "quota_free" || r.out.code === "plan_limit") && r.out.upgrade_url === PRICING,
         JSON.stringify(r.out));
+      // CHE-327: a balance refusal also carries the top-up link; a plan
+      // refusal a top-up cannot answer does not.
+      check(`top-up: ${label} ${r.out.code === "quota_free" ? "carries" : "carries no"} buy_url`,
+        r.out.code === "quota_free" ? r.out.buy_url === BUY : !("buy_url" in r.out), JSON.stringify(r.out));
     }
     check("trial: turning back on a watch past its trial is refused, not answered \"on\"",
       ended.isError && /trial on this app has ended/.test(String(ended.out.error)) &&
@@ -486,15 +501,15 @@ async function main() {
       (html.match(new RegExp(`<li[^>]*data-plan="${plan}"[^>]*>([\\s\\S]*?)</li>`))?.[1] ?? "").replace(/<[^>]+>/g, " ");
     const num = (s: string, re: RegExp) => Number(s.match(re)?.[1] ?? NaN);
     const freeRow = row("free");
-    check("guide: Free's checks and trial are FREE_RUNS_LIFETIME and WATCH_TRIAL_DAYS",
-      num(freeRow, /(\d+) checks? for the whole team/) === FREE_RUNS_LIFETIME &&
-        num(freeRow, /(\d+)-day trial/) === WATCH_TRIAL_DAYS &&
-        num(freeRow, /(\d+) watched apps?/) === PLAN_LIMITS.free.maxWatches, freeRow);
+    check("guide: Free's credit and trial are PLAN_LIMITS.free.creditUsd and WATCH_TRIAL_DAYS",
+      num(freeRow, /\$(\d+(?:\.\d+)?) of checks, once/) === FREE_CREDIT &&
+        num(freeRow, /(\d+)-day trial/) === WATCH_TRIAL_DAYS, freeRow);
     for (const plan of ["starter", "growth", "business"] as UserPlan[]) {
       const r = row(plan);
-      check(`guide: ${plan}'s watched apps and full re-checks are PLAN_LIMITS.${plan}'s`,
-        num(r, /(\d+) watched apps?/) === PLAN_LIMITS[plan].maxWatches &&
-          num(r, /(\d+) full re-checks? a month/) === PLAN_LIMITS[plan].fullRechecksPerMonth, r);
+      const range = typicalPriceRange(plan);
+      check(`guide: ${plan}'s monthly balance and typical price are PLAN_LIMITS.${plan}'s`,
+        num(r, /\$(\d+(?:\.\d+)?) of checks every month/) === PLAN_LIMITS[plan].creditUsd &&
+          r.includes(`${usd(range.low)}–${usd(range.high)}`) && !/full re-check|watched apps? a/i.test(r), r);
     }
     check("guide: says every tool works on every plan, and links /pricing",
       /Every tool above works on every plan/.test(html) && html.includes('href="/pricing"'));

@@ -17,10 +17,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
-  FREE_RUNS_LIFETIME,
   PLAN_LIMITS,
   WATCH_TRIAL_DAYS,
-  fullRecheckGate,
+  balanceTooLowReason,
   shouldSkipWatch,
   watchCapReason,
   watchTrialEnd,
@@ -48,9 +47,10 @@ check(
   "assertCanStartRun's subject is the team",
   /assertCanStartRun\([\s\S]{0,300}?team: \{ id: string; plan: UserPlan \} \| null/.test(plans),
 );
+// CHE-327: the balance replaced the full re-check allowance; it is the team's.
 check(
-  "fullRechecksUsed counts a team's month",
-  /fullRechecksUsed\([\s\S]{0,120}?teamId: string/.test(plans),
+  "teamBalance reads a team's spending",
+  /teamBalance\([\s\S]{0,120}?team: \{ id: string; plan: UserPlan \}/.test(plans),
 );
 check(
   "every quota query is scoped with teamOwned",
@@ -63,16 +63,21 @@ check(
 // that must be a TEAM's; a `user.`, `owner.` or `viewer.` id in that position
 // is the bug this ticket exists to prevent, and it is invisible in review.
 
-const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "fullRechecksUsed", "fullRechecksRemaining"];
+const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance", "appPriceRange", "spendByApp"];
 const CALLERS = [
   "src/app/api/checks/route.ts",
   "src/app/dashboard/actions.ts",
+  "src/app/dashboard/page.tsx",
   "src/app/dashboard/[appId]/page.tsx",
+  "src/app/settings/team/page.tsx",
   "src/app/verdict/[id]/page.tsx",
   "src/app/onboarding/actions.ts",
   "src/lib/recheck.ts",
   "src/lib/start-saved-app.ts",
   "src/lib/watch-enable.ts",
+  "src/lib/mcp/tools.ts",
+  "src/lib/plan-status.ts",
+  "src/agent/scheduler.ts",
 ];
 
 const PERSON_ID = /\b(user|owner|viewer|actor)\.id\b|\bownerId:/;
@@ -101,39 +106,37 @@ check(
 
 // ─── 3. The arithmetic, per plan ─────────────────────────────────────────────
 
+const freeRefusal = balanceTooLowReason("free", { balanceUsd: 0, renewsOn: null }, 0.72);
 check(
-  `Free carries ${FREE_RUNS_LIFETIME} runs for the whole team, not per person`,
-  /Your team has used all \$\{FREE_RUNS_LIFETIME\} runs/.test(plans),
+  "Free's credit is the whole team's, not per person",
+  /Your team's free \$/.test(freeRefusal),
+  freeRefusal,
 );
 for (const plan of USER_PLANS) {
   const limits = PLAN_LIMITS[plan];
   check(
-    `${plan}: a watch cap that is a number, and a budget that is money`,
-    Number.isFinite(limits.maxWatches) && limits.dailyBudgetUsd > 0,
-    `${limits.maxWatches} watches · $${limits.dailyBudgetUsd}/day/app`,
+    `${plan}: a credit that is money (or unlimited), and a price above cost`,
+    (limits.creditUsd === null || limits.creditUsd > 0) && limits.priceMultiplier > 1,
+    `credit ${limits.creditUsd}`,
   );
 }
 
-// The cap's own copy, which a member of a team reads. It must name the team's
-// plan rather than telling them to upgrade something they cannot buy.
-const capped = watchCapReason("growth", PLAN_LIMITS.growth.maxWatches);
+// The refusal a member of a team reads. It must say it is the TEAM's balance
+// and name both ways out, not tell them to upgrade something they cannot buy.
+const balanceRefusal = balanceTooLowReason("starter", { balanceUsd: 0.1, renewsOn: "October 1" }, 0.72);
 check(
-  "a team that has used its watches is told it is the TEAM's plan",
-  typeof capped === "string" && /team's plan/.test(capped),
-  String(capped),
+  "a team whose balance is used is told it is the TEAM's, when it renews, and both ways out",
+  /team's balance/.test(balanceRefusal) && /October 1/.test(balanceRefusal) && /Top up/.test(balanceRefusal) &&
+    /upgrade/.test(balanceRefusal),
+  balanceRefusal,
 );
-check("a team below its cap is told nothing", watchCapReason("growth", 0) === null);
 
-const usedUp = fullRecheckGate("starter", PLAN_LIMITS.starter.fullRechecksPerMonth!, new Date("2026-09-15T00:00:00Z"));
-check(
-  "a used-up full re-check allowance names the team's plan and the reset date",
-  !usedUp.ok && /team's plan/.test(usedUp.reason) && /October 1/.test(usedUp.reason),
-  usedUp.ok ? "allowed" : usedUp.reason,
-);
-check(
-  "…and still says the ordinary re-check is there — the limit is on the expensive mode, never on checking",
-  !usedUp.ok && /regular re-check/i.test(usedUp.reason),
-);
+// The Free trial's one watch is the only watch limit left (CHE-327).
+check("Free's one trial watch, in use, is refused with the trial's words",
+  /one app, on a \d+-day trial/.test(watchCapReason("free", 1) ?? ""));
+for (const plan of ["starter", "growth", "business", "enterprise"] as UserPlan[]) {
+  check(`${plan}: no watch cap at any count`, watchCapReason(plan, 10_000) === null);
+}
 
 // ─── 4. The trial is the team's ──────────────────────────────────────────────
 
@@ -161,7 +164,7 @@ check(
 // appears in any quota. A cap that counted members would hand a five-person
 // Free team five lifetimes.
 
-for (const fn of ["assertCanStartRun", "assertCanAddWatch", "fullRechecksUsed"]) {
+for (const fn of ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance"]) {
   const at = plans.indexOf(`export async function ${fn}`);
   const body = plans.slice(at, plans.indexOf("\n}", at));
   check(

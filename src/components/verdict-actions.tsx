@@ -59,8 +59,9 @@ function EnableWatchSubmit({ variant }: { variant: "primary" | "outline" }) {
 // A native form submit works from the first paint.
 //
 // CHE-137 (owner, 2026-09-06): this is the product's "re-check after a
-// deploy" — it re-walks what changed since the last check and is not limited
-// on paid plans. The click is recorded on submit: the action redirects away.
+// deploy" — it re-walks what changed since the last check, and (CHE-327)
+// spends the team's balance like any check. The click is recorded on submit:
+// the action redirects away.
 export function RecheckButton({ runId, appSlug }: { runId: string; appSlug: string }) {
   return (
     <form
@@ -72,84 +73,29 @@ export function RecheckButton({ runId, appSlug }: { runId: string; appSlug: stri
   );
 }
 
-// What the plan allows this month, as src/lib/plans.ts fullRechecksRemaining
-// reports it: `limit`/`remaining` null = unlimited. The page computes it for
-// the run's owner, who is the only viewer this button is rendered for.
-export type FullRecheckAllowance = {
-  limit: number | null;
-  remaining: number | null;
-  resetsOn: string;
-};
-
 // CHE-74: walk everything from scratch — carried journeys get re-verified
-// instead of riding the partial-run carry forever. CHE-137: metered per plan
-// and month; the button says what is left, and when nothing is, it says so
-// here instead of refusing on click (a control that fails on click is the
-// defect this product flags on other people's apps, CHE-108).
-export function FullRecheckButton({
-  runId,
-  appSlug,
-  allowance,
-}: {
-  runId: string;
-  appSlug: string;
-  allowance: FullRecheckAllowance | null;
-}) {
-  const { title, exhausted } = fullRecheckTooltip(allowance);
+// instead of riding the partial-run carry forever. CHE-327: no separate
+// allowance any more; a full walk spends the balance like any check, and
+// costs more because it walks more — the tooltip says so up front.
+export function FullRecheckButton({ runId, appSlug }: { runId: string; appSlug: string }) {
   return (
     <form
       action={fullRecheckRunAction.bind(null, runId)}
       onSubmit={() => track("recheck_clicked", { kind: "full", appSlug })}
     >
-      <RecheckSubmit label="Full re-check" title={title} disabled={exhausted} />
+      <RecheckSubmit
+        label="Full re-check"
+        title="Walks every journey from scratch — it costs more than a regular re-check, which re-walks only what changed"
+      />
     </form>
   );
 }
 
-// Pure, so the wording can be asserted without rendering. The refusal wording
-// mirrors fullRecheckGate in src/lib/plans.ts: the limit is on the expensive
-// mode, never on re-checking.
-export function fullRecheckTooltip(allowance: FullRecheckAllowance | null): {
-  title: string;
-  exhausted: boolean;
-} {
-  const walks = "Walks every journey from scratch.";
-  if (!allowance || allowance.limit === null || allowance.remaining === null) {
-    return { title: `${walks} Unlimited on your plan.`, exhausted: false };
-  }
-  if (allowance.limit === 0) {
-    return {
-      title: "Full re-checks aren't included on your plan; a regular re-check is still available",
-      exhausted: true,
-    };
-  }
-  if (allowance.remaining <= 0) {
-    return {
-      title: `Full re-checks used up until ${allowance.resetsOn}; a regular re-check is still available`,
-      exhausted: true,
-    };
-  }
-  return {
-    title: `${walks} ${allowance.remaining} of ${allowance.limit} left this month.`,
-    exhausted: false,
-  };
-}
-
-function RecheckSubmit({
-  label,
-  title,
-  disabled = false,
-}: {
-  label: string;
-  title?: string;
-  disabled?: boolean;
-}) {
+function RecheckSubmit({ label, title }: { label: string; title?: string }) {
   const { pending } = useFormStatus();
-  // A disabled <button> receives no pointer events in some browsers, so its
-  // own title never shows; the wrapping span carries it too.
   return (
     <span title={title} className="inline-flex">
-      <Button type="submit" variant="outline" disabled={pending || disabled} title={title}>
+      <Button type="submit" variant="outline" disabled={pending} title={title}>
         {pending ? "Queuing…" : label}
       </Button>
     </span>

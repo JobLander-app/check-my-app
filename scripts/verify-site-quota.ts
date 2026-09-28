@@ -62,7 +62,11 @@ function stubDb(counts: { site: number; visitor: number; owner: number; sitePaid
         if (typeof where.teamId === "string") return counts.owner;
         throw new Error(`unexpected count where: ${JSON.stringify(where)}`);
       },
+      // CHE-327: a team's gate reads its balance — nothing spent here.
+      aggregate: async () => ({ _sum: { priceUsd: counts.owner, priceFromTopupUsd: 0 } }),
+      findMany: async () => [],
     },
+    team: { findUnique: async () => ({ topupUsd: 0 }) },
   };
   return { db: db as unknown as PrismaClient, calls };
 }

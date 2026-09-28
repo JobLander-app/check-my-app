@@ -22,15 +22,20 @@
 
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import type { UserPlan } from "@/lib/enums";
 import { toolSchemas } from "@/lib/mcp/tools";
-import { PLAN_CATALOG, TRACKER_LINE, type CatalogPlan } from "@/lib/plan-catalog";
+import { PLAN_CATALOG, TRACKER_LINE, balanceLine, priceRangeLine, type CatalogPlan } from "@/lib/plan-catalog";
 import {
   ANON_RUNS_PER_DAY,
   ANON_RUNS_PER_DAY_SITE,
-  FREE_RUNS_LIFETIME,
+  FREE_TRIAL_WATCHES,
   PLAN_LIMITS,
+  RUNAWAY_COST_USD,
+  TOPUP_AMOUNTS_USD,
+  TYPICAL_CHECK_COST_USD,
   WATCH_TRIAL_DAYS,
+  typicalPriceRange,
+  usd,
 } from "@/lib/plans";
 import { MAX_EXTRA_ACCOUNTS } from "@/lib/test-accounts";
 
@@ -58,30 +63,24 @@ export function planCatalogDrift(catalog: CatalogPlan[] = PLAN_CATALOG): string[
           : `${plan.name}: трекер на странице цен обещан, а в коде выключен.`,
       );
     }
-    const rechecks = limits.fullRechecksPerMonth;
-    if (rechecks !== null && rechecks > 0 && !new RegExp(`\\b${rechecks} full re-checks\\b`).test(text)) {
-      drift.push(`${plan.name}: полных перепроверок в коде ${rechecks}/мес, на странице цен другое число или ничего.`);
+    // CHE-327: the balance is the plan. The card must carry the plan's
+    // balance line and — on a paid plan — its price range, word for word.
+    if (!plan.features.includes(balanceLine(plan.id))) {
+      drift.push(`${plan.name}: баланс в коде ${usd(limits.creditUsd ?? 0)}, на странице цен другое или ничего.`);
     }
-    if (rechecks === 0 && /full re-check/i.test(text)) {
-      drift.push(`${plan.name}: в коде полных перепроверок нет, а на странице цен они есть.`);
+    if (plan.id !== "free" && !plan.features.includes(priceRangeLine(plan.id))) {
+      drift.push(`${plan.name}: на странице цен нет диапазона цены проверки из кода.`);
     }
-    if (limits.maxWatches > 1 && !new RegExp(`\\bUp to ${limits.maxWatches} apps\\b`).test(text)) {
-      drift.push(`${plan.name}: в коде до ${limits.maxWatches} аппов, на странице цен другое число или ничего.`);
+    if (/full re-check|up to \d+ apps/i.test(text)) {
+      drift.push(`${plan.name}: на странице цен остались полные перепроверки или лимит аппов — их больше нет (CHE-327).`);
     }
     const seats = limits.includedSeats;
     if (seats !== null && !new RegExp(`^${seats} (person|people) who can run checks`, "m").test(text)) {
       drift.push(`${plan.name}: мест в коде ${seats}, на странице цен другое число или ничего.`);
     }
-    if (limits.maxFrequency === "every_6h" && !/every 6h/.test(text)) {
-      drift.push(`${plan.name}: в коде проверки до раза в 6 ч, на странице цен не сказано.`);
-    }
-    if (limits.maxFrequency !== "every_6h" && /every 6h/.test(text)) {
-      drift.push(`${plan.name}: на странице цен «every 6h», а в коде ${limits.maxFrequency ?? "без watch"}.`);
-    }
     if (plan.id === "free") {
       const want = [
         `${ANON_RUNS_PER_DAY} check/day without signup`,
-        `${FREE_RUNS_LIFETIME} checks total with a free account`,
         `${WATCH_TRIAL_DAYS}-day Daily Watch trial`,
       ];
       for (const w of want) {
@@ -139,15 +138,6 @@ function table(rows: string[][]): Block {
 
 const UNLIMITED = "без лимита";
 
-function frequencyRu(f: WatchFrequency | null): string {
-  if (f === "every_6h") return "до раза в 6 ч";
-  if (f === "daily") return "раз в день";
-  if (f === "manual") return "только вручную";
-  return "нет";
-}
-function usd(n: number): string {
-  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
-}
 function countOrUnlimited(n: number | null): string {
   return n === null || n >= Number.MAX_SAFE_INTEGER ? UNLIMITED : String(n);
 }
@@ -155,20 +145,24 @@ function priceLabel(plan: CatalogPlan): string {
   return `${plan.price}${plan.priceNote ?? ""}`;
 }
 
-// One-off runs: only Free is metered (assertCanStartRun lets every other plan
-// through), so the paid cells say so rather than inventing a number.
-function oneOffRuns(plan: UserPlan): string {
+// CHE-327: the balance the plan puts on the team, and the window.
+function creditCell(plan: UserPlan): string {
+  const c = PLAN_LIMITS[plan].creditUsd;
+  if (c === null) return UNLIMITED;
   return plan === "free"
-    ? `${FREE_RUNS_LIFETIME} за всё время на команду; без аккаунта ${ANON_RUNS_PER_DAY}/день`
-    : UNLIMITED;
+    ? `${usd(c)} один раз на команду; без аккаунта ${ANON_RUNS_PER_DAY} проверка/день`
+    : `${usd(c)} каждый месяц (UTC), без переноса`;
 }
 
 function watchCell(plan: UserPlan): string {
-  const n = PLAN_LIMITS[plan].maxWatches;
-  if (n === 0) return "нет";
   return plan === "free"
-    ? `${n}, триал ${WATCH_TRIAL_DAYS} дней, потом пауза`
-    : countOrUnlimited(n);
+    ? `${FREE_TRIAL_WATCHES}, раз в день, триал ${WATCH_TRIAL_DAYS} дней, потом пауза`
+    : "без лимита, раз в день или раз в 6 ч";
+}
+
+function rangeCell(plan: UserPlan): string {
+  const r = typicalPriceRange(plan);
+  return `${usd(r.low)}–${usd(r.high)}`;
 }
 
 export type RenderMeta = { sha: string; date: string };
@@ -188,21 +182,26 @@ export function renderPlanBlocks(meta: RenderMeta): Block[] {
     heading2("Что ограничивает тариф (и только это)"),
     table([
       ["", ...plans.map((p) => `${p.name} ${priceLabel(p)}`)],
-      row("Разовые проверки (UI, API, MCP)", oneOffRuns),
-      row("Daily Watch (аппов)", watchCell),
-      row("Частота watch", (id) => frequencyRu(PLAN_LIMITS[id].maxFrequency)),
-      row("Полные перепроверки / мес", (id) => countOrUnlimited(PLAN_LIMITS[id].fullRechecksPerMonth)),
-      row("Бюджет агента на апп в день (внутреннее, на сайте нет)", (id) => usd(PLAN_LIMITS[id].dailyBudgetUsd)),
+      row("Баланс (любые проверки: watch, агент, UI, перепроверки)", creditCell),
+      row("Множитель цены (ВНУТРЕННЕЕ — клиенту никогда)", (id) => `×${PLAN_LIMITS[id].priceMultiplier}`),
+      row("Типичная цена проверки (p50–p90)", rangeCell),
+      row("Daily Watch", watchCell),
       row("Места (admin/member), readers бесплатно", (id) => countOrUnlimited(PLAN_LIMITS[id].includedSeats)),
       row("Трекер (Linear)", (id) => (PLAN_LIMITS[id].trackerIntegration ? "да" : "нет")),
     ]),
     paragraph(
+      `Цена проверки = её себестоимость × множитель тарифа, списывается с баланса, когда проверка ` +
+        `закончилась; упавшая по нашей вине — $0. Себестоимость проверки (30 дней до 2026-09-28): ` +
+        `p50 ${usd(TYPICAL_CHECK_COST_USD.low)}, p90 ${usd(TYPICAL_CHECK_COST_USD.high)}; предохранитель — ` +
+        `проверка дороже ${usd(RUNAWAY_COST_USD)} себестоимости останавливается как наш сбой. ` +
+        `Пополнение: ${TOPUP_AMOUNTS_USD.map((a) => `$${a}`).join(" / ")}, не сгорает, тратится после баланса тарифа.`,
+    ),
+    paragraph(
       `Сайт целиком: ${ANON_RUNS_PER_DAY_SITE} бесплатных анонимных проверок в сутки ` +
         `(по умолчанию; env ANON_RUNS_PER_DAY_SITE меняет без деплоя), дальше — проверка за $1. ` +
-        `Enterprise: аппов ${countOrUnlimited(PLAN_LIMITS.enterprise.maxWatches)}, ` +
-        `полных перепроверок ${countOrUnlimited(PLAN_LIMITS.enterprise.fullRechecksPerMonth)}, ` +
-        `мест ${countOrUnlimited(PLAN_LIMITS.enterprise.includedSeats)}, ` +
-        `бюджет ${usd(PLAN_LIMITS.enterprise.dailyBudgetUsd)}/день/апп.`,
+        `Enterprise: баланс ${countOrUnlimited(PLAN_LIMITS.enterprise.creditUsd)}, ` +
+        `множитель ×${PLAN_LIMITS.enterprise.priceMultiplier}, ` +
+        `мест ${countOrUnlimited(PLAN_LIMITS.enterprise.includedSeats)}.`,
     ),
     heading2("Что НЕ зависит от тарифа (есть везде, включая Free)"),
     bullet("Свои сценарии (focusAreas), границы (scopeHints), заметки."),
@@ -212,8 +211,7 @@ export function renderPlanBlocks(meta: RenderMeta): Block[] {
         `лимиты — только объёмы из таблицы выше.`,
     ),
     bullet(
-      "Обычная перепроверка (ladder: smoke/partial/full по тому, что изменилось) — не лимитирована; " +
-        "лимит только на принудительно полную.",
+      "Число проверок, аппов под watch и частота (для платных) — не лимитированы: всё тратит один баланс (CHE-327).",
     ),
     heading2("Как это сказано на checkmyapp.dev/pricing"),
   ];

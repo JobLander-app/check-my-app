@@ -25,7 +25,6 @@ import {
   notifyOutcomeCode,
   notifyVerdictReady,
   recordNotifyOutcome,
-  SKIP_BUDGET_TICK,
   SKIP_NO_ADDRESS,
   SKIP_UNCHANGED,
   type NotifiableRun,
@@ -222,11 +221,9 @@ async function main(): Promise<void> {
       String(a.recorded),
     );
   }
-  check(
-    "a budget tick has its own recorded reason",
-    notifyOutcomeCode({ kind: "skipped", reason: SKIP_BUDGET_TICK }) ===
-      `skipped: ${SKIP_BUDGET_TICK}`,
-  );
+  // CHE-327 removed the budget tick (the per-app daily budget became a
+  // per-check ceiling that never ends a run early), and with it the silence
+  // this script used to hold it to.
 
   console.log("\n3 — the provider refuses: the run completes, and the failure is recorded\n");
 
@@ -296,10 +293,6 @@ async function main(): Promise<void> {
     check(
       "workflow: a delivery failure is said in the run feed",
       /couldn&apos;t deliver this verdict|couldn't deliver this verdict/i.test(wf),
-    );
-    check(
-      "workflow: the budget tick's silence is recorded rather than left blank",
-      /budget-notify-skip/.test(wf) && /SKIP_BUDGET_TICK/.test(wf),
     );
     check(
       "workflow: the step returns the outcome, so the Workflow history shows it",

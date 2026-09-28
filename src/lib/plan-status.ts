@@ -1,55 +1,74 @@
 // What a team's plan allows and how much of it is left, told to the coding
-// agent (CHE-325).
+// agent (CHE-325; the balance since CHE-327).
 //
-// Every MCP tool works on every plan (CHE-316); a plan only sets volumes. An
-// agent that does not know the volumes spends the last free check without a
-// word and the person meets the limit as a refusal. So the agent is told up
-// front — in the connection's instructions and in list_apps / latest_results —
-// and every refusal carries the link to upgrade.
+// Every MCP tool works on every plan (CHE-316); a plan only sets how much can
+// be spent. An agent that does not know the balance spends the last of it
+// without a word and the person meets the limit as a refusal. So the agent is
+// told up front — in the connection's instructions and in list_apps /
+// latest_results — and every refusal carries the links to top up or upgrade.
 //
 // Each number is read through the function the matching gate enforces with
-// (src/lib/plans.ts): teamRunsUsed for the Free lifetime runs, activeWatchCount
-// for the watch cap, watchTrialState for the trial, fullRechecksRemaining for
-// the month's full re-checks. Nothing is re-derived here, so what the agent is
-// told is what the gate will say.
+// (src/lib/plans.ts): teamBalance for the balance, activeWatchCount for Free's
+// one watch, watchTrialState for the trial, estimateCheckPrice for "can this
+// app be checked now". Nothing is re-derived here, so what the agent is told
+// is what the gate will say. Prices only — never a cost or a multiplier.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import type { UserPlan } from "@/lib/enums";
 import {
-  FREE_RUNS_LIFETIME,
+  FREE_TRIAL_WATCHES,
   PLAN_LIMITS,
+  TOPUP_AMOUNTS_USD,
   WATCH_TRIAL_DAYS,
   activeWatchCount,
-  fullRechecksRemaining,
+  balanceDecision,
+  estimateCheckPrice,
   planLabel,
-  teamRunsUsed,
+  teamBalance,
+  typicalPriceRange,
+  usd,
   watchTrialState,
+  type TeamBalance,
 } from "@/lib/plans";
+import { BALANCE_PATH, PRICING_PATH } from "@/lib/balance-links";
 import { teamOwned } from "@/lib/tenant-db";
 
-// Where an upgrade happens. Checkout itself (POST /api/billing/checkout) needs
-// a signed-in admin's session and a POST, so it is not a link anyone can be
-// handed; /pricing is, and its buttons start that checkout once signed in.
-export const PRICING_PATH = "/pricing";
+export { BALANCE_PATH, PRICING_PATH };
 
 export interface PlanStatus {
   plan: UserPlan;
-  // null: checks are not counted on this plan.
-  free_checks: { limit: number; used: number; left: number } | null;
-  // limit null: no ceiling.
-  watches: { used: number; limit: number | null };
+  balance: {
+    // What the team can spend now; null = unlimited.
+    usd: number | null;
+    // What the plan puts on it each month (Free: once); null = unlimited.
+    plan_credit_usd: number | null;
+    // "October 1"; null when the credit never renews (Free).
+    renews_on: string | null;
+    // What checks were priced at in this period.
+    spent_this_period_usd: number;
+    // Bought balance still unspent (spent after the plan's credit).
+    topped_up_usd: number;
+  };
+  // What a check typically costs on this plan. Each app's own range is on the
+  // app (list_apps) once it has a history.
+  typical_check_price_usd: { low: number; high: number };
+  // Free's trial is one app; every paid plan has no limit.
+  watches: { active: number; limit: number | null };
   // The Free watch's trial; null when no watch of the team is on one.
   watch_trial: { app: string; ended: boolean; days_left: number | null } | null;
-  // limit / left null: unlimited.
-  full_rechecks: { limit: number | null; used: number; left: number | null; resets_on: string };
   upgrade_url: string;
+  // Top up the balance ($10, $25 or $50).
+  buy_url: string;
 }
 
-// Enterprise carries Number.MAX_SAFE_INTEGER watches: "no ceiling", not a
-// number to print.
-function watchLimit(plan: UserPlan): number | null {
-  const n = PLAN_LIMITS[plan].maxWatches;
-  return n >= Number.MAX_SAFE_INTEGER ? null : n;
+export function balanceBlock(b: TeamBalance): PlanStatus["balance"] {
+  return {
+    usd: b.balanceUsd,
+    plan_credit_usd: b.creditUsd,
+    renews_on: b.renewsOn,
+    spent_this_period_usd: b.spentUsd,
+    topped_up_usd: b.topupUsd,
+  };
 }
 
 export async function loadPlanStatus(
@@ -59,10 +78,9 @@ export async function loadPlanStatus(
   now: Date = new Date(),
 ): Promise<PlanStatus> {
   const free = team.plan === "free";
-  const [runsUsed, watchesUsed, full, trialWatches] = await Promise.all([
-    free ? teamRunsUsed(db, team.id) : Promise.resolve(0),
+  const [balance, watchesActive, trialWatches] = await Promise.all([
+    teamBalance(db, team, now),
     activeWatchCount(db, team.id),
-    fullRechecksRemaining(db, team, now),
     // Only Free has a trial (watchTrialState answers "none" for any other plan).
     free
       ? db.watch.findMany({
@@ -85,44 +103,52 @@ export async function loadPlanStatus(
   }
   return {
     plan: team.plan,
-    free_checks: free
-      ? { limit: FREE_RUNS_LIFETIME, used: runsUsed, left: Math.max(0, FREE_RUNS_LIFETIME - runsUsed) }
-      : null,
-    watches: { used: watchesUsed, limit: watchLimit(team.plan) },
+    balance: balanceBlock(balance),
+    typical_check_price_usd: typicalPriceRange(team.plan),
+    watches: { active: watchesActive, limit: free ? FREE_TRIAL_WATCHES : null },
     watch_trial,
-    full_rechecks: { limit: full.limit, used: full.used, left: full.remaining, resets_on: full.resetsOn },
     upgrade_url: `${origin}${PRICING_PATH}`,
+    buy_url: `${origin}${BALANCE_PATH}`,
   };
 }
 
+// Whether a check of `appSlug` would be admitted right now, and what it would
+// usually cost — the gate's own decision (src/lib/plans.ts balanceDecision).
+// A watch whose app is refused here is paused until a top-up or the next
+// credit; list_apps says so per app.
+export async function appCanRun(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  balance: TeamBalance,
+  appSlug: string,
+): Promise<{ ok: boolean; estimate_usd: number }> {
+  const estimate = await estimateCheckPrice(db, team, appSlug);
+  return { ok: balanceDecision(team.plan, balance, estimate).ok, estimate_usd: estimate };
+}
+
 // ---------------------------------------------------------------------------
-// The same volumes as a sentence per plan, for /guides/connect-your-agent.
+// The same allowances as a sentence per plan, for /guides/connect-your-agent.
 // Generated from PLAN_LIMITS so the guide cannot drift from the gates.
 
 export const GUIDE_PLANS: readonly UserPlan[] = ["free", "starter", "growth", "business"];
 
-const CADENCE: Record<WatchFrequency, string> = { daily: "checked daily", every_6h: "checked every 6 hours", manual: "on demand" };
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
 export function planAllowance(plan: UserPlan): { name: string; text: string } {
-  const limits = PLAN_LIMITS[plan];
-  const watches = watchLimit(plan);
-  const cadence = limits.maxFrequency ? CADENCE[limits.maxFrequency] : "";
-  const watched = watches === null ? "Any number of watched apps" : plural(watches, "watched app");
-  const full = limits.fullRechecksPerMonth;
+  const credit = PLAN_LIMITS[plan].creditUsd;
+  const range = typicalPriceRange(plan);
+  const typical = `a check typically costs ${usd(range.low)}–${usd(range.high)}, and one that finds nothing changed a few cents`;
+  const topUp = `top up from $${TOPUP_AMOUNTS_USD[0]} any time`;
   if (plan === "free") {
     return {
       name: planLabel(plan),
       text:
-        `${plural(FREE_RUNS_LIFETIME, "check")} for the whole team; ${watched}, ${cadence}, ` +
-        `on a ${WATCH_TRIAL_DAYS}-day trial; ${full ? `${plural(full, "full re-check")} a month` : "no full re-checks"}.`,
+        `${usd(credit ?? 0)} of checks, once, for the whole team; ${typical}. 1 watched app, checked daily, ` +
+        `on a ${WATCH_TRIAL_DAYS}-day trial; ${topUp}.`,
     };
   }
   return {
     name: planLabel(plan),
     text:
-      `Unlimited checks; ${watched}, ${cadence}; ` +
-      `${full === null ? "unlimited full re-checks" : `${plural(full, "full re-check")} a month`}.`,
+      `${credit === null ? "Unlimited" : `${usd(credit)} of checks every month`}, spent on anything — recurring checks, ` +
+      `your agent, the dashboard; ${typical}. Any number of watched apps, daily or every 6 hours; ${topUp}.`,
   };
 }

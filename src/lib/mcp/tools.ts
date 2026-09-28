@@ -4,8 +4,8 @@
 // once. So every tool here is a door onto the SAME function the dashboard or
 // the public API calls — createAppForTeam / updateAppForTeam
 // (src/lib/app-settings.ts), startSavedApp and startCheck with the plan's
-// quota (assertCanStartRun), enableWatchForApp / configureWatch with the
-// plan's watch cap, loadRunStatus / loadVerdict / loadReview for reading. A
+// balance (assertCanStartRun), enableWatchForApp / configureWatch with the
+// Free trial's one watch, loadRunStatus / loadVerdict / loadReview for reading. A
 // rule that lived only here would be a rule an agent could get around by using
 // the dashboard, or the other way round.
 //
@@ -35,7 +35,10 @@ import { startSavedApp } from "@/lib/start-saved-app";
 import { appSlugFromUrl } from "@/lib/utils";
 import { createCheckSchema, normalizeTargetUrl } from "@/lib/validation";
 import { EXTENSION_ON_DEMAND, configureWatch, enableWatchForApp } from "@/lib/watch-enable";
-import { PRICING_PATH, loadPlanStatus } from "@/lib/plan-status";
+import { BALANCE_PATH, PRICING_PATH, appCanRun, loadPlanStatus } from "@/lib/plan-status";
+import { explainRunPrice } from "@/lib/check-price";
+import { appPriceRange, teamBalance } from "@/lib/plans";
+import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 
@@ -206,17 +209,22 @@ export type FailureCode =
   | "quota_anon"
   | "quota_free"
   | "quota_site"
+  | "quota_balance"
   | "ephemeral_requires_owner";
 
-// CHE-325: the refusals an upgrade answers. Each carries `upgrade_url`, so the
-// agent can hand the person the way forward in the same breath as the limit.
-// quota_site / quota_anon are the anonymous funnel's caps and never reach a
+// CHE-325: the refusals an upgrade answers carry `upgrade_url`, so the agent
+// can hand the person the way forward in the same breath as the limit. CHE-327:
+// the balance refusals also carry `buy_url` (a top-up). quota_site /
+// quota_anon are the anonymous funnel's caps and never reach a
 // key-authenticated team.
-const UPGRADABLE: readonly FailureCode[] = ["quota_free", "plan_limit"];
+const UPGRADABLE: readonly FailureCode[] = ["quota_free", "quota_balance", "plan_limit"];
+const TOP_UPPABLE: readonly FailureCode[] = ["quota_free", "quota_balance"];
 
 const HINTS: Partial<Record<FailureCode, string>> = {
   quota_free:
-    "The Free plan's checks are used. Give the user upgrade_url, or enable_watch on an app you have already checked. Do not retry.",
+    "The Free plan's credit is used. Give the user buy_url (top up) and upgrade_url. Do not retry.",
+  quota_balance:
+    "The team's balance is too low for another check. Give the user buy_url (top up) and upgrade_url. Do not retry.",
   plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows and give them upgrade_url.",
   not_found: "Not one of this team's apps or runs. list_apps and latest_results show what exists.",
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
@@ -229,12 +237,35 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
 
   const urls = (id: string) => ({ live_url: `${origin}/run/${id}`, verdict_url: `${origin}/verdict/${id}` });
   const upgradeUrl = `${origin}${PRICING_PATH}`;
+  const buyUrl = `${origin}${BALANCE_PATH}`;
 
   function fail(code: FailureCode, error: string, hint?: string): ToolResult {
     return text(
-      { ok: false, code, error, ...(hint ? { hint } : {}), ...(UPGRADABLE.includes(code) ? { upgrade_url: upgradeUrl } : {}) },
+      {
+        ok: false,
+        code,
+        error,
+        ...(hint ? { hint } : {}),
+        ...(TOP_UPPABLE.includes(code) ? { buy_url: buyUrl } : {}),
+        ...(UPGRADABLE.includes(code) ? { upgrade_url: upgradeUrl } : {}),
+      },
       true,
     );
+  }
+
+  // CHE-327: what a finished run was priced at and why — the work it paid for,
+  // against this app's usual. Null while the run is still going.
+  // `price_usd`, the work summary agents budget with (journeys walked, steps),
+  // and `price_explanation` — never alone, always with the work it paid for.
+  async function priceFields(publicId: string) {
+    const p = await explainRunPrice(db, team.id, publicId);
+    if (!p) return { price_usd: null };
+    return {
+      price_usd: p.price_usd,
+      journeys_walked: p.journeys_walked,
+      steps_walked: p.steps_walked,
+      price_explanation: { work: p.work, comparison: p.comparison, usual_price_usd: p.usual, parts: p.parts },
+    };
   }
 
   // CHE-325: what the plan allows and what is left, next to the apps it bounds.
@@ -320,6 +351,21 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           },
         },
       });
+      // CHE-327: per app, what a check usually costs and whether one can run
+      // now — the gate's own decision, so "paused" here is what the scheduler
+      // will do on the next tick.
+      const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      const perApp = new Map(
+        await Promise.all(
+          apps.map(async (a) => {
+            const [range, can] = await Promise.all([
+              appPriceRange(db, { id: team.id, plan }, a.appSlug),
+              appCanRun(db, { id: team.id, plan }, balance, a.appSlug),
+            ]);
+            return [a.id, { range, can }] as const;
+          }),
+        ),
+      );
       return text({
         ok: true,
         team: team.name,
@@ -327,6 +373,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         apps: apps.map((a) => {
           const trial = watchTrialState(a.watch, plan, new Date(deps.now()));
           const last = a.runs[0];
+          const money = perApp.get(a.id);
           return {
             app_id: a.id,
             app: a.appSlug,
@@ -345,10 +392,20 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
               ...(a.testEmail ? [{ label: DEFAULT_ACCOUNT_LABEL, email: a.testEmail, has_password: Boolean(a.testPasswordEnc) }] : []),
               ...a.testAccounts.map((t) => ({ label: t.label, email: t.email, has_password: true })),
             ],
+            // What a check of this app usually costs; null until it has a
+            // history (plan.typical_check_price_usd covers it until then).
+            usual_price_usd: money?.range ? { low: money.range.low, high: money.range.high } : null,
+            can_check_now: money?.can.ok ?? true,
             watch: !a.watch
               ? { state: a.targetKind === "extension" ? "on_demand" : "off" }
               : {
-                  state: !a.watch.active ? "paused" : trial.kind === "ended" ? "trial_ended" : "active",
+                  state: !a.watch.active
+                    ? "paused"
+                    : trial.kind === "ended"
+                      ? "trial_ended"
+                      : money && !money.can.ok
+                        ? "paused_balance"
+                        : "active",
                   frequency: a.watch.frequency,
                   next_run_at: a.watch.active ? a.watch.nextRunAt : null,
                   trial_days_left: trial.kind === "active" ? trial.daysLeft : null,
@@ -479,7 +536,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           db,
           { id: caller.user.id, teamId: team.id, plan },
           args.app_id,
-          { trigger: deps.trigger, siteCap: deps.siteCap },
+          { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: "mcp" },
           { notes: args.notes, deploy: args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env } : undefined },
         );
         if ("error" in started) {
@@ -514,8 +571,16 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // caller, in the same order: ephemeral, the team's run quota, then start.
       const ephemeral = ephemeralGate(input.ephemeral, caller.user);
       if (!ephemeral.ok) return fail(ephemeral.code, ephemeral.reason);
-      const gate = await assertCanStartRun(db, { id: team.id, plan }, null, { siteCap: deps.siteCap() });
-      if (!gate.ok) return fail(gate.code, gate.reason, HINTS[gate.code]);
+      const gate = await assertCanStartRun(db, { id: team.id, plan }, null, {
+        siteCap: deps.siteCap(),
+        appSlug: appSlugFromUrl(input.url),
+      });
+      if (!gate.ok) {
+        if (isBalanceExhausted(gate.code)) {
+          await captureBalanceExhausted(deps.capture, { distinctId: caller.user.id, teamId: team.id, plan, source: "mcp" });
+        }
+        return fail(gate.code, gate.reason, HINTS[gate.code]);
+      }
       const expiresAt = ephemeral.ephemeral ? ephemeralExpiry(new Date(deps.now()), deps.ephemeralTtlDays()) : null;
       const run = await startCheck(
         db,
@@ -523,6 +588,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           input,
           ownerId: caller.user.id,
           teamId: team.id,
+          startedVia: "mcp",
           anonKeyHash: null,
           ephemeral: expiresAt ? { expiresAt } : undefined,
           distinctId: null,
@@ -584,6 +650,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         findings: findings.map((f) => `[${f.severity}/${f.category}] ${f.title}`),
         error: run.errorMessage ?? null,
         verdict_url: urls(args.run_id).verdict_url,
+        ...(await priceFields(args.run_id)),
         ...failedRunHint(run.status),
       });
     },
@@ -609,6 +676,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         findings_by_severity: bySeverity,
         next_actions_count: review.next_actions.length,
         error: run.errorMessage ?? null,
+        ...(await priceFields(args.run_id)),
         review,
         ...failedRunHint(run.status),
       });
@@ -649,7 +717,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       if (!(await ownRun(args.run_id))) return runNotFound();
       const review = await loadReview(db, args.run_id, origin);
       if (!review) return runNotFound();
-      return text({ ok: true, ...review });
+      return text({ ok: true, ...review, ...(await priceFields(args.run_id)) });
     },
 
     async latest_results(): Promise<ToolResult> {
@@ -659,10 +727,14 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       return text({
         ok: true,
         plan: await planStatus(),
-        apps: results.apps.map((a) => ({
-          ...a,
-          verdict_url: a.latest_run ? urls(a.latest_run.run_id).verdict_url : null,
-        })),
+        apps: await Promise.all(
+          results.apps.map(async (a) => ({
+            ...a,
+            verdict_url: a.latest_run ? urls(a.latest_run.run_id).verdict_url : null,
+            // CHE-327: what the latest check was priced at, and the work it paid for.
+            ...(a.latest_run ? await priceFields(a.latest_run.run_id) : {}),
+          })),
+        ),
         in_flight: results.in_flight.map((r) => ({ ...r, live_url: urls(r.run_id).live_url })),
       });
     },
@@ -714,14 +786,15 @@ export type RemoteTools = ReturnType<typeof createRemoteTools>;
 const DESCRIPTIONS: Record<ToolName, string> = {
   list_apps:
     "The team's apps: id, address, scenarios (what must keep working), limits, notes, the test accounts a check " +
-    "signs in as (label and email — never a password), recurring-check state, and the last run; plus `plan`: what " +
-    "the team's plan allows and what is left of it (free checks, watched apps, trial, full re-checks, upgrade_url). Start here.",
+    "signs in as (label and email — never a password), recurring-check state, what a check of it usually costs " +
+    "(usual_price_usd) and whether one can run now, and the last run; plus `plan`: the team's balance, what a check " +
+    "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. Start here.",
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
     "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. A " +
     "website gets a recurring check (daily by default) within the team's plan; the first one is scheduled " +
-    "automatically. isError with code plan_limit when the plan's app/watch allowance is used.",
+    "automatically; each check spends the team's balance. isError with code plan_limit when the plan does not allow it.",
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, verdict email. Only the fields you pass change; " +
     "\"\" clears a field (for test_password: removes the stored password). test_accounts adds or updates named " +
@@ -730,14 +803,16 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "Start a check. With app_id: checks a saved app using its stored test logins, scenarios and limits — the usual " +
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +
     "shipped). With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
-    "20–40 minutes; follow it with wait_for_run or get_check_status. Refusals carry a stable code " +
-    "(quota_free, quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal; " +
-    "quota_free and plan_limit carry upgrade_url for the user.",
+    "20–40 minutes and spends the team's balance (its price is on wait_for_run / get_review when it finishes); " +
+    "follow it with wait_for_run or get_check_status. Refusals carry a stable code (quota_balance, quota_free, " +
+    "quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal; quota_balance and " +
+    "quota_free carry buy_url and upgrade_url for the user.",
   get_check_status:
     "Status of a run: phase (queued/connecting/surface_scan/discovery/walking/anatomy/writing), terminal state " +
     "(completed/partial/failed), verdict when done, and the latest progress events.",
   wait_for_run:
-    "Wait for a run to finish, then return its verdict (bottom line, findings by severity, verdict URL). Each call " +
+    "Wait for a run to finish, then return its verdict (bottom line, findings by severity, verdict URL) and its " +
+    "price with the work it paid for (price_usd, journeys_walked, steps_walked, price_explanation). Each call " +
     "waits up to 45 seconds; if the run is still going it returns timed_out: true with the status — call it again. " +
     "A `failed` status is CheckMyApp not finishing, not the app being broken.",
   wait_for_review:
@@ -754,7 +829,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(`next_actions`). It names symptoms and evidence, never files or fixes — what to change is your call.",
   latest_results:
     "For every app of the team: the latest finished run, its verdict, findings by severity, and the findings that " +
-    "are NEW since the app's previous finished run; plus the checks still running and `plan` (as in list_apps). " +
+    "are NEW since the app's previous finished run, and that run's price with the work it paid for; plus the checks " +
+    "still running and `plan` (as in list_apps). " +
     "Use at the start of a session.",
   enable_watch:
     "Turn on (or resume) an app's recurring check at the given frequency, within the team's plan. isError with " +

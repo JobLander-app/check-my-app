@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { can } from "@/lib/scopes";
 import { seatSummary } from "@/lib/seats";
-import { PLAN_LIMITS } from "@/lib/plans";
+import { PLAN_LIMITS, teamBalance, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import type { TeamScope } from "@/lib/scopes";
 import { ManageBillingButton } from "@/components/manage-billing-button";
@@ -32,6 +32,7 @@ export default async function TeamSettingsPage() {
   const mayBill = can(scope, "billing.manage");
   const mayInvite = can(scope, "member.invite");
   const limits = PLAN_LIMITS[team.plan as UserPlan];
+  const balance = await teamBalance(db, { id: team.id, plan: team.plan as UserPlan });
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-12">
@@ -66,12 +67,13 @@ export default async function TeamSettingsPage() {
       <section className="card mt-6 p-6">
         <h2 className="text-lg font-medium">Plan and billing</h2>
         <p className="mt-2 text-sm text-fg-muted">
-          On <strong>{team.plan}</strong>: {limits.maxWatches} watched app
-          {limits.maxWatches === 1 ? "" : "s"},{" "}
-          {limits.fullRechecksPerMonth === null
-            ? "unlimited full re-checks"
-            : `${limits.fullRechecksPerMonth} full re-check${limits.fullRechecksPerMonth === 1 ? "" : "s"} a month`}
-          , ${limits.dailyBudgetUsd.toFixed(2)} of checking per app per day.
+          On <strong>{team.plan}</strong>:{" "}
+          {balance.balanceUsd === null
+            ? "unlimited checks."
+            : `${usd(balance.balanceUsd)} left${balance.renewsOn ? ` — the plan adds ${usd(limits.creditUsd ?? 0)} on ${balance.renewsOn}` : ""}.`}{" "}
+          <Link href="/dashboard#balance" className="text-accent hover:underline">
+            Balance and top-up
+          </Link>
         </p>
         {mayBill ? (
           <>

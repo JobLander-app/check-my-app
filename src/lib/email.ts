@@ -4,6 +4,7 @@
 // degrades to a console log so local dev works offline.
 
 import { VERDICT_META } from "@/lib/status";
+import { BALANCE_PATH } from "@/lib/balance-links";
 
 // The bottom line is model-written prose about the customer's product; it goes
 // into HTML mail, so it gets escaped rather than trusted.
@@ -157,6 +158,52 @@ export async function sendWatchTrialPaused({
         `<p>Your app, its history and its settings are all still here — upgrade and ` +
         `the next check runs on schedule.</p>` +
         `<p><a href="${url}">Keep the daily watch running</a></p><p>— CheckMyApp</p>`,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Resend send failed: ${res.status} ${await res.text()}`);
+  }
+}
+
+interface BalanceUsedUpArgs {
+  to: string;
+  appSlug: string;
+  // balanceTooLowReason (src/lib/plans.ts): the balance, and both ways out.
+  reason: string;
+  apiKey?: string;
+  from?: string;
+  baseUrl?: string;
+}
+
+// CHE-327: sent by the scheduler the first time in a window it declines to run
+// a watch because the team's balance is used. Nothing is paused by a setting:
+// a top-up, an upgrade, or the plan's next credit is all it takes for the next
+// tick to run it, and the mail says exactly that.
+export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, baseUrl }: BalanceUsedUpArgs): Promise<void> {
+  const base = baseUrl ?? "http://localhost:3000";
+  const url = `${base}${BALANCE_PATH}`;
+  const subject = `Recurring checks of ${appSlug} are paused`;
+
+  if (!apiKey || !from) {
+    console.log(`[email:dev] to=${to} subject="${subject}" url=${url}`);
+    return;
+  }
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      html:
+        `<p>${escapeHtml(reason)}</p>` +
+        `<p>Until then the recurring checks of <strong>${escapeHtml(appSlug)}</strong> are paused. ` +
+        `Nothing is lost — they pick up on their own as soon as the balance allows.</p>` +
+        `<p><a href="${url}">Top up or upgrade</a></p><p>— CheckMyApp</p>`,
+      text:
+        `${reason}\n\nUntil then the recurring checks of ${appSlug} are paused. Nothing is lost — ` +
+        `they pick up on their own as soon as the balance allows.\n\nTop up or upgrade: ${url}\n\n— CheckMyApp`,
     }),
   });
   if (!res.ok) {

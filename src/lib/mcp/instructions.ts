@@ -14,7 +14,7 @@
 
 import type { LatestResults } from "@/lib/latest-results";
 import type { PlanStatus } from "@/lib/plan-status";
-import { planLabel } from "@/lib/plans";
+import { planLabel, usd } from "@/lib/plans";
 
 export const MAX_INSTRUCTIONS_CHARS = 1500;
 
@@ -31,32 +31,36 @@ const VERDICT_WORDS: Record<string, string> = {
 // (src/lib/plan-status.ts), which reads them through the gates' own counts.
 function planLine(s: PlanStatus): string {
   const parts = [`Plan: ${planLabel(s.plan)}.`];
-  parts.push(s.free_checks ? `Free checks left: ${s.free_checks.left} of ${s.free_checks.limit}.` : "Checks: unlimited.");
+  const b = s.balance;
+  parts.push(
+    b.usd === null
+      ? "Balance: unlimited."
+      : `Balance: ${usd(b.usd)}` +
+          (b.renews_on ? ` (the plan adds ${usd(b.plan_credit_usd ?? 0)} on ${b.renews_on}).` : " (the free credit does not renew)."),
+  );
+  const t = s.typical_check_price_usd;
+  parts.push(
+    `Every check has its own price, typically ${usd(t.low)}–${usd(t.high)}; one that finds nothing changed costs a few cents. ` +
+      "list_apps shows each app's usual price.",
+  );
   const trial = s.watch_trial
     ? ` (${s.watch_trial.app}: ${s.watch_trial.ended ? "trial ended, not running" : `trial, ${s.watch_trial.days_left} day${s.watch_trial.days_left === 1 ? "" : "s"} left`})`
     : "";
-  parts.push(`Watched apps: ${s.watches.used} of ${s.watches.limit ?? "unlimited"}${trial}.`);
-  const f = s.full_rechecks;
-  parts.push(
-    f.limit === null
-      ? "Full re-checks: unlimited."
-      : f.limit === 0
-        ? "Full re-checks: not on this plan."
-        : `Full re-checks left this month: ${f.left} of ${f.limit}.`,
-  );
-  parts.push(`Upgrade: ${s.upgrade_url}`);
+  parts.push(`Watched apps: ${s.watches.active}${s.watches.limit === null ? "" : ` of ${s.watches.limit}`}${trial}.`);
+  parts.push(`Top up: ${s.buy_url} · Upgrade: ${s.upgrade_url}`);
   return parts.join(" ");
 }
 
-// What the agent does with that line. The Free warning exists because the
-// last free check spent in silence is how a person meets the limit: as a
-// refusal on the next deploy.
+// What the agent does with that line. The warning exists because the last of
+// a balance spent in silence is how a person meets the limit: as a refusal on
+// the next deploy.
 function planRule(s: PlanStatus): string {
-  const refusal = "Every limit refusal carries upgrade_url: say what the plan allows and give the user that link.";
-  if (!s.free_checks) return refusal;
+  const refusal =
+    "Every balance refusal carries buy_url and upgrade_url: say what is left and give the user both links.";
+  if (s.balance.usd === null) return refusal;
   return (
-    "Before starting a check that uses the last free check — or if none are left — tell the user first and give " +
-    `them the upgrade link; never let a limit surprise them. ${refusal}`
+    "Before starting a check the balance may not cover — or if it is used up — tell the user first and give " +
+    `them the top-up and upgrade links; never let a limit surprise them. ${refusal}`
   );
 }
 
