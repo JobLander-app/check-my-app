@@ -72,6 +72,12 @@ export interface CarriedJourney {
   /** The run that actually walked it. Provenance root, not the run we copy from. */
   sourceRunId: string;
   sourceRunNumber: number;
+  /**
+   * When that walk happened, ISO. Set on the journeys a run lists without
+   * walking (knownJourneysToList) so the coverage line can date each one; a
+   * partial plan dates its carry once, in oldestVerifiedAt.
+   */
+  walkedAt?: string;
 }
 
 /** A journey that was bad last time and gets walked again from its old plan. */
@@ -564,6 +570,121 @@ async function planFromCatalog(
   };
 }
 
+// ─── Every known journey on the verdict ──────────────────────────────────────
+
+/**
+ * The app's live journeys this run has no row for, in the order the verdict
+ * lists them: the ones that ended badly first, then the most recently walked.
+ *
+ * Until CHE-331 only a partial run copied anything forward, and a partial run
+ * happens only on a watch run of an app the survey saw unchanged. Every other
+ * run — a full check after a deploy, any on-demand or MCP check — listed only
+ * the five it walked. checkmyapp.dev's verdict went from ten journeys (#247,
+ * partial) to five (#257, #260) and three (#261) with twelve live in its
+ * catalog: nothing had been retired, the page had simply stopped saying they
+ * existed.
+ *
+ * Pure, so scripts/verify-known-journeys-listed.ts holds it to the rules
+ * without a database. A journey nothing has walked has no evidence to show and
+ * is left out; a retired one is not in the catalog to begin with
+ * (journeysForPlanning reads retiredAt: null), so this never resurrects one.
+ */
+export function knownJourneysToList(args: {
+  catalog: CatalogJourneyState[];
+  /** appJourneyIds this run already has a row for — walked or carried. */
+  present: Iterable<string>;
+}): CatalogJourneyState[] {
+  const present = new Set(args.present);
+  const bad = (j: CatalogJourneyState) => (j.status !== null && !CARRIABLE_STATUSES.has(j.status) ? 0 : 1);
+  return args.catalog
+    .filter((j) => !present.has(j.appJourneyId) && Boolean(j.lastWalkedRunId) && j.lastWalkedAt !== null)
+    .sort(
+      (a, b) =>
+        bad(a) - bad(b) || (b.lastWalkedAt as Date).getTime() - (a.lastWalkedAt as Date).getTime(),
+    );
+}
+
+/**
+ * The copies that put every known journey on this run's verdict, each from the
+ * run that last really walked it and dated by that walk. Orders continue after
+ * the highest one the run already holds, so a copy can never take the slot of a
+ * journey this run walked (walkOneJourney and carryJourney both clear their slot
+ * first).
+ *
+ * What a copy is, and is not: the journey's last real walk, shown under its own
+ * run number and date. It is not a check of it today, and nothing it carries
+ * enters this run's adjudication — the workflow writes these after the verdict,
+ * the findings and the pill are decided from what this run walked (rule 8: a
+ * claim about the product rests on this run's evidence).
+ *
+ * `omitted` names the known journeys that could not be shown because their
+ * walk is gone. The run still did not cover them, and the caller must not let
+ * their absence read as "nothing left to list" — fix verification treats a run
+ * with no carried rows as a walk of the whole app.
+ */
+export async function planKnownJourneys(
+  env: AgentEnv,
+  args: { runId: string; appId: string; startOrder: number },
+): Promise<{ listed: CarriedJourney[]; omitted: string[] }> {
+  const [catalog, rows] = await Promise.all([
+    journeysForPlanning(env, args.appId),
+    env.db.journey.findMany({ where: { runId: args.runId }, select: { appJourneyId: true, order: true } }),
+  ]);
+  const due = knownJourneysToList({
+    catalog,
+    present: rows.map((r) => r.appJourneyId).filter((id): id is string => Boolean(id)),
+  });
+  if (due.length === 0) return { listed: [], omitted: [] };
+
+  const walkedRunIds = [...new Set(due.map((j) => j.lastWalkedRunId as string))];
+  const [sourceJourneys, sourceRuns] = await Promise.all([
+    env.db.journey.findMany({
+      // The walk itself, never a copy of it: a copy's steps are the same, but
+      // its run is not the one that saw them.
+      where: {
+        runId: { in: walkedRunIds },
+        appJourneyId: { in: due.map((j) => j.appJourneyId) },
+        carriedFromRunId: null,
+        status: { not: "skipped" },
+      },
+      orderBy: { order: "asc" },
+      select: { id: true, runId: true, appJourneyId: true },
+    }),
+    env.db.run.findMany({ where: { id: { in: walkedRunIds } }, select: { id: true, runNumber: true } }),
+  ]);
+  const rowFor = new Map<string, string>();
+  for (const j of sourceJourneys) {
+    const key = `${j.runId}:${j.appJourneyId}`;
+    if (!rowFor.has(key)) rowFor.set(key, j.id);
+  }
+  const runNumberOf = new Map(sourceRuns.map((r) => [r.id, r.runNumber]));
+
+  let order = Math.max(args.startOrder, ...rows.map((r) => r.order + 1));
+  const listed: CarriedJourney[] = [];
+  const omitted: string[] = [];
+  for (const j of due) {
+    const sourceJourneyId = rowFor.get(`${j.lastWalkedRunId}:${j.appJourneyId}`);
+    const sourceRunNumber = runNumberOf.get(j.lastWalkedRunId as string);
+    if (!sourceJourneyId || sourceRunNumber === undefined) {
+      // The catalog names a walk that is not there to show (a pruned run, an
+      // ephemeral sweep). Undateable evidence is unusable evidence — this one
+      // journey is left off rather than shown without its proof, and said.
+      console.warn(`[known-journeys] no walk to show for "${j.title}" (run ${j.lastWalkedRunId})`);
+      omitted.push(j.title);
+      continue;
+    }
+    listed.push({
+      sourceJourneyId,
+      order: order++,
+      title: j.title,
+      sourceRunId: j.lastWalkedRunId as string,
+      sourceRunNumber,
+      walkedAt: (j.lastWalkedAt as Date).toISOString(),
+    });
+  }
+  return { listed, omitted };
+}
+
 // ─── Carrying journeys forward ───────────────────────────────────────────────
 
 // Copy one baseline journey (steps + evidence) onto this run. Evidence rows are
@@ -664,27 +785,56 @@ export async function carryJourney(
 // `rewalked` is counted from the DB after the walk, not taken from the plan: a
 // journey whose walk aborted leaves a skipped row behind, and "re-checked 2 of
 // 5" would then be a claim about work that didn't happen.
+//
+// CHE-331: `listed` is the rest of the app's known journeys, shown as of their
+// last walk (planKnownJourneys). They are carried like the plan's own, so the
+// sentence counts them in the same breath and the date it quotes is the oldest
+// walk among all of them.
 export function partialBottomLine(
   plan: PartialPlan,
   synthesized: string | null,
   rewalked: number,
+  listed: CarriedJourney[] = [],
 ): string {
-  const k = plan.rewalk.length;
-  const m = plan.carry.length;
+  const oldest = [plan.oldestVerifiedAt, ...listed.map((c) => c.walkedAt ?? plan.oldestVerifiedAt)].sort()[0];
+  const prefix = coveragePrefix(plan.rewalk.length, rewalked, [...plan.carry, ...listed], oldest);
+  return synthesized ? `${prefix} ${synthesized.trim()}` : prefix;
+}
+
+/**
+ * CHE-331 — the same coverage-before-opinion line for a full run that lists
+ * journeys it did not walk. A full run that walked every known journey says
+ * nothing extra: its verdict already covers the whole app.
+ */
+export function fullBottomLine(
+  planned: number,
+  synthesized: string | null,
+  walked: number,
+  listed: CarriedJourney[],
+): string | null {
+  const dates = listed.map((c) => c.walkedAt).filter((d): d is string => Boolean(d)).sort();
+  if (listed.length === 0 || dates.length === 0) return synthesized;
+  const prefix = coveragePrefix(planned, walked, listed, dates[0]);
+  return synthesized ? `${prefix} ${synthesized.trim()}` : prefix;
+}
+
+function coveragePrefix(planned: number, rewalked: number, carried: CarriedJourney[], oldestIso: string): string {
+  const k = planned;
+  const m = carried.length;
   const missed = Math.max(0, k - rewalked);
   // Name the run only when every carried journey came from the same one —
   // otherwise "from Run #43 (last walked Aug 19)" would credit #43 with a walk
   // that happened three runs earlier.
-  const sources = new Set(plan.carry.map((c) => c.sourceRunNumber));
+  const sources = new Set(carried.map((c) => c.sourceRunNumber));
   const from =
     sources.size === 1
       ? `carried forward from Run #${[...sources][0]}`
       : `carried forward from ${sources.size} earlier runs`;
-  const prefix =
+  return (
     `Re-checked ${rewalked} of ${k + m} journey${k + m === 1 ? "" : "s"}` +
     (missed ? ` (${missed} couldn't be re-walked this run)` : "") +
-    `; ${m} ${from} (last walked ${formatDay(plan.oldestVerifiedAt)}).`;
-  return synthesized ? `${prefix} ${synthesized.trim()}` : prefix;
+    `; ${m} ${from} (last walked ${formatDay(oldestIso)}).`
+  );
 }
 
 /** "Aug 12" — no Intl dependency, identical on workerd and Node. */

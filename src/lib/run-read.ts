@@ -42,7 +42,10 @@ export async function loadVerdict(db: PrismaClient, publicId: string) {
   const run = await db.run.findUnique({ ...publicRow(),
     where: { publicId },
     include: {
-      journeys: { orderBy: { order: "asc" }, select: { title: true, status: true, summary: true } },
+      journeys: {
+        orderBy: { order: "asc" },
+        select: { title: true, status: true, summary: true, carriedFromRunId: true },
+      },
       findings: {
         orderBy: { number: "asc" },
         select: { number: true, title: true, category: true, severity: true, mark: true },
@@ -53,6 +56,28 @@ export async function loadVerdict(db: PrismaClient, publicId: string) {
   if (!extensionReportPublished(run)) {
     return { status: run.status, verdict: null, bottom_line: null, journeys: [], findings: [] };
   }
+
+  // CHE-331: every check lists the app's known journeys, and the ones it did
+  // not walk are an earlier run's evidence. An agent reading this must be able
+  // to tell them apart as the verdict page does — by the run that walked it and
+  // when — or a days-old "ok" reads as today's.
+  const carriedIds = [...new Set(run.journeys.map((j) => j.carriedFromRunId).filter((id): id is string => Boolean(id)))];
+  const sources = carriedIds.length
+    ? await db.run.findMany({ ...publicRow(),
+        where: { id: { in: carriedIds } },
+        select: { id: true, runNumber: true, completedAt: true },
+      })
+    : [];
+  const sourceOf = new Map(sources.map((s) => [s.id, s]));
+  const journeys = run.journeys.map(({ carriedFromRunId, ...j }) => {
+    const source = carriedFromRunId ? sourceOf.get(carriedFromRunId) : undefined;
+    return {
+      ...j,
+      carried_from: carriedFromRunId
+        ? { run_number: source?.runNumber ?? null, walked_at: source?.completedAt ?? null }
+        : null,
+    };
+  });
 
   return {
     run_number: run.runNumber,
@@ -66,7 +91,7 @@ export async function loadVerdict(db: PrismaClient, publicId: string) {
     // CHE-202: a preview run says when it will be gone; null on every other run.
     ephemeral: run.ephemeral,
     expires_at: run.expiresAt,
-    journeys: run.journeys,
+    journeys,
     findings: run.findings,
     // Pricing rule (CLAUDE.md §10): what a check cost US — dollars, tokens,
     // the multiplier — never leaves in anything a customer or their agent
