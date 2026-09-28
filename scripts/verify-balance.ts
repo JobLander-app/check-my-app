@@ -308,6 +308,12 @@ async function main() {
     check("workflow: the runaway fuse runs before each journey and stops the run as ours",
       /assertBelowRunaway\(runId, \(discovery\?\.costUsd \?\? 0\) \+ walkCost\)/.test(wf) && /NonRetryableError\(\s*`internal: runaway fuse/.test(wf));
     check("workflow: no per-check ceiling or daily budget branch is left", !/ceiling|budget-complete|smokeOnly/.test(wf));
+    // Run.smokeOnly is the daily budget's last trace: out of the Prisma model
+    // (so no client selects it — step 1 of dropping the column) and out of its
+    // one historical reader. Strip comments so a history note can still name it.
+    const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    check("schema: Run has no smokeOnly field", !/^\s*smokeOnly\s/m.test(code("prisma/schema.prisma")));
+    check("cost-trend: no longer reads smokeOnly", !/smokeOnly/.test(code("scripts/cost-trend.mjs")));
     const { SERVER_ANALYTICS_EVENTS } = await import("@/lib/analytics-server");
     const ev = SERVER_ANALYTICS_EVENTS as readonly string[];
     check("events: balance_exhausted and balance_topped_up are catalogued", ev.includes("balance_exhausted") && ev.includes("balance_topped_up"));
