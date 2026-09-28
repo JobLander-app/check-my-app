@@ -765,22 +765,30 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // lost the rest (checkmyapp.dev: #247 showed 10, #261 showed 3 of 12
       // live). Planned here, after the walks, because which journeys this run
       // covered is only known once each walk has resolved its identity; the
-      // copies themselves are written after the verdict (below), so none of
-      // their old evidence enters this run's findings or pill. Best-effort like
-      // every catalog read: a failure costs the list, never the run.
-      const listed = await step.do("known-journeys-plan", async (): Promise<CarriedJourney[]> => {
-        if (!run.appId || isExtension) return [];
-        try {
-          return await planKnownJourneys(env, {
-            runId,
-            appId: run.appId,
-            startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
-          });
-        } catch (err) {
-          console.warn(`[known-journeys] not listed: ${err instanceof Error ? err.message : String(err)}`);
-          return [];
-        }
-      });
+      // copies themselves are written after the verdict is decided (below), so
+      // none of their old evidence enters this run's findings or pill.
+      // Best-effort like every catalog read — a failure costs the list, never
+      // the run — but the failure is kept: an empty list that means "could not
+      // read" must not pass for "walked everything known", because fix
+      // verification reads a run with no carried rows as a full walk.
+      const known = await step.do(
+        "known-journeys-plan",
+        async (): Promise<{ listed: CarriedJourney[]; complete: boolean }> => {
+          if (!run.appId || isExtension) return { listed: [], complete: true };
+          try {
+            const planned = await planKnownJourneys(env, {
+              runId,
+              appId: run.appId,
+              startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
+            });
+            return { listed: planned, complete: true };
+          } catch (err) {
+            console.warn(`[known-journeys] not listed: ${err instanceof Error ? err.message : String(err)}`);
+            return { listed: [], complete: false };
+          }
+        },
+      );
+      const listed = known.listed;
 
       // Phase 5 — Anatomy (merge deterministic scan signals into the LLM map).
       // A partial run reuses the baseline's anatomy: nothing re-mapped the app
@@ -929,14 +937,20 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await env.db.run.update({
           where: { id: runId },
           data: {
-            status: structured?.partial ? "partial" : "completed",
+            // CHE-331: a run with journeys still to list stays in "writing"
+            // until they land (the step below). A terminal status is what
+            // every poller — wait_for_run, the live page, CI — reads as "the
+            // verdict is whole", and one that fired before the copies would
+            // hand them the 3 walked journeys of 12 for good.
+            ...(listed.length > 0
+              ? {}
+              : { status: structured?.partial ? "partial" : "completed", completedAt: new Date() }),
             verdict: checked.verdict,
             bottomLine,
             appLens: JSON.stringify(synth.appLens),
             transcriptUrl,
             costUsd,
             currentAction: null,
-            completedAt: new Date(),
           },
         });
         return checked.verdict;
@@ -945,18 +959,14 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // CHE-331: the known journeys this run did not walk go onto its verdict
       // now that the verdict has been decided without them. Each copy keeps the
       // run and the date of the walk it came from, and the bottom line above
-      // already counts them. Per journey, so one missing source costs that one
-      // line rather than the list.
+      // already counts them. Not swallowed: carryJourney clears its slot
+      // before writing, so a retry of this step replaces a half-written copy
+      // rather than leaving the bottom line counting one that is not there —
+      // and a D1 that cannot write them could not have written the verdict.
       if (listed.length > 0) {
         await step.do("list-known-journeys", async () => {
           for (const entry of listed) {
-            try {
-              await carryJourney(env, runId, entry, run.runNumber);
-            } catch (err) {
-              console.warn(
-                `[known-journeys] "${entry.title}" not listed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
+            await carryJourney(env, runId, entry, run.runNumber);
           }
           await appendEvent(env, runId, "writing", {
             icon: "info",
@@ -968,6 +978,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
                 .map((l) => `${l.title} (Run #${l.sourceRunNumber})`)
                 .join(" · ") +
               (listed.length > 6 ? ` and ${listed.length - 6} more` : ""),
+          });
+          // Last, so nothing reads the run as finished before its list is.
+          await env.db.run.update({
+            where: { id: runId },
+            data: { status: "completed", completedAt: new Date() },
           });
         });
       }
@@ -1083,7 +1098,14 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // and can never be mistaken for a verified fix. Links still "fixed" whose
       // signature stayed away — in a walk that actually covered their journey —
       // get the "verified fixed in prod" comment and status "resolved".
-      if (run.watchId) {
+      // CHE-331: not when the known-journeys read failed. verifyFixedLinks
+      // treats a run with no carried rows as a walk of the whole app, and that
+      // run carries none only because we could not tell what it missed — a fix
+      // is confirmed by a walk of its journey, never by our own blind spot.
+      if (run.watchId && !known.complete) {
+        console.warn("[reconcile] fix verification skipped — the known-journeys read failed this run");
+      }
+      if (run.watchId && known.complete) {
         await step.do("reconcile-verify", async () => {
           try {
             for (const note of await verifyFixedLinks(env, runId)) {
