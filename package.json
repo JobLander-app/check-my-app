@@ -39,6 +39,7 @@
     "verify:discovery-lean": "tsx --tsconfig tsconfig.json scripts/verify-discovery-lean.ts",
     "verify:knowledge": "tsx --tsconfig tsconfig.json scripts/verify-knowledge.ts",
     "verify:nav-vision": "tsx --tsconfig tsconfig.json scripts/verify-nav-vision.ts",
+    "verify:synthesis-fallback": "tsx --tsconfig tsconfig.json scripts/verify-synthesis-fallback.ts",
     "verify:harness": "tsx --tsconfig tsconfig.json scripts/verify-harness.ts",
     "verify:viewer": "tsx --tsconfig tsconfig.json scripts/verify-viewer-capabilities.ts",
     "verify:unpublished-404": "tsx --tsconfig tsconfig.json scripts/verify-unpublished-404.ts",

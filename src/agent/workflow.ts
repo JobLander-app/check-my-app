@@ -32,7 +32,7 @@ import { parseJson } from "@/lib/json";
 import { readExtensionOptions } from "@/lib/extension-target";
 import type { RunEvent, RunPhase } from "@/lib/types";
 import { discoveryMemoryEnabled, makeAgentEnv, putText, type AgentBindings, type AgentEnv } from "./env";
-import { makeLlm, type UsageTotals } from "./llm";
+import { makeLlm, refusalsOf, type UsageTotals } from "./llm";
 import { launchAgentBrowser, closeAgentBrowser, newAgentContext, surfaceScan } from "./browser";
 import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
@@ -57,7 +57,7 @@ import { parseActions, replayJourney, type ReplayResult } from "./journey-replay
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
-import { fileCapabilityGaps, fileDeliveryGap } from "./capability-gaps";
+import { fileCapabilityGaps, fileDeliveryGap, fileRouteRefusal } from "./capability-gaps";
 import { measureRunJourneys, measurementNote } from "./journey-measurement";
 import { GAP_CLASSES } from "./gap-classes";
 import { auditCreatedResources } from "./cleanup";
@@ -837,9 +837,32 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await transition(env, runId, "writing", { icon: "info", text: "Writing your verdict" });
         const structured = extensionEvidence ? await prepareExtensionPublication(env, runId, extensionEvidence) : null;
         const synth = structured ?? await synthesizeVerdict({ env, llm, runId, anatomy, knowledge }).catch(
-          rethrowBudgetNonRetryable,
+          async (err: unknown) => {
+            // CHE-330: every road refused. The run fails as it always did; the
+            // refusals, with where they left from, still reach our board.
+            const refusals = refusalsOf(err);
+            if (refusals.length) {
+              const filed = await fileRouteRefusal(env, runId, { refusals, verdictWritten: false });
+              console.warn(`[synthesis] run ${runId}: synthesis failed after refusals; our board: ${filed}`);
+            }
+            return rethrowBudgetNonRetryable(err);
+          },
         );
-        if (!structured) await recordUsage(env, runId, "synthesis", llm.synthModel, synth.usage);
+        if (!structured) {
+          // CHE-330: the ledger names the model that wrote the verdict, so a
+          // fallback shows as its own model id on this run (a bottom-line
+          // rewrite's few hundred tokens ride on the same row). Each refusal
+          // names the road that answered its own call, and goes to our board
+          // and the log — not to the run's events, which the customer reads
+          // (CLAUDE.md rules 1 and 10).
+          const written = "model" in synth ? synth : null;
+          await recordUsage(env, runId, "synthesis", written?.model ?? llm.synthModel, synth.usage);
+          if (written?.refusals.length) {
+            const filed = await fileRouteRefusal(env, runId, { refusals: written.refusals, verdictWritten: true });
+            const roads = written.refusals.map((r) => `${r.model}→${r.answeredBy ?? "none"}`).join(", ");
+            console.warn(`[synthesis] run ${runId} refused on ${roads}; our board: ${filed}`);
+          }
+        }
         // CHE-188: a finding whose only evidence is a skipped step is dropped
         // before it becomes a row (run #153 wrote one off a step our own fill
         // could not drive). Same journey/step order synthesis numbered its
