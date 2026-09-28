@@ -175,6 +175,10 @@ export interface RouteRefusal {
   // reports. This is the fact that names a region block for what it is.
   colo: string | null;
   loc: string | null;
+  // The road that answered this call after the refusal; null when none did.
+  // Per call, because one run's synthesis and bottom-line rewrite can each
+  // end on a different road.
+  answeredBy: string | null;
 }
 
 // A 4xx that says "not from here, not like this" — the same request to the
@@ -197,7 +201,7 @@ async function refusalFacts(route: ModelRoute, err: InstanceType<typeof Anthropi
   } catch {
     // Best effort: the refusal is recorded whether or not the trace answers.
   }
-  return { model: route.model, status: err.status ?? 0, error: err.message, colo, loc };
+  return { model: route.model, status: err.status ?? 0, error: err.message, colo, loc, answeredBy: null };
 }
 
 // When every road refused, the error that fails the run is still the
@@ -221,6 +225,7 @@ export async function createOnRoutes(
     const route = routes[i];
     try {
       const message = await route.client.messages.create({ ...params, model: route.model });
+      for (const r of refusals) r.answeredBy = route.model;
       return { message, model: route.model, refusals };
     } catch (err) {
       // Whatever ends the ladder carries the refusals seen before it: a 500 on

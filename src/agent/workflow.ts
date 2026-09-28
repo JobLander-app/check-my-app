@@ -807,22 +807,25 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             // refusals, with where they left from, still reach our board.
             const refusals = refusalsOf(err);
             if (refusals.length) {
-              const filed = await fileRouteRefusal(env, runId, { refusals, answeredBy: null });
-              console.warn(`[synthesis] run ${runId}: every road refused; our board: ${filed}`);
+              const filed = await fileRouteRefusal(env, runId, { refusals, verdictWritten: false });
+              console.warn(`[synthesis] run ${runId}: synthesis failed after refusals; our board: ${filed}`);
             }
             return rethrowBudgetNonRetryable(err);
           },
         );
         if (!structured) {
-          // CHE-330: the ledger names the model that actually wrote the
-          // verdict, so a fallback shows as its own model id on this run. The
-          // refusal goes to our board and the log — not to the run's events,
-          // which the customer reads (CLAUDE.md rules 1 and 10).
+          // CHE-330: the ledger names the model that wrote the verdict, so a
+          // fallback shows as its own model id on this run (a bottom-line
+          // rewrite's few hundred tokens ride on the same row). Each refusal
+          // names the road that answered its own call, and goes to our board
+          // and the log — not to the run's events, which the customer reads
+          // (CLAUDE.md rules 1 and 10).
           const written = "model" in synth ? synth : null;
           await recordUsage(env, runId, "synthesis", written?.model ?? llm.synthModel, synth.usage);
           if (written?.refusals.length) {
-            const filed = await fileRouteRefusal(env, runId, { refusals: written.refusals, answeredBy: written.model });
-            console.warn(`[synthesis] run ${runId} written on the fallback ${written.model}; our board: ${filed}`);
+            const filed = await fileRouteRefusal(env, runId, { refusals: written.refusals, verdictWritten: true });
+            const roads = written.refusals.map((r) => `${r.model}→${r.answeredBy ?? "none"}`).join(", ");
+            console.warn(`[synthesis] run ${runId} refused on ${roads}; our board: ${filed}`);
           }
         }
         // CHE-188: a finding whose only evidence is a skipped step is dropped

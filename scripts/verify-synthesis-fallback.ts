@@ -245,13 +245,36 @@ async function main() {
     );
   }
 
+  // (4d) Synthesis answers directly, only the rewrite is refused: the verdict
+  // is still the direct model's, and the refusal names the road that answered
+  // the rewrite — not the model that refused it.
+  {
+    const leaky = JSON.stringify({ ...VERDICT, bottomLine: "The signup button did nothing in our test browser." });
+    stubNetwork({
+      "api.anthropic.com": [ok("claude-opus-4-8", leaky), refuse],
+      "openrouter.ai": ok("anthropic/claude-opus-4.8", "Sign-up could not be confirmed this run."),
+    });
+    const r = (await synth()) as Awaited<ReturnType<typeof synth>> & {
+      model?: string;
+      refusals?: { model: string; answeredBy: string | null }[];
+    };
+    check(
+      "rewrite-only refusal: the verdict model stays direct, the refusal names who answered the rewrite",
+      r.model === "claude-opus-4-8" &&
+        r.refusals?.length === 1 &&
+        r.refusals[0].model === "claude-opus-4-8" &&
+        r.refusals[0].answeredBy === "anthropic/claude-opus-4.8",
+      JSON.stringify({ model: r.model, refusals: r.refusals?.map((x) => `${x.model}→${x.answeredBy}`) }),
+    );
+  }
+
   // (4b) Filing the refusal cannot fail the step that just wrote a verdict.
   {
     const broken = { ...env, db: { run: { findUnique: async () => { throw new Error("D1 unavailable"); } } } } as unknown as AgentEnv;
     let threw = false;
     let said = "";
     try {
-      said = await fileRouteRefusal(broken, "run_stub", { refusals: [], answeredBy: "anthropic/claude-opus-4.8" });
+      said = await fileRouteRefusal(broken, "run_stub", { refusals: [], verdictWritten: true });
     } catch {
       threw = true;
     }

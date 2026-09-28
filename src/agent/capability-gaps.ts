@@ -455,12 +455,12 @@ const ROUTE_REFUSAL = {
 
 // Never throws, and nothing in it can: it runs inside the `writing` step, and
 // a tracker or database hiccup here must not turn a verdict the fallback just
-// wrote into a failed step that pays for synthesis again. answeredBy is null
-// when no road answered and the run is failing anyway.
+// wrote into a failed step that pays for synthesis again. verdictWritten is
+// false when no road answered synthesis and the run is failing anyway.
 export async function fileRouteRefusal(
   env: AgentEnv,
   runId: string,
-  opts: { refusals: RouteRefusal[]; answeredBy: string | null },
+  opts: { refusals: RouteRefusal[]; verdictWritten: boolean },
 ): Promise<string> {
   try {
     return await fileRouteRefusalOrThrow(env, runId, opts);
@@ -472,7 +472,7 @@ export async function fileRouteRefusal(
 async function fileRouteRefusalOrThrow(
   env: AgentEnv,
   runId: string,
-  opts: { refusals: RouteRefusal[]; answeredBy: string | null },
+  opts: { refusals: RouteRefusal[]; verdictWritten: boolean },
 ): Promise<string> {
   const run = await env.db.run.findUnique({
     where: { id: runId },
@@ -496,13 +496,13 @@ async function fileRouteRefusalOrThrow(
         ...opts.refusals.map(
           (r) =>
             `${r.model} answered ${r.error} (left from ${r.colo ?? "unknown location"}` +
-            `${r.loc ? `, country ${r.loc}` : ""}).`,
+            `${r.loc ? `, country ${r.loc}` : ""}); ` +
+            `${r.answeredBy ? `${r.answeredBy} answered that call instead.` : "no road answered that call."}`,
         ),
-        opts.answeredBy ? `${opts.answeredBy} wrote the verdict instead.` : "No road answered; the run failed.",
         `On: ${run.appSlug} (run #${run.runNumber}).`,
       ],
-      whatHappened: opts.answeredBy
-        ? "The first road to the verdict model refused the request; the run finished on the fallback."
+      whatHappened: opts.verdictWritten
+        ? "A road to the verdict model refused the request; the run finished on the fallback."
         : "Every road to the verdict model refused the request, and a run whose walk was paid for published nothing.",
       whyItMatters: `${ROUTE_REFUSAL.why} This ticket counts every refusal; it closes when the first road stops refusing.`,
     }),
