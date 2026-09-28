@@ -582,7 +582,6 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         bottom_line: verdict?.bottom_line ?? null,
         findings_by_severity: bySeverity,
         findings: findings.map((f) => `[${f.severity}/${f.category}] ${f.title}`),
-        cost_usd: verdict && "cost_usd" in verdict ? verdict.cost_usd : null,
         error: run.errorMessage ?? null,
         verdict_url: urls(args.run_id).verdict_url,
         ...failedRunHint(run.status),

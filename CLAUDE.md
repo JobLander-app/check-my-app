@@ -168,3 +168,24 @@ we will never have. Our half is to state the problem so precisely that their
 half is possible — and then to check, from outside, whether it is really gone.
 
 A ticket of ours that contains a proposed fix is a defect in the ticket.
+
+## 10. A check has a price. What it cost us is never shown.
+
+Owner rule, 2026-09-28, with the move to a dollar balance where every check has
+its own price (CHE-327). The customer sees the **price** of a check and what it
+did for that price — click the price and the reason is right there ("walked 7
+journeys, 48 steps" / "quick check, nothing changed"). They never see what the
+check cost **us**: not the dollars, not the tokens, not the multiplier or markup
+we price at. Shown side by side with the price, our cost reads as "look how
+much they make", and it answers a question nobody asked.
+
+This covers everything a customer or their agent reads: pages, emails, the
+public API, MCP tools and instructions. Our own admin views and internal Notion
+pages may show cost and multipliers.
+
+Mechanism: `scripts/verify-cost-never-shown.ts` — no cost, token or multiplier
+field in the modules that build customer payloads, and the real verdict/status
+loaders, fed a run with known cost, return none of it — plus the pricing-formula
+patterns in `scripts/verify-public-copy.ts` for hand-written pages. Until
+2026-09-28 the public verdict payload and the MCP tools returned `cost_usd` and
+`total_tokens` to anyone holding a run id.

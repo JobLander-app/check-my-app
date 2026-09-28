@@ -48,6 +48,9 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
   { name: "cost figure", pattern: /\$\d+(\.\d+)?\s*(of|in)\s+(agent\s+)?compute/i },
   // "costs us", "cost us" — our side of the invoice, on their side of the page.
   { name: "costs us", pattern: /\bcosts?\s+us\b/i },
+  // Pricing rule (CLAUDE.md §10): how we price a check — the multiplier, the
+  // markup, our margin — is ours. A customer sees a price and its reason.
+  { name: "our pricing formula", pattern: /\b(multiplier|mark-?up|our margin|at cost)\b/i },
   // Compute is our bill, not their product.
   { name: "agent compute", pattern: /\bagent\s+compute\b/i },
   // How we check.
