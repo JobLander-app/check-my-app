@@ -48,15 +48,16 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
   { name: "cost figure", pattern: /\$\d+(\.\d+)?\s*(of|in)\s+(agent\s+)?compute/i },
   // "costs us", "cost us" — our side of the invoice, on their side of the page.
   { name: "costs us", pattern: /\bcosts?\s+us\b/i },
-  // Pricing rule (CLAUDE.md §10): how we price a check — the multiplier, the
-  // markup, our margin — is ours. A customer sees a price and its reason.
-  { name: "our pricing formula", pattern: /\b(multiplier|mark-?up|our margin|at cost)\b/i },
   // Compute is our bill, not their product.
   { name: "agent compute", pattern: /\bagent\s+compute\b/i },
   // How we check.
   { name: "headless", pattern: /\bheadless\b/i },
   { name: "in our environment", pattern: /\bin\s+our\s+environment\b/i },
   { name: "our test browser", pattern: /\bour\s+test\s+browser\b/i },
+  // Pricing rule (CLAUDE.md §10): how we price a check — the multiplier, the
+  // markup, our margin — is ours. A customer sees a price and its reason.
+  // Appended last: the self-tests below address earlier entries by index.
+  { name: "our pricing formula", pattern: /\b(multiplier|mark-?up|our margin|at cost)\b/i },
 ];
 
 // Explicit exemptions: a file, the exact line text after trimming, and the
