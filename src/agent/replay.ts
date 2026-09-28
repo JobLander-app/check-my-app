@@ -76,7 +76,8 @@ export { consoleSetAsideLine, shortLabel, smokeOutcomeLine, type PageProbe } fro
 
 // Browser-time only — no tokens are spent on a smoke pass. Recorded so a run's
 // cost column is never a lie by omission and the ledger still sums correctly.
-export const SMOKE_COST_USD = 0.01;
+// CHE-327: the number lives with the prices it sets (src/lib/plans.ts).
+export { SMOKE_COST_USD } from "@/lib/plans";
 
 // The fuse (CHE-132). Until 2026-09-03 this was the calendar: once the last
 // real walk was this old, the next watch run was a full one no matter how

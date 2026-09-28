@@ -26,10 +26,23 @@ export const POSTHOG_CAPTURE_URL = `${POSTHOG_SERVER_HOST}/i/v0/e/`;
 export type ServerAnalyticsEvents = {
   /** A run row was created for `appSlug`; `paid` when a $1 one-off check bought it. */
   run_created: { appSlug: string; paid: boolean; hasCredentials: boolean };
-  /** Stripe reported a completed subscription checkout for `plan`. */
-  checkout_completed: { plan: string };
+  /**
+   * Stripe reported a completed subscription checkout for `plan`. `teamId`
+   * (CHE-327) joins it to `balance_exhausted`, so "the balance ran out → the
+   * team upgraded" is countable per team, not only per person.
+   */
+  checkout_completed: { plan: string; teamId?: string };
   /** Stripe reported a paid one-off check for `appSlug`. */
   one_check_paid: { appSlug: string };
+  /**
+   * CHE-327: a team whose balance was too low was refused a check. `source` is
+   * the door it came through: the dashboard (`ui`), the coding agent (`mcp`),
+   * the REST API (`api`), or a watch's scheduled tick (`watch` — once per
+   * window, not once per tick).
+   */
+  balance_exhausted: { plan: string; source: "ui" | "mcp" | "api" | "watch"; teamId: string };
+  /** CHE-327: Stripe reported a paid top-up of `amountUsd` for the team. */
+  balance_topped_up: { plan: string; amountUsd: number; teamId: string };
 };
 
 /**
@@ -55,6 +68,8 @@ export const SERVER_ANALYTICS_EVENTS = [
   "run_created",
   "checkout_completed",
   "one_check_paid",
+  "balance_exhausted",
+  "balance_topped_up",
 ] as const satisfies readonly ServerAnalyticsEvent[];
 
 export type CapturePayload = {

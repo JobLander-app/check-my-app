@@ -42,6 +42,8 @@ const RELATIONS: Record<string, Record<string, Relation>> = {
     findings: { model: "finding", local: "id", foreign: "runId", many: true },
     journeys: { model: "journey", local: "id", foreign: "runId", many: true },
     llmUsage: { model: "llmUsage", local: "id", foreign: "runId", many: true },
+    // CHE-327: a run is priced on its team's plan.
+    team: { model: "team", local: "teamId", foreign: "id", many: false },
   },
   journey: { steps: { model: "step", local: "id", foreign: "journeyId", many: true } },
   finding: { evidence: { model: "evidence", local: "id", foreign: "findingId", many: true } },
@@ -54,7 +56,10 @@ const DEFAULTS: Record<string, () => Row> = {
   watch: () => ({ active: true, frequency: "daily", notifyOnChangeOnly: true, nextRunAt: null, trialEndsAt: null }),
   run: () => ({ status: "queued", verdict: null, bottomLine: null, events: null, errorMessage: null, anatomy: null,
     targetKind: "website", deploySha: null, deployEnv: null, completedAt: null, costUsd: null, ephemeral: false,
-    expiresAt: null, startedAt: new Date(), forceFull: false, appId: null }),
+    expiresAt: null, startedAt: new Date(), forceFull: false, appId: null,
+    // CHE-327: unpriced until the workflow prices it.
+    priceUsd: null, priceFromTopupUsd: 0, quickPagesOpened: null }),
+  team: () => ({ topupUsd: 0, balanceNoticeSentAt: null }),
   teamEvent: () => ({}),
   ticketPolicy: () => ({}),
 };
@@ -71,6 +76,9 @@ function matchValue(value: unknown, cond: unknown): boolean {
     if ("equals" in c && value !== c.equals) return false;
     if ("gte" in c && !((value as Date | number) >= (c.gte as Date | number))) return false;
     if ("lte" in c && !((value as Date | number) <= (c.lte as Date | number))) return false;
+    // CHE-327: a null never passes a comparison, as in SQL.
+    if ("gt" in c && (value == null || !((value as Date | number) > (c.gt as Date | number)))) return false;
+    if ("lt" in c && (value == null || !((value as Date | number) < (c.lt as Date | number)))) return false;
     return true;
   }
   if (value instanceof Date && cond instanceof Date) return value.getTime() === cond.getTime();
@@ -141,6 +149,15 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
       const out: Row = {};
       for (const [k, v] of Object.entries(select)) {
         if (!v) continue;
+        if (k === "_count") {
+          // { _count: { select: { steps: { where } | true } } }
+          const counts: Row = {};
+          for (const [rel, spec] of Object.entries(((v as Args).select ?? {}) as Args)) {
+            counts[rel] = (related(model, row, rel, spec === true ? {} : { where: (spec as Args).where }) as Row[]).length;
+          }
+          out._count = counts;
+          continue;
+        }
         out[k] = RELATIONS[model]?.[k] ? related(model, row, k, v) : row[k];
       }
       return out;
@@ -176,6 +193,8 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
       if (v === undefined) continue;
       if (v && typeof v === "object" && !(v instanceof Date) && "increment" in (v as Args)) {
         row[k] = (row[k] as number) + ((v as Args).increment as number);
+      } else if (v && typeof v === "object" && !(v instanceof Date) && "decrement" in (v as Args)) {
+        row[k] = (row[k] as number) - ((v as Args).decrement as number);
       } else row[k] = v;
     }
     row.updatedAt = new Date();
@@ -203,6 +222,37 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
       count: async (args: Args = {}) => {
         calls.push(`${name}.count`);
         return find(args).length;
+      },
+      // CHE-327: the balance is a sum over priced runs.
+      aggregate: async (args: Args) => {
+        calls.push(`${name}.aggregate`);
+        const rows = find(args);
+        const _sum: Row = {};
+        for (const f of Object.keys((args._sum ?? {}) as Args)) {
+          const vals = rows.map((r) => r[f]).filter((x): x is number => typeof x === "number");
+          _sum[f] = vals.length ? vals.reduce((s, x) => s + x, 0) : null;
+        }
+        return { _sum };
+      },
+      groupBy: async (args: Args) => {
+        calls.push(`${name}.groupBy`);
+        const by = args.by as string[];
+        const groups = new Map<string, Row[]>();
+        for (const r of find(args)) {
+          const key = JSON.stringify(by.map((b) => r[b]));
+          groups.set(key, [...(groups.get(key) ?? []), r]);
+        }
+        return [...groups.values()].map((rows) => {
+          const out: Row = {};
+          for (const b of by) out[b] = rows[0][b];
+          const _sum: Row = {};
+          for (const f of Object.keys((args._sum ?? {}) as Args)) {
+            _sum[f] = rows.reduce((s, r) => s + ((r[f] as number) ?? 0), 0);
+          }
+          out._sum = _sum;
+          out._count = { _all: rows.length };
+          return out;
+        });
       },
       create: async (args: Args) => {
         calls.push(`${name}.create`);

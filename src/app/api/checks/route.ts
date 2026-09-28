@@ -8,7 +8,9 @@ import { assertCanStartRun } from "@/lib/plans";
 import { effectiveEphemeralTtlDays, effectiveSiteCap } from "@/lib/site-cap";
 import { ephemeralExpiry, ephemeralGate } from "@/lib/ephemeral";
 import { startCheck } from "@/lib/start-check";
-import { distinctIdFromCookies } from "@/lib/analytics-server";
+import { captureServer, distinctIdFromCookies } from "@/lib/analytics-server";
+import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
+import { BALANCE_PATH, PRICING_PATH } from "@/lib/balance-links";
 import { appSlugFromUrl } from "@/lib/utils";
 import { createCheckSchema } from "@/lib/validation";
 import { verifyTurnstile } from "@/lib/turnstile";
@@ -107,10 +109,28 @@ export async function POST(req: Request) {
     prisma,
     context ? { id: context.team.id, plan: context.team.plan as UserPlan } : null,
     anonKeyHash,
-    { siteCap: effectiveSiteCap() },
+    { siteCap: effectiveSiteCap(), appSlug: appSlugFromUrl(input.url) },
   );
   if (!gate.ok) {
-    return NextResponse.json({ error: gate.reason, code: gate.code }, { status: 429 });
+    // CHE-327: an empty balance answers with both ways out, like every door.
+    const exhausted = context && isBalanceExhausted(gate.code);
+    if (exhausted) {
+      await captureBalanceExhausted(captureServer, {
+        distinctId: owner?.id ?? null,
+        teamId: context.team.id,
+        plan: context.team.plan,
+        source: auth?.via === "api_key" ? "api" : "ui",
+      });
+    }
+    const origin = new URL(req.url).origin;
+    return NextResponse.json(
+      {
+        error: gate.reason,
+        code: gate.code,
+        ...(exhausted ? { buy_url: `${origin}${BALANCE_PATH}`, upgrade_url: `${origin}${PRICING_PATH}` } : {}),
+      },
+      { status: 429 },
+    );
   }
 
   // Insert + hand-off to the agent, shared with the paid one-off check. The
@@ -119,6 +139,7 @@ export async function POST(req: Request) {
     input,
     ownerId: owner?.id ?? null,
     teamId: context?.team.id ?? null,
+    startedVia: !owner ? "anon" : auth?.via === "api_key" ? "api" : "ui",
     anonKeyHash,
     ephemeral: expiresAt ? { expiresAt } : undefined,
     distinctId: distinctIdFromCookies(req.headers.get("cookie")),

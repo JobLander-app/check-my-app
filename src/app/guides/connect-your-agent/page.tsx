@@ -21,8 +21,8 @@ export const metadata = guideMetadata("connect-your-agent");
 //   url + headers, ${env:VAR}): cursor.com/docs/context/mcp
 // - the raw key is shown once, only its hash is stored, revoke deletes it:
 //   src/components/api-keys.tsx, src/app/dashboard/actions.ts (CHE-52)
-// - runs started with a key belong to the key's team and follow its plan's
-//   quotas: src/app/api/checks/route.ts (assertCanStartRun)
+// - runs started with a key belong to the key's team and spend its balance:
+//   src/app/api/checks/route.ts (assertCanStartRun)
 const CLAUDE_CODE = `claude mcp add --transport http checkmyapp https://checkmyapp.dev/mcp \\
   --header "Authorization: Bearer cma_YOUR_KEY"`;
 
@@ -74,7 +74,7 @@ export default function ConnectAgentGuide() {
           Dashboard → <Strong>API keys</Strong> → Create key. Keys are available on every plan.
           The key is shown once — copy it then. Only a hash of it is stored, and revoking it
           deletes it immediately. Checks started with the key belong to your team and
-          count against your plan like any other.
+          spend its balance like any other.
         </p>
       </Section>
 
@@ -132,8 +132,9 @@ export default function ConnectAgentGuide() {
           scripts/verify-mcp-remote.ts renders this page and compares. */}
       <Section title="What your plan allows">
         <p>
-          Every tool above works on every plan, Free included. A plan sets volume — how many
-          checks, how many apps watched, how many full re-checks a month:
+          Every tool above works on every plan, Free included. A plan is a balance, and every
+          check — scheduled, started by your agent or from the dashboard — spends it at its own
+          price:
         </p>
         <ul className="card divide-y divide-ink-700">
           {GUIDE_PLANS.map((plan) => {
@@ -147,9 +148,10 @@ export default function ConnectAgentGuide() {
           })}
         </ul>
         <p>
-          Your agent is told your plan and what is left of it when it connects, and says so
-          before it spends your last free check. When a limit is reached, the answer comes with
-          a link to upgrade. Prices are on <A href="/pricing">Pricing</A>.
+          Your agent is told your balance and what a check of each app usually costs when it
+          connects, and says so before it spends the last of it. Every finished check comes
+          back with its price and the work it paid for. When the balance runs out, the answer
+          comes with two links: top up, or upgrade. Plans are on <A href="/pricing">Pricing</A>.
         </p>
       </Section>
 

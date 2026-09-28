@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { UpgradeCta } from "@/components/upgrade-cta";
-import { PLAN_CATALOG, catalogPlan } from "@/lib/plan-catalog";
+import { PLAN_CATALOG, TOPUP_LINE, catalogPlan } from "@/lib/plan-catalog";
 import { pageMetadata } from "@/lib/site-metadata";
 
 const STARTER = catalogPlan("starter");
 
 export const metadata = pageMetadata({
   title: "Pricing",
-  description: `First check is free, no signup. Daily Watch from ${STARTER.price}${STARTER.priceNote ?? ""}: your app checked every day, and you hear the moment something breaks.`,
+  description: `First check is free, no signup. From ${STARTER.price}${STARTER.priceNote ?? ""} of checks: your app checked every day, and you hear the moment something breaks.`,
   path: "/pricing",
 });
 
@@ -17,10 +17,9 @@ export const metadata = pageMetadata({
 //
 // CHE-137 (owner, 2026-09-06): what a paid plan sells is "confidence every
 // morning that my app did not break overnight" plus "the answer right now,
-// after a deploy". The re-check after a deploy is unlimited on every paid
-// plan; only the FULL re-check (every journey from scratch) is metered. No
-// per-month run count is promised anywhere else on the site, by the same
-// decision.
+// after a deploy". CHE-327 (owner, 2026-09-28): a plan is a monthly balance,
+// spent on anything, and every check has its own price — the cards say the
+// balance and the typical price, never what a check costs us.
 //
 // CHE-326: the cards are PLAN_CATALOG (src/lib/plan-catalog.ts), whose every
 // number is read from PLAN_LIMITS — the same catalog renders the owner's Notion
@@ -108,7 +107,19 @@ export default function PricingPage() {
         <p className="mx-auto max-w-2xl text-center text-sm text-fg-muted">
           <span className="text-fg">Connect your coding agent (MCP) — every plan.</span> Run
           checks from Claude Code, CI or your own tooling with an API key; checks started that
-          way count against your plan like any other.
+          way spend the same balance as any other.
+        </p>
+
+        {/* CHE-327: the way out of an empty balance, next to the plans. The
+            buttons themselves live on the dashboard's balance card, where a
+            signed-in admin can press them (src/lib/balance-links.ts). */}
+        <p id="checks" className="mx-auto max-w-2xl text-center text-sm text-fg-muted">
+          <span className="text-fg">{TOPUP_LINE}.</span> Spent after the plan&apos;s own balance
+          — from{" "}
+          <Link href="/dashboard#balance" className="text-accent hover:underline">
+            your dashboard
+          </Link>
+          .
         </p>
 
         <p className="mx-auto max-w-2xl text-center text-sm text-fg-muted">

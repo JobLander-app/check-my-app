@@ -10,13 +10,20 @@
 // feature — every plan sets its own (the Notion page's "not gated" list) — so no line may
 // suggest one plan gets "the paths you nominate" and another does not.
 // scripts/verify-plan-catalog.ts holds all of that.
+//
+// CHE-327: a plan is a monthly balance (Free: once), and every check has its
+// own price. The cards say the balance and the typical price range on that
+// plan — prices only; what a check costs us and the multiplier between the
+// two never appear here (scripts/verify-balance.ts).
 
-import type { UserPlan, WatchFrequency } from "./enums";
+import type { UserPlan } from "./enums";
 import {
   ANON_RUNS_PER_DAY,
-  FREE_RUNS_LIFETIME,
   PLAN_LIMITS,
+  TOPUP_AMOUNTS_USD,
   WATCH_TRIAL_DAYS,
+  typicalPriceRange,
+  usd,
 } from "./plans";
 
 // The plans /pricing sells. Enterprise exists in PLAN_LIMITS but is a
@@ -41,26 +48,22 @@ export type CatalogPlan = {
 export const TRACKER_LINE =
   "Findings auto-filed to your tracker — Linear now, GitHub next — with dedup & escalation";
 
-// What a watch's cadence reads as on the page.
-function cadenceLine(freq: WatchFrequency | null): string | null {
-  if (freq === "every_6h") {
-    return "Checks every 6h — uptime and page health each cycle, one deep journey walk a day per app";
-  }
-  if (freq === "daily") return "Daily Watch — a full journey check every 24h";
-  return null;
+// What the plan puts on the balance, as the card says it.
+export function balanceLine(plan: CatalogPlanId): string {
+  const credit = PLAN_LIMITS[plan].creditUsd ?? 0;
+  return plan === "free"
+    ? `${usd(credit)} of checks with a free account`
+    : `${usd(credit)} of checks every month — daily watches, your agent, re-checks after a deploy`;
 }
 
-function appsLine(plan: CatalogPlanId): string | null {
-  const n = PLAN_LIMITS[plan].maxWatches;
-  return n > 1 ? `Up to ${n} apps` : null;
+// What a check typically costs on the plan.
+export function priceRangeLine(plan: CatalogPlanId): string {
+  const r = typicalPriceRange(plan);
+  return `Every check has its own price, typically ${usd(r.low)}–${usd(r.high)}; a check that finds nothing changed costs a few cents`;
 }
 
-function recheckLine(plan: CatalogPlanId): string | null {
-  const n = PLAN_LIMITS[plan].fullRechecksPerMonth;
-  if (n === null) return "Re-check after a deploy, any time — unlimited full re-checks";
-  if (n === 0) return null;
-  return `Re-check after a deploy, any time — up to ${n} full re-checks a month`;
-}
+export const TOPUP_LINE = `Top up any time from $${TOPUP_AMOUNTS_USD[0]} — bought balance never expires`;
+export const WATCHES_LINE = "Any number of apps, checked daily or every 6 hours";
 
 function seatsLine(plan: CatalogPlanId): string | null {
   const n = PLAN_LIMITS[plan].includedSeats;
@@ -76,7 +79,7 @@ function lines(...items: (string | null)[]): string[] {
   return items.filter((l): l is string => l !== null);
 }
 
-const FREE_WATCHES = PLAN_LIMITS.free.maxWatches;
+const planPrice = (plan: CatalogPlanId) => `$${PLAN_LIMITS[plan].creditUsd}`;
 
 export const PLAN_CATALOG: CatalogPlan[] = [
   {
@@ -86,8 +89,8 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     blurb: "See what the agent sees. No card, no signup.",
     features: lines(
       `${ANON_RUNS_PER_DAY} check/day without signup`,
-      `${FREE_RUNS_LIFETIME} checks total with a free account`,
-      `${WATCH_TRIAL_DAYS}-day Daily Watch trial on ${FREE_WATCHES === 1 ? "one app" : `${FREE_WATCHES} apps`} — no card`,
+      balanceLine("free"),
+      `${WATCH_TRIAL_DAYS}-day Daily Watch trial on one app — no card`,
       seatsLine("free"),
       "Evidence on every verdict — screenshots, network logs",
       "Agent-written Playwright specs",
@@ -97,13 +100,15 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     id: "starter",
     name: "Starter",
-    price: "$29",
-    priceNote: "/mo per app",
+    // The subscription price IS the monthly balance, by design: what you pay
+    // is what you can spend.
+    price: planPrice("starter"),
+    priceNote: "/mo",
     blurb: "Your app, watched every day.",
     features: lines(
-      appsLine("starter"),
-      cadenceLine(PLAN_LIMITS.starter.maxFrequency),
-      recheckLine("starter"),
+      balanceLine("starter"),
+      priceRangeLine("starter"),
+      WATCHES_LINE,
       "Regression alerts by email",
       trackerLine("starter"),
       seatsLine("starter"),
@@ -117,13 +122,13 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     id: "growth",
     name: "Growth",
-    price: "$99",
+    price: planPrice("growth"),
     priceNote: "/mo",
     blurb: "For teams shipping more than one thing.",
     features: lines(
-      appsLine("growth"),
-      cadenceLine(PLAN_LIMITS.growth.maxFrequency),
-      recheckLine("growth"),
+      balanceLine("growth"),
+      priceRangeLine("growth"),
+      WATCHES_LINE,
       trackerLine("growth"),
       seatsLine("growth"),
       "Fixes verified from the outside: close a ticket and the next run confirms it",
@@ -134,13 +139,13 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     id: "business",
     name: "Business",
-    price: "from $499",
+    price: `from ${planPrice("business")}`,
     priceNote: "/mo",
     blurb: "Compliance-grade checking, on your terms.",
     features: lines(
-      appsLine("business"),
-      cadenceLine(PLAN_LIMITS.business.maxFrequency),
-      recheckLine("business"),
+      balanceLine("business"),
+      priceRangeLine("business"),
+      WATCHES_LINE,
       trackerLine("business"),
       seatsLine("business"),
       "SSO",

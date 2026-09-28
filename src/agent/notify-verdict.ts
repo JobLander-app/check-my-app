@@ -141,10 +141,9 @@ export function notifyOutcomeCode(outcome: NotifyOutcome): string {
 // the stored code and any query over them cannot drift apart.
 export const SKIP_NO_ADDRESS = "no address on the run";
 export const SKIP_UNCHANGED = "the verdict has not changed since the last check";
-export const SKIP_BUDGET_TICK = "a budget tick carries no news about the product";
 
-// Write the outcome onto the run. Separate from the decision so the workflow can
-// record the budget tick's silence too, at a point that never reaches the send.
+// Write the outcome onto the run. Separate from the decision so a path that
+// never reaches the send can still record why.
 export async function recordNotifyOutcome(
   env: AgentEnv,
   publicId: string,

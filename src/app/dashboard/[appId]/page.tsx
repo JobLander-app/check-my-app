@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { setIntegrationEndpoints, updateAppSettings } from "../actions";
 import { DeleteAppSection } from "@/components/delete-app";
-import { fullRechecksRemaining } from "@/lib/plans";
+import { appPriceRange, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { setAppNotifiers } from "@/app/dashboard/actions";
@@ -97,14 +97,12 @@ export default async function AppSettingsPage({
   // CHE-322: label and email only — the password never reaches the page.
   const testAccounts = await listTestAccounts(db, team.id, app.id);
 
-  // CHE-137: full re-checks are an allowance per owner and UTC month (the
-  // regular re-check after a deploy is not limited). Shown where the owner
-  // decides when their app is checked.
-  const fullRechecks = await fullRechecksRemaining(db, { id: team.id, plan: team.plan as UserPlan });
-  const fullRechecksLine =
-    fullRechecks.limit === null
-      ? "Full re-checks this month: unlimited"
-      : `Full re-checks this month: ${fullRechecks.used}/${fullRechecks.limit}, resets ${fullRechecks.resetsOn}`;
+  // CHE-327: every check spends the team's balance, so where the owner decides
+  // how often the app is checked, they see what a check of it usually costs.
+  const usual = await appPriceRange(db, { id: team.id, plan: team.plan as UserPlan }, app.appSlug);
+  const priceLine = usual
+    ? `A check of this app usually costs ${usd(usual.low)}–${usd(usual.high)}; one that finds nothing changed, a few cents.`
+    : "Each check spends your team's balance; one that finds nothing changed costs a few cents.";
 
   // Tracker token health (CHE-68/72): a pre-refresh-flow connection has no
   // refresh token, so its 24h access token dies and only a reconnect heals it.
@@ -297,7 +295,7 @@ export default async function AppSettingsPage({
               />
             </label>
             <p className="text-xs text-fg-faint sm:col-span-2">
-              {fullRechecksLine} · a regular re-check after a deploy is not limited.
+              {priceLine}
             </p>
           </div>
         </section>}
@@ -493,7 +491,7 @@ export default async function AppSettingsPage({
       </section>
 
       {/* CHE-95: found by our own check — an app could be added and never
-          removed, which also pinned a free plan at its one-watch cap. */}
+          removed, which also pinned a free plan at its one-watch trial. */}
       <DeleteAppSection appId={app.id} appSlug={app.appSlug} isExtension={app.targetKind === "extension"} />
 
       {/* One Save for sections 1–2 + the ticket contract (form= association). */}

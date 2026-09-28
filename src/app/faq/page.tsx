@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { pageMetadata } from "@/lib/site-metadata";
+import { ANON_RUNS_PER_DAY, ANON_RUNS_PER_DAY_SITE, PLAN_LIMITS, TOPUP_AMOUNTS_USD, usd } from "@/lib/plans";
 
 export const metadata = pageMetadata({
   title: "FAQ",
@@ -37,8 +38,8 @@ const FAQS: Faq[] = [
         <Link href="/guides/connect-your-agent" className="text-accent hover:underline">
           Connect your coding agent
         </Link>
-        . A check started with a key counts against your plan exactly like one started from
-        the site.
+        . A check started with a key spends your balance exactly like one started from the
+        site.
       </>
     ),
   },
@@ -84,15 +85,26 @@ const FAQS: Faq[] = [
     ),
   },
   {
-    // CHE-137: the numbers are PLAN_LIMITS[plan].fullRechecksPerMonth in
-    // src/lib/plans.ts and on /pricing — change all three together.
+    // CHE-327: every number here is read from src/lib/plans.ts, never typed.
+    q: "What does a check cost?",
+    a: (
+      <>
+        Every plan is a balance: {usd(PLAN_LIMITS.starter.creditUsd ?? 0)} of checks a month on
+        Starter, {usd(PLAN_LIMITS.growth.creditUsd ?? 0)} on Growth. Each check has its own
+        price, shown on its verdict next to the work it did — a check that walks every journey
+        of a big app costs more than one that re-walks what changed after a deploy, and one
+        that finds nothing changed costs a few cents. When the balance runs out you can top it
+        up from ${TOPUP_AMOUNTS_USD[0]} or upgrade; nothing is lost in between.
+      </>
+    ),
+  },
+  {
     q: "What is the difference between a re-check and a full re-check?",
     a: (
       <>
         A re-check re-walks what changed since the last check and is what to press after a
-        deploy. It is not limited on paid plans. A full re-check walks every journey of your
-        app from scratch, as if for the first time, and is limited per plan: 5 a month on
-        Starter, 20 on Growth, 100 on Business.
+        deploy. A full re-check walks every journey of your app from scratch, as if for the
+        first time — so it costs more.
       </>
     ),
   },
@@ -100,9 +112,10 @@ const FAQS: Faq[] = [
     q: "How is the free tier limited?",
     a: (
       <>
-        The site runs 20 free checks a day in total. Without an account that is 1 check per
-        visitor every 24 hours; a free account gets 3 checks. Once the day&apos;s free checks
-        are used up, a check costs $1; paid plans lift the caps.
+        The site runs {ANON_RUNS_PER_DAY_SITE} free checks a day in total. Without an account
+        that is {ANON_RUNS_PER_DAY} check per visitor every 24 hours; a free account gets{" "}
+        {usd(PLAN_LIMITS.free.creditUsd ?? 0)} of checks. Once the day&apos;s free checks are
+        used up, a check costs $1; a plan or a top-up lifts the caps.
       </>
     ),
   },

@@ -11,6 +11,7 @@ import { getOptionalUser } from "@/lib/auth";
 import { optionalTeamContext } from "@/lib/auth";
 import { hashClientKey } from "@/lib/crypto";
 import { createRecheckRun } from "@/lib/recheck";
+import { isBalanceExhausted } from "@/lib/balance-events";
 import { EPHEMERAL_WATCH_REFUSAL, enableWatchForRun } from "@/lib/watch-enable";
 import { isSelfCheckRequest, selfCheckRedirectPath } from "@/lib/self-check";
 
@@ -87,7 +88,10 @@ async function doRecheck(publicId: string, full: boolean): Promise<void> {
     redirect(`/verdict/${result.publicId}?recheck=reused`);
   }
   if (result.kind === "quota") {
-    redirect(`/verdict/${publicId}?recheck=${encodeURIComponent(result.reason)}`);
+    // CHE-327: an empty balance comes back with a flag, so the page shows the
+    // two ways out next to the sentence.
+    const balance = isBalanceExhausted(result.code) ? "&balance=1" : "";
+    redirect(`/verdict/${publicId}?recheck=${encodeURIComponent(result.reason)}${balance}`);
   }
   if (result.kind === "ok") {
     redirect(`/run/${result.publicId}`);

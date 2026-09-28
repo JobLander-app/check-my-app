@@ -1,37 +1,34 @@
-// Subscription tier limits (CHE-34). Enforcement only — no billing yet (Stripe /
-// Clerk Billing wire later, per the PRD). `User.plan` drives the gates.
+// What each plan allows, and the gates that enforce it (CHE-34, rebuilt around
+// one currency in CHE-327). `Team.plan` drives the gates.
 
 import type { UserPlan, WatchFrequency } from "./enums";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ownerScoped, teamOwned } from "@/lib/tenant-db";
 
 export interface PlanLimits {
-  // 0 = no Daily Watch (one-off runs only).
-  maxWatches: number;
-  // Most-frequent cadence allowed; null = no recurring checks.
-  maxFrequency: WatchFrequency | null;
+  // CHE-327 (owner, 2026-09-28): a plan is a dollar BALANCE, and every check
+  // has its own price. What a check is for does not matter — a watch's
+  // scheduled tick, a check the coding agent starts, the dashboard's button, a
+  // re-check, a full re-check all spend the same balance. Someone working
+  // through their agent may want forty checks and no watch at all; a
+  // watch-slot cap told them no, and a count of "full re-checks" meant nothing
+  // across apps of different size.
+  //
+  // `creditUsd` is what the plan puts on the balance each UTC month (no
+  // rollover). Free's is one-time: it never renews. null = unlimited.
+  creditUsd: number | null;
+  // INTERNAL. A check's price is what it cost us × this. Never shown to a
+  // customer, anywhere (owner: "×2–3 makes people think look how much they
+  // earn") — the customer sees a check's price and their balance, nothing
+  // else. It appears in code and on our own Notion page, and
+  // scripts/verify-balance.ts fails the build if a customer surface prints it.
+  priceMultiplier: number;
   trackerIntegration: boolean;
   // No API flag here, on purpose (CHE-316, owner 2026-09-27): the coding agent
   // is the primary interface, so every plan — Free included — can mint a key
   // and connect MCP. What bounds a key's spending is what bounds the UI's: the
-  // run quota (assertCanStartRun), the watch cap and the daily budget below.
-  // CHE-106: what one watched app may spend on agent work per day. Measured
-  // reality is ~$0.44/tick, so these are budgets for roughly one deep check a
-  // day plus room for a re-check when something is wrong. Beyond it, ticks
-  // still run — as smoke passes, which cost ~$0.01 and still catch an app
-  // going down. Set against revenue: Starter is $29/mo/app ≈ $0.97/day.
-  dailyBudgetUsd: number;
-  // CHE-137: how many FULL re-checks an owner may start per UTC calendar
-  // month; null = unlimited. The default re-check is the ladder (smoke /
-  // partial / full, decided by the survey — re-walk only what changed, map
-  // reused from Daily Watch) and is not limited here. A full re-check skips
-  // the ladder and walks everything, which on the current model tiers costs
-  // $0.16–0.24 a run (CHE-184: run #145 at $0.193), so it is metered per plan
-  // against what the plan pays: Starter $29/mo carries 5, Growth $99/mo 20,
-  // Business 100. Free carries none — the ladder re-check is the trial. The
-  // "30 runs a month" Starter promise was dropped with this (owner,
-  // 2026-09-06).
-  fullRechecksPerMonth: number | null;
+  // team's balance (assertCanStartRun).
+  //
   // CHE-259: how many BILLABLE seats the plan carries before the subscription's
   // quantity has to grow. A billable seat is an admin or a member — the two
   // scopes that can spend the team's plan. Readers are free, deliberately: a
@@ -42,61 +39,63 @@ export interface PlanLimits {
 }
 
 export const PLAN_LIMITS: Record<UserPlan, PlanLimits> = {
-  // Free gets ONE daily watch: every verdict page advertises "Enable Daily
-  // Watch", and with no billing wired a 0-cap made the button a dead end for
-  // every account that exists. One watch is the product's hook; caps bite at
-  // the second app.
-  free: {
-    maxWatches: 1,
-    maxFrequency: "daily",
-    trackerIntegration: false,
-    // A trial should be able to show its best work once a day.
-    dailyBudgetUsd: 1.2,
-    fullRechecksPerMonth: 0,
-    includedSeats: 1,
-  },
-  starter: {
-    maxWatches: 1,
-    maxFrequency: "daily",
-    trackerIntegration: true,
-    dailyBudgetUsd: 1.2,
-    fullRechecksPerMonth: 5,
-    includedSeats: 3,
-  },
-  growth: {
-    maxWatches: 5,
-    maxFrequency: "every_6h",
-    trackerIntegration: true,
-    // $99/mo across 5 apps ≈ $0.66/day/app of revenue; one deep walk a day
-    // plus smoke on the other ticks fits inside it.
-    dailyBudgetUsd: 0.8,
-    fullRechecksPerMonth: 20,
-    includedSeats: 10,
-  },
-  business: {
-    maxWatches: 50,
-    maxFrequency: "every_6h",
-    trackerIntegration: true,
-    dailyBudgetUsd: 4,
-    fullRechecksPerMonth: 100,
-    includedSeats: 50,
-  },
-  enterprise: {
-    maxWatches: Number.MAX_SAFE_INTEGER,
-    maxFrequency: "every_6h",
-    trackerIntegration: true,
-    dailyBudgetUsd: 10,
-    fullRechecksPerMonth: null,
-    includedSeats: null,
-  },
+  free: { creditUsd: 3, priceMultiplier: 3, trackerIntegration: false, includedSeats: 1 },
+  starter: { creditUsd: 29, priceMultiplier: 3, trackerIntegration: true, includedSeats: 3 },
+  growth: { creditUsd: 99, priceMultiplier: 2.5, trackerIntegration: true, includedSeats: 10 },
+  business: { creditUsd: 499, priceMultiplier: 2, trackerIntegration: true, includedSeats: 50 },
+  enterprise: { creditUsd: null, priceMultiplier: 2, trackerIntegration: true, includedSeats: null },
 };
 
-// Run quotas (CHE-40 phase 1 — limits only, no checkout). A run costs real
-// money to execute, so the free funnel is capped at both ends: one taste for a
-// stranger, a handful for a signed-up account. Every paid plan is uncapped for
-// now; per-tier run allowances land with billing.
+// What a check costs us, measured (prod, 30 days to 2026-09-28, 120 finished
+// runs: avg $0.32, p50 $0.24, p90 $0.75, max $1.63). The customer never sees
+// these; they see a PRICE range derived from them for their own plan
+// (typicalPriceRange), which is how /pricing, the guide and the agent can say
+// "a check typically costs $X–$Y" without a number anyone has to keep in sync.
+// Re-measure with scripts/measure/pricing-hypotheses.ts.
+export const TYPICAL_CHECK_COST_USD = { low: 0.24, high: 0.75 } as const;
+
+// A check whose survey found nothing changed walks no journey and carries the
+// last verdict forward (src/agent/replay.ts). It costs this, and is priced like
+// any other check — a few cents — so a 6-hourly watch costs almost nothing on
+// the days nothing happens.
+export const SMOKE_COST_USD = 0.01;
+
+// A safety fuse, not fair use. A single check that has cost this much is far
+// past anything measured (max $1.63), which means something of OURS is looping —
+// so it is stopped as our failure: price 0, internal reason, nothing published
+// (rule 4). The agent's per-phase iteration caps (src/agent/limits.ts,
+// instructions.ts) bound one journey; nothing bounded a run's journeys
+// together, and that is the gap this closes.
+export const RUNAWAY_COST_USD = 3;
+
+// What the customer pays for a check that cost us `costUsd`, in cents.
+export function priceForCost(plan: UserPlan, costUsd: number): number {
+  return Math.round(Math.max(0, costUsd) * PLAN_LIMITS[plan].priceMultiplier * 100) / 100;
+}
+
+// The price range a check typically has on this plan.
+export function typicalPriceRange(plan: UserPlan): { low: number; high: number } {
+  return {
+    low: priceForCost(plan, TYPICAL_CHECK_COST_USD.low),
+    high: priceForCost(plan, TYPICAL_CHECK_COST_USD.high),
+  };
+}
+
+export function usd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+// Run quotas for the anonymous funnel (CHE-40).
 export const ANON_RUNS_PER_DAY = 1;
-export const FREE_RUNS_LIFETIME = 3;
+
+// CHE-327: the top-up amounts the buttons offer. Nothing below $10, so Stripe's
+// fixed fee per payment does not eat the purchase. Bought balance never expires
+// and is spent after the plan's own credit.
+export const TOPUP_AMOUNTS_USD = [10, 25, 50] as const;
+export type TopUpAmount = (typeof TOPUP_AMOUNTS_USD)[number];
+export function isTopUpAmount(n: unknown): n is TopUpAmount {
+  return typeof n === "number" && (TOPUP_AMOUNTS_USD as readonly number[]).includes(n);
+}
 
 // Site-wide cap on free anonymous checks per UTC day (owner decision,
 // 2026-09-05, before launch). The per-visitor cap above bounds one stranger;
@@ -154,6 +153,12 @@ export async function anonRunsToday(
 export const WATCH_TRIAL_DAYS = 7;
 const TRIAL_MS = WATCH_TRIAL_DAYS * 24 * 60 * 60 * 1000;
 
+// CHE-327: the one watch-shaped limit left. A paid team may watch any number
+// of apps at any cadence — a watch is a schedule that spends the team's
+// balance, and the balance is the limit. Free keeps its trial: one app, daily,
+// for WATCH_TRIAL_DAYS, spending the same one-time credit everything else does.
+export const FREE_TRIAL_WATCHES = 1;
+
 // trialEndsAt to stamp on a watch the given plan is enabling. Paid plans get
 // null — no trial, no expiry.
 export function watchTrialEnd(plan: UserPlan, now: Date = new Date()): Date | null {
@@ -195,33 +200,23 @@ export function watchTrialState(
   return { kind: "active", daysLeft: Math.ceil(left / (24 * 60 * 60 * 1000)) };
 }
 
-const FREQ_RANK: Record<WatchFrequency, number> = { manual: 0, daily: 1, every_6h: 2 };
-
+// Every paid plan may use every cadence; Free's trial watch is daily.
 export function canUseFrequency(plan: UserPlan, freq: WatchFrequency): boolean {
-  const max = PLAN_LIMITS[plan].maxFrequency;
-  return max !== null && FREQ_RANK[freq] <= FREQ_RANK[max];
+  return plan !== "free" || freq !== "every_6h";
 }
 
 export type WatchGate = { ok: true } | { ok: false; reason: string };
 
-// Pure half of assertCanAddWatch: the cap decision given how many active
-// watches the owner already has. Split out so the rule can be asserted without
-// a database, and so the Free copy says what Free actually is — one app, on a
-// trial — instead of a bare number.
+// Pure half of assertCanAddWatch: the Free trial's one app. Every other plan
+// has no watch count to run out of (CHE-327).
 export function watchCapReason(plan: UserPlan, activeWatches: number): string | null {
-  const limits = PLAN_LIMITS[plan];
-  if (limits.maxWatches === 0) {
-    return "Daily Watch isn't available on the Free plan — upgrade to enable it.";
-  }
-  if (activeWatches < limits.maxWatches) return null;
-  return plan === "free"
-    ? `Free covers one app, on a ${WATCH_TRIAL_DAYS}-day trial. Upgrade to Starter to watch this one too.`
-    : `Your team's plan covers ${limits.maxWatches} watched app(s), and they are all in use.`;
+  if (plan !== "free" || activeWatches < FREE_TRIAL_WATCHES) return null;
+  return `Free covers one app, on a ${WATCH_TRIAL_DAYS}-day trial. Upgrade to Starter to watch this one too.`;
 }
 
-// CHE-325: what the watch cap counts — every ACTIVE watch of the team, a Free
+// CHE-325: what the Free cap counts — every ACTIVE watch of the team, a Free
 // watch whose trial has ended included (it is still switched on; the scheduler
-// skips it). One count for the gate and for what an agent is told is left.
+// skips it). One count for the gate and for what an agent is told.
 export async function activeWatchCount(db: PrismaClient, teamId: string): Promise<number> {
   return db.watch.count({ where: { ...teamOwned(teamId), active: true } });
 }
@@ -232,7 +227,7 @@ export const TRIAL_ENDED_REASON =
   `The free ${WATCH_TRIAL_DAYS}-day Daily Watch trial on this app has ended. Upgrade to keep it running.`;
 
 // Gate for enabling/configuring a Daily Watch. existingWatchId set → it's an
-// update of an existing watch, so it doesn't count against the per-plan cap.
+// update of an existing watch, so it doesn't count against Free's one app.
 export async function assertCanAddWatch(
   db: PrismaClient,
   opts: {
@@ -244,35 +239,245 @@ export async function assertCanAddWatch(
     existingWatchId?: string | null;
   },
 ): Promise<WatchGate> {
-  if (PLAN_LIMITS[opts.plan].maxWatches === 0) {
-    return { ok: false, reason: watchCapReason(opts.plan, 0)! };
-  }
   if (!canUseFrequency(opts.plan, opts.frequency)) {
-    return { ok: false, reason: `Your plan doesn't allow ${opts.frequency} checks.` };
+    return { ok: false, reason: "The free Daily Watch trial checks once a day. Upgrade to check every 6 hours." };
   }
-  if (!opts.existingWatchId) {
-    const count = await activeWatchCount(db, opts.teamId);
-    const reason = watchCapReason(opts.plan, count);
+  if (opts.plan === "free" && !opts.existingWatchId) {
+    const reason = watchCapReason(opts.plan, await activeWatchCount(db, opts.teamId));
     if (reason) return { ok: false, reason };
   }
   return { ok: true };
 }
 
-// What a Free team's lifetime allowance counts: every run of the team, however
-// it started. The gate below and the "free checks left" an agent is told
-// (src/lib/plan-status.ts, CHE-325) read this one count, so the number said is
-// the number enforced.
-export async function teamRunsUsed(db: PrismaClient, teamId: string): Promise<number> {
-  return db.run.count({ where: { ...teamOwned(teamId) } });
+// ---------------------------------------------------------------------------
+// The balance (CHE-327): one number for every surface.
+//
+// A check is priced when it finishes (priceRun, called by the workflow): what
+// it cost us × the plan's multiplier, stored on Run.priceUsd. The price is
+// taken from the plan's credit for the window first; whatever the credit
+// cannot cover comes off the team's bought balance (Team.topupUsd), and that
+// part is stored as Run.priceFromTopupUsd so the window's plan spending is a
+// plain sum over the rows. Two rules decide what is free:
+//
+//   - A run that failed — ours, by definition (rule 4: our failures never
+//     reach the customer) — costs 0. Whatever it had been priced at is given
+//     back (voidRunPrice).
+//   - A check whose survey found nothing changed is NOT free: it costs its
+//     real, tiny price (SMOKE_COST_USD × multiplier, a few cents). Nothing is
+//     hidden in "it didn't count".
+//
+// A check may start while the balance is positive and at least what a check of
+// this app usually costs (estimateCheckPrice). The finishing check may take the
+// balance slightly below zero; that blocks the next start and nothing else.
+// The number a person or an agent is told (teamBalance) and the number the
+// gate reads are the same computation over the same rows.
+
+// Start of the current UTC month — the credit renews there, and the copy names
+// that date.
+export function utcMonthStart(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
+
+// The first day of the following UTC month, as the copy says it: "October 1".
+// A fixed English table rather than Intl so the wording is the same on every
+// runtime (workerd, Node in a verify script).
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+export function nextUtcMonthLabel(now: Date = new Date()): string {
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return `${MONTH_NAMES[next.getUTCMonth()]} 1`;
+}
+
+export function planLabel(plan: UserPlan): string {
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+// The plan's credit and the window it covers. Free's is once, ever; every
+// other plan's renews on the first of the UTC month.
+export function planCredit(plan: UserPlan): { window: "lifetime" | "month"; creditUsd: number | null } {
+  return { window: plan === "free" ? "lifetime" : "month", creditUsd: PLAN_LIMITS[plan].creditUsd };
+}
+
+function windowWhere(plan: UserPlan, now: Date) {
+  return planCredit(plan).window === "month" ? { createdAt: { gte: utcMonthStart(now) } } : {};
+}
+
+const cents = (n: number) => Math.round(n * 100) / 100;
+
+export interface TeamBalance {
+  window: "lifetime" | "month";
+  // What the plan puts on the balance for the window; null = unlimited.
+  creditUsd: number | null;
+  // Everything this window's checks were priced at (credit + bought).
+  spentUsd: number;
+  // The part of that the plan's credit covered.
+  planSpentUsd: number;
+  // Bought balance not yet spent (can be slightly negative after a check
+  // finished above what was left).
+  topupUsd: number;
+  // What the team can spend now; null = unlimited.
+  balanceUsd: number | null;
+  // "October 1" for a monthly plan; null for Free, whose credit never renews.
+  renewsOn: string | null;
+}
+
+// Pure: the balance from its parts, so the rule can be asserted without a
+// database.
+export function balanceFrom(
+  plan: UserPlan,
+  parts: { spentUsd: number; planSpentUsd: number; topupUsd: number },
+  now: Date = new Date(),
+): TeamBalance {
+  const { window, creditUsd } = planCredit(plan);
+  return {
+    window,
+    creditUsd,
+    spentUsd: cents(parts.spentUsd),
+    planSpentUsd: cents(parts.planSpentUsd),
+    topupUsd: cents(parts.topupUsd),
+    balanceUsd: creditUsd === null ? null : cents(Math.max(0, creditUsd - parts.planSpentUsd) + parts.topupUsd),
+    renewsOn: window === "month" ? nextUtcMonthLabel(now) : null,
+  };
+}
+
+export async function teamBalance(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  now: Date = new Date(),
+): Promise<TeamBalance> {
+  const [sums, row] = await Promise.all([
+    db.run.aggregate({
+      where: { ...teamOwned(team.id), ...windowWhere(team.plan, now) },
+      _sum: { priceUsd: true, priceFromTopupUsd: true },
+    }),
+    db.team.findUnique({ where: { id: team.id }, select: { topupUsd: true } }),
+  ]);
+  const spentUsd = sums._sum.priceUsd ?? 0;
+  const fromTopup = sums._sum.priceFromTopupUsd ?? 0;
+  return balanceFrom(team.plan, { spentUsd, planSpentUsd: spentUsd - fromTopup, topupUsd: row?.topupUsd ?? 0 }, now);
+}
+
+// Where the window's spending went, per app — the dashboard's breakdown under
+// the balance. Priced checks only; biggest first.
+export async function spendByApp(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  now: Date = new Date(),
+): Promise<{ appSlug: string; spentUsd: number; checks: number }[]> {
+  const rows = await db.run.groupBy({
+    by: ["appSlug"],
+    where: { ...teamOwned(team.id), ...windowWhere(team.plan, now), priceUsd: { gt: 0 } },
+    _sum: { priceUsd: true },
+    _count: { _all: true },
+  });
+  return rows
+    .map((r) => ({ appSlug: r.appSlug, spentUsd: cents(r._sum.priceUsd ?? 0), checks: r._count._all }))
+    .sort((a, b) => b.spentUsd - a.spentUsd);
+}
+
+// A check that walked something: anything above the smoke price. A smoke pass
+// is a few cents and says nothing about what a real check of the app costs.
+const WALKED = { costUsd: { gt: SMOKE_COST_USD * 1.1 } };
+
+// What checks of this app usually cost the team, from its own recent priced
+// checks; null until there are three. Priced on the CURRENT plan, so a team
+// that just upgraded is told the price it will pay, not the one it paid.
+export async function appPriceRange(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  appSlug: string,
+): Promise<{ low: number; high: number; median: number } | null> {
+  const rows = await db.run.findMany({
+    where: { ...teamOwned(team.id), appSlug, priceUsd: { gt: 0 }, ...WALKED },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { costUsd: true },
+  });
+  if (rows.length < 3) return null;
+  const prices = rows.map((r) => priceForCost(team.plan, r.costUsd ?? 0)).sort((a, b) => a - b);
+  const at = (q: number) => prices[Math.min(prices.length - 1, Math.floor(q * prices.length))];
+  return { low: at(0.25), high: at(0.75), median: at(0.5) };
+}
+
+// What the start gate expects the next check of an app to cost: this app's
+// median, or the plan's typical low end for an app with no history yet.
+export async function estimateCheckPrice(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  appSlug: string | null,
+): Promise<number> {
+  const range = appSlug ? await appPriceRange(db, team, appSlug) : null;
+  return range?.median ?? typicalPriceRange(team.plan).low;
+}
+
+// The refusal when the balance is too low, with both ways out named: top up,
+// or upgrade. Never a bare "limit reached" — a limit with no visible door is
+// the opaque throttle the owner ruled out (2026-09-28).
+export function balanceTooLowReason(plan: UserPlan, balance: Pick<TeamBalance, "balanceUsd" | "renewsOn">, estimateUsd: number): string {
+  const topUp = `Top up your balance (from $${TOPUP_AMOUNTS_USD[0]})`;
+  const left = balance.balanceUsd ?? 0;
+  if (plan === "free") {
+    return (
+      `Your team's free ${usd(PLAN_LIMITS.free.creditUsd ?? 0)} of checks is used (${usd(left)} left; a check of this app ` +
+      `costs about ${usd(estimateUsd)}). ${topUp}, or upgrade to Starter for ${usd(PLAN_LIMITS.starter.creditUsd ?? 0)} of checks every month.`
+    );
+  }
+  return (
+    `Your team's balance is ${usd(left)} — not enough for another check (about ${usd(estimateUsd)}). ` +
+    `${topUp}, or upgrade — the plan's credit renews ${balance.renewsOn}.`
+  );
+}
+
+export type BalanceDecision =
+  | { ok: true }
+  | { ok: false; reason: string; code: "quota_free" | "quota_balance" };
+
+// Pure: may a team with `balance` start a check expected to cost `estimateUsd`?
+export function balanceDecision(plan: UserPlan, balance: TeamBalance, estimateUsd: number): BalanceDecision {
+  if (balance.balanceUsd === null) return { ok: true };
+  if (balance.balanceUsd > 0 && balance.balanceUsd >= estimateUsd) return { ok: true };
+  return {
+    ok: false,
+    code: plan === "free" ? "quota_free" : "quota_balance",
+    reason: balanceTooLowReason(plan, balance, estimateUsd),
+  };
+}
+
+// Admit one check for a team: the one decision every start goes through — the
+// dashboard, the API, MCP, a re-check, a watch's tick.
+export async function admitTeamCheck(
+  db: PrismaClient,
+  team: { id: string; plan: UserPlan },
+  appSlug: string | null,
+  now: Date = new Date(),
+): Promise<BalanceDecision> {
+  const [balance, estimate] = await Promise.all([
+    teamBalance(db, team, now),
+    estimateCheckPrice(db, team, appSlug),
+  ]);
+  return balanceDecision(team.plan, balance, estimate);
+}
+
+// Pure: how a price splits between the plan's credit left in the window and
+// the bought balance. Whatever the credit cannot cover comes off the bought
+// balance, even past zero — the check was admitted and did its work.
+export function splitPrice(priceUsd: number, creditLeftUsd: number | null): { fromTopupUsd: number } {
+  if (creditLeftUsd === null) return { fromTopupUsd: 0 };
+  return { fromTopupUsd: cents(Math.max(0, priceUsd - Math.max(0, creditLeftUsd))) };
+}
+
+// Pricing a finished run onto the balance (priceRun, voidRunPrice) is the
+// agent's act and lives with it: src/agent/pricing.ts.
 
 export type RunGate =
   | { ok: true }
-  | { ok: false; reason: string; code: "quota_anon" | "quota_free" | "quota_site" };
+  | { ok: false; reason: string; code: "quota_anon" | "quota_free" | "quota_site" | "quota_balance" };
 
-// Gate for starting a one-off run from the submit form. Only that route calls
-// it: Watch/scheduler runs are already paid for by the plan that enabled them
-// and must never be blocked by a quota.
+// Gate for starting a run: the dashboard, the API, MCP, a re-check. A team's
+// run needs the team's balance (admitTeamCheck); an anonymous one goes through
+// the free funnel's caps.
 //
 // `anonKeyHash` identifies the client of an anonymous submission; null means we
 // couldn't derive one (see hashClientKey), and an unidentifiable client is let
@@ -281,26 +486,17 @@ export type RunGate =
 //
 // `opts.siteCap` is the effective site-wide cap (siteCapFromEnv); callers in
 // the web app pass what the runtime env says, and the constant is the default.
+// `opts.appSlug` is the app about to be checked, whose own recent prices set
+// what the check is expected to cost.
 export async function assertCanStartRun(
   db: PrismaClient,
-  // CHE-260: the team acting. `id` is the TEAM id, and the lifetime free-run
-  // allowance is the team's — five people on one Free team share three runs.
+  // CHE-260: the team acting. `id` is the TEAM id, and the balance is the
+  // team's — five people on one team share it.
   team: { id: string; plan: UserPlan } | null,
   anonKeyHash: string | null,
-  opts: { siteCap?: number } = {},
+  opts: { siteCap?: number; appSlug?: string | null; now?: Date } = {},
 ): Promise<RunGate> {
-  if (team) {
-    if (team.plan !== "free") return { ok: true };
-    const used = await teamRunsUsed(db, team.id);
-    if (used >= FREE_RUNS_LIFETIME) {
-      return {
-        ok: false,
-        code: "quota_free",
-        reason: `Your team has used all ${FREE_RUNS_LIFETIME} runs on the Free plan. Enable Daily Watch on an app you've already checked, or upgrade for unlimited runs.`,
-      };
-    }
-    return { ok: true };
-  }
+  if (team) return admitTeamCheck(db, team, opts.appSlug ?? null, opts.now);
 
   // The site-wide cap comes first: once today's free checks are gone, no
   // stranger gets one — identifiable or not — and the answer names the two
@@ -330,104 +526,4 @@ export async function assertCanStartRun(
     };
   }
   return { ok: true };
-}
-
-// ---------------------------------------------------------------------------
-// Full re-checks per month (CHE-137).
-//
-// The allowance is a UTC calendar month, and the count is Run rows with
-// forceFull set for the same owner since the month began — no counter row to
-// keep in sync, no schema change, and the number the owner is shown is the
-// number the gate enforces. Every forceFull row counts, including one whose
-// run later failed: the allowance is what the owner asked to start.
-
-// Start of the current UTC month — the allowance resets there, and the copy
-// names that date.
-export function utcMonthStart(now: Date = new Date()): Date {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-}
-
-// The first day of the following UTC month, as the copy says it: "October 1".
-// A fixed English table rather than Intl so the wording is the same on every
-// runtime (workerd, Node in a verify script).
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-export function nextUtcMonthLabel(now: Date = new Date()): string {
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return `${MONTH_NAMES[next.getUTCMonth()]} 1`;
-}
-
-// How many full re-checks this owner has started this UTC month.
-export async function fullRechecksUsed(
-  db: PrismaClient,
-  teamId: string,
-  now: Date = new Date(),
-): Promise<number> {
-  return db.run.count({
-    where: { ...teamOwned(teamId), forceFull: true, createdAt: { gte: utcMonthStart(now) } },
-  });
-}
-
-export type FullRecheckGate =
-  // `remaining` is what is left AFTER the re-check being gated; null = the
-  // plan has no limit.
-  | { ok: true; remaining: number | null }
-  | { ok: false; reason: string };
-
-// Pure decision: may an owner on `plan`, having started `used` full re-checks
-// this month, start one more? Split from the count so the rule and its wording
-// can be asserted without a database (scripts/verify-recheck-limits.ts).
-//
-// The wording names the plan's own number and the reset date, and always says
-// that the regular re-check is still there — the limit is on the expensive
-// mode, never on re-checking.
-export function fullRecheckGate(plan: UserPlan, used: number, now: Date = new Date()): FullRecheckGate {
-  const limit = PLAN_LIMITS[plan].fullRechecksPerMonth;
-  if (limit === null) return { ok: true, remaining: null };
-  if (limit === 0) {
-    return {
-      ok: false,
-      reason:
-        `Full re-checks aren't included on the ${planLabel(plan)} plan. ` +
-        `Upgrade to Starter for ${PLAN_LIMITS.starter.fullRechecksPerMonth} a month. ` +
-        REGULAR_RECHECK_STILL_AVAILABLE,
-    };
-  }
-  if (used >= limit) {
-    return {
-      ok: false,
-      reason:
-        `Full re-checks on your team's plan: ${limit} a month, all used until ${nextUtcMonthLabel(now)}. ` +
-        REGULAR_RECHECK_STILL_AVAILABLE,
-    };
-  }
-  return { ok: true, remaining: limit - used - 1 };
-}
-
-const REGULAR_RECHECK_STILL_AVAILABLE =
-  "A regular re-check is still available and re-walks what changed.";
-
-export function planLabel(plan: UserPlan): string {
-  return plan.charAt(0).toUpperCase() + plan.slice(1);
-}
-
-// What the dashboard shows: the month's allowance, how much of it is used, and
-// what is left right now (nothing pending — unlike the gate's `remaining`,
-// which is after the re-check it is deciding). `limit` and `remaining` null =
-// unlimited.
-export async function fullRechecksRemaining(
-  db: PrismaClient,
-  team: { id: string; plan: UserPlan },
-  now: Date = new Date(),
-): Promise<{ used: number; limit: number | null; remaining: number | null; resetsOn: string }> {
-  const limit = PLAN_LIMITS[team.plan].fullRechecksPerMonth;
-  const used = await fullRechecksUsed(db, team.id, now);
-  return {
-    used,
-    limit,
-    remaining: limit === null ? null : Math.max(0, limit - used),
-    resetsOn: nextUtcMonthLabel(now),
-  };
 }

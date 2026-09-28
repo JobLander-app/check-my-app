@@ -52,7 +52,7 @@
     "verify:gap-filing": "tsx --tsconfig tsconfig.json scripts/verify-gap-filing.ts",
     "verify:egress-links": "tsx --tsconfig tsconfig.json scripts/verify-egress-links.ts",
     "verify:public-copy": "tsx --tsconfig tsconfig.json scripts/verify-public-copy.ts",
-    "verify:recheck-limits": "tsx --tsconfig tsconfig.json scripts/verify-recheck-limits.ts",
+    "verify:balance": "tsx --tsconfig tsconfig.json scripts/verify-balance.ts",
     "verify:self-check-agent": "tsx --tsconfig tsconfig.json scripts/verify-self-check-agent.ts",
     "verify:self-check-guard": "tsx --tsconfig tsconfig.json scripts/verify-self-check-guard.ts",
     "posthog:setup": "tsx --tsconfig tsconfig.json scripts/posthog-setup.ts",

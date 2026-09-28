@@ -66,9 +66,21 @@ import {
   notifyOutcomeCode,
   notifyVerdictReady,
   recordNotifyOutcome,
-  SKIP_BUDGET_TICK,
   type NotifiableRun,
 } from "./notify-verdict";
+import { RUNAWAY_COST_USD } from "@/lib/plans";
+import { priceRun, voidRunPrice } from "./pricing";
+
+// CHE-327: the runaway fuse. A NonRetryableError, so the engine does not spend
+// again by retrying, and an "internal:" message, so the run reads as ours.
+function assertBelowRunaway(runId: string, spentUsd: number): void {
+  if (spentUsd <= RUNAWAY_COST_USD) return;
+  console.error(`[runaway] run ${runId} stopped at $${spentUsd.toFixed(2)} (fuse $${RUNAWAY_COST_USD})`);
+  throw new NonRetryableError(
+    `internal: runaway fuse — the check cost more than any check should; stopped, nothing was published`,
+    "RunawayCost",
+  );
+}
 import { deliverWebhook, type RunCompletedPayload } from "@/lib/notify/webhook";
 import { deliverSlack } from "@/lib/notify/slack";
 import { decryptSecret } from "@/lib/crypto";
@@ -141,7 +153,6 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           watchId: true,
           baselineRunId: true,
           forceFull: true,
-          smokeOnly: true,
           appId: true,
           // CHE-136: tracker settlements are kept per owner (CHE-101).
           ownerId: true,
@@ -264,9 +275,6 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         if (run.forceFull) {
           return { taken: false, reason: "full re-check requested — walking everything" };
         }
-        if (run.smokeOnly) {
-          return { taken: false, reason: "today's agent budget for this app is spent" };
-        }
         if (!run.watchId) return { taken: false, reason: "one-off check" };
         if (smoke.taken) {
           return { taken: false, reason: "the smoke check found trouble — re-walking every journey" };
@@ -302,49 +310,6 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // question can be answered from the logs alone.
       console.log(`[mode] ${mode.mode} — ${mode.reason}`);
 
-      // CHE-106: the budget is spent and the smoke pass could not carry the
-      // verdict forward. Finish honestly rather than spend: the app was
-      // checked for outages today, and the deep walk resumes tomorrow.
-      if (run.smokeOnly && mode.mode !== "smoke" && !isExtension) {
-        await step.do("budget-complete", async () => {
-          await env.db.run.update({
-            where: { id: runId },
-            data: {
-              status: "completed",
-              verdict: "unverified",
-              bottomLine:
-                "We checked that your app is up and serving its known pages today. The full " +
-                "journey check runs on the next cycle — your plan covers one deep check a day " +
-                "per app, and today's has already run.",
-              costUsd: SMOKE_COST_USD,
-              currentAction: null,
-              completedAt: new Date(),
-            },
-          });
-          await appendEvent(env, runId, "replay", {
-            icon: "info",
-            text: "Budget for today is spent — this tick confirmed the app is up; the deep check runs next cycle",
-          });
-        });
-        // Deliberately silent: a budget tick is our accounting, not news about
-        // the customer's product. Emailing "unverified" three times a day
-        // because we chose to spend less would be alarming and useless.
-        //
-        // CHE-224: silent, but no longer unaccounted for. This return skips the
-        // notify step entirely, so without a recorded reason the run would look
-        // exactly like one where the send was attempted and vanished — the two
-        // cases this ticket existed because nobody could tell apart.
-        if (run.notifyEmail) {
-          await step.do("budget-notify-skip", async () => {
-            await recordNotifyOutcome(env, run.publicId, {
-              kind: "skipped",
-              reason: SKIP_BUDGET_TICK,
-            });
-          });
-        }
-        return;
-      }
-
       // `smoke.taken` is how TypeScript learns the report's fields are there;
       // decideRunMode returning "smoke" already implies it.
       if (mode.mode === "smoke" && smoke.taken) {
@@ -375,10 +340,17 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               anatomy: smoke.anatomy,
               ...(smoke.screenshotUrl ? { liveScreenshotUrl: smoke.screenshotUrl } : {}),
               costUsd: SMOKE_COST_USD,
+              // CHE-327: the work its few-cent price paid for.
+              quickPagesOpened: smoke.probes.length,
               currentAction: null,
               completedAt: new Date(),
             },
           });
+        });
+        // CHE-327: a quick check costs its real, tiny price — priced on the
+        // balance like every other check (src/lib/plans.ts priceRun).
+        await step.do("price-quick", async () => {
+          await priceRun(env.db, runId);
         });
 
         // CHE-289: measure here too. A smoke run walks nothing, and until now
@@ -708,6 +680,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
 
       let walkCost = 0;
       for (const { order, proposed } of walkList) {
+        // CHE-327: the runaway fuse (RUNAWAY_COST_USD in src/lib/plans.ts).
+        // Not fair use — a check this expensive means something of ours is
+        // looping, so it stops as our failure: the fail handler below prices
+        // it 0 and publishes nothing. Read only from step outputs, so a
+        // replayed workflow trips at the same journey.
+        assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
         const jcost = await step.do(`walk-${order}`, extensionStepConfig(isExtension), async () => {
           const browser = await launchAgentBrowser(env, { run, phase: `walk-${order}`, expected: scan.extensionIdentity ?? undefined, scenario: proposed.extensionScenario }).catch(rethrowBudgetNonRetryable);
           try {
@@ -776,6 +754,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         });
         walkCost += jcost;
       }
+      assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
 
       // Phase 5 — Anatomy (merge deterministic scan signals into the LLM map).
       // A partial run reuses the baseline's anatomy: nothing re-mapped the app
@@ -934,6 +913,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           },
         });
         return checked.verdict;
+      });
+
+      // CHE-327: the check is done — price it on the team's balance. Its own
+      // step, after the verdict is written, so a retry of pricing never
+      // re-writes the verdict and a retry of writing never prices twice.
+      await step.do("price", async () => {
+        await priceRun(env.db, runId);
       });
 
       // Auto-file tracker tickets (CHE-50). Watch runs only, and only when the
@@ -1147,6 +1133,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               : msg,
           },
         });
+        // CHE-327: a failed run costs the customer nothing (rule 4: our
+        // failures never reach them — their balance included). Priced 0 if it
+        // never was; if a later step threw after it was priced, the price is
+        // voided and any bought balance it took goes back. Never fatal: a
+        // pricing hiccup must not mask the failure being recorded.
+        await priceRun(env.db, runId)
+          .then(() => voidRunPrice(env.db, runId))
+          .catch((e) =>
+            console.warn(`[balance] zeroing failed run ${runId} did not happen: ${e instanceof Error ? e.message : String(e)}`),
+          );
         if (isExtension && !budget) {
           try {
             for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [{

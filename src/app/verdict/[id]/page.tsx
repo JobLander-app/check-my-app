@@ -15,7 +15,8 @@ import { TrackOnView, TrackedLink } from "@/components/track";
 import { canMutateOwned, getOptionalUser, optionalTeamContext } from "@/lib/auth";
 import { viewerCapabilities } from "@/lib/viewer-capabilities";
 import { FINDING_PUBLIC_SELECT } from "@/lib/finding-fields";
-import { fullRechecksRemaining } from "@/lib/plans";
+import { explainPrice } from "@/lib/check-price";
+import { CheckPrice } from "@/components/check-price";
 import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
 import { OG_IMAGE, canonical } from "@/lib/site-metadata";
@@ -77,11 +78,12 @@ export default async function VerdictPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ watch_error?: string; recheck?: string }>;
+  searchParams: Promise<{ watch_error?: string; recheck?: string; balance?: string }>;
 }) {
   // CHE-75/94: the verdict actions bounce their outcomes back here as text —
   // a refusal the visitor can read beats a button that quietly does nothing.
-  const { watch_error: watchError, recheck } = await searchParams;
+  const { watch_error: watchError, recheck, balance } = await searchParams;
+  const balanceRefused = balance === "1" && typeof recheck === "string";
   const recheckNotice =
     recheck === "reused"
       ? "This is the current verdict for this app — it was checked recently, so we're showing that result instead of spending a new check."
@@ -157,22 +159,13 @@ export default async function VerdictPage({
     viewerApp,
     canMutate: await canMutateOwned(prisma, run.ownerId),
   });
-  // CHE-137: the full re-check is metered per plan and UTC month, and the
-  // button says what is left before it is pressed. `caps.fullRecheck` holds
-  // only when the viewer is the run's owner (an owned run, canMutateOwned), so
-  // the viewer's plan is the plan the server gates on (src/lib/recheck.ts
-  // reads the owner's current plan).
-  const fullRecheckAllowance =
-    caps.fullRecheck && viewer
-      ? await fullRechecksRemaining(prisma, {
-          id: viewerTeam!.team.id,
-          plan: (viewerTeam?.team.plan ?? "free") as UserPlan,
-        })
+  // CHE-327: what this check was priced at, and why — only to the team whose
+  // balance paid for it. A shared verdict link is public; the team's spending
+  // is not.
+  const priceExplanation =
+    viewerTeam && run.teamId && viewerTeam.team.id === run.teamId
+      ? await explainPrice(prisma, run, viewerTeam.team.plan as UserPlan)
       : null;
-  // The refusal of a full re-check comes back as ?recheck=<reason>, worded by
-  // fullRecheckGate in src/lib/plans.ts; both of its refusals start with
-  // "Full re-checks". The page records the denial once, on render.
-  const fullRecheckDenied = typeof recheck === "string" && /^Full re-checks\b/.test(recheck);
   // CHE-108: what a run cost us, which models produced it and which deploy it
   // ran against are OUR operating figures, and they belong to nobody outside
   // this business — not a stranger who opened a shared link, and not the
@@ -227,9 +220,6 @@ export default async function VerdictPage({
           isOwner: viewer !== null && viewer.id === run.ownerId,
         }}
       />
-      {fullRecheckDenied && (
-        <TrackOnView event="full_recheck_denied" props={{ appSlug: run.appSlug, remaining: 0 }} />
-      )}
       {run.status === "partial" && (
         <p className="mb-4 rounded-lg border border-status-confusing/40 bg-status-confusing/10 px-4 py-2.5 text-sm text-status-confusing">
           {run.targetKind === "extension" ? "Some parts of this extension remain unverified. The results below show what was confirmed." : "The agent got partway through and paused — this is a partial verdict."}
@@ -293,6 +283,7 @@ export default async function VerdictPage({
                 {isAdmin && run.deploySha &&
                   ` · deploy ${run.deploySha.slice(0, 7)}${run.deployEnv ? ` (${run.deployEnv})` : ""}`}
               </p>
+              {priceExplanation && <CheckPrice explanation={priceExplanation} />}
               {isAdmin && totalTokens > 0 && (
                 <p className="mt-0.5 font-mono text-xs text-fg-faint">
                   {fmtTok(totalTokens)} tokens
@@ -303,13 +294,7 @@ export default async function VerdictPage({
             {(caps.recheck || caps.fullRecheck || caps.enableWatch || caps.watchSettings) && (
               <div className="flex shrink-0 items-center gap-2.5">
                 {caps.recheck && <RecheckButton runId={run.publicId} appSlug={run.appSlug} />}
-                {caps.fullRecheck && (
-                  <FullRecheckButton
-                    runId={run.publicId}
-                    appSlug={run.appSlug}
-                    allowance={fullRecheckAllowance}
-                  />
-                )}
+                {caps.fullRecheck && <FullRecheckButton runId={run.publicId} appSlug={run.appSlug} />}
                 {(caps.enableWatch || caps.watchSettings) && (
                   <EnableWatchButton
                     runId={run.publicId}
@@ -325,6 +310,19 @@ export default async function VerdictPage({
           {recheckNotice && (
             <p className="rounded-md border border-ink-600 bg-ink-800/60 px-3 py-2 text-sm text-fg-muted">
               {recheckNotice}
+              {/* CHE-327: an empty balance is never met without its two doors. */}
+              {balanceRefused && (
+                <>
+                  {" "}
+                  <Link href="/dashboard#balance" className="text-accent hover:underline">
+                    Top up
+                  </Link>{" "}
+                  ·{" "}
+                  <Link href="/pricing" className="text-accent hover:underline">
+                    Upgrade
+                  </Link>
+                </>
+              )}
             </p>
           )}
 

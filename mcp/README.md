@@ -156,7 +156,15 @@ Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
   finished, returns its verdict, bottom line, `findings_by_severity`, a
   findings summary, the deploy it was bound to and the verdict URL. Still
   running → `timed_out: true` with the status: call it again. A `failed`
-  status is CheckMyApp not finishing, not the app being broken.
+  status is CheckMyApp not finishing, not the app being broken — and it costs
+  nothing.
+  Finished runs also carry their **price**: `price_usd`, `journeys_walked`,
+  `steps_walked` and `price_explanation` (`work`, `comparison` with the app's
+  usual price, `usual_price_usd`, and `parts` — what each journey's share of
+  the price was, summing to `price_usd`). The same fields are on
+  `wait_for_review`, `get_review` and each app in `latest_results`; `list_apps`
+  and the connection instructions carry the team's balance and each app's
+  `usual_price_usd`.
 - **`wait_for_review`** `{run_id}` — the same wait, answering with the review:
   a head (`verdict`, `findings_by_severity`, `next_actions_count`) and the whole
   review under `review`.
@@ -177,8 +185,10 @@ Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
 **Recurring checks**
 
 - **`enable_watch`** `{app_id, frequency}` — turn on or resume (`daily`,
-  `every_6h`, `manual`) within the plan. Resuming a paused check counts
-  against the plan's allowance like a new one.
+  `every_6h`, `manual`). Every tick spends the team's balance at the check's
+  own price; a watch pauses by itself while the balance cannot cover a check
+  (`list_apps` shows `paused_balance`) and resumes after a top-up or the plan's
+  next credit. On Free, one app, daily, on a trial.
 - **`disable_watch`** `{app_id}` — pause it. History and settings stay;
   `enable_watch` resumes.
 
@@ -212,8 +222,9 @@ a JSON body `{ ok: false, code, error, hint? }`:
 |--------|---------|------------|
 | `not_found` | No such app or run **in this key's team** (another team's ids look exactly like missing ones) | `list_apps` / `latest_results` |
 | `forbidden` | The key's scope does not allow this (a reader key starting a check, adding an app, changing a watch) | An admin can issue a member key |
-| `plan_limit` | The team's plan does not allow it (watch count, cadence) | Do not retry; tell the person what the plan allows |
-| `quota_free` | The Free plan's lifetime runs are used | Upgrade, or `enable_watch` on an app already checked. Do not retry |
+| `plan_limit` | The team's plan does not allow it (Free's one trial watch, its daily cadence) | Do not retry; tell the person what the plan allows and give them `upgrade_url` |
+| `quota_balance` | The team's balance is too low for another check of this app | Do not retry; give the person `buy_url` (top up) and `upgrade_url` |
+| `quota_free` | The Free plan's one-time credit is used | Do not retry; give the person `buy_url` (top up) and `upgrade_url` |
 | `quota_site` | Today's site-wide free checks are used | Do not retry |
 | `ephemeral_requires_owner` | `ephemeral` without an account (cannot happen with a key) | — |
 | `invalid_input` | An argument was rejected (the message names it), `app_id` and `url` together, or the app already exists | Fix the argument |

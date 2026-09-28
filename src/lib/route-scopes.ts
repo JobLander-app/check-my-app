@@ -50,6 +50,7 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   // change or cancel one.
   "POST /api/billing/checkout": { kind: "team", action: "billing.manage" },
   "POST /api/billing/portal": { kind: "team", action: "billing.manage" },
+  "POST /api/billing/topup": { kind: "team", action: "billing.manage" },
   "POST /api/billing/one-check": { kind: "public", why: "the anonymous funnel — a stranger's first check" },
   "GET /api/billing/one-check": { kind: "public", why: "the anonymous funnel — a stranger's first check" },
 

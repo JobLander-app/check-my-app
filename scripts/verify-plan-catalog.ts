@@ -135,11 +135,12 @@ async function main() {
   check("catalog covers free, starter, growth, business", PLAN_CATALOG.map((p) => p.id).join(",") === "free,starter,growth,business");
   for (const plan of PLAN_CATALOG) {
     const l = PLAN_LIMITS[plan.id];
-    const allowed = new Set<number>([l.maxWatches, l.includedSeats ?? -1, l.fullRechecksPerMonth ?? -1]);
-    if (l.maxFrequency === "daily") allowed.add(24);
-    if (l.maxFrequency === "every_6h") allowed.add(6);
-    if (plan.id === "free") [plans.ANON_RUNS_PER_DAY, plans.FREE_RUNS_LIFETIME, plans.WATCH_TRIAL_DAYS].forEach((n) => allowed.add(n));
-    const stray = plan.features.flatMap((f) => (f.match(/\d+/g) ?? []).map(Number)).filter((n) => !allowed.has(n));
+    // CHE-327: a card's numbers are its balance, its typical price range,
+    // the top-up amounts, its seats and the 6-hour cadence — nothing else.
+    const range = plans.typicalPriceRange(plan.id);
+    const allowed = new Set<number>([l.creditUsd ?? -1, l.includedSeats ?? -1, range.low, range.high, 6, ...plans.TOPUP_AMOUNTS_USD]);
+    if (plan.id === "free") [plans.ANON_RUNS_PER_DAY, plans.WATCH_TRIAL_DAYS].forEach((n) => allowed.add(n));
+    const stray = plan.features.flatMap((f) => (f.match(/\d+(?:\.\d+)?/g) ?? []).map(Number)).filter((n) => !allowed.has(n));
     check(`${plan.name}: every number on the card is in PLAN_LIMITS`, stray.length === 0, stray.join(", "));
     check(
       `${plan.name}: tracker line ${l.trackerIntegration ? "present" : "absent"} (trackerIntegration=${l.trackerIntegration})`,
@@ -154,6 +155,9 @@ async function main() {
   check("origin/main cards: Business «nominate» caught", mainDrift.some((d) => d.startsWith("Business") && d.includes("nominate")), mainDrift.join(" | "));
   check("origin/main cards: Starter tracker missing caught", mainDrift.some((d) => d.startsWith("Starter") && d.includes("трекер")));
   check("origin/main cards: seats missing caught", mainDrift.some((d) => d.includes("мест")));
+  // CHE-327: the old cards sold full re-checks and app counts, and no balance.
+  check("origin/main cards: a missing balance line caught", mainDrift.some((d) => d.startsWith("Starter") && d.includes("баланс")));
+  check("origin/main cards: full re-checks / app caps caught", mainDrift.some((d) => d.includes("полные перепроверки")));
 
   // 4. The Notion page.
   const blocks = renderPlanBlocks({ sha: "abcdef0123456", date: "2026-09-28" });
@@ -170,14 +174,17 @@ async function main() {
     const l = PLAN_LIMITS[plan.id];
     const col = i + 1;
     const n = (x: number | null) => (x === null ? "без лимита" : String(x));
-    check(`Notion table: ${plan.name} watches`, (cell("Daily Watch", col) ?? "").startsWith(String(l.maxWatches)), cell("Daily Watch", col));
-    check(`Notion table: ${plan.name} full re-checks`, cell("Полные перепроверки", col) === n(l.fullRechecksPerMonth), cell("Полные перепроверки", col));
+    check(`Notion table: ${plan.name} balance`, (cell("Баланс", col) ?? "").startsWith(plans.usd(l.creditUsd ?? 0)), cell("Баланс", col));
+    // The Notion page is ours: it may, and must, show the multiplier.
+    check(`Notion table: ${plan.name} multiplier (internal)`, cell("Множитель", col) === `×${l.priceMultiplier}`, cell("Множитель", col));
+    const r = plans.typicalPriceRange(plan.id);
+    check(`Notion table: ${plan.name} typical price`, cell("Типичная цена", col) === `${plans.usd(r.low)}–${plans.usd(r.high)}`, cell("Типичная цена", col));
     check(`Notion table: ${plan.name} seats`, cell("Места", col) === n(l.includedSeats), cell("Места", col));
     check(`Notion table: ${plan.name} tracker`, cell("Трекер", col) === (l.trackerIntegration ? "да" : "нет"), cell("Трекер", col));
-    check(`Notion table: ${plan.name} budget`, Number((cell("Бюджет", col) ?? "").replace("$", "")) === l.dailyBudgetUsd, cell("Бюджет", col));
   });
-  check("Notion: free lifetime runs and anon/day", (cell("Разовые", 1) ?? "").includes(`${plans.FREE_RUNS_LIFETIME} за всё время`) && (cell("Разовые", 1) ?? "").includes(`${plans.ANON_RUNS_PER_DAY}/день`));
+  check("Notion: free is once, and anon/day", (cell("Баланс", 1) ?? "").includes("один раз") && (cell("Баланс", 1) ?? "").includes(`${plans.ANON_RUNS_PER_DAY} проверка/день`));
   check("Notion: trial days", (cell("Daily Watch", 1) ?? "").includes(`${plans.WATCH_TRIAL_DAYS} дней`));
+  check("Notion: no full re-checks or daily budget rows", !rows.some((r) => /Полные перепроверки|Бюджет агента/.test(r[0])));
   check("Notion: site cap", text.includes(`${plans.ANON_RUNS_PER_DAY_SITE} бесплатных анонимных`));
   check("Notion: 'not gated by plan' section", text.includes("Что НЕ зависит от тарифа"));
   check("Notion: no «Расхождения» while there is no drift", !text.includes("Расхождения"));
