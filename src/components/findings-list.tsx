@@ -37,14 +37,31 @@ const MARK_LABEL: Record<FindingMark, string | null> = {
 // CHE-108: the triage row is the owner's. The page decides who gets it with
 // the same rules the API applies (src/lib/viewer-capabilities.ts) — this
 // component only renders what it is told the server would accept.
+// CHE-334: what the section says when there are no findings. Run #261 read
+// a finished "Mostly OK" verdict whose journey was flagged Confusing, and the
+// section above it said "Nothing recorded yet." twice — wording for a run still
+// in progress, on a run that was over, contradicting the flag right below it.
+export function emptyFindingsNote(finished: boolean, journeysFlagged: boolean): string {
+  if (!finished) return "Nothing recorded yet.";
+  return journeysFlagged
+    ? "No findings written up — the journeys below show what was flagged."
+    : "Nothing to fix was found.";
+}
+
 export function FindingsList({
   findings,
   canMark,
   canCreateTicket,
+  finished,
+  journeysFlagged,
 }: {
   findings: FindingWithEvidence[];
   canMark: boolean;
   canCreateTicket: boolean;
+  // The run is over (completed or partial); otherwise findings may still come.
+  finished: boolean;
+  // A journey of this run landed on a problem status.
+  journeysFlagged: boolean;
 }) {
   const counts = CATEGORY_ORDER.filter(
     (c) => findings.some((f) => f.category === c),
@@ -55,7 +72,7 @@ export function FindingsList({
   return (
     <section>
       <h2 className="section-label">What we found</h2>
-      <p className="mt-1 font-mono text-[13px] text-fg-muted">{counts || "Nothing recorded yet."}</p>
+      <p className="mt-1 font-mono text-[13px] text-fg-muted">{counts || emptyFindingsNote(finished, journeysFlagged)}</p>
 
       <div className="mt-4 space-y-2.5">
         {CATEGORY_ORDER.map((category) => {
@@ -92,9 +109,6 @@ export function FindingsList({
             </details>
           );
         })}
-        {findings.length === 0 && (
-          <p className="text-sm text-fg-faint">No findings recorded yet.</p>
-        )}
       </div>
     </section>
   );

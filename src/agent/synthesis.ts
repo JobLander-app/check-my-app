@@ -26,8 +26,11 @@ import type { AppKnowledge } from "./knowledge";
 import { DEFAULT_ACCOUNT_LABEL, describeAccounts, parseRunAccounts, rejectedAccountLabels } from "@/lib/test-accounts";
 import {
   CUSTOMER_LANGUAGE_RULES,
+  cutSelfCheckRefusalClaims,
   hasEnvironmentLeak,
   hasHomework,
+  isSelfCheckRefusalStep,
+  type RefusalContextStep,
   stripEnvironmentLeak,
   stripHomework,
 } from "@/lib/verdict-language";
@@ -312,6 +315,14 @@ export async function synthesizeVerdict(args: {
         bottomLine = claim.text ?? BOTTOM_LINE_FALLBACK;
       }
     }
+    // CHE-334: where our own self-check guard refused a step, the bottom line
+    // and the findings may not retell that refusal as the product's.
+    const refusal = ownGuardRefusals(journeys, bottomLine, cleanedFindings);
+    if (refusal.cut.length) {
+      console.warn(`[synthesis] cut our own guard retold as the product's: ${refusal.cut.join(" / ")}`);
+      bottomLine = refusal.bottomLine;
+      cleanedFindings.splice(0, cleanedFindings.length, ...refusal.findings);
+    }
     // CHE-191: a trailing "Worth checking …" is one sentence to cut, not a
     // reason to spend a model call rewriting the line. Cut first; what is
     // left goes through the machinery check below as before.
@@ -368,6 +379,52 @@ export async function synthesizeVerdict(args: {
 
 // The bottom line when nothing the model wrote about the product survived.
 export const BOTTOM_LINE_FALLBACK = "We checked what we could reach this run; some paths went unverified.";
+
+// CHE-334. Pure, exported for scripts/verify-self-check-own-state.ts. A run
+// whose steps carry no refusal of our own guard comes back untouched — the
+// words "403" and "refused" are real evidence on every other run. Where one
+// does, a finding is judged by its anchor first: anchored on a refused step,
+// it is not written; anchored on a step that stands (a real 403 elsewhere in
+// the run), it is kept whatever its words. Only a finding with no usable
+// anchor is judged by its words — every field the customer reads — and goes
+// if any of them retells a refusal. The bottom line loses the sentences that
+// retell it. Both word tests are matched against the run's steps (Codex
+// review of #205): a sentence that points at a standing problem step more
+// than at a refused one — "the /settings/team page answers 403" next to a
+// refused "Show me my app" — is the product's own evidence and stays.
+export function ownGuardRefusals(
+  journeys: Array<{ steps: RefusalContextStep[] }>,
+  bottomLine: string | null,
+  findings: SynthesizedFinding[],
+): { bottomLine: string | null; findings: SynthesizedFinding[]; cut: string[] } {
+  if (!journeys.some((j) => j.steps.some(isSelfCheckRefusalStep))) return { bottomLine, findings, cut: [] };
+  const allSteps = journeys.flatMap((j) => j.steps);
+  const cut: string[] = [];
+  const kept = findings.filter((f) => {
+    const ref = f.stepRef;
+    const anchored = ref ? journeys[ref.journeyIndex]?.steps[ref.stepIndex] : undefined;
+    const d = f.detail ?? {};
+    const words = [f.title, d.where, ...(Array.isArray(d.whatWeTried) ? d.whatWeTried : []), d.whatHappened, d.whyItMatters]
+      .filter((s): s is string => typeof s === "string" && s.length > 0)
+      .map((s) => (/[.!?]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`))
+      .join(" ");
+    const refused = anchored
+      ? isSelfCheckRefusalStep(anchored)
+      : cutSelfCheckRefusalClaims(words, allSteps).cut.length > 0;
+    if (refused) {
+      cut.push(`finding "${f.title}"`);
+      return false;
+    }
+    return true;
+  });
+  const line = cutSelfCheckRefusalClaims(bottomLine, allSteps);
+  cut.push(...line.cut);
+  return {
+    bottomLine: line.cut.length ? (line.text ?? BOTTOM_LINE_FALLBACK) : bottomLine,
+    findings: kept,
+    cut,
+  };
+}
 
 // One finding through the customer-language gate (CHE-82, CHE-191). Null means
 // the finding is not written. Exported so verify-homework-gate.ts runs the
