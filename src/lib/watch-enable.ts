@@ -5,7 +5,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
-import { assertCanAddWatch, watchTrialEnd } from "@/lib/plans";
+import { TRIAL_ENDED_REASON, assertCanAddWatch, shouldSkipWatch, watchTrialEnd } from "@/lib/plans";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 
 export type EnableWatchResult =
@@ -138,12 +138,22 @@ async function upsertWatch(
     // What a NEW watch starts with. Enabling from a verdict carries that run's
     // inputs; enabling an app carries the app's own credentials.
     seed?: { notifyEmail: string | null; testEmail: string | null; testPasswordEnc: string | null };
+    // The clock the trial is read against; the MCP server passes its own.
+    now?: Date;
   },
 ) {
   const existing = await db.watch.findUnique({ ...alreadyScoped("the App was just scoped to this team"),
     where: { appId: app.id },
-    select: { id: true, active: true },
+    select: { id: true, active: true, trialEndsAt: true },
   });
+  // CHE-325: a Free watch past its trial stays switched on and never runs
+  // (shouldSkipWatch — the scheduler's own rule). Enabling it again used to
+  // answer "on" all the same; the person heard the watch was running and it
+  // was not. The trial clock is never restarted (see `update` below), so the
+  // honest answer is the refusal, with the way forward.
+  if (existing && shouldSkipWatch(existing, user.plan as UserPlan, opts.now)) {
+    return { ok: false as const, reason: TRIAL_ENDED_REASON };
+  }
   const gate = await watchGate(db, user, opts.frequency, existing);
   if (!gate.ok) return { ok: false as const, reason: gate.reason };
 
@@ -184,7 +194,7 @@ export async function enableWatchForApp(
   db: PrismaClient,
   user: { id: string; teamId: string; plan: string },
   appId: string,
-  opts: { frequency: WatchFrequency; notifyOnChangeOnly?: boolean },
+  opts: { frequency: WatchFrequency; notifyOnChangeOnly?: boolean; now?: Date },
 ): Promise<EnableWatchResult> {
   const app = await db.app.findFirst({
     where: { ...teamOwned(user.teamId), id: appId, ownerId: user.id },
@@ -223,4 +233,4 @@ export async function configureWatch(
   return { ok: true as const, watch: updated };
 }
 
-const EXTENSION_ON_DEMAND = "Extension checks run on demand. Add this extension to your dashboard to run another check.";
+export const EXTENSION_ON_DEMAND = "Extension checks run on demand. Add this extension to your dashboard to run another check.";

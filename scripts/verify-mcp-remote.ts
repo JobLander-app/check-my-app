@@ -25,12 +25,22 @@
 //      is refused;
 //   8. latest_results tells a new finding from one the previous run already had
 //      (same signature, different run), and wait_for_run gives up inside its
-//      budget with timed_out rather than holding the request.
+//      budget with timed_out rather than holding the request;
+//   9. the plan is said before it is spent (CHE-325): a Free team's
+//      instructions name the plan, the free checks left, the watch cap and the
+//      trial, the upgrade link, and the rule to warn before the last free
+//      check; list_apps and latest_results carry the same `plan` block; every
+//      quota_free / plan_limit refusal (run quota, watch cap, cadence, trial
+//      ended) carries upgrade_url; turning back on a watch past its trial is
+//      refused rather than answered "on"; and the numbers
+//      /guides/connect-your-agent shows are PLAN_LIMITS'.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-mcp-remote.ts
 
 process.env.CREDENTIALS_SECRET ??= "verify-mcp-remote-secret";
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { hashApiKey } from "@/lib/apiKeys";
@@ -38,6 +48,9 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { handleMcpRequest, UNAUTHORIZED_MESSAGE } from "@/lib/mcp/handler";
 import { MAX_INSTRUCTIONS_CHARS } from "@/lib/mcp/instructions";
 import { WAIT_BUDGET_MS, type McpDeps } from "@/lib/mcp/tools";
+import { FREE_RUNS_LIFETIME, PLAN_LIMITS, WATCH_TRIAL_DAYS } from "@/lib/plans";
+import type { UserPlan } from "@/lib/enums";
+import ConnectAgentGuide from "@/app/guides/connect-your-agent/page";
 import { createStubDb } from "./fixtures/mcp-db";
 
 let failures = 0;
@@ -51,6 +64,8 @@ const KEY_A = "cma_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const KEY_A_READER = "cma_cccccccccccccccccccccccccccccccc";
 const KEY_B = "cma_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const KEY_FREE = "cma_dddddddddddddddddddddddddddddddd";
+const KEY_FREE_LAST = "cma_ffffffffffffffffffffffffffffffff";
+const PRICING = `${ORIGIN}/pricing`;
 const PASSWORD = "hunter2-very-secret";
 
 const day = (n: number) => new Date(Date.UTC(2026, 8, n, 12));
@@ -62,17 +77,21 @@ async function seed() {
       { id: "u_a", email: "a@team-a.test", name: "Ann" },
       { id: "u_b", email: "b@team-b.test", name: "Bob" },
       { id: "u_f", email: "f@free.test", name: "Fay" },
+      { id: "u_g", email: "g@free-two.test", name: "Gus" },
     ],
     team: [
       { id: "team_a", name: "Team A", plan: "business", isPersonal: false },
       { id: "team_b", name: "Team B", plan: "business", isPersonal: false },
       { id: "team_f", name: "Free team", plan: "free", isPersonal: true },
+      // CHE-325: a Free team with one check left and a watch past its trial.
+      { id: "team_g", name: "Last-check team", plan: "free", isPersonal: true },
     ],
     apiKey: [
       { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
       { id: "k_r", ownerId: "u_a", teamId: "team_a", scope: "reader", keyHash: await hashApiKey(KEY_A_READER), lastUsedAt: null },
       { id: "k_b", ownerId: "u_b", teamId: "team_b", scope: "member", keyHash: await hashApiKey(KEY_B), lastUsedAt: null },
       { id: "k_f", ownerId: "u_f", teamId: "team_f", scope: "admin", keyHash: await hashApiKey(KEY_FREE), lastUsedAt: null },
+      { id: "k_g", ownerId: "u_g", teamId: "team_g", scope: "admin", keyHash: await hashApiKey(KEY_FREE_LAST), lastUsedAt: null },
     ],
     app: [
       { id: "app_a", ownerId: "u_a", teamId: "team_a", appSlug: "shop-a.test", targetUrl: "https://shop-a.test",
@@ -86,16 +105,22 @@ async function seed() {
         targetKind: "website", testEmail: null, testPasswordEnc: null, createdAt: day(1) },
       { id: "app_f2", ownerId: "u_f", teamId: "team_f", appSlug: "free-two.test", targetUrl: "https://free-two.test",
         targetKind: "website", testEmail: null, testPasswordEnc: null, createdAt: day(2) },
+      { id: "app_g1", ownerId: "u_g", teamId: "team_g", appSlug: "last-one.test", targetUrl: "https://last-one.test",
+        targetKind: "website", testEmail: null, testPasswordEnc: null, createdAt: day(1) },
     ],
     watch: [
       { id: "w_a", appId: "app_a", teamId: "team_a", ownerId: "u_a", appSlug: "shop-a.test", targetUrl: "https://shop-a.test",
         frequency: "daily", active: true, testEmail: "qa@shop-a.test", testPasswordEnc: encryptSecret(PASSWORD),
         nextRunAt: day(20), trialEndsAt: null },
-      // Free team: one watch running, one paused — resuming it must not fit.
+      // Free team: one watch running (its trial ends 3 days after the clock
+      // below), one paused — resuming it must not fit.
       { id: "w_f1", appId: "app_f1", teamId: "team_f", ownerId: "u_f", appSlug: "free-one.test", targetUrl: "https://free-one.test",
-        frequency: "daily", active: true, trialEndsAt: null },
+        frequency: "daily", active: true, trialEndsAt: day(23), createdAt: day(1) },
       { id: "w_f2", appId: "app_f2", teamId: "team_f", ownerId: "u_f", appSlug: "free-two.test", targetUrl: "https://free-two.test",
-        frequency: "daily", active: false, trialEndsAt: null },
+        frequency: "daily", active: false, trialEndsAt: null, createdAt: day(2) },
+      // Still switched on, trial over: the scheduler skips it.
+      { id: "w_g1", appId: "app_g1", teamId: "team_g", ownerId: "u_g", appSlug: "last-one.test", targetUrl: "https://last-one.test",
+        frequency: "daily", active: true, trialEndsAt: day(15), createdAt: day(1) },
     ],
     ticketPolicy: [{ id: "p_a", appId: "app_a", pickupLabels: "[]", repoLabel: null, priorityRule: "{}" }],
     run: [
@@ -113,6 +138,11 @@ async function seed() {
       ...[1, 2, 3].map((i) => ({ id: `r_f${i}`, publicId: `pub_f${i}`, runNumber: 10 + i, appId: "app_f1", teamId: "team_f",
         ownerId: "u_f", appSlug: "free-one.test", targetUrl: "https://free-one.test", targetKind: "website",
         status: "failed", startedAt: day(i), completedAt: day(i), createdAt: day(i) })),
+      // The last-check team has spent all but one.
+      ...Array.from({ length: FREE_RUNS_LIFETIME - 1 }, (_, i) => ({ id: `r_g${i}`, publicId: `pub_g${i}`, runNumber: 20 + i,
+        appId: "app_g1", teamId: "team_g", ownerId: "u_g", appSlug: "last-one.test", targetUrl: "https://last-one.test",
+        targetKind: "website", status: "completed", verdict: "all_good", startedAt: day(i + 1), completedAt: day(i + 1),
+        createdAt: day(i + 1) })),
     ],
     finding: [
       // The same regression on both runs — worded differently, same failing request.
@@ -200,6 +230,7 @@ async function main() {
   const b = await connect(KEY_B);
   const reader = await connect(KEY_A_READER);
   const free = await connect(KEY_FREE);
+  const last = await connect(KEY_FREE_LAST);
 
   check("auth: the key's lastUsedAt is stamped",
     stub.table("apiKey").find((k) => k.id === "k_a")?.lastUsedAt instanceof Date);
@@ -391,7 +422,85 @@ async function main() {
         (review.out.next_actions as unknown[]).length === 2, JSON.stringify(review.out).slice(0, 160));
   }
 
-  for (const c of [a, b, reader, free]) await c.close();
+  // 9 — the plan, said before it is spent (CHE-325).
+  {
+    const t = free.getInstructions() ?? "";
+    check("plan: a Free team's instructions name the plan and the free checks left",
+      t.includes("Plan: Free.") && t.includes(`Free checks left: 0 of ${FREE_RUNS_LIFETIME}.`), t);
+    check("plan: …the watch cap in use and the trial's days left",
+      t.includes(`Watched apps: 1 of ${PLAN_LIMITS.free.maxWatches} (free-one.test: trial, 3 days left).`), t);
+    check("plan: …that full re-checks are not on the plan", t.includes("Full re-checks: not on this plan."), t);
+    check("plan: …the upgrade link, built from the request origin", t.includes(`Upgrade: ${PRICING}`), t);
+    check("plan: …and the rule: warn before the last free check, never surprise",
+      /Before starting a check that uses the last free check/.test(t) && /never let a limit surprise them/.test(t), t);
+    check(`plan: a Free team's instructions stay under ${MAX_INSTRUCTIONS_CHARS} characters`,
+      t.length <= MAX_INSTRUCTIONS_CHARS, String(t.length));
+
+    const l = last.getInstructions() ?? "";
+    check("plan: one check left is said as one left, and a watch past its trial as not running",
+      l.includes(`Free checks left: 1 of ${FREE_RUNS_LIFETIME}.`) && l.includes("(last-one.test: trial ended, not running)"), l);
+
+    const paid = a.getInstructions() ?? "";
+    check("plan: a paid team hears its plan, uncounted checks and its full re-checks — and no Free warning",
+      paid.includes("Plan: Business.") && paid.includes("Checks: unlimited.") &&
+        paid.includes(`Full re-checks left this month: ${PLAN_LIMITS.business.fullRechecksPerMonth} of ${PLAN_LIMITS.business.fullRechecksPerMonth}.`) &&
+        !/last free check/.test(paid), paid);
+
+    for (const tool of ["list_apps", "latest_results"]) {
+      const r = await call(free, tool);
+      const p = r.out.plan as Record<string, Record<string, unknown> | string> | undefined;
+      const fc = p?.free_checks as Record<string, unknown> | undefined;
+      const w = p?.watches as Record<string, unknown> | undefined;
+      const trial = p?.watch_trial as Record<string, unknown> | undefined;
+      check(`plan: ${tool} carries the plan block — checks left, watches, trial, upgrade_url`,
+        p?.plan === "free" && fc?.left === 0 && fc?.limit === FREE_RUNS_LIFETIME && w?.used === 1 &&
+          w?.limit === PLAN_LIMITS.free.maxWatches && trial?.days_left === 3 && p?.upgrade_url === PRICING,
+        JSON.stringify(p));
+    }
+
+    const refusals: Array<[string, Awaited<ReturnType<typeof call>>]> = [
+      ["start_check {url} past the Free runs (quota_free)", await call(free, "start_check", { url: "https://free-one.test" })],
+      ["start_check {app_id} past the Free runs (quota_free)", await call(free, "start_check", { app_id: "app_f1" })],
+      ["enable_watch past the watch cap (plan_limit)", await call(free, "enable_watch", { app_id: "app_f2", frequency: "daily" })],
+      ["enable_watch at a cadence the plan lacks (plan_limit)", await call(free, "enable_watch", { app_id: "app_f1", frequency: "every_6h" })],
+    ];
+    const ended = await call(last, "enable_watch", { app_id: "app_g1", frequency: "daily" });
+    refusals.push(["enable_watch on a watch past its trial (plan_limit)", ended]);
+    for (const [label, r] of refusals) {
+      check(`upgrade: ${label} carries upgrade_url`,
+        r.isError && (r.out.code === "quota_free" || r.out.code === "plan_limit") && r.out.upgrade_url === PRICING,
+        JSON.stringify(r.out));
+    }
+    check("trial: turning back on a watch past its trial is refused, not answered \"on\"",
+      ended.isError && /trial on this app has ended/.test(String(ended.out.error)) &&
+        stub.table("watch").find((w) => w.id === "w_g1")?.trialEndsAt instanceof Date,
+      JSON.stringify(ended.out));
+    const notFound = await call(free, "start_check", { app_id: "nope" });
+    check("upgrade: a refusal no upgrade answers carries no upgrade_url",
+      notFound.out.code === "not_found" && !("upgrade_url" in notFound.out), JSON.stringify(notFound.out));
+
+    // The guide renders its plan list from PLAN_LIMITS; read the numbers back
+    // out of the rendered page, row by row.
+    const html = renderToStaticMarkup(createElement(ConnectAgentGuide));
+    const row = (plan: string) =>
+      (html.match(new RegExp(`<li[^>]*data-plan="${plan}"[^>]*>([\\s\\S]*?)</li>`))?.[1] ?? "").replace(/<[^>]+>/g, " ");
+    const num = (s: string, re: RegExp) => Number(s.match(re)?.[1] ?? NaN);
+    const freeRow = row("free");
+    check("guide: Free's checks and trial are FREE_RUNS_LIFETIME and WATCH_TRIAL_DAYS",
+      num(freeRow, /(\d+) checks? for the whole team/) === FREE_RUNS_LIFETIME &&
+        num(freeRow, /(\d+)-day trial/) === WATCH_TRIAL_DAYS &&
+        num(freeRow, /(\d+) watched apps?/) === PLAN_LIMITS.free.maxWatches, freeRow);
+    for (const plan of ["starter", "growth", "business"] as UserPlan[]) {
+      const r = row(plan);
+      check(`guide: ${plan}'s watched apps and full re-checks are PLAN_LIMITS.${plan}'s`,
+        num(r, /(\d+) watched apps?/) === PLAN_LIMITS[plan].maxWatches &&
+          num(r, /(\d+) full re-checks? a month/) === PLAN_LIMITS[plan].fullRechecksPerMonth, r);
+    }
+    check("guide: says every tool works on every plan, and links /pricing",
+      /Every tool above works on every plan/.test(html) && html.includes('href="/pricing"'));
+  }
+
+  for (const c of [a, b, reader, free, last]) await c.close();
   console.log(failures === 0 ? "\nverify-mcp-remote: all checks passed" : `\nverify-mcp-remote: ${failures} check(s) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }

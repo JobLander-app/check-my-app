@@ -219,6 +219,18 @@ export function watchCapReason(plan: UserPlan, activeWatches: number): string | 
     : `Your team's plan covers ${limits.maxWatches} watched app(s), and they are all in use.`;
 }
 
+// CHE-325: what the watch cap counts — every ACTIVE watch of the team, a Free
+// watch whose trial has ended included (it is still switched on; the scheduler
+// skips it). One count for the gate and for what an agent is told is left.
+export async function activeWatchCount(db: PrismaClient, teamId: string): Promise<number> {
+  return db.watch.count({ where: { ...teamOwned(teamId), active: true } });
+}
+
+// CHE-325: turning back on a Free watch whose trial is over would say "on" and
+// never run (shouldSkipWatch). Refused instead, with the way forward.
+export const TRIAL_ENDED_REASON =
+  `The free ${WATCH_TRIAL_DAYS}-day Daily Watch trial on this app has ended. Upgrade to keep it running.`;
+
 // Gate for enabling/configuring a Daily Watch. existingWatchId set → it's an
 // update of an existing watch, so it doesn't count against the per-plan cap.
 export async function assertCanAddWatch(
@@ -239,11 +251,19 @@ export async function assertCanAddWatch(
     return { ok: false, reason: `Your plan doesn't allow ${opts.frequency} checks.` };
   }
   if (!opts.existingWatchId) {
-    const count = await db.watch.count({ where: { ...teamOwned(opts.teamId), active: true } });
+    const count = await activeWatchCount(db, opts.teamId);
     const reason = watchCapReason(opts.plan, count);
     if (reason) return { ok: false, reason };
   }
   return { ok: true };
+}
+
+// What a Free team's lifetime allowance counts: every run of the team, however
+// it started. The gate below and the "free checks left" an agent is told
+// (src/lib/plan-status.ts, CHE-325) read this one count, so the number said is
+// the number enforced.
+export async function teamRunsUsed(db: PrismaClient, teamId: string): Promise<number> {
+  return db.run.count({ where: { ...teamOwned(teamId) } });
 }
 
 export type RunGate =
@@ -271,7 +291,7 @@ export async function assertCanStartRun(
 ): Promise<RunGate> {
   if (team) {
     if (team.plan !== "free") return { ok: true };
-    const used = await db.run.count({ where: { ...teamOwned(team.id) } });
+    const used = await teamRunsUsed(db, team.id);
     if (used >= FREE_RUNS_LIFETIME) {
       return {
         ok: false,
@@ -389,7 +409,7 @@ export function fullRecheckGate(plan: UserPlan, used: number, now: Date = new Da
 const REGULAR_RECHECK_STILL_AVAILABLE =
   "A regular re-check is still available and re-walks what changed.";
 
-function planLabel(plan: UserPlan): string {
+export function planLabel(plan: UserPlan): string {
   return plan.charAt(0).toUpperCase() + plan.slice(1);
 }
 
