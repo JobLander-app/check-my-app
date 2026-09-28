@@ -454,14 +454,35 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           : fail(result.code, result.error, HINTS[result.code]);
       }
       const manual = args.frequency === "manual" || result.app.isExtension;
+      if (manual) {
+        return text({ ok: true, app_id: result.app.id, app: result.app.appSlug, hint: "Saved. Call start_check with this app_id to check it." });
+      }
+      // A recurring check spends the same balance as any other (CHE-327). When
+      // the balance cannot cover one, "scheduled automatically" would be a
+      // promise the scheduler then silently breaks — seen live 2026-09-28 on a
+      // Free team with $0 left. Say what will happen and hand over both ways out.
+      const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug);
+      if (!can.ok) {
+        return text({
+          ok: true,
+          app_id: result.app.id,
+          app: result.app.appSlug,
+          hint:
+            `Saved, with a recurring check — but the balance ($${balance.balanceUsd.toFixed(2)} left) does not cover a check ` +
+            `of this app (about $${can.estimate_usd.toFixed(2)}), so it waits until a top-up or the next credit. ` +
+            "Tell the user and give them buy_url and upgrade_url.",
+          buy_url: buyUrl,
+          upgrade_url: upgradeUrl,
+        });
+      }
       return text({
         ok: true,
         app_id: result.app.id,
         app: result.app.appSlug,
-        hint: manual
-          ? "Saved. Call start_check with this app_id to check it."
-          : "Saved, with a recurring check. The first one is scheduled automatically — its result shows up in " +
-            "latest_results; call start_check with this app_id only if you need it sooner.",
+        hint:
+          "Saved, with a recurring check. The first one is scheduled automatically — its result shows up in " +
+          "latest_results; call start_check with this app_id only if you need it sooner.",
       });
     },
 
