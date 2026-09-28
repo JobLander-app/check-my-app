@@ -270,6 +270,9 @@ function wiringChecks(): void {
   check("execution.ts: only steps that count are rolled up", /if \(countsTowardJourney\(step\)\) stepStatuses\.push\(/.test(execution));
   check("execution.ts: the summary goes through walkSummaryOnly", /walkSummaryOnly\(claimed, run\.targetUrl\)/.test(execution));
   check("execution.ts: a walk that met our guard has its retelling cut", /metOwnGuard \? cutSelfCheckRefusalClaims\(/.test(execution));
+  const partial = source("src/agent/partial.ts");
+  check("partial.ts: a carried summary goes through walkSummaryOnly", /walkSummaryOnly\(source\.summary, run\.targetUrl\)/.test(partial));
+  check("partial.ts: a carried step keeps why it went unverified", /unverifiedReason: step\.unverifiedReason/.test(partial));
   const synthesis = source("src/agent/synthesis.ts");
   check("synthesis.ts: the bottom line and findings go through ownGuardRefusals", /ownGuardRefusals\(journeys, bottomLine, cleanedFindings\)/.test(synthesis));
   const verdict = source("src/app/verdict/[id]/page.tsx");

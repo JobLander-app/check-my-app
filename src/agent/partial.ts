@@ -37,6 +37,7 @@ import { journeysForPlanning, recordCarry, type CatalogJourneyState } from "./jo
 import { matchJourney } from "@/lib/journey-key";
 import { parseRunAccounts, usableRunAccounts } from "@/lib/test-accounts";
 import type { ProposedJourney } from "./discovery";
+import { summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 
 // The only journey statuses worth carrying: "ok" (everything worked) and
 // "partial" (everything attempted worked, some steps went unverified). Anything
@@ -723,6 +724,8 @@ export async function carryJourney(
           screenshotUrl: true,
           attempted: true,
           observed: true,
+          unverifiedReason: true,
+          gapClass: true,
           consoleLog: true,
           networkLog: true,
           evidence: {
@@ -734,6 +737,15 @@ export async function carryJourney(
   });
   if (!source) return;
 
+  // CHE-334: a carried summary is read on today's verdict, so it meets the same
+  // cut a fresh walk's summary does. Summaries written before the cut existed
+  // still open with "CheckMyApp is a …" or retell our history; carrying them
+  // verbatim put that back on the page the cut was built for (run
+  // cmuln3zoo00031g1o0bd577bx, journey 5).
+  const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
+  const walkOnly = run ? walkSummaryOnly(source.summary, run.targetUrl) : { text: source.summary, cut: [] };
+  const summary = walkOnly.cut.length ? (walkOnly.text ?? summaryFallback(source.status)) : source.summary;
+
   await env.db.journey.deleteMany({ where: { runId, order: entry.order } });
   const journey = await env.db.journey.create({
     data: {
@@ -741,7 +753,7 @@ export async function carryJourney(
       order: entry.order,
       title: source.title,
       status: source.status,
-      summary: source.summary,
+      summary,
       videoUrl: source.videoUrl,
       carriedFromRunId: entry.sourceRunId,
       appJourneyId: source.appJourneyId,
@@ -770,6 +782,10 @@ export async function carryJourney(
         screenshotUrl: step.screenshotUrl,
         attempted: step.attempted,
         observed: step.observed,
+        // Why a carried step went unverified travels with it: without the
+        // reason, a not_applicable skip reads as an unexplained one.
+        unverifiedReason: step.unverifiedReason,
+        gapClass: step.gapClass,
         consoleLog: step.consoleLog,
         networkLog: step.networkLog,
         evidence: step.evidence.length ? { create: step.evidence } : undefined,
