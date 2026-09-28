@@ -15,6 +15,7 @@ import { triggerRun } from "@/lib/trigger";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { failedPaidCheck } from "@/lib/failed-run";
+import { encryptSecret } from "@/lib/crypto";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -54,7 +55,8 @@ const ANON_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000;
 export async function createRecheckRun(
   prisma: PrismaClient,
   publicId: string,
-  opts: { full?: boolean; anonKeyHash?: string | null } = {},
+  // testPassword: typed again for a paid check's owed re-check (CHE-335).
+  opts: { full?: boolean; anonKeyHash?: string | null; testPassword?: string } = {},
   // CHE-263: a caller may override just the authorization half — the recheck
   // route does, so an API key is answered the same way a session is.
   overrides: Partial<RecheckDeps> = {},
@@ -135,9 +137,17 @@ export async function createRecheckRun(
   // CHE-335: a $1 check that ended failed bought a verdict it never got. Its
   // one re-check is owed, not granted: no reuse window, no free-funnel cap
   // (the cap was already spent, which is why they paid), and it does not eat
-  // the visitor's own free check either. Once — the re-check names this run as
-  // its baseline, and a second press goes through the gates like any other.
-  const owedRetry = isAnonymous && !opts.full && (await paidRetryOwed(prisma, prev));
+  // the visitor's own free check either. Once, and the database decides who
+  // gets it (claimPaidRetry): two tabs pressing together start one run, and
+  // the loser goes through the gates like any second press.
+  let owedRetry = isAnonymous && !opts.full && (await paidRetryOwed(prisma, prev));
+  // The password went when the check ended (workflow.ts "fail"), as the home
+  // form promises. A retry of a signed-in check without it would walk signed
+  // out, which is not the check they paid for — so it is asked for again.
+  if (owedRetry && prev.testEmail && !opts.testPassword) {
+    return { kind: "quota", reason: RETRY_PASSWORD_NEEDED };
+  }
+  if (owedRetry) owedRetry = await claimPaidRetry(prisma, prev.id);
   if (isAnonymous && !owedRetry) {
     // A full walk is the expensive mode and exists for owners who just shipped
     // something. Nobody holding a public link gets to spend that.
@@ -192,7 +202,7 @@ export async function createRecheckRun(
       extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
       appSlug: prev.appSlug,
       testEmail: login.testEmail,
-      testPasswordEnc: login.testPasswordEnc,
+      testPasswordEnc: owedRetry && opts.testPassword ? encryptSecret(opts.testPassword) : login.testPasswordEnc,
       testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
       scopeHints: prev.scopeHints,
       userNotes: saved ? saved.userNotes : prev.userNotes,
@@ -223,13 +233,32 @@ export async function createRecheckRun(
   return { kind: "ok", publicId: run.publicId };
 }
 
+// The owed re-check is claimed by inserting a Counter row named after the
+// failed run: Counter.name is the primary key, so exactly one insert wins and
+// every concurrent one gets P2002 (Codex review of #207). D1 has no
+// transactions; a unique key is the lock one-check.ts uses for the same reason.
+const paidRetryClaim = (runId: string) => `paid-retry:${runId}`;
+
+export const RETRY_PASSWORD_NEEDED =
+  "Enter the test account's password to run it again. We delete it when a check ends.";
+
 // Whether a failed run is a paid $1 check whose one re-check has not been
-// started yet (CHE-335). The failed-run page asks the same question to say so.
+// claimed yet (CHE-335). The failed-run page asks the same question to say so.
 export async function paidRetryOwed(
   prisma: PrismaClient,
   run: { id: string; status: string; paidCheckoutSessionId: string | null },
 ): Promise<boolean> {
   if (!failedPaidCheck(run)) return false;
-  const retried = await prisma.run.findFirst({ ...publicRow(), where: { baselineRunId: run.id }, select: { id: true } });
-  return !retried;
+  const claimed = await prisma.counter.findUnique({ where: { name: paidRetryClaim(run.id) } });
+  return !claimed;
+}
+
+async function claimPaidRetry(prisma: PrismaClient, runId: string): Promise<boolean> {
+  try {
+    await prisma.counter.create({ data: { name: paidRetryClaim(runId), value: 1 } });
+    return true;
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "P2002") return false;
+    throw err;
+  }
 }

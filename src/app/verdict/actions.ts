@@ -34,9 +34,11 @@ export async function recheckRunAction(publicId: string): Promise<void> {
 // failed run's own page, since a failed run has no verdict page to land on.
 // (Our own checker is still turned away first; its bounce to /verdict/{id}
 // lands on the run page, where a failed run's verdict URL now leads.)
-export async function retryFailedRunAction(publicId: string): Promise<void> {
+export async function retryFailedRunAction(publicId: string, form?: FormData): Promise<void> {
   await refuseSelfCheck(publicId);
-  return doRecheck(publicId, false, `/run/${publicId}`);
+  // CHE-335: a paid check that signed in asks for the password again.
+  const password = form?.get("testPassword");
+  return doRecheck(publicId, false, `/run/${publicId}`, typeof password === "string" && password ? password : undefined);
 }
 
 // CHE-74: walk everything from scratch — partial/smoke skip themselves.
@@ -82,10 +84,15 @@ export async function enableWatchAction(publicId: string): Promise<void> {
   }
 }
 
-async function doRecheck(publicId: string, full: boolean, back = `/verdict/${publicId}`): Promise<void> {
+async function doRecheck(
+  publicId: string,
+  full: boolean,
+  back = `/verdict/${publicId}`,
+  testPassword?: string,
+): Promise<void> {
   const prisma = await getDbFromContext();
   const anonKeyHash = await hashClientKey((await headers()).get("cf-connecting-ip"));
-  const result = await createRecheckRun(prisma, publicId, { full, anonKeyHash });
+  const result = await createRecheckRun(prisma, publicId, { full, anonKeyHash, testPassword });
   if (result.kind === "unauthorized") {
     redirect(`/sign-in?redirect_url=${encodeURIComponent(back)}`);
   }

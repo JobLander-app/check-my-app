@@ -11,7 +11,7 @@
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { createRecheckRun, paidRetryOwed, type RecheckDeps } from "@/lib/recheck";
+import { createRecheckRun, paidRetryOwed, RETRY_PASSWORD_NEEDED, type RecheckDeps } from "@/lib/recheck";
 import { RunFailed } from "@/components/run-failed";
 import { PAID_RETRY_LINE } from "@/lib/failed-run";
 
@@ -55,11 +55,23 @@ function anonRun(id: string, over: Partial<Row> = {}): Row {
 function stubDb(rows: Row[]) {
   const created: Row[] = [];
   let counter = 1000;
+  // Counter.name is the primary key: a second insert of the same name is the
+  // P2002 the real D1 adapter raises.
+  const names = new Set<string>();
   const all = () => [...rows, ...created];
   const matches = (r: Row, where: Record<string, unknown>) =>
     Object.entries(where).every(([k, v]) => (typeof v === "object" && v !== null ? true : r[k] === v));
   const db = {
-    counter: { upsert: async () => ({ value: ++counter }) },
+    counter: {
+      upsert: async () => ({ value: ++counter }),
+      findUnique: async ({ where }: { where: { name: string } }) => (names.has(where.name) ? { name: where.name, value: 1 } : null),
+      create: async ({ data }: { data: { name: string } }) => {
+        await Promise.resolve();
+        if (names.has(data.name)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        names.add(data.name);
+        return { name: data.name, value: 1 };
+      },
+    },
     app: { findFirst: async () => null },
     run: {
       findUnique: async ({ where }: { where: Record<string, unknown> }) =>
@@ -106,7 +118,30 @@ async function main() {
     // 3. Once.
     const again = await createRecheckRun(db, "pub-paid", { anonKeyHash: "buyer-key" }, {}, deps);
     check("a second press goes through the gates like any other", again.kind === "quota", again.kind);
-    check("paidRetryOwed is false once the re-check exists", !(await paidRetryOwed(db, { id: "paid", status: "failed", paidCheckoutSessionId: "cs_live_1" })));
+    check("paidRetryOwed is false once the re-check is claimed",!(await paidRetryOwed(db, { id: "paid", status: "failed", paidCheckoutSessionId: "cs_live_1" })));
+  }
+
+  // 3b. Two presses at once (two tabs, the API and the page): one run.
+  {
+    const { db, created } = stubDb([anonRun("race", { paidCheckoutSessionId: "cs_live_3" })]);
+    const [a, b] = await Promise.all([
+      createRecheckRun(db, "pub-race", { anonKeyHash: "buyer-key" }, {}, deps),
+      createRecheckRun(db, "pub-race", { anonKeyHash: "buyer-key" }, {}, deps),
+    ]);
+    const kinds = [a.kind, b.kind].sort().join(",");
+    check("two concurrent presses start exactly one owed re-check", kinds === "ok,quota" && created.length === 1, `${kinds}, ${created.length} run(s)`);
+  }
+
+  // 3c. A paid check that signed in: the password went when it ended.
+  {
+    process.env.CREDENTIALS_SECRET ??= "verify-paid-retry";
+    const { db, created } = stubDb([anonRun("login", { paidCheckoutSessionId: "cs_live_4", testEmail: "qa@shop.example.org" })]);
+    const bare = await createRecheckRun(db, "pub-login", { anonKeyHash: "buyer-key" }, {}, deps);
+    check("a signed-in paid check's re-check asks for the password", bare.kind === "quota" && bare.reason === RETRY_PASSWORD_NEEDED, bare.kind);
+    check("…without spending the owed re-check", created.length === 0 && (await paidRetryOwed(db, { id: "login", status: "failed", paidCheckoutSessionId: "cs_live_4" })));
+    const withPw = await createRecheckRun(db, "pub-login", { anonKeyHash: "buyer-key", testPassword: "s3cret" }, {}, deps);
+    check("with the password it starts, signed in", withPw.kind === "ok" && typeof created[0]?.testPasswordEnc === "string" && created[0]?.testEmail === "qa@shop.example.org", withPw.kind);
+    check("…and the password is stored encrypted, never as typed", created[0]?.testPasswordEnc !== "s3cret");
   }
 
   // 4. A paid run that completed owes nothing.
@@ -120,6 +155,9 @@ async function main() {
   check("the failed-run card says the re-check is on us", owed.includes(PAID_RETRY_LINE.replace(/'/g, "&#x27;")));
   const plain = renderToString(createElement(RunFailed, { free: false, retry: { runId: "pub-free", appSlug: "shop.example.org" } }));
   check("…and a free check's card does not", !plain.includes("on us"));
+  const signedIn = renderToString(createElement(RunFailed, { free: false, paidRetry: true, retry: { runId: "pub-login", appSlug: "shop.example.org", loginEmail: "qa@shop.example.org" } }));
+  check("a signed-in paid check's card asks for that account's password", signedIn.includes('name="testPassword"') && signedIn.includes("qa@shop.example.org"));
+  check("…and no other card does", !owed.includes("testPassword") && !plain.includes("testPassword"));
 
   if (failures) {
     console.log(`\n${failures} check(s) failed`);

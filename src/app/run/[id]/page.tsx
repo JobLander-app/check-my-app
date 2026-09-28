@@ -37,6 +37,7 @@ export default async function RunPage({
       priceUsd: true,
       id: true,
       paidCheckoutSessionId: true,
+      testEmail: true,
     },
   });
   if (!run) notFound();
@@ -53,12 +54,17 @@ export default async function RunPage({
   if (run.status === "failed") {
     const { recheck, balance } = await searchParams;
     const canRetry = await canMutateOwned(prisma, run.ownerId);
+    const paidRetry = await paidRetryOwed(prisma, run);
     return (
       <main className="mx-auto max-w-5xl px-4 py-10">
         <RunFailed
           free={failedRunWasFree(run)}
-          paidRetry={await paidRetryOwed(prisma, run)}
-          retry={canRetry ? { runId: run.publicId, appSlug: run.appSlug } : null}
+          paidRetry={paidRetry}
+          retry={
+            canRetry
+              ? { runId: run.publicId, appSlug: run.appSlug, loginEmail: paidRetry ? run.testEmail : null }
+              : null
+          }
           notice={recheck === "notfound" ? "That run no longer exists." : (recheck ?? null)}
           balanceRefused={balance === "1" && typeof recheck === "string"}
         />
