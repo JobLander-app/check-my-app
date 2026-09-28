@@ -523,7 +523,9 @@ async function main() {
     const zero = await call(free, "create_app", { url: "https://zero-balance.test" });
     const hint = String(zero.out.hint ?? "");
     check("create_app on an empty balance: saved, says it waits for a top-up, carries buy_url and upgrade_url",
-      zero.out.ok === true && /waits until a top-up/.test(hint) && !/scheduled automatically/.test(hint) &&
+      // Free's credit never renews, so the hint must not promise a next credit.
+      zero.out.ok === true && /waits until a top-up\./.test(hint) && !/next credit/.test(hint) &&
+        !/scheduled automatically/.test(hint) &&
         zero.out.buy_url === `${ORIGIN}/dashboard#balance` && zero.out.upgrade_url === `${ORIGIN}/pricing`,
       JSON.stringify(zero.out));
     const paid = await call(a, "create_app", { url: "https://paid-team.test" });

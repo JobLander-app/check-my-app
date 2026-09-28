@@ -471,7 +471,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           hint:
             // balanceUsd is null only on an unlimited plan, which appCanRun never refuses.
             `Saved, with a recurring check — but the balance ($${(balance.balanceUsd ?? 0).toFixed(2)} left) does not cover a check ` +
-            `of this app (about $${can.estimate_usd.toFixed(2)}), so it waits until a top-up or the next credit. ` +
+            `of this app (about $${can.estimate_usd.toFixed(2)}), so it waits until a top-up` +
+            // Free's credit is one-time; only a paid plan's credit comes back.
+            (balance.renewsOn ? ` or the next credit on ${balance.renewsOn}. ` : ". ") +
             "Tell the user and give them buy_url and upgrade_url.",
           buy_url: buyUrl,
           upgrade_url: upgradeUrl,
