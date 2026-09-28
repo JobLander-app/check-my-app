@@ -38,6 +38,13 @@ interface VerdictReadyArgs {
   apiKey?: string;
   from?: string;
   baseUrl?: string;
+  // CHE-328: the notify step is a Workflow step, and the platform retries a step
+  // that dies after the mail has gone (run #263: WorkflowInternalError after the
+  // send, then a second identical mail to our first customer). Resend keeps an
+  // Idempotency-Key for 24 h and answers a repeat with the original response
+  // instead of sending again — so the caller passes a key that is the same on
+  // every attempt for the same run and recipient.
+  idempotencyKey?: string;
 }
 
 // Returns the provider's own id for the accepted message, or null when there is
@@ -58,6 +65,7 @@ export async function sendVerdictReady({
   apiKey,
   from,
   baseUrl,
+  idempotencyKey,
 }: VerdictReadyArgs): Promise<string | null> {
   const base = baseUrl ?? "http://localhost:3000";
   const url = `${base}/verdict/${publicId}`;
@@ -76,7 +84,11 @@ export async function sendVerdictReady({
 
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: JSON.stringify({
       from,
       to: [to],
@@ -104,7 +116,12 @@ export async function sendVerdictReady({
     }),
   });
   if (!res.ok) {
-    throw new Error(`Resend send failed: ${res.status} ${await res.text()}`);
+    const detail = await res.text();
+    // Same key, different body: the first attempt's mail went out, and the row
+    // changed between attempts. Sending again is exactly what the key prevents,
+    // so this counts as sent — without an id, because the provider gave none.
+    if (res.status === 409 && idempotencyKey && detail.includes("invalid_idempotent_request")) return null;
+    throw new Error(`Resend send failed: ${res.status} ${detail}`);
   }
   // The provider's id for the accepted message. Best-effort: an unreadable body
   // must not turn a delivered mail into a failure.
@@ -114,6 +131,12 @@ export async function sendVerdictReady({
   } catch {
     return null;
   }
+}
+
+// CHE-328: one verdict mail per run and recipient, however many times the step
+// that sends it runs. Stable across attempts, distinct per recipient.
+export function verdictIdempotencyKey(publicId: string, to: string): string {
+  return `verdict-ready/${publicId}/${to.toLowerCase()}`.slice(0, 256);
 }
 
 interface WatchTrialPausedArgs {
