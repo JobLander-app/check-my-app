@@ -93,12 +93,36 @@ export function FullRecheckButton({ runId, appSlug }: { runId: string; appSlug: 
 
 // CHE-329: the one way forward from a check that didn't finish. Same form
 // around a server action as RecheckButton, for the same pre-hydration reason.
-export function RetryFailedRunButton({ runId, appSlug }: { runId: string; appSlug: string }) {
+// CHE-335: a paid check that signed in lost its password when it ended, so its
+// owed re-check asks for it again. The account is not named: the run link is
+// shareable, and its address is the customer's.
+export function RetryFailedRunButton({
+  runId,
+  appSlug,
+  needsPassword = false,
+}: {
+  runId: string;
+  appSlug: string;
+  needsPassword?: boolean;
+}) {
   return (
     <form
       action={retryFailedRunAction.bind(null, runId)}
       onSubmit={() => track("recheck_clicked", { kind: "retry_failed", appSlug })}
+      className="flex flex-col items-center gap-2"
     >
+      {needsPassword && (
+        <label className="flex w-full max-w-xs flex-col gap-1 text-left text-sm text-fg-muted">
+          Password for the test account
+          <input
+            type="password"
+            name="testPassword"
+            required
+            autoComplete="off"
+            className="rounded-md border border-ink-600 bg-ink-850 px-3 py-2 text-fg"
+          />
+        </label>
+      )}
       <RecheckSubmit label="Run it again" />
     </form>
   );

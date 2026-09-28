@@ -4,6 +4,7 @@
 import type { UserPlan, WatchFrequency } from "./enums";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ownerScoped, teamOwned } from "@/lib/tenant-db";
+import { PAID_RETRY_SOURCE } from "@/lib/failed-run";
 
 export interface PlanLimits {
   // CHE-327 (owner, 2026-09-28): a plan is a dollar BALANCE, and every check
@@ -142,7 +143,15 @@ export async function anonRunsToday(
 ): Promise<{ used: number; cap: number; dayStartIso: string }> {
   const dayStart = utcDayStart(now);
   const used = await db.run.count({ ...ownerScoped(),
-    where: { ownerId: null, paidCheckoutSessionId: null, createdAt: { gte: dayStart } },
+    where: {
+      ownerId: null,
+      paidCheckoutSessionId: null,
+      // CHE-335: a failed $1 check's owed re-check is paid for too. The null
+      // branch keeps runs from before startedVia existed — SQL's NULL <> x is
+      // not true, so a bare `not` would drop them from the count.
+      OR: [{ startedVia: null }, { startedVia: { not: PAID_RETRY_SOURCE } }],
+      createdAt: { gte: dayStart },
+    },
   });
   return { used, cap, dayStartIso: dayStart.toISOString() };
 }

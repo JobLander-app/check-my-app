@@ -14,6 +14,8 @@ import { ephemeralExpiry } from "@/lib/ephemeral";
 import { triggerRun } from "@/lib/trigger";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
+import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
+import { encryptSecret } from "@/lib/crypto";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -53,7 +55,8 @@ const ANON_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000;
 export async function createRecheckRun(
   prisma: PrismaClient,
   publicId: string,
-  opts: { full?: boolean; anonKeyHash?: string | null } = {},
+  // testPassword: typed again for a paid check's owed re-check (CHE-335).
+  opts: { full?: boolean; anonKeyHash?: string | null; testPassword?: string } = {},
   // CHE-263: a caller may override just the authorization half — the recheck
   // route does, so an API key is answered the same way a session is.
   overrides: Partial<RecheckDeps> = {},
@@ -89,6 +92,8 @@ export async function createRecheckRun(
       ownerId: true,
       ephemeral: true,
       teamId: true,
+      status: true,
+      paidCheckoutSessionId: true,
       // CHE-253: the plan is the TEAM's — the person who clicks may not be the
       // one who pays. CHE-137: the CURRENT plan decides the allowance,
       // so an upgrade takes effect on the next click with nothing to sync.
@@ -129,7 +134,21 @@ export async function createRecheckRun(
       return { kind: "quota", reason: gate.reason, code: gate.code };
     }
   }
-  if (isAnonymous) {
+  // CHE-335: a $1 check that ended failed bought a verdict it never got. Its
+  // one re-check is owed, not granted: no reuse window, no free-funnel cap
+  // (the cap was already spent, which is why they paid), and it does not eat
+  // the visitor's own free check either. Once, and the database decides who
+  // gets it (claimPaidRetry): two tabs pressing together start one run, and
+  // the loser goes through the gates like any second press.
+  let owedRetry = isAnonymous && !opts.full && (await paidRetryOwed(prisma, prev));
+  // The password went when the check ended (workflow.ts "fail"), as the home
+  // form promises. A retry of a signed-in check without it would walk signed
+  // out, which is not the check they paid for — so it is asked for again.
+  if (owedRetry && prev.testEmail && !opts.testPassword) {
+    return { kind: "quota", reason: RETRY_PASSWORD_NEEDED, code: "password_needed" };
+  }
+  if (owedRetry) owedRetry = await claimPaidRetry(prisma, prev.id);
+  if (isAnonymous && !owedRetry) {
     // A full walk is the expensive mode and exists for owners who just shipped
     // something. Nobody holding a public link gets to spend that.
     if (opts.full) {
@@ -174,42 +193,85 @@ export async function createRecheckRun(
     ? await prisma.app.findFirst({ where: { ...teamOwned(prev.teamId), id: prev.appId },
       select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true } }) : null;
   const login = saved ?? appLogin ?? prev;
-  const run = await prisma.run.create({ ...alreadyScoped("created with its team"),
-    data: {
-      runNumber: await nextRunNumber(prisma),
-      targetUrl: prev.targetUrl,
-      targetKind: prev.targetKind,
-      extensionId: prev.extensionId,
-      extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
-      appSlug: prev.appSlug,
-      testEmail: login.testEmail,
-      testPasswordEnc: login.testPasswordEnc,
-      testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
-      scopeHints: prev.scopeHints,
-      userNotes: saved ? saved.userNotes : prev.userNotes,
-      focusAreas: prev.focusAreas,
-      notifyEmail: prev.notifyEmail,
-      watchId: prev.watchId,
-      appId: prev.appId,
-      ownerId: prev.ownerId,
-      teamId: prev.teamId,
-      baselineRunId: prev.id,
-      // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
-      forceFull: opts.full ?? false,
-      startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
-      // Anonymous re-checks count against the same daily allowance as
-      // anonymous submissions (CHE-97).
-      anonKeyHash: prev.ownerId ? null : (opts.anonKeyHash ?? null),
-      // CHE-202: ephemeral begets ephemeral. An ephemeral run is always owned
-      // (the API refuses anonymous ones), so it never reaches the anonymous
-      // path above; and it has no appId/watchId to copy — they are null.
-      ephemeral: prev.ephemeral,
-      expiresAt: prev.ephemeral ? ephemeralExpiry(deps.now(), deps.ephemeralTtlDays()) : null,
-      status: "queued",
-    },
-    select: { id: true, publicId: true },
-  });
+  // CHE-335 (Codex review of #207): a claimed re-check that never got started
+  // is still owed — the claim goes back if anything below throws.
+  try {
+    const run = await prisma.run.create({ ...alreadyScoped("created with its team"),
+      data: {
+        runNumber: await nextRunNumber(prisma),
+        targetUrl: prev.targetUrl,
+        targetKind: prev.targetKind,
+        extensionId: prev.extensionId,
+        extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
+        appSlug: prev.appSlug,
+        testEmail: login.testEmail,
+        testPasswordEnc: owedRetry && opts.testPassword ? encryptSecret(opts.testPassword) : login.testPasswordEnc,
+        testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
+        scopeHints: prev.scopeHints,
+        userNotes: saved ? saved.userNotes : prev.userNotes,
+        focusAreas: prev.focusAreas,
+        notifyEmail: prev.notifyEmail,
+        watchId: prev.watchId,
+        appId: prev.appId,
+        ownerId: prev.ownerId,
+        teamId: prev.teamId,
+        baselineRunId: prev.id,
+        // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
+        forceFull: opts.full ?? false,
+        // CHE-335: an owed re-check is marked so the site's free-check count
+        // leaves it out, as it leaves out the paid run it replaces.
+        startedVia: prev.ownerId ? (deps.source ?? "ui") : owedRetry ? PAID_RETRY_SOURCE : "anon",
+        // Anonymous re-checks count against the same daily allowance as
+        // anonymous submissions (CHE-97).
+        anonKeyHash: prev.ownerId || owedRetry ? null : (opts.anonKeyHash ?? null),
+        // CHE-202: ephemeral begets ephemeral. An ephemeral run is always owned
+        // (the API refuses anonymous ones), so it never reaches the anonymous
+        // path above; and it has no appId/watchId to copy — they are null.
+        ephemeral: prev.ephemeral,
+        expiresAt: prev.ephemeral ? ephemeralExpiry(deps.now(), deps.ephemeralTtlDays()) : null,
+        status: "queued",
+      },
+      select: { id: true, publicId: true },
+    });
 
-  await deps.trigger(run.id);
-  return { kind: "ok", publicId: run.publicId };
+    await deps.trigger(run.id);
+    return { kind: "ok", publicId: run.publicId };
+  } catch (err) {
+    if (owedRetry) {
+      await prisma.counter.delete({ where: { name: paidRetryClaim(prev.id) } }).catch((e) =>
+        console.warn(`[recheck] owed re-check claim not released: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
+    throw err;
+  }
+}
+
+// The owed re-check is claimed by inserting a Counter row named after the
+// failed run: Counter.name is the primary key, so exactly one insert wins and
+// every concurrent one gets P2002 (Codex review of #207). D1 has no
+// transactions; a unique key is the lock one-check.ts uses for the same reason.
+const paidRetryClaim = (runId: string) => `paid-retry:${runId}`;
+
+export const RETRY_PASSWORD_NEEDED =
+  "Enter the test account's password to run it again. We delete it when a check ends.";
+
+// Whether a failed run is a paid $1 check whose one re-check has not been
+// claimed yet (CHE-335). The failed-run page asks the same question to say so.
+export async function paidRetryOwed(
+  prisma: PrismaClient,
+  run: { id: string; status: string; paidCheckoutSessionId: string | null },
+): Promise<boolean> {
+  if (!failedPaidCheck(run)) return false;
+  const claimed = await prisma.counter.findUnique({ where: { name: paidRetryClaim(run.id) } });
+  return !claimed;
+}
+
+async function claimPaidRetry(prisma: PrismaClient, runId: string): Promise<boolean> {
+  try {
+    await prisma.counter.create({ data: { name: paidRetryClaim(runId), value: 1 } });
+    return true;
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "P2002") return false;
+    throw err;
+  }
 }
