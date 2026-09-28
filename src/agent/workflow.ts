@@ -57,7 +57,13 @@ import { parseActions, replayJourney, type ReplayResult } from "./journey-replay
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
-import { fileCapabilityGaps, fileDeliveryGap, fileRouteRefusal } from "./capability-gaps";
+import {
+  fileCapabilityGaps,
+  fileDeliveryGap,
+  fileRouteRefusal,
+  ROUTE_REFUSAL_FILED,
+  routeRefusalFiledAs,
+} from "./capability-gaps";
 import { fileRunFailure } from "./run-failures";
 import { measureRunJourneys, measurementNote } from "./journey-measurement";
 import { GAP_CLASSES } from "./gap-classes";
@@ -845,6 +851,15 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             if (refusals.length) {
               const filed = await fileRouteRefusal(env, runId, { refusals, verdictWritten: false });
               console.warn(`[synthesis] run ${runId}: synthesis failed after refusals; our board: ${filed}`);
+              // CHE-329: say on the failure itself that it is on our board, so
+              // the run-failure filing does not count it a second time — and
+              // only when it truly is: a filing that failed leaves the provider's
+              // message as it was, and the run-failure ticket catches it.
+              const identifier = routeRefusalFiledAs(filed);
+              if (identifier && !(err instanceof LlmBudgetError)) {
+                const message = err instanceof Error ? err.message : String(err);
+                throw new Error(`${ROUTE_REFUSAL_FILED}${identifier}: ${message}`);
+              }
             }
             return rethrowBudgetNonRetryable(err);
           },

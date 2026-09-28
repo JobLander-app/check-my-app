@@ -23,9 +23,10 @@
 //      filed twice. Unless it threw after its verdict was written: that branch
 //      of "fail" files no gap, so it is filed here like any other.
 //   3. Our runaway fuse, the Workflows engine, and the model provider answering
-//      an HTTP error are ours. A route refusal that ended synthesis (a 4xx in
-//      `writing`, isRefusalStatus) was already filed by fileRouteRefusal
-//      (CHE-330) with its route facts, and is not filed twice.
+//      an HTTP error are ours. A route refusal that ended synthesis and that
+//      fileRouteRefusal (CHE-330) did file says so in its message
+//      (ROUTE_REFUSAL_FILED) and is not filed twice; one whose filing failed
+//      carries no mark and is filed here.
 //   4. The target's page not loading in our browser:
 //        - on a target that is ours (our host on our run, or a self-check
 //          account's placeholder app — silenceReason, CLAUDE.md §6) it is ours:
@@ -44,8 +45,7 @@
 // real classification and the real filing path against a stub board.
 
 import { fileFindingTicket, type TicketFinding } from "@/lib/tracker/file";
-import { ourBoard, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
-import { isRefusalStatus } from "./llm";
+import { ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
 import { isOwnRun, silenceReason } from "./notify-verdict";
 import type { AgentEnv } from "./env";
 
@@ -64,8 +64,6 @@ export interface FailureFacts {
    * that step, so here nothing else has filed it.
    */
   afterVerdict: boolean;
-  /** Run.status when it threw — the phase it died in. */
-  phase: string | null;
   /** Our host on our run, or a self-check account's run — silenceReason() !== null. */
   ourTarget: boolean;
   /** A plain request from our side got an HTTP answer from the target. null = not asked. */
@@ -112,13 +110,14 @@ export function classifyRunFailure(f: FailureFacts): FailureOwner {
   if (/WorkflowInternalError|internal workflows error/i.test(msg)) {
     return { kind: "ours", signature: "Workflow engine failed the run" };
   }
-  const http = PROVIDER_HTTP.exec(msg);
-  // CHE-330: a refusal that ends synthesis was filed by fileRouteRefusal, with
-  // the route and the location it left from, before the run failed. One
-  // failure, one ticket: not filed a second time under this signature.
-  if (http && f.phase === "writing" && isRefusalStatus(Number(http[1]))) {
-    return { kind: "filed_elsewhere", why: "a refused verdict route is filed as its own gap (fileRouteRefusal)" };
+  // CHE-330: a refusal that ended synthesis was filed by fileRouteRefusal,
+  // with the route and the location it left from, and the failure says so
+  // (ROUTE_REFUSAL_FILED). One failure, one ticket. A refusal whose filing
+  // failed carries no such prefix and is filed below like any provider error.
+  if (msg.startsWith(ROUTE_REFUSAL_FILED)) {
+    return { kind: "filed_elsewhere", why: "the refused verdict route is already on our board (fileRouteRefusal)" };
   }
+  const http = PROVIDER_HTTP.exec(msg);
   if (http) return { kind: "ours", signature: `Model provider answered HTTP ${http[1]}` };
   const nav = navigationFailure(msg);
   if (nav) {
@@ -192,7 +191,6 @@ export async function fileRunFailure(
       budget: facts.budget,
       isExtension: run.targetKind === "extension",
       afterVerdict: facts.afterVerdict === true,
-      phase: facts.phase,
       ourTarget,
       targetAnswers,
     });

@@ -136,14 +136,26 @@ async function main() {
   // ─── 1. Whose failure it is ────────────────────────────────────────────────
   const rf = await importOrFail("src/agent/run-failures.ts", () => import("@/agent/run-failures"));
   if (rf) {
-    const facts = { budget: false, isExtension: false, afterVerdict: false, phase: "walking", ourTarget: false, targetAnswers: null };
+    const facts = { budget: false, isExtension: false, afterVerdict: false, ourTarget: false, targetAnswers: null };
     const c258 = rf.classifyRunFailure({ ...facts, message: PROVIDER_403 });
-    check("a provider 403 outside synthesis → ours", c258.kind === "ours" && c258.signature === "Model provider answered HTTP 403", JSON.stringify(c258));
-    // CHE-330 files a refusal that ended synthesis itself (fileRouteRefusal),
-    // before the run fails: #258's exact shape. One failure, one ticket.
-    check("#258 (403 in writing) is left to the route-refusal ticket, not filed twice", rf.classifyRunFailure({ ...facts, phase: "writing", message: PROVIDER_403 }).kind === "filed_elsewhere");
-    check("…but a 500 in writing is not a refusal and is filed", rf.classifyRunFailure({ ...facts, phase: "writing", message: '500 {"error":{"type":"api_error"}}' }).kind === "ours");
-    check("…and a 429 in writing is not a refusal either", rf.classifyRunFailure({ ...facts, phase: "writing", message: '429 {"error":{"type":"rate_limit"}}' }).kind === "ours");
+    check("#258's provider 403, with no route-refusal ticket behind it → ours", c258.kind === "ours" && c258.signature === "Model provider answered HTTP 403", JSON.stringify(c258));
+    // CHE-330 files a refusal that ended synthesis itself (fileRouteRefusal)
+    // and, when that filing landed, the failure says so. One failure, one
+    // ticket — and a filing that failed leaves the message bare, so the
+    // run-failure ticket still catches it (Codex on #204, round 4).
+    const cg0 = await import("@/agent/capability-gaps");
+    const marked = "ROUTE_REFUSAL_FILED" in cg0 ? `${cg0.ROUTE_REFUSAL_FILED}CHE-777: ${PROVIDER_403}` : PROVIDER_403;
+    check("a refusal fileRouteRefusal filed is not filed twice", rf.classifyRunFailure({ ...facts, message: marked }).kind === "filed_elsewhere", marked);
+    if ("routeRefusalFiledAs" in cg0) {
+      check("fileRouteRefusal's result: created/commented/suppressed → filed", cg0.routeRefusalFiledAs("created CHE-777") === "CHE-777" && cg0.routeRefusalFiledAs("commented CHE-777") === "CHE-777" && cg0.routeRefusalFiledAs("suppressed CHE-777") === "CHE-777");
+      check("…a filing that failed, or found no board, → not filed", cg0.routeRefusalFiledAs("filing failed: Linear 503") === null && cg0.routeRefusalFiledAs("no tracker on our own app") === null && cg0.routeRefusalFiledAs("run r1 is gone") === null);
+    } else {
+      check("capability-gaps exports routeRefusalFiledAs", false);
+    }
+    check(
+      "the synthesis catch marks the failure only when routeRefusalFiledAs found a ticket",
+      /const identifier = routeRefusalFiledAs\(filed\);\s*if \(identifier && !\(err instanceof LlmBudgetError\)\) \{[\s\S]{0,200}throw new Error\(`\$\{ROUTE_REFUSAL_FILED\}\$\{identifier\}: \$\{message\}`\);/.test(source("src/agent/workflow.ts")),
+    );
     const c500 = rf.classifyRunFailure({ ...facts, message: '500 {"error":{"type":"api_error"}}' });
     check("a provider 500 is a different signature from a 403", c500.kind === "ours" && c500.signature !== (c258 as { signature?: string }).signature);
     check("#206 WorkflowInternalError → ours", rf.classifyRunFailure({ ...facts, message: WORKFLOW_206 }).kind === "ours");

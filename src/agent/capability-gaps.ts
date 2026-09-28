@@ -466,6 +466,21 @@ const ROUTE_REFUSAL = {
     "fallback existed.",
 };
 
+// CHE-329: when every road refused and the run is failing, the failure path
+// must know whether THIS run's refusal reached our board — the error object
+// (and the refusals riding on it) does not cross the step boundary, and a
+// filing that failed must fall back to the run-failure ticket rather than be
+// assumed. So a filed refusal is written into the message the run fails with:
+// Run.errorMessage is internal, and the prefix is a per-run fact, not an
+// inference from the status code and the phase.
+export const ROUTE_REFUSAL_FILED = "internal: route refusal filed as ";
+
+// The identifier fileRouteRefusal filed onto, or null when it did not file.
+// A suppressed signature counts as settled: the owner ruled on it.
+export function routeRefusalFiledAs(result: string): string | null {
+  return /^(?:created|commented|suppressed) (\S+)$/.exec(result)?.[1] ?? null;
+}
+
 // Never throws, and nothing in it can: it runs inside the `writing` step, and
 // a tracker or database hiccup here must not turn a verdict the fallback just
 // wrote into a failed step that pays for synthesis again. verdictWritten is
