@@ -7,6 +7,7 @@ import type { Browser } from "@cloudflare/playwright";
 import type { StepStatus } from "@/lib/enums";
 import { LlmBudgetError, runAgentLoop, finalizeJson, type TranscriptEntry } from "./core";
 import {
+  countsTowardJourney,
   knownUrlsFrom,
   prepareAgentPage,
   productizeStep,
@@ -30,7 +31,7 @@ import { parseJson } from "@/lib/json";
 import { adjudicateStep } from "./judge";
 import { classifyGap, gapEvidenceText } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
-import { summaryFallback } from "@/lib/verdict-language";
+import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
@@ -196,6 +197,9 @@ export async function walkOneJourney(args: {
     // CHE-219: this journey's steps as they land, so its summary can be held to
     // the same evidence a finding is.
     const walkedSteps: GateStep[] = [];
+    // CHE-334: this walk met our own self-check guard, so its summary may not
+    // retell that refusal as the product's.
+    let metOwnGuard = false;
 
     const toolEnv: ToolEnv = {
       page,
@@ -285,7 +289,11 @@ export async function walkOneJourney(args: {
         // CHE-180: the customer's words, decided after the judge has seen the
         // model's. Nothing between here and the row may reintroduce ours.
         productizeStep(step);
-        stepStatuses.push(step.status as StepStatus);
+        // CHE-334: a step our own guard refused is kept (it is what the walk
+        // did) but is no part of the journey's status — the journey is judged
+        // up to the guard.
+        if (countsTowardJourney(step)) stepStatuses.push(step.status as StepStatus);
+        else metOwnGuard = true;
         const trail = actionTrail.splice(0);
         // CHE-219: the same rows the summary below is judged against, kept as
         // they are written so the cut sees this journey's own evidence.
@@ -417,7 +425,16 @@ export async function walkOneJourney(args: {
           `[walk] summary claimed ${claim.cut.length} interaction(s) this journey never performed — cutting: ${claim.cut.join(" / ")}`,
         );
       }
-      const summary = claim.cut.length ? (claim.text ?? summaryFallback(status)) : written;
+      const claimed = claim.cut.length ? (claim.text ?? summaryFallback(status)) : written;
+      // CHE-334: what happened on this walk — not a description of the
+      // product, not our own history, and not our own guard retold as theirs.
+      const walkOnly = walkSummaryOnly(claimed, run.targetUrl);
+      const guarded = metOwnGuard ? cutSelfCheckRefusalClaims(walkOnly.text) : { text: walkOnly.text, cut: [] };
+      const ownWords = [...walkOnly.cut, ...guarded.cut];
+      if (ownWords.length) {
+        console.warn(`[walk] summary cut ${ownWords.length} sentence(s) not about this walk: ${ownWords.join(" / ")}`);
+      }
+      const summary = ownWords.length ? (guarded.text ?? summaryFallback(status)) : claimed;
 
       await env.db.journey.update({
         where: { id: journey.id },

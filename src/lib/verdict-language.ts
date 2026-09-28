@@ -546,6 +546,149 @@ export function summaryFallback(status?: string | null): string {
   return JOURNEY_PROBLEM_FALLBACK;
 }
 
+// ─── Our own guard, and a summary that is about this walk (CHE-334) ─────────
+//
+// Owner, 2026-09-28, during a live demo: checkmyapp.dev's own verdict showed
+// "strange reasons why it's broken". Run #260 said "'Show me my app' returns
+// 403 for this account" and, in the bottom line, that the core promise "was
+// refused at the bot-check gate (403)". The 403 was our own self-check guard
+// (src/lib/self-check.ts) refusing our own checker — rule 8, a claim resting
+// on our own state. Run #261's summaries opened with "CheckMyApp is a
+// link-verification tool that …" and said "the previously reported OAuth
+// redirect bug appears fixed": a product brochure and our own history, where
+// the reader expects what happened on this walk.
+
+// What a step our own guard refused says instead of the model's words. Fixed,
+// so the verdict reads one sentence for one situation, and so a later reader
+// (synthesis, below) can recognise the step from the row alone.
+export const SELF_CHECK_REFUSED_OBSERVED =
+  "Stopped here on purpose: checks of this product never create, start or change anything in it.";
+
+export function isSelfCheckRefusalStep(step: { unverifiedReason?: string | null; observed?: string | null }): boolean {
+  return step.unverifiedReason === "not_applicable" && step.observed === SELF_CHECK_REFUSED_OBSERVED;
+}
+
+// A sentence that retells the refusal as a fact about the product. Applied
+// only where a refusal of our own guard is known to have happened (the walk
+// that met it, the run whose steps carry it) — never as a general rule, where
+// "403" and "refused" are exactly the evidence a real user hits.
+const SELF_CHECK_REFUSAL_CLAIM =
+  /\b403\b|\bforbidden\b|\brefus(?:ed|es|al|ing)\b|\brejected\b|\bdenied\b|\bblocked\b|\bbot[- ]?(?:check|gate|protection)\b|\bnot available to (?:this|the|our) account\b|\bout of reach\b|\bself_check=read_only\b|\bread-only\b/i;
+
+// The sentences that retell our own refusal go; the rest stays as written.
+// Null when nothing survives, so the caller writes its fixed sentence.
+export function cutSelfCheckRefusalClaims(text: string | null | undefined): { text: string | null; cut: string[] } {
+  if (!text) return { text: text ?? null, cut: [] };
+  const cut: string[] = [];
+  const kept = splitSentences(text).filter((s) => {
+    if (!SELF_CHECK_REFUSAL_CLAIM.test(s)) return true;
+    cut.push(s);
+    return false;
+  });
+  if (cut.length === 0) return { text, cut };
+  const out = kept.join(" ").replace(/\s+/g, " ").trim();
+  return { text: out || null, cut };
+}
+
+// The names a summary would call the product by: the target's registrable
+// label ("checkmyapp" for checkmyapp.dev, "joblander" for app.joblander.app).
+// Compared with every non-letter removed, so "CheckMyApp", "Check My App" and
+// "checkmyapp.dev" are all the same name.
+function productNamesOf(targetUrl: string): string[] {
+  try {
+    const labels = new URL(targetUrl).hostname.toLowerCase().replace(/^www\./, "").split(".");
+    const names = new Set<string>([labels.join("")]);
+    if (labels.length >= 2) names.add(labels[labels.length - 2]);
+    return [...names].filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// "<Product> is a/an …", "This app is a …". The subject is the product's own
+// name or a generic word for the product, never a part of it ("The sign-in
+// page is a two-step form" is about this walk and stays).
+const DESCRIPTION_OPENER =
+  /^\s*["'“]?((?:[A-Za-z0-9][\w.'’-]*)(?:\s+[A-Za-z0-9][\w.'’-]*){0,2})["'”]?\s+is\s+(?:an?|the)\s+/;
+const GENERIC_PRODUCT_SUBJECT = /^(?:the|this)\s+(?:app|application|product|site|website|service|platform|tool|web\s*app)$/i;
+// The description ends where an independent clause starts: after a semicolon
+// or a dash, what follows is its own statement ("…; its sign-in works"). A
+// colon or a comma only continues the description.
+const DESCRIPTION_END = /;\s+|\s+[—–]\s+/;
+
+function cutDescription(sentence: string, names: string[]): string | null {
+  const m = DESCRIPTION_OPENER.exec(sentence);
+  if (!m) return sentence;
+  const subject = m[1].trim();
+  if (!GENERIC_PRODUCT_SUBJECT.test(subject) && !names.includes(squash(subject))) return sentence;
+  const end = DESCRIPTION_END.exec(sentence);
+  if (!end) return null;
+  const rest = sentence.slice(end.index + end[0].length).trim();
+  if (rest.length < 20) return null;
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
+// Our own history, retold: an earlier report, a bug that "appears fixed", the
+// old behaviour that "is gone". A summary says what this walk saw; whether a
+// ticket of ours is settled is decided elsewhere (src/agent/reconcile.ts).
+const HISTORY_CLAIM = new RegExp(
+  [
+    String.raw`\b(?:previously|earlier|formerly|last\s+time|before)\s+(?:\w+\s+){0,2}(?:reported|flagged|noted|found|seen|filed|observed|identified|described)\b`,
+    String.raw`\b(?:previous|prior|earlier|last|past|older)\s+(?:runs?|checks?|reports?|verdicts?|walks?|visits?|findings?)\b`,
+    String.raw`\b(?:bug|issue|problem|defect|error|regression|finding|detour)\b[^.;:]{0,40}\b(?:(?:is|was|are|were|has\s+been|have\s+been|appears?|seems?)\s+(?:now\s+)?(?:to\s+be\s+)?(?:fixed|resolved|gone)|no\s+longer\s+(?:occurs?|happens?|appears?|reproduces?))\b`,
+    String.raw`\bthe\s+old\b[^.;:]{0,60}\b(?:is|are|was|were)\s+(?:now\s+)?gone\b`,
+    String.raw`\bas\s+(?:previously|before|last\s+time)\s+(?:reported|noted|seen)\b`,
+  ].join("|"),
+  "i",
+);
+
+// The clause that retells history goes, with everything after it in the
+// sentence; the clauses before it stay (the cut cutNarration makes). A
+// parenthesis the cut left open goes too.
+function cutHistory(sentence: string): string | null {
+  const m = HISTORY_CLAIM.exec(sentence);
+  if (!m) return sentence;
+  const before = sentence.slice(0, m.index);
+  // An aside in brackets ("works end-to-end (the previously reported bug is
+  // fixed), but the layout …") goes on its own; the sentence around it stands.
+  const open = before.lastIndexOf("(");
+  const close = sentence.indexOf(")", m.index);
+  if (open >= 0 && before.indexOf(")", open) < 0 && close > 0) {
+    const rest = `${sentence.slice(0, open).trimEnd()}${sentence.slice(close + 1)}`.replace(/\s+([,.;:!?])/g, "$1");
+    return cutHistory(rest.replace(/\s{2,}/g, " ").trim());
+  }
+  const parts = before.split(CLAUSE_SPLIT);
+  parts.pop();
+  parts.pop();
+  const head = parts.join("").replace(/\s*\([^)]*$/, "").replace(/[\s,;:—–(-]+$/, "").trim();
+  if (head.length < 20 || DANGLING_HEAD.test(head)) return null;
+  return /[.!?]$/.test(head) ? head : `${head}.`;
+}
+
+// A journey summary as the reader expects it: what happened on this walk.
+// Product descriptions and our own history are cut deterministically; what is
+// left stays as written. Null when nothing is left — the caller writes the
+// journey's fixed sentence (summaryFallback).
+export function walkSummaryOnly(
+  text: string | null | undefined,
+  targetUrl: string,
+): { text: string | null; cut: string[] } {
+  if (!text) return { text: text ?? null, cut: [] };
+  const names = productNamesOf(targetUrl);
+  const cut: string[] = [];
+  const out: string[] = [];
+  for (const raw of splitSentences(text)) {
+    const described = cutDescription(raw, names);
+    const kept = described === null ? null : cutHistory(described);
+    if (kept !== raw) cut.push(raw);
+    if (kept) out.push(kept);
+  }
+  if (cut.length === 0) return { text, cut };
+  const joined = out.join(" ").replace(/\s+/g, " ").trim();
+  return { text: joined || null, cut };
+}
+
 // A sentence that names our machinery (the CHE-82 tables). Homework is judged
 // separately, because it is cut at the clause rather than the sentence.
 function leaksMachinery(sentence: string): boolean {

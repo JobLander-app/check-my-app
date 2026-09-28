@@ -25,8 +25,8 @@ export const POSTHOG_FLAGS_URL = "https://us.i.posthog.com/flags?v=2";
 
 /**
  * The Chrome-extension check on the home page and in onboarding. Created by
- * `npm run posthog:setup`: off for everyone, on for the owner's e-mail and
- * for accounts with `isTestAccount`.
+ * `npm run posthog:setup`: off for everyone, on for the owner's e-mail.
+ * Never on for a test account (see evaluateFlag).
  */
 export const HOME_EXTENSION_CHECK_FLAG = "home-extension-check";
 
@@ -44,9 +44,10 @@ export function buildFlagsPayload(key: string, person: FlagPerson) {
     api_key: POSTHOG_FLAGS_TOKEN,
     distinct_id: person.distinctId,
     // Sent with the request, not left for PostHog to remember: the browser
-    // sets `email` on identify, but only after a visit, and nothing ever
-    // sets `is_test_account`. PostHog evaluates against these overrides.
-    person_properties: { email: person.email, is_test_account: person.isTestAccount },
+    // sets `email` on identify, but only after a visit. PostHog evaluates
+    // against this override. No `is_test_account` since CHE-334: a test
+    // account never reaches this request (evaluateFlag).
+    person_properties: { email: person.email },
     flag_keys_to_evaluate: [key],
   };
 }
@@ -62,13 +63,21 @@ export function flagEnabledIn(body: unknown, key: string): boolean {
  * anonymous visitor) is off without a request: the flags we keep this way
  * are released to named people, and a stranger's page should not wait on a
  * round trip whose answer is already known.
+ *
+ * A test account is evaluated as a stranger, also without a request (CHE-334).
+ * Test accounts are the ones our self-check of checkmyapp.dev signs in with,
+ * and what the self-check sees is what it reports: with this flag on for test
+ * accounts, run #260 filed "Homepage layout diverges between anonymous and
+ * signed-in visitors" — our own configuration, published as the product's
+ * defect in front of a prospect (rule 8). The checking account sees what a
+ * stranger sees, so no flag of ours can differ between its two walks.
  */
 export async function evaluateFlag(
   key: string,
   person: FlagPerson | null,
   fetchImpl: FlagFetch = fetch,
 ): Promise<boolean> {
-  if (!person) return false;
+  if (!person || person.isTestAccount) return false;
   try {
     const res = await fetchImpl(POSTHOG_FLAGS_URL, {
       method: "POST",

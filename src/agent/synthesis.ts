@@ -15,8 +15,10 @@ import type { AppKnowledge } from "./knowledge";
 import { DEFAULT_ACCOUNT_LABEL, describeAccounts, parseRunAccounts, rejectedAccountLabels } from "@/lib/test-accounts";
 import {
   CUSTOMER_LANGUAGE_RULES,
+  cutSelfCheckRefusalClaims,
   hasEnvironmentLeak,
   hasHomework,
+  isSelfCheckRefusalStep,
   stripEnvironmentLeak,
   stripHomework,
 } from "@/lib/verdict-language";
@@ -294,6 +296,14 @@ export async function synthesizeVerdict(args: {
         bottomLine = claim.text ?? BOTTOM_LINE_FALLBACK;
       }
     }
+    // CHE-334: where our own self-check guard refused a step, the bottom line
+    // and the findings may not retell that refusal as the product's.
+    const refusal = ownGuardRefusals(journeys, bottomLine, cleanedFindings);
+    if (refusal.cut.length) {
+      console.warn(`[synthesis] cut our own guard retold as the product's: ${refusal.cut.join(" / ")}`);
+      bottomLine = refusal.bottomLine;
+      cleanedFindings.splice(0, cleanedFindings.length, ...refusal.findings);
+    }
     // CHE-191: a trailing "Worth checking …" is one sentence to cut, not a
     // reason to spend a model call rewriting the line. Cut first; what is
     // left goes through the machinery check below as before.
@@ -344,6 +354,38 @@ export async function synthesizeVerdict(args: {
 
 // The bottom line when nothing the model wrote about the product survived.
 export const BOTTOM_LINE_FALLBACK = "We checked what we could reach this run; some paths went unverified.";
+
+// CHE-334. Pure, exported for scripts/verify-self-check-own-state.ts. A run
+// whose steps carry no refusal of our own guard comes back untouched — the
+// words "403" and "refused" are real evidence on every other run. Where one
+// does: a finding anchored on a refused step, or whose title or account of
+// what happened retells a refusal, is not written; the bottom line loses the
+// sentences that retell it.
+export function ownGuardRefusals(
+  journeys: Array<{ steps: Array<{ unverifiedReason?: string | null; observed?: string | null }> }>,
+  bottomLine: string | null,
+  findings: SynthesizedFinding[],
+): { bottomLine: string | null; findings: SynthesizedFinding[]; cut: string[] } {
+  if (!journeys.some((j) => j.steps.some(isSelfCheckRefusalStep))) return { bottomLine, findings, cut: [] };
+  const cut: string[] = [];
+  const kept = findings.filter((f) => {
+    const ref = f.stepRef;
+    const anchored = ref ? journeys[ref.journeyIndex]?.steps[ref.stepIndex] : undefined;
+    const retold = cutSelfCheckRefusalClaims(`${f.title}. ${f.detail?.whatHappened ?? ""}`).cut.length > 0;
+    if ((anchored && isSelfCheckRefusalStep(anchored)) || retold) {
+      cut.push(`finding "${f.title}"`);
+      return false;
+    }
+    return true;
+  });
+  const line = cutSelfCheckRefusalClaims(bottomLine);
+  cut.push(...line.cut);
+  return {
+    bottomLine: line.cut.length ? (line.text ?? BOTTOM_LINE_FALLBACK) : bottomLine,
+    findings: kept,
+    cut,
+  };
+}
 
 // One finding through the customer-language gate (CHE-82, CHE-191). Null means
 // the finding is not written. Exported so verify-homework-gate.ts runs the

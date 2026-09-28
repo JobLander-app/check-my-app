@@ -11,8 +11,8 @@ type FlagUser = { clerkUserId: string; email: string; isTestAccount: boolean };
 
 /**
  * May this person start a Chrome-extension check from the UI? Off for the
- * public (owner, 2026-09-27); on for the owner and test accounts. For pages
- * that already hold the user row.
+ * public (owner, 2026-09-27) and for test accounts, which see what a stranger
+ * sees (CHE-334); on for the owner. For pages that already hold the user row.
  */
 export function extensionCheckFor(user: FlagUser | null): Promise<boolean> {
   return evaluateFlag(

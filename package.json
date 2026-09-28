@@ -55,6 +55,7 @@
     "verify:balance": "tsx --tsconfig tsconfig.json scripts/verify-balance.ts",
     "verify:self-check-agent": "tsx --tsconfig tsconfig.json scripts/verify-self-check-agent.ts",
     "verify:self-check-guard": "tsx --tsconfig tsconfig.json scripts/verify-self-check-guard.ts",
+    "verify:self-check-own-state": "tsx --tsconfig tsconfig.json scripts/verify-self-check-own-state.ts",
     "posthog:setup": "tsx --tsconfig tsconfig.json scripts/posthog-setup.ts",
     "cost:trend": "node scripts/cost-trend.mjs",
     "supply": "tsx --tsconfig tsconfig.json scripts/measure/gate-ready-supply.ts",

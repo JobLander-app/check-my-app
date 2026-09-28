@@ -25,6 +25,10 @@ import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
 
+// CHE-334: the journey statuses that put a problem on the page — what the
+// empty findings section must not contradict.
+const FLAGGED_JOURNEY = new Set(["confusing", "risky", "broken", "exposed"]);
+
 function formatDuration(start: Date, end: Date | null): string | null {
   if (!end) return null;
   const mins = Math.round((end.getTime() - start.getTime()) / 60000);
@@ -367,6 +371,8 @@ export default async function VerdictPage({
           findings={run.findings}
           canMark={caps.markFindings}
           canCreateTicket={caps.createTicket}
+          finished={run.status === "completed" || run.status === "partial"}
+          journeysFlagged={run.journeys.some((j) => FLAGGED_JOURNEY.has(j.status))}
         />
         <AppLensSection
           runId={run.publicId}

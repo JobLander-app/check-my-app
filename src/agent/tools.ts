@@ -18,6 +18,7 @@ import {
   PROBLEM_FALLBACK,
   productProse,
   productStepLabel,
+  SELF_CHECK_REFUSED_OBSERVED,
   splitSentences,
   UNVERIFIABLE_FALLBACK,
 } from "@/lib/verdict-language";
@@ -105,11 +106,25 @@ export interface ToolEnv {
   // beside checkmyapp.dev (self-hosts.ts). Whether the target is ours is
   // decided from targetOrigin against that list; this only carries the list.
   selfCheckHosts?: string;
+  // CHE-334: our own guard refusing the self-check since the last report_step
+  // — the web half's 403 / read-only redirect after a click or navigate, or the
+  // click gate refusing a control on our own host. Written by the tools, never
+  // by the model; drained by report_step, where the step it belongs to becomes
+  // not_applicable and stops counting toward its journey. Optional so a bare
+  // ToolEnv still builds.
+  selfCheckRefusals?: string[];
 }
 
 // CHE-193: is this run checking CheckMyApp itself?
 function isSelfTarget(env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts">): boolean {
   return isSelfUrl(env.targetOrigin, env.selfCheckHosts);
+}
+
+// CHE-334: remember that our own guard answered, for the step about to be
+// reported. Only on our own hosts — a customer's refusal is never ours.
+function noteSelfCheckRefusal(env: ToolEnv, evidence: string): void {
+  if (!isSelfTarget(env)) return;
+  (env.selfCheckRefusals ??= []).push(evidence);
 }
 
 // CHE-193: what the model is told when our own product refused the self-check
@@ -369,6 +384,10 @@ export interface ReportedStep {
   // model's own words and the machine trail before productizeStep cuts the
   // words (execution.ts onReportStep). Only set with our_capability.
   gapClass?: GapClass;
+  // CHE-334: set by coerceSelfCheck403, never by the model — the step is our
+  // own guard refusing the self-check. It is written not_applicable and does
+  // not count toward its journey's status (countsTowardJourney).
+  selfCheckRefused?: boolean;
 }
 
 export const BROWSER_TOOLS: Anthropic.Tool[] = [
@@ -631,6 +650,8 @@ export async function executeTool(
         // The model occasionally invents enum values — coerce to the schema.
         const valid = ["ok", "risky", "confusing", "broken", "exposed", "skipped"];
         if (!valid.includes(step.status)) step.status = "confusing";
+        // CHE-334: only coerceSelfCheck403 may say a step was our own guard.
+        delete step.selfCheckRefused;
         // CHE-171 first: a step it rewrites is already skipped/not_applicable
         // by the time classifyUnverified looks, and that one leaves a step
         // with a reason alone.
@@ -713,6 +734,7 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   // redirecting back with ?self_check=read_only. Not a page to judge.
   if (isSelfTarget(env) && isSelfCheckRedirect(env.page.url(), env.selfCheckHosts)) {
     console.warn(`[navigate] self-check refused by the product: ${env.page.url()}`);
+    noteSelfCheckRefusal(env, `redirected back as read-only: ${env.page.url()}`);
     return selfCheckRefusedText(`Navigated to ${env.page.url()}`, "redirected back as read-only");
   }
   // CHE-169: a page that answered with an error, or loaded a media/WebRTC
@@ -943,6 +965,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   const label = [input.name, input.selector].filter(Boolean).map(String).join(" ");
   if (label && SELF_HOST_GUARDED_VERBS.test(label) && isSelfTarget(env)) {
     console.warn(`[click] refused self-host guarded click: ${label}`);
+    noteSelfCheckRefusal(env, `click gate: ${label}`);
     return (
       `Refused: "${label}" acts on real data of this product's users — a check that costs ` +
       `money, a verdict that belongs to someone else, a ticket on someone's board. That is ` +
@@ -967,6 +990,9 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   }
   if (label && STATE_TOGGLE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
     console.warn(`[click] refused state-toggling click: ${label}`);
+    // CHE-334: on our own host this refusal is the self-check guard, like the
+    // one above; on a customer's app it is not ours to note.
+    noteSelfCheckRefusal(env, `click gate: ${label}`);
     return (
       `Refused: "${label}" would change the state of something that already exists in this ` +
       `product — a subscription, a schedule, a setting someone deliberately set. That is never ` +
@@ -977,6 +1003,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   }
   if (!env.writeAllowed && label && CREATE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
     console.warn(`[click] refused create-shaped click in read-only run: ${label}`);
+    noteSelfCheckRefusal(env, `click gate: ${label}`);
     return (
       `Refused: "${label}" looks like it would create or send something, and this run is read-only ` +
       `(the owner has not enabled record creation). You have confirmed the form accepts input — ` +
@@ -1124,6 +1151,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       (isSelfCheckRedirect(env.page.url(), env.selfCheckHosts) ? `redirected back as read-only: ${env.page.url()}` : null);
     if (selfRefusal) {
       console.warn(`[click] self-check refused by the product: ${selfRefusal}`);
+      noteSelfCheckRefusal(env, selfRefusal);
       return selfCheckRefusedText("Clicked", selfRefusal);
     }
   }
@@ -1628,31 +1656,93 @@ export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "target
 // the redirect, or the step text citing 403/forbidden/self_check=read_only.
 // Only self hosts: a customer's 403 stays whatever the model and the existing
 // rules say.
+//
+// CHE-334. Run #260 (checkmyapp.dev, 2026-09-28) shows what that left open.
+// The walk clicked "Show me my app", our guard answered POST /api/checks → 403,
+// and the model reported the step *skipped* itself — so this rule, which only
+// looked at broken/confusing, never ran. The step kept the model's words ("the
+// check is not available to an unauthenticated account"), the skip rolled the
+// journey up to "partial", the summary said "'Show me my app' returns 403 for
+// this account", and the bottom line called it a bot-check gate refusing the
+// core promise — our own guard, shown to a prospect as the product's defect.
+// So now:
+//   - the tools note every refusal of our own guard as it happens
+//     (noteSelfCheckRefusal: the web half's 403 or read-only redirect, and the
+//     click gate refusing a control on our host), and the step reported next
+//     is that refusal whatever status the model gave it, unless it is ok or
+//     carries the product's own hard evidence (a 5xx, a console exception);
+//   - without that note, the machine evidence rule above still applies — to a
+//     skipped or risky step only when the text cites the refusal AND the log
+//     or trail shows it, so a skip that merely says "forbidden" is left alone;
+//   - the step's words are replaced, not appended to: the model's sentence is
+//     exactly the misreading ("unauthenticated account", "bot-check"), and a
+//     sentence saying the product refused this account was what synthesis
+//     turned into "returns 403 for this account";
+//   - selfCheckRefused marks the step for the roll-up (countsTowardJourney)
+//     and the summary gates.
 const FORBIDDEN = /\b403\b|\bforbidden\b|self_check=read_only/i;
+// The refusals already written onto a step, per walk (one ToolEnv per journey).
+const ATTRIBUTED = new WeakMap<object, Set<string>>();
+function attributedRefusals(env: object): Set<string> {
+  let set = ATTRIBUTED.get(env);
+  if (!set) ATTRIBUTED.set(env, (set = new Set()));
+  return set;
+}
+const PRODUCT_OWN_EVIDENCE = /\b5\d{2}\b|console error|exception|stack trace|\bcrash/i;
 
 export function coerceSelfCheck403(
   step: ReportedStep,
-  env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts" | "networkLog" | "actionTrail">,
+  env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts" | "networkLog" | "actionTrail" | "selfCheckRefusals">,
 ): void {
   if (!isSelfTarget(env)) return;
-  if (step.status !== "broken" && step.status !== "confusing") return;
+  // An ok step is never rewritten, and it does not use up a refusal: the
+  // model often reports "the form accepts input" before the step the refusal
+  // belongs to.
+  if (step.status === "ok" || step.status === "exposed") return;
+  // Otherwise the refusals noted since the last report belong to this step
+  // and to no later one, whatever is decided below — including the log lines
+  // they came from, which stay in the rolling log and must not be read again
+  // as the next step's evidence.
+  const noted = env.selfCheckRefusals?.splice(0) ?? [];
+  const attributed = attributedRefusals(env);
+  for (const line of noted) attributed.add(line);
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
-  const cited = FORBIDDEN.test(text);
-  const logged =
-    selfCheckRefusalIn(env.networkLog ?? [], env.selfCheckHosts) !== null ||
-    (env.actionTrail ?? []).some((a) => isSelfCheckRedirect(a.outcome.urlAfter, env.selfCheckHosts));
-  if (!cited && !logged) return;
-  // A server error is the product's own word; a 403 next to it is not the story.
+  // A server error or an exception is the product's own word; a 403 next to
+  // it is not the story.
   if (/\b5\d{2}\b/.test(step.observed ?? "")) return;
-  // The log is a rolling window: a refusal from an earlier click must not
-  // erase a step that stands on its own evidence (a crash, an exception, some
-  // other error response the step actually cites).
-  if (!cited && /\b4\d{2}\b|console error|exception|stack|crash/i.test(step.observed ?? "")) return;
-  console.warn(`[report_step] "${step.label}": ${step.status} on a self-check 403 → skipped`);
+  if (noted.length === 0) {
+    const cited = FORBIDDEN.test(text);
+    const unattributed = (env.networkLog ?? []).filter((line) => !attributed.has(line));
+    const logged =
+      selfCheckRefusalIn(unattributed, env.selfCheckHosts) !== null ||
+      (env.actionTrail ?? []).some((a) => isSelfCheckRedirect(a.outcome.urlAfter, env.selfCheckHosts));
+    if (step.status === "broken" || step.status === "confusing") {
+      if (!cited && !logged) return;
+      // The log is a rolling window: a refusal from an earlier click must not
+      // erase a step that stands on its own evidence (a crash, an exception,
+      // some other error response the step actually cites).
+      if (!cited && /\b4\d{2}\b|console error|exception|stack|crash/i.test(step.observed ?? "")) return;
+    } else if (!cited || !logged) {
+      return;
+    }
+  } else if (PRODUCT_OWN_EVIDENCE.test(step.observed ?? "")) {
+    return;
+  }
+  console.warn(
+    `[report_step] "${step.label}": ${step.status} on our own self-check guard (${noted[0] ?? "a refusal in the step or the log"}) → skipped`,
+  );
   step.status = "skipped";
   step.unverifiedReason = "not_applicable";
-  const observed = (step.observed ?? "").trim();
-  step.observed = `${observed}${observed && !/[.!?]$/.test(observed) ? "." : ""} This action is not available to the account used for this check.`.trim();
+  step.gapClass = undefined;
+  step.selfCheckRefused = true;
+  step.observed = SELF_CHECK_REFUSED_OBSERVED;
+}
+
+// CHE-334: a step our own guard refused is not part of what its journey says
+// about the product — "journeys that exist only to start a check are judged up
+// to the guard". execution.ts rolls up only the steps this lets through.
+export function countsTowardJourney(step: Pick<ReportedStep, "selfCheckRefused">): boolean {
+  return step.selfCheckRefused !== true;
 }
 
 // Bulk outbound-link verification (CHE-81 follow-up). Run #92 inventoried 200+

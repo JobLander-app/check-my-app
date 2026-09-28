@@ -11,9 +11,10 @@
 //   3. three saved insights: the landing→checkout funnel, check_submitted by
 //      landing_variant, and the quota/one-check trend;
 //   4. the boolean flag `home-extension-check` (CHE-320): off for everyone,
-//      on for the owner's e-mail and for test accounts. Read on the server by
-//      src/lib/viewer-flags.ts, which sends `email` and `is_test_account` as
-//      person properties, so the match does not wait for PostHog to learn them.
+//      on for the owner's e-mail. Read on the server by
+//      src/lib/viewer-flags.ts, which sends `email` as a person property, so
+//      the match does not wait for PostHog to learn it. Test accounts are
+//      answered "off" before PostHog is asked (CHE-334).
 //
 // Idempotent: looks each object up by key (flag) or exact name (experiment,
 // insights) before creating it, and prints ids and URLs either way. Reads
@@ -89,8 +90,10 @@ async function ensureFlag(): Promise<Flag> {
 // ─── 1b. Extension-check flag (CHE-320) ─────────────────────────────────────
 //
 // Owner, 2026-09-27: the Chrome-extension option on the home page is not for
-// the public yet. Two release conditions, nothing else — no rollout
-// percentage, so no stranger lands in it by chance. The key is imported from
+// the public yet. One release condition, nothing else — no rollout
+// percentage, so no stranger lands in it by chance. The second condition,
+// is_test_account, went with CHE-334: the self-check signs in as the test
+// account and must see what a stranger sees. The key is imported from
 // the file that reads it, so a rename cannot leave this script creating a
 // flag nobody evaluates.
 
@@ -106,12 +109,11 @@ async function ensureExtensionFlag(): Promise<Flag> {
   }
   const created = await api<Flag>("POST", "/feature_flags/", {
     key: HOME_EXTENSION_CHECK_FLAG,
-    name: "Chrome-extension check on / and in onboarding (CHE-320). Off for the public; on for the owner and test accounts. Evaluated server-side in src/lib/viewer-flags.ts.",
+    name: "Chrome-extension check on / and in onboarding (CHE-320). Off for the public and for test accounts (CHE-334); on for the owner. Evaluated server-side in src/lib/viewer-flags.ts.",
     active: true,
     filters: {
       groups: [
         { properties: [{ key: "email", type: "person", operator: "exact", value: EXTENSION_FLAG_OWNER_EMAILS }], rollout_percentage: 100 },
-        { properties: [{ key: "is_test_account", type: "person", operator: "exact", value: ["true"] }], rollout_percentage: 100 },
       ],
     },
   });

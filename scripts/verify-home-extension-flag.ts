@@ -1,6 +1,7 @@
 // CHE-320: the Chrome-extension check is behind the PostHog flag
-// `home-extension-check` — off for the public, on for the owner and test
-// accounts. This proves, without a browser, a server or PostHog:
+// `home-extension-check` — off for the public, on for the owner; off for test
+// accounts, which the self-check signs in with (CHE-334). This proves,
+// without a browser, a server or PostHog:
 //
 //   1. the server-rendered home form carries no extension option when the
 //      flag is off, and carries it when the flag is on — including when a Web
@@ -14,8 +15,8 @@
 // receives before any script runs, which is exactly where a flag read in the
 // browser would have leaked the option.
 //
-// --live additionally asks the real PostHog project: the owner's e-mail and a
-// test account get the flag, a stranger does not. Not in CI (network).
+// --live additionally asks the real PostHog project: the owner's e-mail gets
+// the flag, a test account and a stranger do not. Not in CI (network).
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-home-extension-flag.ts [--live]
 
@@ -103,12 +104,18 @@ async function flagChecks(): Promise<void> {
     check("the request goes to the flags endpoint", f.calls[0]?.url === POSTHOG_FLAGS_URL, f.calls[0]?.url);
     const body = f.calls[0]?.body as ReturnType<typeof buildFlagsPayload>;
     check(
-      "…as the Clerk id, with email and is_test_account as person properties",
-      body.distinct_id === "user_owner" &&
-        body.person_properties.email === "owner@example.com" &&
-        body.person_properties.is_test_account === false,
+      "…as the Clerk id, with email as a person property",
+      body.distinct_id === "user_owner" && body.person_properties.email === "owner@example.com",
       JSON.stringify(body),
     );
+  }
+  {
+    // CHE-334: the self-check signs in as the test account and must see what
+    // a stranger sees — even when PostHog would say yes.
+    const f = fakeFetch(reply(200, enabled(true)));
+    const testAccount = { distinctId: "user_dogfood", email: "dogfood+clerk_test@example.com", isTestAccount: true };
+    check("test account (the self-check's): off, as a stranger", (await evaluateFlag(HOME_EXTENSION_CHECK_FLAG, testAccount, f.impl)) === false);
+    check("…and no request is made for it", f.calls.length === 0, `${f.calls.length} calls`);
   }
   const offCases: [string, () => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>][] = [
     ["PostHog says disabled", reply(200, enabled(false))],
@@ -154,7 +161,7 @@ async function liveChecks(): Promise<void> {
   const ask = (email: string, isTestAccount: boolean) =>
     evaluateFlag(HOME_EXTENSION_CHECK_FLAG, { distinctId: `verify-che-320-${email}`, email, isTestAccount });
   check("live: the owner's e-mail gets the flag", (await ask("sorokinvj@gmail.com", false)) === true);
-  check("live: a test account gets the flag", (await ask("someone@example.com", true)) === true);
+  check("live: a test account does not (CHE-334)", (await ask("someone@example.com", true)) === false);
   check("live: a stranger does not", (await ask("stranger@example.com", false)) === false);
 }
 

@@ -52,7 +52,7 @@ import {
   type SelfCheckRoutable,
   type SelfCheckRoute,
 } from "@/agent/self-hosts";
-import { hasEnvironmentLeak } from "@/lib/verdict-language";
+import { hasEnvironmentLeak, SELF_CHECK_REFUSED_OBSERVED } from "@/lib/verdict-language";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -450,16 +450,29 @@ async function main() {
     check("report_step: broken off the self-host 403 is written skipped / not_applicable",
       reported[0].status === "skipped" && reported[0].unverifiedReason === "not_applicable",
       `${reported[0].status}/${reported[0].unverifiedReason}`);
-    check("report_step: the reason is appended in product language",
-      reported[0].observed.endsWith(" This action is not available to the account used for this check.") &&
-        !hasEnvironmentLeak(reported[0].observed),
+    // CHE-334: replaced, not appended — the model's sentence is the misreading.
+    check("report_step: the step says it stopped on purpose, in product language",
+      reported[0].observed === SELF_CHECK_REFUSED_OBSERVED && !hasEnvironmentLeak(reported[0].observed),
       reported[0].observed);
 
-    // The step text does not say 403 but the log does: still coerced.
+    // CHE-334: that refusal is now written onto the step above; the same log
+    // line cannot erase the next step too.
     await executeTool(env, "report_step", step("confusing", "The button seemed to do nothing visible."));
+    check("report_step: a refusal already written onto a step does not coerce the next one",
+      reported[1].status === "confusing", `${reported[1].status}/${reported[1].unverifiedReason}`);
+
+    // The step text does not say 403 but the log does, and no tool noted it
+    // (a request the page made on its own): still coerced.
+    const unnoted = stubEnv(SELF);
+    unnoted.networkLog.push(`POST ${SELF}/api/apps/9/runs → 403`);
+    const reportedUnnoted: ReportedStep[] = [];
+    unnoted.onReportStep = async (s) => {
+      reportedUnnoted.push(s);
+    };
+    await executeTool(unnoted, "report_step", step("confusing", "The button seemed to do nothing visible."));
     check("report_step: confusing with the refusal only in the log is coerced",
-      reported[1].status === "skipped" && reported[1].unverifiedReason === "not_applicable",
-      `${reported[1].status}/${reported[1].unverifiedReason}`);
+      reportedUnnoted[0].status === "skipped" && reportedUnnoted[0].unverifiedReason === "not_applicable",
+      `${reportedUnnoted[0].status}/${reportedUnnoted[0].unverifiedReason}`);
 
     // A self-host 403 on our Clerk sign-in keeps its CHE-100 meaning.
     const clerk = stubEnv(SELF, { onClick: ["POST https://clerk.checkmyapp.dev/v1/client/sign_ins → 403"] });
