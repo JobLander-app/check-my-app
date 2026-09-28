@@ -819,6 +819,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. A " +
     "website gets a recurring check (daily by default) within the team's plan; each check spends the team's " +
     "balance, so the first one runs automatically when the balance covers it and otherwise waits for a top-up " +
+    "(or, on a paid plan, the next monthly credit) " +
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   update_app:
