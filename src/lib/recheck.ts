@@ -145,7 +145,7 @@ export async function createRecheckRun(
   // form promises. A retry of a signed-in check without it would walk signed
   // out, which is not the check they paid for — so it is asked for again.
   if (owedRetry && prev.testEmail && !opts.testPassword) {
-    return { kind: "quota", reason: RETRY_PASSWORD_NEEDED };
+    return { kind: "quota", reason: RETRY_PASSWORD_NEEDED, code: "password_needed" };
   }
   if (owedRetry) owedRetry = await claimPaidRetry(prisma, prev.id);
   if (isAnonymous && !owedRetry) {
@@ -193,44 +193,55 @@ export async function createRecheckRun(
     ? await prisma.app.findFirst({ where: { ...teamOwned(prev.teamId), id: prev.appId },
       select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true } }) : null;
   const login = saved ?? appLogin ?? prev;
-  const run = await prisma.run.create({ ...alreadyScoped("created with its team"),
-    data: {
-      runNumber: await nextRunNumber(prisma),
-      targetUrl: prev.targetUrl,
-      targetKind: prev.targetKind,
-      extensionId: prev.extensionId,
-      extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
-      appSlug: prev.appSlug,
-      testEmail: login.testEmail,
-      testPasswordEnc: owedRetry && opts.testPassword ? encryptSecret(opts.testPassword) : login.testPasswordEnc,
-      testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
-      scopeHints: prev.scopeHints,
-      userNotes: saved ? saved.userNotes : prev.userNotes,
-      focusAreas: prev.focusAreas,
-      notifyEmail: prev.notifyEmail,
-      watchId: prev.watchId,
-      appId: prev.appId,
-      ownerId: prev.ownerId,
-      teamId: prev.teamId,
-      baselineRunId: prev.id,
-      // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
-      forceFull: opts.full ?? false,
-      startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
-      // Anonymous re-checks count against the same daily allowance as
-      // anonymous submissions (CHE-97).
-      anonKeyHash: prev.ownerId || owedRetry ? null : (opts.anonKeyHash ?? null),
-      // CHE-202: ephemeral begets ephemeral. An ephemeral run is always owned
-      // (the API refuses anonymous ones), so it never reaches the anonymous
-      // path above; and it has no appId/watchId to copy — they are null.
-      ephemeral: prev.ephemeral,
-      expiresAt: prev.ephemeral ? ephemeralExpiry(deps.now(), deps.ephemeralTtlDays()) : null,
-      status: "queued",
-    },
-    select: { id: true, publicId: true },
-  });
+  // CHE-335 (Codex review of #207): a claimed re-check that never got started
+  // is still owed — the claim goes back if anything below throws.
+  try {
+    const run = await prisma.run.create({ ...alreadyScoped("created with its team"),
+      data: {
+        runNumber: await nextRunNumber(prisma),
+        targetUrl: prev.targetUrl,
+        targetKind: prev.targetKind,
+        extensionId: prev.extensionId,
+        extensionConfig: saved?.extensionConfig ?? prev.extensionConfig,
+        appSlug: prev.appSlug,
+        testEmail: login.testEmail,
+        testPasswordEnc: owedRetry && opts.testPassword ? encryptSecret(opts.testPassword) : login.testPasswordEnc,
+        testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
+        scopeHints: prev.scopeHints,
+        userNotes: saved ? saved.userNotes : prev.userNotes,
+        focusAreas: prev.focusAreas,
+        notifyEmail: prev.notifyEmail,
+        watchId: prev.watchId,
+        appId: prev.appId,
+        ownerId: prev.ownerId,
+        teamId: prev.teamId,
+        baselineRunId: prev.id,
+        // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
+        forceFull: opts.full ?? false,
+        startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
+        // Anonymous re-checks count against the same daily allowance as
+        // anonymous submissions (CHE-97).
+        anonKeyHash: prev.ownerId || owedRetry ? null : (opts.anonKeyHash ?? null),
+        // CHE-202: ephemeral begets ephemeral. An ephemeral run is always owned
+        // (the API refuses anonymous ones), so it never reaches the anonymous
+        // path above; and it has no appId/watchId to copy — they are null.
+        ephemeral: prev.ephemeral,
+        expiresAt: prev.ephemeral ? ephemeralExpiry(deps.now(), deps.ephemeralTtlDays()) : null,
+        status: "queued",
+      },
+      select: { id: true, publicId: true },
+    });
 
-  await deps.trigger(run.id);
-  return { kind: "ok", publicId: run.publicId };
+    await deps.trigger(run.id);
+    return { kind: "ok", publicId: run.publicId };
+  } catch (err) {
+    if (owedRetry) {
+      await prisma.counter.delete({ where: { name: paidRetryClaim(prev.id) } }).catch((e) =>
+        console.warn(`[recheck] owed re-check claim not released: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
+    throw err;
+  }
 }
 
 // The owed re-check is claimed by inserting a Counter row named after the

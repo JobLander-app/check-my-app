@@ -62,7 +62,7 @@ export default async function RunPage({
           paidRetry={paidRetry}
           retry={
             canRetry
-              ? { runId: run.publicId, appSlug: run.appSlug, loginEmail: paidRetry ? run.testEmail : null }
+              ? { runId: run.publicId, appSlug: run.appSlug, needsPassword: paidRetry && Boolean(run.testEmail) }
               : null
           }
           notice={recheck === "notfound" ? "That run no longer exists." : (recheck ?? null)}

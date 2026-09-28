@@ -22,9 +22,9 @@ export function RunFailed({
   // CHE-335: a $1 check whose one re-check is still owed (paidRetryOwed).
   paidRetry?: boolean;
   // Offered only to a viewer the re-check would accept (canMutateOwned).
-  // loginEmail: the owed re-check of a signed-in paid check asks for its
+  // needsPassword: the owed re-check of a signed-in paid check asks for its
   // password again (CHE-335).
-  retry: { runId: string; appSlug: string; loginEmail?: string | null } | null;
+  retry: { runId: string; appSlug: string; needsPassword?: boolean } | null;
   // A refused "Run it again", bounced back as text (retryFailedRunAction).
   notice?: string | null;
   balanceRefused?: boolean;
@@ -37,7 +37,7 @@ export function RunFailed({
       {paidRetry && retry && <p className="text-sm text-fg-muted">{PAID_RETRY_LINE}</p>}
       {retry && (
         <div className="flex justify-center pt-1">
-          <RetryFailedRunButton runId={retry.runId} appSlug={retry.appSlug} loginEmail={retry.loginEmail} />
+          <RetryFailedRunButton runId={retry.runId} appSlug={retry.appSlug} needsPassword={retry.needsPassword} />
         </div>
       )}
       {notice && (

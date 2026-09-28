@@ -8,6 +8,8 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-paid-retry.ts
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -71,6 +73,10 @@ function stubDb(rows: Row[]) {
         names.add(data.name);
         return { name: data.name, value: 1 };
       },
+      delete: async ({ where }: { where: { name: string } }) => {
+        names.delete(where.name);
+        return { name: where.name, value: 1 };
+      },
     },
     app: { findFirst: async () => null },
     run: {
@@ -132,6 +138,15 @@ async function main() {
     check("two concurrent presses start exactly one owed re-check", kinds === "ok,quota" && created.length === 1, `${kinds}, ${created.length} run(s)`);
   }
 
+  // 3a. The start throws after the claim: the re-check is still owed.
+  {
+    const { db, created } = stubDb([anonRun("boom", { paidCheckoutSessionId: "cs_live_5" })]);
+    const failing: RecheckDeps = { ...deps, trigger: async () => { throw new Error("workflow binding down"); } };
+    const threw = await createRecheckRun(db, "pub-boom", { anonKeyHash: "buyer-key" }, {}, failing).then(() => false, () => true);
+    check("a re-check whose start throws surfaces the error", threw);
+    check("…and the owed re-check goes back", await paidRetryOwed(db, { id: "boom", status: "failed", paidCheckoutSessionId: "cs_live_5" }), `${created.length} row(s)`);
+  }
+
   // 3c. A paid check that signed in: the password went when it ended.
   {
     process.env.CREDENTIALS_SECRET ??= "verify-paid-retry";
@@ -155,8 +170,12 @@ async function main() {
   check("the failed-run card says the re-check is on us", owed.includes(PAID_RETRY_LINE.replace(/'/g, "&#x27;")));
   const plain = renderToString(createElement(RunFailed, { free: false, retry: { runId: "pub-free", appSlug: "shop.example.org" } }));
   check("…and a free check's card does not", !plain.includes("on us"));
-  const signedIn = renderToString(createElement(RunFailed, { free: false, paidRetry: true, retry: { runId: "pub-login", appSlug: "shop.example.org", loginEmail: "qa@shop.example.org" } }));
-  check("a signed-in paid check's card asks for that account's password", signedIn.includes('name="testPassword"') && signedIn.includes("qa@shop.example.org"));
+  const signedIn = renderToString(createElement(RunFailed, { free: false, paidRetry: true, retry: { runId: "pub-login", appSlug: "shop.example.org", needsPassword: true } }));
+  check("a signed-in paid check's card asks for the test account's password", signedIn.includes('name="testPassword"'));
+  // The run link is shareable; the account address is the customer's.
+  const page = readFileSync(path.join(process.cwd(), "src/app/run/[id]/page.tsx"), "utf8");
+  const cardProps = (page.split("<RunFailed")[1] ?? "").split("/>")[0].replace("Boolean(run.testEmail)", "");
+  check("the run page never hands the login email to the card", cardProps.length > 0 && !cardProps.includes("testEmail"));
   check("…and no other card does", !owed.includes("testPassword") && !plain.includes("testPassword"));
 
   if (failures) {

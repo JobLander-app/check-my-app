@@ -24,17 +24,23 @@ import { BALANCE_PATH, PRICING_PATH } from "@/lib/balance-links";
 //                                                   anonymous caller, or not
 //                                                   the owner
 //                           404 { error }
+//   Body (optional JSON):   { "testPassword": "…" } — the owed re-check of a
+//                           failed $1 check that signed in (CHE-335); without
+//                           it that case answers 403 code password_needed.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   // CHE-193: our own checker never starts a re-check. First, before anything else.
   if (isSelfCheckRequest(req.headers)) return selfCheckReadOnlyResponse();
   const prisma = await getDbFromContext();
   const full = new URL(req.url).searchParams.get("full") === "1";
   const anonKeyHash = await hashClientKey(req.headers.get("cf-connecting-ip"));
+  const body: unknown = await req.json().catch(() => null);
+  const pw = body && typeof body === "object" && "testPassword" in body ? body.testPassword : undefined;
+  const testPassword = typeof pw === "string" && pw ? pw.slice(0, 500) : undefined;
   // CHE-263: the caller may be a browser session or an API key, and both are
   // answered the same way — by the row's team, not by which helper this route
   // happens to call. That accident is what refused the owner's own key
   // (CHE-246).
-  const result = await createRecheckRun(prisma, (await params).id, { full, anonKeyHash }, {
+  const result = await createRecheckRun(prisma, (await params).id, { full, anonKeyHash, testPassword }, {
     canMutate: (db, row) => canMutateOwnedFromRequest(db, req, row),
     source: "api",
   });

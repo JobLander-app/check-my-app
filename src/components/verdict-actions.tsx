@@ -94,15 +94,16 @@ export function FullRecheckButton({ runId, appSlug }: { runId: string; appSlug: 
 // CHE-329: the one way forward from a check that didn't finish. Same form
 // around a server action as RecheckButton, for the same pre-hydration reason.
 // CHE-335: a paid check that signed in lost its password when it ended, so its
-// owed re-check asks for it again (`loginEmail` names the account).
+// owed re-check asks for it again. The account is not named: the run link is
+// shareable, and its address is the customer's.
 export function RetryFailedRunButton({
   runId,
   appSlug,
-  loginEmail = null,
+  needsPassword = false,
 }: {
   runId: string;
   appSlug: string;
-  loginEmail?: string | null;
+  needsPassword?: boolean;
 }) {
   return (
     <form
@@ -110,9 +111,9 @@ export function RetryFailedRunButton({
       onSubmit={() => track("recheck_clicked", { kind: "retry_failed", appSlug })}
       className="flex flex-col items-center gap-2"
     >
-      {loginEmail && (
+      {needsPassword && (
         <label className="flex w-full max-w-xs flex-col gap-1 text-left text-sm text-fg-muted">
-          Password for {loginEmail}
+          Password for the test account
           <input
             type="password"
             name="testPassword"
