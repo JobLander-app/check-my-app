@@ -50,21 +50,38 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkProvider>
+    // Owner 2026-09-28: signing in lands in the workspace, not back on the
+    // marketing page. The fallback applies whenever no redirect_url is given;
+    // flows that sign in for a purpose (enable a watch on a verdict, export
+    // specs) still pass their own and come back to it.
+    <ClerkProvider signInFallbackRedirectUrl="/dashboard" signUpFallbackRedirectUrl="/dashboard">
       <html lang="en" className={`${sans.variable} ${mono.variable}`}>
         <body className="min-h-screen">
           {/* Product analytics (PostHog) — renders nothing; see src/lib/analytics.ts. */}
           <AnalyticsProvider />
           <header className="border-b border-ink-800">
             <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-              <Link href="/" aria-label="CheckMyApp home" className="group flex items-center gap-2.5">
-                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 font-mono text-[13px] font-semibold text-accent transition-colors group-hover:bg-accent/25">
-                  ✓
-                </span>
-                <span className="hidden font-mono text-sm font-medium tracking-tight text-fg min-[480px]:inline">
-                  checkmyapp
-                </span>
-              </Link>
+              {/* The tagline belongs to the brand, not to the menu (owner,
+                  2026-09-28: as a tracked caps label beside the links it read
+                  as a fifth nav item). A lockup: mark, wordmark, a hairline,
+                  then the line in the body face at rest weight. From lg only —
+                  below that the nav needs the room. */}
+              <div className="flex items-center gap-3.5">
+                <Link href="/" aria-label="CheckMyApp home" className="group flex items-center gap-2.5">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 font-mono text-[13px] font-semibold text-accent transition-colors group-hover:bg-accent/25">
+                    ✓
+                  </span>
+                  <span className="hidden font-mono text-sm font-medium tracking-tight text-fg min-[480px]:inline">
+                    checkmyapp
+                  </span>
+                </Link>
+                <Show when="signed-out">
+                  <span aria-hidden className="hidden h-3.5 w-px bg-ink-600 lg:block" />
+                  <span className="hidden font-sans text-[13px] text-fg-faint lg:inline">
+                    Product mirror, QA fallout
+                  </span>
+                </Show>
+              </div>
               {/* Signed out, this is a website and the links sell it. Signed in,
                   it is a workspace, and the same links leave the owner with no
                   idea where they are or what else is here. Two different headers
@@ -74,15 +91,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   stays and still goes home) and the gap tightens a step. */}
               <div className="flex items-center gap-3 whitespace-nowrap sm:gap-4">
                 <Show when="signed-out">
-                  {/* The tagline is not a menu item; owner 2026-09-28: set it
-                      apart from the links rather than let it read as one. It
-                      appears from md, not sm: at 640px it already pushed the
-                      page 20px wider than the screen (measured, 660 vs 640),
-                      and 768px holds it with the gap. The margin adds to the
-                      row's 16px gap: 32px total from md, 48px from lg. */}
-                  <span className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint md:mr-4 md:inline lg:mr-8">
-                    product mirror · qa fallout
-                  </span>
                   <Link
                     href="/pricing"
                     className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
