@@ -454,14 +454,38 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           : fail(result.code, result.error, HINTS[result.code]);
       }
       const manual = args.frequency === "manual" || result.app.isExtension;
+      if (manual) {
+        return text({ ok: true, app_id: result.app.id, app: result.app.appSlug, hint: "Saved. Call start_check with this app_id to check it." });
+      }
+      // A recurring check spends the same balance as any other (CHE-327). When
+      // the balance cannot cover one, "scheduled automatically" would be a
+      // promise the scheduler then silently breaks — seen live 2026-09-28 on a
+      // Free team with $0 left. Say what will happen and hand over both ways out.
+      const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug);
+      if (!can.ok) {
+        return text({
+          ok: true,
+          app_id: result.app.id,
+          app: result.app.appSlug,
+          hint:
+            // balanceUsd is null only on an unlimited plan, which appCanRun never refuses.
+            `Saved, with a recurring check — but the balance ($${(balance.balanceUsd ?? 0).toFixed(2)} left) does not cover a check ` +
+            `of this app (about $${can.estimate_usd.toFixed(2)}), so it waits until a top-up` +
+            // Free's credit is one-time; only a paid plan's credit comes back.
+            (balance.renewsOn ? ` or the next credit on ${balance.renewsOn}. ` : ". ") +
+            "Tell the user and give them buy_url and upgrade_url.",
+          buy_url: buyUrl,
+          upgrade_url: upgradeUrl,
+        });
+      }
       return text({
         ok: true,
         app_id: result.app.id,
         app: result.app.appSlug,
-        hint: manual
-          ? "Saved. Call start_check with this app_id to check it."
-          : "Saved, with a recurring check. The first one is scheduled automatically — its result shows up in " +
-            "latest_results; call start_check with this app_id only if you need it sooner.",
+        hint:
+          "Saved, with a recurring check. The first one is scheduled automatically — its result shows up in " +
+          "latest_results; call start_check with this app_id only if you need it sooner.",
       });
     },
 
@@ -793,8 +817,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
     "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. A " +
-    "website gets a recurring check (daily by default) within the team's plan; the first one is scheduled " +
-    "automatically; each check spends the team's balance. isError with code plan_limit when the plan does not allow it.",
+    "website gets a recurring check (daily by default) within the team's plan; each check spends the team's " +
+    "balance, so the first one runs automatically when the balance covers it and otherwise waits for a top-up " +
+    "(or, on a paid plan, the next monthly credit) " +
+    "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
+    "not allow it.",
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, verdict email. Only the fields you pass change; " +
     "\"\" clears a field (for test_password: removes the stored password). test_accounts adds or updates named " +
