@@ -127,7 +127,6 @@ async function main() {
   console.log(`status:      ${String(waited.status)}`);
   console.log(`verdict:     ${String(waited.verdict)}`);
   console.log(`findings:    ${JSON.stringify(waited.findings_by_severity)}`);
-  console.log(`cost_usd:    ${String(verdict.cost_usd ?? waited.cost_usd)}`);
   console.log(`duration:    ${Math.floor(elapsedS / 60)}m${elapsedS % 60}s (client-side, start_check → wait_for_run)`);
   console.log(`verdict_url: ${String(waited.verdict_url)}`);
   process.exit(waited.__isError || waited.timed_out === true ? 1 : 0);

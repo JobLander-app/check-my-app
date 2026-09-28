@@ -47,18 +47,12 @@ export async function loadVerdict(db: PrismaClient, publicId: string) {
         orderBy: { number: "asc" },
         select: { number: true, title: true, category: true, severity: true, mark: true },
       },
-      llmUsage: true,
     },
   });
   if (!run) return null;
   if (!extensionReportPublished(run)) {
     return { status: run.status, verdict: null, bottom_line: null, journeys: [], findings: [] };
   }
-
-  const totalTokens = run.llmUsage.reduce(
-    (s, u) => s + u.inputTokens + u.cacheWriteTokens + u.cacheReadTokens + u.outputTokens,
-    0,
-  );
 
   return {
     run_number: run.runNumber,
@@ -74,8 +68,10 @@ export async function loadVerdict(db: PrismaClient, publicId: string) {
     expires_at: run.expiresAt,
     journeys: run.journeys,
     findings: run.findings,
-    cost_usd: run.costUsd,
-    total_tokens: totalTokens || null,
+    // Pricing rule (CLAUDE.md §10): what a check cost US — dollars, tokens,
+    // the multiplier — never leaves in anything a customer or their agent
+    // reads. This payload is public by run id. The customer's price for a
+    // check arrives with CHE-327.
     completed_at: run.completedAt,
   };
 }
