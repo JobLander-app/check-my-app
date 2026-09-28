@@ -93,7 +93,7 @@ function d1(sql) {
 // from rows updated by hand). Both compare correctly as strings against a
 // YYYY-MM-DD prefix, which is why the WHERE below is a string comparison.
 const runRows = d1(
-  `SELECT id, runNumber, appSlug, status, costUsd, forceFull, smokeOnly, watchId, ` +
+  `SELECT id, runNumber, appSlug, status, costUsd, forceFull, watchId, ` +
     `baselineRunId, createdAt, completedAt FROM Run WHERE createdAt >= '${SINCE}' ORDER BY runNumber`,
 );
 const journeyRows = d1(
@@ -199,7 +199,6 @@ const rows = runRows
       status: r.status,
       mode,
       forceFull: Boolean(r.forceFull),
-      smokeOnly: Boolean(r.smokeOnly),
       watch: Boolean(r.watchId),
       walked,
       carried,

@@ -108,15 +108,6 @@ model Run {
   // Full re-check (CHE-74): the owner explicitly asked to walk everything from
   // scratch — replay/partial planning skip themselves when set.
   forceFull     Boolean @default(false)
-  // CHE-106: today's agent budget for this app is spent — run a smoke pass
-  // instead of a paid walk. CHE-327 replaced the per-app daily budget with the
-  // team's balance, so nothing writes or reads this any more. The column stays
-  // for exactly one deploy: CI applies migrations BEFORE it deploys the
-  // workers, and the worker still running at that moment selects it in
-  // "load-run" — dropping it in the same change would fail every run that
-  // loads in that window. Dropped by the next migration after this ships,
-  // together with its one historical reader, scripts/cost-trend.mjs.
-  smokeOnly     Boolean @default(false)
   // CHE-327: what the customer paid for this check, in USD — what it cost us
   // × the plan's multiplier (src/lib/plans.ts priceRun), set when the run
   // finishes. 0 for a run that failed (our failure is free, rule 4); null
