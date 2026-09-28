@@ -33,6 +33,11 @@ async function main() {
   check("key: differs per run", keyFor("pub_1", "a@x.test") !== keyFor("pub_2", "a@x.test"));
   check("key: case of the address does not split it", keyFor("pub_1", "A@X.test") === keyFor("pub_1", "a@x.test"));
   check("key: within Resend's 256-character limit", keyFor("p".repeat(300), "a@x.test").length <= 256);
+  const longA = `${"x".repeat(250)}a@example.test`;
+  const longB = `${"x".repeat(250)}b@example.test`;
+  check("key: two long addresses that share a prefix still get different keys (no truncation collision)",
+    keyFor("pub_1", longA) !== keyFor("pub_1", longB) && keyFor("pub_1", longA).length <= 256);
+  check("key: a long address's key is still stable across attempts", keyFor("pub_1", longA) === keyFor("pub_1", longA));
 
   const seen: Seen[] = [];
   let reply: () => Response = () => new Response(JSON.stringify({ id: "msg_1" }), { status: 200 });

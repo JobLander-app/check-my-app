@@ -63,6 +63,8 @@
     "verify:ephemeral": "tsx --tsconfig tsconfig.json scripts/verify-ephemeral.ts",
     "verify:mcp": "tsx --tsconfig tsconfig.json scripts/verify-mcp.ts",
     "verify:mcp-remote": "tsx --tsconfig tsconfig.json scripts/verify-mcp-remote.ts",
+    "verify:verdict-email-once": "tsx --tsconfig tsconfig.json scripts/verify-verdict-email-once.ts",
+    "verify:cost-never-shown": "tsx --tsconfig tsconfig.json scripts/verify-cost-never-shown.ts",
     "verify:test-accounts": "tsx --tsconfig tsconfig.json scripts/verify-test-accounts.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",

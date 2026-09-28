@@ -136,7 +136,24 @@ export async function sendVerdictReady({
 // CHE-328: one verdict mail per run and recipient, however many times the step
 // that sends it runs. Stable across attempts, distinct per recipient.
 export function verdictIdempotencyKey(publicId: string, to: string): string {
-  return `verdict-ready/${publicId}/${to.toLowerCase()}`.slice(0, 256);
+  const key = `verdict-ready/${publicId}/${to.toLowerCase()}`;
+  if (key.length <= 256) return key;
+  // Resend caps keys at 256 characters. Cutting the tail would let two long
+  // addresses on one run share a key — and the second recipient's 409 would
+  // then read as "already sent" while they got nothing. A digest of the whole
+  // address keeps them apart (Codex P2 on #199).
+  return `verdict-ready/h${fnv1a64(`${publicId}/${to.toLowerCase()}`)}`;
+}
+
+// 64-bit FNV-1a as hex: synchronous, the same in workerd and Node, and ample
+// for telling a handful of addresses on one run apart.
+function fnv1a64(s: string): string {
+  let h = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(s)) {
+    h ^= BigInt(byte);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, "0");
 }
 
 interface WatchTrialPausedArgs {
