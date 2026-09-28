@@ -314,6 +314,10 @@ async function main() {
     const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
     check("schema: Run has no smokeOnly field", !/^\s*smokeOnly\s/m.test(code("prisma/schema.prisma")));
     check("cost-trend: no longer reads smokeOnly", !/smokeOnly/.test(code("scripts/cost-trend.mjs")));
+    // Step 2: the column itself is dropped by a migration.
+    const migrations = readdirSync(join(ROOT, "prisma/migrations")).filter((f) => f.endsWith(".sql"));
+    check("migration: Run.smokeOnly is dropped",
+      migrations.some((f) => /ALTER TABLE "Run" DROP COLUMN "smokeOnly"/.test(read(`prisma/migrations/${f}`))));
     const { SERVER_ANALYTICS_EVENTS } = await import("@/lib/analytics-server");
     const ev = SERVER_ANALYTICS_EVENTS as readonly string[];
     check("events: balance_exhausted and balance_topped_up are catalogued", ev.includes("balance_exhausted") && ev.includes("balance_topped_up"));
