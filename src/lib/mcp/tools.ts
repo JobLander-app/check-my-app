@@ -34,7 +34,8 @@ import { startCheck } from "@/lib/start-check";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { appSlugFromUrl } from "@/lib/utils";
 import { createCheckSchema, normalizeTargetUrl } from "@/lib/validation";
-import { configureWatch, enableWatchForApp } from "@/lib/watch-enable";
+import { EXTENSION_ON_DEMAND, configureWatch, enableWatchForApp } from "@/lib/watch-enable";
+import { PRICING_PATH, loadPlanStatus } from "@/lib/plan-status";
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 
@@ -207,14 +208,16 @@ export type FailureCode =
   | "quota_site"
   | "ephemeral_requires_owner";
 
-function fail(code: FailureCode, error: string, hint?: string): ToolResult {
-  return text({ ok: false, code, error, ...(hint ? { hint } : {}) }, true);
-}
+// CHE-325: the refusals an upgrade answers. Each carries `upgrade_url`, so the
+// agent can hand the person the way forward in the same breath as the limit.
+// quota_site / quota_anon are the anonymous funnel's caps and never reach a
+// key-authenticated team.
+const UPGRADABLE: readonly FailureCode[] = ["quota_free", "plan_limit"];
 
 const HINTS: Partial<Record<FailureCode, string>> = {
   quota_free:
-    "The Free plan's runs are used. Upgrade the team's plan, or enable_watch on an app you have already checked. Do not retry.",
-  plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows.",
+    "The Free plan's checks are used. Give the user upgrade_url, or enable_watch on an app you have already checked. Do not retry.",
+  plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows and give them upgrade_url.",
   not_found: "Not one of this team's apps or runs. list_apps and latest_results show what exists.",
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
 };
@@ -225,6 +228,17 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   const plan = team.plan as UserPlan;
 
   const urls = (id: string) => ({ live_url: `${origin}/run/${id}`, verdict_url: `${origin}/verdict/${id}` });
+  const upgradeUrl = `${origin}${PRICING_PATH}`;
+
+  function fail(code: FailureCode, error: string, hint?: string): ToolResult {
+    return text(
+      { ok: false, code, error, ...(hint ? { hint } : {}), ...(UPGRADABLE.includes(code) ? { upgrade_url: upgradeUrl } : {}) },
+      true,
+    );
+  }
+
+  // CHE-325: what the plan allows and what is left, next to the apps it bounds.
+  const planStatus = () => loadPlanStatus(db, { id: team.id, plan }, origin, new Date(deps.now()));
 
   function deny(action: TeamAction): ToolResult | null {
     if (can(caller.scope, action)) return null;
@@ -309,8 +323,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       return text({
         ok: true,
         team: team.name,
+        plan: await planStatus(),
         apps: apps.map((a) => {
-          const trial = watchTrialState(a.watch, plan);
+          const trial = watchTrialState(a.watch, plan, new Date(deps.now()));
           const last = a.runs[0];
           return {
             app_id: a.id,
@@ -644,6 +659,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       const results = await latestResults(db, team.id);
       return text({
         ok: true,
+        plan: await planStatus(),
         apps: results.apps.map((a) => ({
           ...a,
           verdict_url: a.latest_run ? urls(a.latest_run.run_id).verdict_url : null,
@@ -659,13 +675,17 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         db,
         { id: caller.user.id, teamId: team.id, plan },
         args.app_id,
-        { frequency: args.frequency },
+        { frequency: args.frequency, now: new Date(deps.now()) },
       );
       switch (result.kind) {
         case "ok":
           return text({ ok: true, app_id: args.app_id, app: result.slug, watch: { state: "active", frequency: args.frequency } });
         case "gated":
-          return fail("plan_limit", result.reason, HINTS.plan_limit);
+          // An extension is checked on demand on every plan: no upgrade
+          // changes that, so it is not a plan refusal and carries no link.
+          return result.reason === EXTENSION_ON_DEMAND
+            ? fail("invalid_input", result.reason, "Use start_check with this app_id to check it.")
+            : fail("plan_limit", result.reason, HINTS.plan_limit);
         default:
           return fail("not_found", "App not found", HINTS.not_found);
       }
@@ -695,7 +715,8 @@ export type RemoteTools = ReturnType<typeof createRemoteTools>;
 const DESCRIPTIONS: Record<ToolName, string> = {
   list_apps:
     "The team's apps: id, address, scenarios (what must keep working), limits, notes, the test accounts a check " +
-    "signs in as (label and email — never a password), recurring-check state, and the last run. Start here.",
+    "signs in as (label and email — never a password), recurring-check state, and the last run; plus `plan`: what " +
+    "the team's plan allows and what is left of it (free checks, watched apps, trial, full re-checks, upgrade_url). Start here.",
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
@@ -711,7 +732,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +
     "shipped). With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
     "20–40 minutes; follow it with wait_for_run or get_check_status. Refusals carry a stable code " +
-    "(quota_free, quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal.",
+    "(quota_free, quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal; " +
+    "quota_free and plan_limit carry upgrade_url for the user.",
   get_check_status:
     "Status of a run: phase (queued/connecting/surface_scan/discovery/walking/anatomy/writing), terminal state " +
     "(completed/partial/failed), verdict when done, and the latest progress events.",
@@ -733,7 +755,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(`next_actions`). It names symptoms and evidence, never files or fixes — what to change is your call.",
   latest_results:
     "For every app of the team: the latest finished run, its verdict, findings by severity, and the findings that " +
-    "are NEW since the app's previous finished run; plus the checks still running. Use at the start of a session.",
+    "are NEW since the app's previous finished run; plus the checks still running and `plan` (as in list_apps). " +
+    "Use at the start of a session.",
   enable_watch:
     "Turn on (or resume) an app's recurring check at the given frequency, within the team's plan. isError with " +
     "code plan_limit when the plan does not allow it.",

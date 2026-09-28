@@ -1,7 +1,7 @@
 // The first thing an agent reads when it connects (MCP `instructions`,
 // CHE-315): which apps this team has, how each one stood at its latest check,
 // and how many problems are new since the check before — then what to do with
-// that.
+// that; and the team's plan with what is left of it (CHE-325).
 //
 // Computed per connection from the key's team, so it is always today's answer.
 // Every sentence here reaches the person through their agent, so CLAUDE.md §1
@@ -13,6 +13,8 @@
 // the rest, never a page of text.
 
 import type { LatestResults } from "@/lib/latest-results";
+import type { PlanStatus } from "@/lib/plan-status";
+import { planLabel } from "@/lib/plans";
 
 export const MAX_INSTRUCTIONS_CHARS = 1500;
 
@@ -24,7 +26,41 @@ const VERDICT_WORDS: Record<string, string> = {
   unverified: "no result",
 };
 
-export function buildInstructions(teamName: string, results: LatestResults): string {
+// CHE-325: the plan and what is left of it, one line — so the agent knows
+// before it spends, not from a refusal. Numbers come from loadPlanStatus
+// (src/lib/plan-status.ts), which reads them through the gates' own counts.
+function planLine(s: PlanStatus): string {
+  const parts = [`Plan: ${planLabel(s.plan)}.`];
+  parts.push(s.free_checks ? `Free checks left: ${s.free_checks.left} of ${s.free_checks.limit}.` : "Checks: unlimited.");
+  const trial = s.watch_trial
+    ? ` (${s.watch_trial.app}: ${s.watch_trial.ended ? "trial ended, not running" : `trial, ${s.watch_trial.days_left} day${s.watch_trial.days_left === 1 ? "" : "s"} left`})`
+    : "";
+  parts.push(`Watched apps: ${s.watches.used} of ${s.watches.limit ?? "unlimited"}${trial}.`);
+  const f = s.full_rechecks;
+  parts.push(
+    f.limit === null
+      ? "Full re-checks: unlimited."
+      : f.limit === 0
+        ? "Full re-checks: not on this plan."
+        : `Full re-checks left this month: ${f.left} of ${f.limit}.`,
+  );
+  parts.push(`Upgrade: ${s.upgrade_url}`);
+  return parts.join(" ");
+}
+
+// What the agent does with that line. The Free warning exists because the
+// last free check spent in silence is how a person meets the limit: as a
+// refusal on the next deploy.
+function planRule(s: PlanStatus): string {
+  const refusal = "Every limit refusal carries upgrade_url: say what the plan allows and give the user that link.";
+  if (!s.free_checks) return refusal;
+  return (
+    "Before starting a check that uses the last free check — or if none are left — tell the user first and give " +
+    `them the upgrade link; never let a limit surprise them. ${refusal}`
+  );
+}
+
+export function buildInstructions(teamName: string, results: LatestResults, plan: PlanStatus): string {
   const head =
     `CheckMyApp checks the deployed apps of team "${teamName}" the way a real user would and reports what is broken. ` +
     "The person you work with manages CheckMyApp entirely through these tools — they should not need to open its dashboard.";
@@ -55,7 +91,9 @@ export function buildInstructions(teamName: string, results: LatestResults): str
     "Use start_check after a deploy (pass app_id, deploy_sha), wait_for_run or get_check_status to follow it, " +
     "and enable_watch / disable_watch for daily checks.";
 
-  const fixed = [head, what, running, tail].filter(Boolean);
+  const planText = `${planLine(plan)}\n${planRule(plan)}`;
+
+  const fixed = [head, what, running, tail, planText].filter(Boolean);
   const fixedLength = fixed.join("\n").length + "\nApps:\n".length;
   const budget = MAX_INSTRUCTIONS_CHARS - fixedLength;
 
@@ -72,5 +110,5 @@ export function buildInstructions(teamName: string, results: LatestResults): str
     used += lines[i].length + 1;
   }
 
-  return [head, ...(kept.length ? ["Apps:", ...kept] : []), what, running, tail].filter(Boolean).join("\n");
+  return [head, ...(kept.length ? ["Apps:", ...kept] : []), what, running, tail, planText].filter(Boolean).join("\n");
 }

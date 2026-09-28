@@ -1,4 +1,5 @@
 import { CodeBlock } from "@/components/code-block";
+import { GUIDE_PLANS, planAllowance } from "@/lib/plan-status";
 import { A, Bullets, Code, Example, GuidePage, Note, Section, Strong, guideMetadata } from "../guide-kit";
 
 export const metadata = guideMetadata("connect-your-agent");
@@ -124,6 +125,32 @@ export default function ConnectAgentGuide() {
             </div>
           ))}
         </div>
+      </Section>
+
+      {/* CHE-325: generated from PLAN_LIMITS (src/lib/plan-status.ts
+          planAllowance), so no number here can drift from the gates;
+          scripts/verify-mcp-remote.ts renders this page and compares. */}
+      <Section title="What your plan allows">
+        <p>
+          Every tool above works on every plan, Free included. A plan sets volume — how many
+          checks, how many apps watched, how many full re-checks a month:
+        </p>
+        <ul className="card divide-y divide-ink-700">
+          {GUIDE_PLANS.map((plan) => {
+            const a = planAllowance(plan);
+            return (
+              <li key={plan} data-plan={plan} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:gap-4">
+                <span className="shrink-0 font-mono text-[13px] text-accent sm:w-40">{a.name}</span>
+                <span className="text-sm leading-6 text-fg-muted">{a.text}</span>
+              </li>
+            );
+          })}
+        </ul>
+        <p>
+          Your agent is told your plan and what is left of it when it connects, and says so
+          before it spends your last free check. When a limit is reached, the answer comes with
+          a link to upgrade. Prices are on <A href="/pricing">Pricing</A>.
+        </p>
       </Section>
 
       <Note label="how to read what comes back">
