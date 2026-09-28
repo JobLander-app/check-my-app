@@ -6,6 +6,7 @@ import { isTerminal } from "@/lib/status";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { failedRunWasFree } from "@/lib/failed-run";
 import { canMutateOwned } from "@/lib/auth";
+import { paidRetryOwed } from "@/lib/recheck";
 import { publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +35,8 @@ export default async function RunPage({
       ownerId: true,
       teamId: true,
       priceUsd: true,
+      id: true,
+      paidCheckoutSessionId: true,
     },
   });
   if (!run) notFound();
@@ -54,6 +57,7 @@ export default async function RunPage({
       <main className="mx-auto max-w-5xl px-4 py-10">
         <RunFailed
           free={failedRunWasFree(run)}
+          paidRetry={await paidRetryOwed(prisma, run)}
           retry={canRetry ? { runId: run.publicId, appSlug: run.appSlug } : null}
           notice={recheck === "notfound" ? "That run no longer exists." : (recheck ?? null)}
           balanceRefused={balance === "1" && typeof recheck === "string"}

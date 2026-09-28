@@ -14,6 +14,7 @@ import { ephemeralExpiry } from "@/lib/ephemeral";
 import { triggerRun } from "@/lib/trigger";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
+import { failedPaidCheck } from "@/lib/failed-run";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -89,6 +90,8 @@ export async function createRecheckRun(
       ownerId: true,
       ephemeral: true,
       teamId: true,
+      status: true,
+      paidCheckoutSessionId: true,
       // CHE-253: the plan is the TEAM's — the person who clicks may not be the
       // one who pays. CHE-137: the CURRENT plan decides the allowance,
       // so an upgrade takes effect on the next click with nothing to sync.
@@ -129,7 +132,13 @@ export async function createRecheckRun(
       return { kind: "quota", reason: gate.reason, code: gate.code };
     }
   }
-  if (isAnonymous) {
+  // CHE-335: a $1 check that ended failed bought a verdict it never got. Its
+  // one re-check is owed, not granted: no reuse window, no free-funnel cap
+  // (the cap was already spent, which is why they paid), and it does not eat
+  // the visitor's own free check either. Once — the re-check names this run as
+  // its baseline, and a second press goes through the gates like any other.
+  const owedRetry = isAnonymous && !opts.full && (await paidRetryOwed(prisma, prev));
+  if (isAnonymous && !owedRetry) {
     // A full walk is the expensive mode and exists for owners who just shipped
     // something. Nobody holding a public link gets to spend that.
     if (opts.full) {
@@ -199,7 +208,7 @@ export async function createRecheckRun(
       startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
       // Anonymous re-checks count against the same daily allowance as
       // anonymous submissions (CHE-97).
-      anonKeyHash: prev.ownerId ? null : (opts.anonKeyHash ?? null),
+      anonKeyHash: prev.ownerId || owedRetry ? null : (opts.anonKeyHash ?? null),
       // CHE-202: ephemeral begets ephemeral. An ephemeral run is always owned
       // (the API refuses anonymous ones), so it never reaches the anonymous
       // path above; and it has no appId/watchId to copy — they are null.
@@ -212,4 +221,15 @@ export async function createRecheckRun(
 
   await deps.trigger(run.id);
   return { kind: "ok", publicId: run.publicId };
+}
+
+// Whether a failed run is a paid $1 check whose one re-check has not been
+// started yet (CHE-335). The failed-run page asks the same question to say so.
+export async function paidRetryOwed(
+  prisma: PrismaClient,
+  run: { id: string; status: string; paidCheckoutSessionId: string | null },
+): Promise<boolean> {
+  if (!failedPaidCheck(run)) return false;
+  const retried = await prisma.run.findFirst({ ...publicRow(), where: { baselineRunId: run.id }, select: { id: true } });
+  return !retried;
 }

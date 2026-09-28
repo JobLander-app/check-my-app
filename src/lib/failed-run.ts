@@ -45,8 +45,17 @@ export function publicRunState<E>(run: { status: string; verdict: string | null;
 // voidRunPrice for one priced before a later step threw); a null price on a
 // failed team run is the instant before that write. A run with no team was
 // never on a balance — the free public check, or a $1 check paid through
-// Stripe, which is not refunded — so "it wasn't charged" would be either
-// meaningless or untrue there, and is not said.
+// Stripe — so "it wasn't charged" would be either meaningless or untrue there,
+// and is not said. The $1 check is made whole another way: its one re-check is
+// on us (failedPaidCheck, CHE-335).
 export function failedRunWasFree(run: { status: string; teamId: string | null; priceUsd: number | null }): boolean {
   return run.status === "failed" && run.teamId !== null && (run.priceUsd ?? 0) === 0;
 }
+
+// A $1 check that did not finish (CHE-335): the buyer paid for a verdict and
+// got none, so one re-check is owed — src/lib/recheck.ts paidRetryOwed.
+export function failedPaidCheck(run: { status: string; paidCheckoutSessionId: string | null }): boolean {
+  return run.status === "failed" && run.paidCheckoutSessionId !== null;
+}
+
+export const PAID_RETRY_LINE = "You paid for this check, so running it again is on us.";
