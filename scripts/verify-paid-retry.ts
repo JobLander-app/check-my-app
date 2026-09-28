@@ -15,7 +15,7 @@ import { renderToString } from "react-dom/server";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { createRecheckRun, paidRetryOwed, RETRY_PASSWORD_NEEDED, type RecheckDeps } from "@/lib/recheck";
 import { RunFailed } from "@/components/run-failed";
-import { PAID_RETRY_LINE } from "@/lib/failed-run";
+import { PAID_RETRY_LINE, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -120,6 +120,10 @@ async function main() {
     check("a failed $1 check's re-check starts although the site cap is spent", r.kind === "ok", r.kind);
     check("…names the failed run as its baseline", created[0]?.baselineRunId === "paid");
     check("…and is not counted against the buyer's own free check", created[0]?.anonKeyHash === null);
+    check("…nor against the site's free checks of the day", created[0]?.startedVia === PAID_RETRY_SOURCE);
+    const plans = readFileSync(path.join(process.cwd(), "src/lib/plans.ts"), "utf8");
+    check("anonRunsToday leaves owed re-checks out and keeps rows with no startedVia",
+      plans.includes("OR: [{ startedVia: null }, { startedVia: { not: PAID_RETRY_SOURCE } }]"));
 
     // 3. Once.
     const again = await createRecheckRun(db, "pub-paid", { anonKeyHash: "buyer-key" }, {}, deps);

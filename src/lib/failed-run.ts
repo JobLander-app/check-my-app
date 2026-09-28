@@ -58,4 +58,8 @@ export function failedPaidCheck(run: { status: string; paidCheckoutSessionId: st
   return run.status === "failed" && run.paidCheckoutSessionId !== null;
 }
 
+// Run.startedVia of that re-check. src/lib/plans.ts anonRunsToday reads it:
+// the re-check is part of what was paid for, not a free check of the day.
+export const PAID_RETRY_SOURCE = "paid_retry";
+
 export const PAID_RETRY_LINE = "You paid for this check, so running it again is on us.";

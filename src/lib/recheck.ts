@@ -14,7 +14,7 @@ import { ephemeralExpiry } from "@/lib/ephemeral";
 import { triggerRun } from "@/lib/trigger";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
-import { failedPaidCheck } from "@/lib/failed-run";
+import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
 
 export type RecheckResult =
@@ -218,7 +218,9 @@ export async function createRecheckRun(
         baselineRunId: prev.id,
         // CHE-74: an explicit full re-check must not be eaten by smoke/partial.
         forceFull: opts.full ?? false,
-        startedVia: prev.ownerId ? (deps.source ?? "ui") : "anon",
+        // CHE-335: an owed re-check is marked so the site's free-check count
+        // leaves it out, as it leaves out the paid run it replaces.
+        startedVia: prev.ownerId ? (deps.source ?? "ui") : owedRetry ? PAID_RETRY_SOURCE : "anon",
         // Anonymous re-checks count against the same daily allowance as
         // anonymous submissions (CHE-97).
         anonKeyHash: prev.ownerId || owedRetry ? null : (opts.anonKeyHash ?? null),
