@@ -104,9 +104,12 @@ import {
 } from "./snapshot";
 import {
   carryJourney,
+  fullBottomLine,
   fullRunQueue,
   partialBottomLine,
+  planKnownJourneys,
   planPartialRun,
+  type CarriedJourney,
   type PartialDecision,
 } from "./partial";
 
@@ -756,6 +759,38 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       }
       assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
 
+      // CHE-331: the app's other known journeys, as of their last real walk.
+      // Only a partial run used to carry anything, so a full check or any
+      // on-demand check listed the handful it walked and the verdict silently
+      // lost the rest (checkmyapp.dev: #247 showed 10, #261 showed 3 of 12
+      // live). Planned here, after the walks, because which journeys this run
+      // covered is only known once each walk has resolved its identity; the
+      // copies themselves are written after the verdict is decided (below), so
+      // none of their old evidence enters this run's findings or pill.
+      // NOT best-effort, unlike the catalog writes: a read that failed and
+      // returned nothing would publish exactly the truncated verdict this
+      // exists to prevent. The step retries, and a D1 that stays down fails
+      // the run as ours (rule 4) — it could not have written the verdict
+      // either.
+      const known = await step.do(
+        "known-journeys-plan",
+        async (): Promise<{ listed: CarriedJourney[]; complete: boolean }> => {
+          if (!run.appId || isExtension) return { listed: [], complete: true };
+          const planned = await planKnownJourneys(env, {
+            runId,
+            appId: run.appId,
+            startOrder: Math.max(0, ...walkList.map((w) => w.order + 1)),
+          });
+          // A known journey whose walk is gone was not covered either; it
+          // just has nothing to show, and fix verification must know that.
+          if (planned.omitted.length) {
+            console.warn(`[known-journeys] no walk to show for: ${planned.omitted.join(" · ")}`);
+          }
+          return { listed: planned.listed, complete: planned.omitted.length === 0 };
+        },
+      );
+      const listed = known.listed;
+
       // Phase 5 — Anatomy (merge deterministic scan signals into the LLM map).
       // A partial run reuses the baseline's anatomy: nothing re-mapped the app
       // this run, so writing a fresh-looking map would be an invention.
@@ -890,16 +925,17 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // Coverage before opinion: a partial run's pill covers journeys nobody
         // walked today, so the bottom line says which is which before it says
         // anything else. The re-walk count comes from the rows that landed, so
-        // an aborted walk shrinks the claim instead of inflating it.
-        const carriedAware = plan.taken
-          ? partialBottomLine(
-              plan,
-              checked.bottomLine,
-              await env.db.journey.count({
+        // an aborted walk shrinks the claim instead of inflating it. CHE-331:
+        // the same holds for any run that lists journeys it did not walk.
+        const walkedHere =
+          plan.taken || listed.length > 0
+            ? await env.db.journey.count({
                 where: { runId, carriedFromRunId: null, status: { not: "skipped" } },
-              }),
-            )
-          : checked.bottomLine;
+              })
+            : 0;
+        const carriedAware = plan.taken
+          ? partialBottomLine(plan, checked.bottomLine, walkedHere, listed)
+          : fullBottomLine(walkList.length, checked.bottomLine, walkedHere, listed);
 
         // CHE-107: discovery writes down what it found; the walk writes down
         // where it went. A page in the first list and not the second is a part
@@ -925,18 +961,55 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await env.db.run.update({
           where: { id: runId },
           data: {
-            status: structured?.partial ? "partial" : "completed",
+            // CHE-331: a run with journeys still to list stays in "writing"
+            // until they land (the step below). A terminal status is what
+            // every poller — wait_for_run, the live page, CI — reads as "the
+            // verdict is whole", and one that fired before the copies would
+            // hand them the 3 walked journeys of 12 for good.
+            ...(listed.length > 0
+              ? {}
+              : { status: structured?.partial ? "partial" : "completed", completedAt: new Date() }),
             verdict: checked.verdict,
             bottomLine,
             appLens: JSON.stringify(synth.appLens),
             transcriptUrl,
             costUsd,
             currentAction: null,
-            completedAt: new Date(),
           },
         });
         return checked.verdict;
       });
+
+      // CHE-331: the known journeys this run did not walk go onto its verdict
+      // now that the verdict has been decided without them. Each copy keeps the
+      // run and the date of the walk it came from, and the bottom line above
+      // already counts them. Not swallowed: carryJourney clears its slot
+      // before writing, so a retry of this step replaces a half-written copy
+      // rather than leaving the bottom line counting one that is not there —
+      // and a D1 that cannot write them could not have written the verdict.
+      if (listed.length > 0) {
+        await step.do("list-known-journeys", async () => {
+          for (const entry of listed) {
+            await carryJourney(env, runId, entry, run.runNumber);
+          }
+          await appendEvent(env, runId, "writing", {
+            icon: "info",
+            text:
+              `Also listed as of their last check: ${listed.length} journey` +
+              `${listed.length === 1 ? "" : "s"} not walked this run — ` +
+              listed
+                .slice(0, 6)
+                .map((l) => `${l.title} (Run #${l.sourceRunNumber})`)
+                .join(" · ") +
+              (listed.length > 6 ? ` and ${listed.length - 6} more` : ""),
+          });
+          // Last, so nothing reads the run as finished before its list is.
+          await env.db.run.update({
+            where: { id: runId },
+            data: { status: "completed", completedAt: new Date() },
+          });
+        });
+      }
 
       // CHE-327: the check is done — price it on the team's balance. Its own
       // step, after the verdict is written, so a retry of pricing never
@@ -1049,7 +1122,15 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // and can never be mistaken for a verified fix. Links still "fixed" whose
       // signature stayed away — in a walk that actually covered their journey —
       // get the "verified fixed in prod" comment and status "resolved".
-      if (run.watchId) {
+      // CHE-331: not when the known-journeys list is incomplete — a known
+      // journey's walk is gone. verifyFixedLinks treats a
+      // run with no carried rows as a walk of the whole app, and such a run may
+      // carry none only because we could not show what it missed — a fix is
+      // confirmed by a walk of its journey, never by our own blind spot.
+      if (run.watchId && !known.complete) {
+        console.warn("[reconcile] fix verification skipped — this run's known-journeys list is incomplete");
+      }
+      if (run.watchId && known.complete) {
         await step.do("reconcile-verify", async () => {
           try {
             for (const note of await verifyFixedLinks(env, runId)) {

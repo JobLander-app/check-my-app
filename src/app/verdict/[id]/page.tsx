@@ -182,7 +182,7 @@ export default async function VerdictPage({
     run.journeys.length === 0 && events[events.length - 1]?.phase === "replay";
   // Carried journeys (CHE-57) name the run that actually walked them by id; the
   // chip shows its number. One query for the handful of distinct source runs —
-  // usually exactly one, and none at all on a full run.
+  // a few at most, since each carried journey names the run that last walked it.
   const carriedRunIds = [
     ...new Set(run.journeys.map((j) => j.carriedFromRunId).filter((id): id is string => Boolean(id))),
   ];
@@ -194,15 +194,23 @@ export default async function VerdictPage({
     prisma,
     run.journeys.map((j) => ({ id: j.id, appJourneyId: j.appJourneyId, status: j.status })),
   );
-  const carriedRunNumbers = Object.fromEntries(
-    carriedRunIds.length
-      ? (
-          await prisma.run.findMany({ ...publicRow(),
-            where: { id: { in: carriedRunIds } },
-            select: { id: true, runNumber: true },
-          })
-        ).map((r) => [r.id, r.runNumber])
-      : [],
+  const carriedRuns = carriedRunIds.length
+    ? await prisma.run.findMany({ ...publicRow(),
+        where: { id: { in: carriedRunIds } },
+        select: { id: true, runNumber: true, completedAt: true },
+      })
+    : [];
+  const carriedRunNumbers = Object.fromEntries(carriedRuns.map((r) => [r.id, r.runNumber]));
+  // CHE-331: a carried journey says WHEN it was last walked, not only by which
+  // run — since every check now lists the app's known journeys, a carried card
+  // can be days old, and its status pill is a statement about that day. UTC.
+  const carriedRunDays = Object.fromEntries(
+    carriedRuns
+      .filter((r) => r.completedAt)
+      .map((r) => [
+        r.id,
+        (r.completedAt as Date).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+      ]),
   );
   const newerRun = await prisma.run.findFirst({ ...publicRow(),
     where: { baselineRunId: run.id, status: { in: ["completed", "partial"] } },
@@ -237,7 +245,7 @@ export default async function VerdictPage({
           <TrackedLink
             event="sign_in_clicked"
             props={{ from: "verdict" }}
-            href="/sign-in?redirect_url=%2F"
+            href="/sign-in"
             className="text-accent underline-offset-2 hover:underline"
           >
             Sign in
@@ -378,6 +386,7 @@ export default async function VerdictPage({
           journeys={run.journeys}
           numbers={journeyNumbers}
           carriedRunNumbers={carriedRunNumbers}
+          carriedRunDays={carriedRunDays}
           emptyNote={
             smokePass
               ? "Not re-walked this run — the smoke check confirmed your known pages still load, " +

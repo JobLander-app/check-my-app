@@ -46,6 +46,8 @@ export interface ReviewJourney {
   title: string;
   status: string;
   summary: string | null;
+  // CHE-331: not walked by this run — shown as an earlier run walked it.
+  carried: boolean;
   steps: ReviewStep[];
 }
 
@@ -122,6 +124,7 @@ export interface ReviewSourceJourney {
   title: string;
   status: string;
   summary: string | null;
+  carriedFromRunId?: string | null;
   steps: ReviewSourceStep[];
 }
 
@@ -171,6 +174,7 @@ export const REVIEW_SELECT = {
       title: true,
       status: true,
       summary: true,
+      carriedFromRunId: true,
       steps: {
         orderBy: { order: "asc" as const },
         select: {
@@ -277,6 +281,7 @@ export function buildReview(run: ReviewSource, origin: string): Review {
     title: j.title,
     status: j.status,
     summary: j.summary,
+    carried: Boolean(j.carriedFromRunId),
     steps: j.steps.map((s) => ({
       order: s.order,
       label: s.label,
@@ -306,15 +311,18 @@ export function buildReview(run: ReviewSource, origin: string): Review {
   const next_actions = run.findings.map((f) => nextActionFor(f, run.appSlug));
 
   // Coverage, the same arithmetic the bottom line's coverage sentence uses
-  // (CHE-107): pages discovery wrote down, minus pages any step reached.
+  // (CHE-107): pages discovery wrote down, minus pages any step reached. Only
+  // this run's walks count (CHE-331): a carried journey reached its pages on
+  // an earlier day, and its skipped steps are that day's gaps, not this run's.
   const pages = (normalizeAnatomy(parseJson<unknown>(run.anatomy))?.pages ?? []).filter(Boolean);
-  const steps = run.journeys.flatMap((j) => j.steps);
+  const walkedHere = run.journeys.filter((j) => !j.carriedFromRunId);
+  const steps = walkedHere.flatMap((j) => j.steps);
   const pages_not_opened = unreachedPages(
     pages,
     steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""]),
   ).map((p) => p.path);
 
-  const unverified: ReviewUnverified[] = run.journeys.flatMap((j) =>
+  const unverified: ReviewUnverified[] = walkedHere.flatMap((j) =>
     j.steps
       .filter((s) => s.status === "skipped")
       .map((s) => ({

@@ -477,7 +477,9 @@ export async function clearUnsupportablePrices(env: AgentEnv, appId: string): Pr
  */
 async function typicalSteps(env: AgentEnv, appJourneyId: string): Promise<number | null> {
   const walks = await env.db.journey.findMany({
-    where: { appJourneyId },
+    // A carried copy is the same walk again (CHE-331 writes one on most runs),
+    // and counting it would let a few copies fill the sample.
+    where: { appJourneyId, carriedFromRunId: null },
     select: { _count: { select: { steps: true } } },
     take: 20,
   });
