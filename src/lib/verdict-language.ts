@@ -691,11 +691,13 @@ function cutDescription(sentence: string, names: string[]): string | null {
 // ticket of ours is settled is decided elsewhere (src/agent/reconcile.ts).
 const HISTORY_CLAIM = new RegExp(
   [
-    String.raw`\b(?:previously|earlier|formerly|last\s+time|before)\s+(?:\w+\s+){0,2}(?:reported|flagged|noted|found|seen|filed|observed|identified|described)\b`,
+    // "previously reported" and "previously-reported" (run
+    // cmulp9pxt0003ri1o8wptwzo8, a carried summary) are the same claim.
+    String.raw`\b(?:previously|earlier|formerly|last\s+time|before)[\s-]+(?:\w+\s+){0,2}(?:reported|flagged|noted|found|seen|filed|observed|identified|described)\b`,
     // "in the last check", "since the previous run" — the noun alone is not
     // history: "The Previous Runs table loaded" is this walk's page.
     String.raw`\b(?:in|from|on|since|than|as\s+in|during|after)\s+(?:the\s+|a\s+|an\s+|our\s+|your\s+)?(?:previous|prior|earlier|last|past|older)\s+(?:runs?|checks?|reports?|verdicts?|walks?|visits?)\b`,
-    String.raw`\b(?:bug|issue|problem|defect|error|regression|finding|detour)\b[^.;:]{0,40}\b(?:(?:is|was|are|were|has\s+been|have\s+been|appears?|seems?)\s+(?:now\s+)?(?:to\s+be\s+)?(?:fixed|resolved|gone)|no\s+longer\s+(?:occurs?|happens?|appears?|reproduces?))\b`,
+    String.raw`\b(?:bugs?|issues?|problems?|defects?|errors?|regressions?|findings?|detours?|failures?)\b[^.;:]{0,40}\b(?:(?:is|was|are|were|has\s+been|have\s+been|appears?|seems?)\s+(?:now\s+)?(?:to\s+be\s+)?(?:fixed|resolved|gone)|no\s+longer\s+(?:occurs?|happens?|appears?|reproduces?))\b`,
     String.raw`\bthe\s+old\b[^.;:]{0,60}\b(?:is|are|was|were)\s+(?:now\s+)?gone\b`,
     String.raw`\bas\s+(?:previously|before|last\s+time)\s+(?:reported|noted|seen)\b`,
   ].join("|"),
