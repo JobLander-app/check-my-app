@@ -17,9 +17,13 @@
   // EMAIL_FROM carries a display name (CHE-226): a bare address shows up in the
   // inbox as "verdicts", which is how an unknown bot looks to a stranger's
   // mail provider — and the first verdict to a customer went to spam.
+  // EMAIL_REPLY_TO is a mailbox somebody reads: hello@ is routed by Cloudflare
+  // Email Routing to the owner (enabled 2026-09-29; before that the domain had
+  // no MX and every reply bounced).
   "vars": {
     "APP_URL": "https://checkmyapp.dev",
-    "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>"
+    "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>",
+    "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>"
   },
   "browser": {
     "binding": "MYBROWSER"

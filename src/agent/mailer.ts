@@ -23,6 +23,11 @@ export class Mailer extends WorkerEntrypoint<AgentBindings> {
     if (!this.env.EMAIL_API_KEY || !this.env.EMAIL_FROM) {
       throw new Error("Mailer: the agent worker has no EMAIL_API_KEY or EMAIL_FROM");
     }
-    return sendTeamInvite({ ...mail, apiKey: this.env.EMAIL_API_KEY, from: this.env.EMAIL_FROM });
+    return sendTeamInvite({
+      ...mail,
+      apiKey: this.env.EMAIL_API_KEY,
+      from: this.env.EMAIL_FROM,
+      replyTo: this.env.EMAIL_REPLY_TO,
+    });
   }
 }

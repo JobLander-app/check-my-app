@@ -241,6 +241,7 @@ export async function notifyVerdictReady(
       },
       apiKey: bindings.EMAIL_API_KEY,
       from: bindings.EMAIL_FROM,
+      replyTo: bindings.EMAIL_REPLY_TO,
       baseUrl: bindings.APP_URL,
       // CHE-328: a retried notify step must not mail the same person twice.
       idempotencyKey: verdictIdempotencyKey(run.publicId, to),

@@ -37,6 +37,8 @@ export interface AgentBindings {
   // Verdict-ready notifications (Resend). All optional — absent = log-only.
   EMAIL_API_KEY?: string;
   EMAIL_FROM?: string;
+  // CHE-226: where replies to our mail go (a routed, read mailbox).
+  EMAIL_REPLY_TO?: string;
   // Public web origin for links in emails, e.g. https://checkmyapp.dev
   APP_URL?: string;
   // CHE-130: how many recent screenshots the walking loop keeps in the model's
