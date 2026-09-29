@@ -294,6 +294,7 @@ async function pauseBalanceUsedUp(
         reason: watch.reason,
         apiKey: bindings.EMAIL_API_KEY,
         from: bindings.EMAIL_FROM,
+        replyTo: bindings.EMAIL_REPLY_TO,
         baseUrl: bindings.APP_URL,
       });
     }
@@ -336,6 +337,7 @@ async function pauseExpiredTrial(
       appSlug: watch.appSlug,
       apiKey: bindings.EMAIL_API_KEY,
       from: bindings.EMAIL_FROM,
+      replyTo: bindings.EMAIL_REPLY_TO,
       baseUrl: bindings.APP_URL,
     });
     // Stamped only after a successful send, so a transient Resend failure costs

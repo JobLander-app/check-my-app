@@ -33,6 +33,7 @@ function check(name: string, ok: boolean, detail = "") {
 interface Posted {
   from?: string;
   subject?: string;
+  reply_to?: string;
   html?: string;
   text?: string;
 }
@@ -55,7 +56,13 @@ async function capture(send: () => Promise<unknown>): Promise<Posted> {
   return body;
 }
 
-const common = { apiKey: "re_stub", from: "CheckMyApp <verdicts@checkmyapp.dev>", baseUrl: "https://checkmyapp.dev" };
+const REPLY_TO = "CheckMyApp <hello@checkmyapp.dev>";
+const common = {
+  apiKey: "re_stub",
+  from: "CheckMyApp <verdicts@checkmyapp.dev>",
+  replyTo: REPLY_TO,
+  baseUrl: "https://checkmyapp.dev",
+};
 
 async function main(): Promise<void> {
   const mails: [string, Posted, { recurring: boolean }][] = [
@@ -122,7 +129,23 @@ async function main(): Promise<void> {
       check(`${name}: a recurring mail says where to change or stop it`, (m.text ?? "").includes("https://checkmyapp.dev/dashboard"));
     }
     check(`${name}: nothing about how we check leaks into the footer`, !/browser|headless|playwright|model|token/i.test(m.text ?? ""));
+    check(`${name}: a reply goes to a mailbox somebody reads`, m.reply_to === REPLY_TO, String(m.reply_to));
   }
+
+  console.log("\nreply path\n");
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const src = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
+  check(
+    "agent worker: EMAIL_REPLY_TO is a named address on our domain",
+    /"EMAIL_REPLY_TO":\s*"CheckMyApp <hello@checkmyapp\.dev>"/.test(src("wrangler-agent.jsonc")),
+  );
+  check("notify-verdict: the verdict mail passes EMAIL_REPLY_TO", /replyTo: bindings\.EMAIL_REPLY_TO/.test(src("src/agent/notify-verdict.ts")));
+  check(
+    "scheduler: both notices pass EMAIL_REPLY_TO",
+    (src("src/agent/scheduler.ts").match(/replyTo: bindings\.EMAIL_REPLY_TO/g) ?? []).length === 2,
+  );
+  check("mailer: the invite passes EMAIL_REPLY_TO", /replyTo: this\.env\.EMAIL_REPLY_TO/.test(src("src/agent/mailer.ts")));
+  check(".env.example: EMAIL_REPLY_TO is documented", /^EMAIL_REPLY_TO="CheckMyApp <hello@checkmyapp\.dev>"/m.test(src(".env.example")));
 
   console.log("\nsender\n");
   const agentConfig = readFileSync(

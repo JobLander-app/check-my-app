@@ -35,6 +35,15 @@ function htmlDocument(subject: string, body: string, footer: string): string {
   );
 }
 
+// CHE-226: where a reply goes. The From address only sends; until 2026-09-29
+// checkmyapp.dev had no MX at all, so a person answering a verdict got a bounce.
+// The reply now lands in a mailbox somebody reads (Cloudflare Email Routing),
+// and a reply is also the strongest sign to a recipient's provider that this
+// sender is wanted.
+function replyToField(replyTo?: string): { reply_to?: string } {
+  return replyTo ? { reply_to: replyTo } : {};
+}
+
 // Why this address is getting the mail, in the same words in both parts. A
 // recurring mail says where to stop it; a one-off says there is nothing to stop.
 // Worded for every recipient the rule in recipients.ts can pick — the person
@@ -79,6 +88,7 @@ interface VerdictReadyArgs {
   metricAlerts?: string[];
   apiKey?: string;
   from?: string;
+  replyTo?: string;
   baseUrl?: string;
   // CHE-328: the notify step is a Workflow step, and the platform retries a step
   // that dies after the mail has gone (run #263: WorkflowInternalError after the
@@ -106,6 +116,7 @@ export async function sendVerdictReady({
   metricAlerts,
   apiKey,
   from,
+  replyTo,
   baseUrl,
   idempotencyKey,
 }: VerdictReadyArgs): Promise<string | null> {
@@ -136,6 +147,7 @@ export async function sendVerdictReady({
       from,
       to: [to],
       subject,
+      ...replyToField(replyTo),
       html: htmlDocument(
         subject,
         `<p style="margin:0 0 4px"><strong>${escapeHtml(appSlug)}</strong>${label ? ` — ${escapeHtml(label)}` : ""}</p>` +
@@ -207,6 +219,7 @@ interface WatchTrialPausedArgs {
   appSlug: string;
   apiKey?: string;
   from?: string;
+  replyTo?: string;
   baseUrl?: string;
 }
 
@@ -219,6 +232,7 @@ export async function sendWatchTrialPaused({
   appSlug,
   apiKey,
   from,
+  replyTo,
   baseUrl,
 }: WatchTrialPausedArgs): Promise<void> {
   const base = baseUrl ?? "http://localhost:3000";
@@ -239,6 +253,7 @@ export async function sendWatchTrialPaused({
       from,
       to: [to],
       subject,
+      ...replyToField(replyTo),
       html: htmlDocument(
         subject,
         `<p>Your free trial of Daily Watch on <strong>${escapeHtml(appSlug)}</strong> has ended, ` +
@@ -267,6 +282,7 @@ interface BalanceUsedUpArgs {
   reason: string;
   apiKey?: string;
   from?: string;
+  replyTo?: string;
   baseUrl?: string;
 }
 
@@ -274,7 +290,7 @@ interface BalanceUsedUpArgs {
 // a watch because the team's balance is used. Nothing is paused by a setting:
 // a top-up, an upgrade, or the plan's next credit is all it takes for the next
 // tick to run it, and the mail says exactly that.
-export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, baseUrl }: BalanceUsedUpArgs): Promise<void> {
+export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, replyTo, baseUrl }: BalanceUsedUpArgs): Promise<void> {
   const base = baseUrl ?? "http://localhost:3000";
   const url = `${base}${BALANCE_PATH}`;
   const subject = `Recurring checks of ${appSlug} are paused`;
@@ -292,6 +308,7 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, bas
       from,
       to: [to],
       subject,
+      ...replyToField(replyTo),
       html: htmlDocument(
         subject,
         `<p>${escapeHtml(reason)}</p>` +
@@ -320,11 +337,12 @@ interface TeamInviteArgs {
   acceptUrl: string;
   apiKey?: string;
   from?: string;
+  replyTo?: string;
 }
 
 // CHE-341: what the web worker hands the agent's Mailer — the invitation
-// without the key and sender, which only the agent worker holds.
-export type TeamInviteMail = Omit<TeamInviteArgs, "apiKey" | "from">;
+// without the key, sender and reply address, which only the agent worker holds.
+export type TeamInviteMail = Omit<TeamInviteArgs, "apiKey" | "from" | "replyTo">;
 
 // CHE-257: the invitation. It says who is asking, which team, what the reader
 // will be able to do, and how long the link lasts — a person deciding whether
@@ -337,6 +355,7 @@ export async function sendTeamInvite({
   acceptUrl,
   apiKey,
   from,
+  replyTo,
 }: TeamInviteArgs): Promise<string | null> {
   const subject = `${invitedBy} added you to ${teamName} on CheckMyApp`;
   const whatTheyCanDo =
@@ -361,6 +380,7 @@ export async function sendTeamInvite({
       from,
       to: [to],
       subject,
+      ...replyToField(replyTo),
       html: htmlDocument(
         subject,
         `<p><strong>${escapeHtml(invitedBy)}</strong> added you to <strong>${escapeHtml(teamName)}</strong> on CheckMyApp.</p>` +
