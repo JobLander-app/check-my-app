@@ -86,6 +86,16 @@ check(
   /signIn\s*\.create\(\{[\s\S]{0,400}?strategy:\s*"oauth_google"[\s\S]{0,400}?oidcPrompt:\s*"select_account"/.test(chooser),
   chooser ? CHOOSER : `${CHOOSER} missing`,
 );
+// The call only helps if it runs INSTEAD of Clerk's handler: bound in the
+// capture phase, on Clerk's Google button, with the event stopped. Bound as
+// onClick, Clerk's own prompt-less flow would start first and this file would
+// still pass on the create() call alone.
+check(
+  "…bound in the capture phase to Clerk's Google button, which it stops",
+  /onClickCapture=\{onClickCapture\}/.test(chooser) &&
+    chooser.includes(".cl-socialButtonsBlockButton__google") &&
+    /event\.stopPropagation\(\)/.test(chooser),
+);
 
 // ─── And the surface that cannot ask does not exist ──────────────────────────
 //
