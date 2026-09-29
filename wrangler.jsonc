@@ -32,6 +32,17 @@
       "script_name": "checkmyapp-agent"
     }
   ],
+  // CHE-341: this worker holds no mail key. Team invites are sent by the agent
+  // worker's Mailer entrypoint (src/agent/mailer.ts), which has the key and the
+  // sender — one copy of each. CI deploys the agent worker first, so the
+  // entrypoint exists before this binding points at it.
+  "services": [
+    {
+      "binding": "MAILER",
+      "service": "checkmyapp-agent",
+      "entrypoint": "Mailer"
+    }
+  ],
   "observability": {
     "enabled": true
   }

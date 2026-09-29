@@ -10,6 +10,9 @@ import { CheckRunWorkflow } from "./workflow";
 
 export { CheckRunWorkflow };
 export { ExtensionRunner } from "./extension-runner";
+// CHE-341: the web worker sends team invites through this entrypoint (service
+// binding MAILER in wrangler.jsonc), so the mail key lives in one worker only.
+export { Mailer } from "./mailer";
 
 export default {
   async fetch(req: Request, env: AgentBindings): Promise<Response> {
