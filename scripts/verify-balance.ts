@@ -205,6 +205,21 @@ async function main() {
     const route = read("src/app/api/billing/topup/route.ts");
     check("the top-up route is a signed-in admin's (billing.manage) and sells only TOPUP_AMOUNTS_USD",
       /requireScope\(db, req, "billing\.manage"/.test(route) && /isTopUpAmount\(amountUsd\)/.test(route));
+    // The first real top-up (2026-09-29) went out without receipt_email and its
+    // payer got no receipt: Stripe sends one for a one-time payment only when
+    // the payment names the address or a dashboard toggle is on.
+    const params = (customer: string | null) => topup.topUpSessionParams({
+      amountUsd: 10, teamId: "t", userId: "u", email: "admin@team.test", customer, appUrl: "https://app.test",
+    });
+    const guest = params(null), known = params("cus_1");
+    check("a top-up asks Stripe for the payer's receipt by address, with or without a Stripe customer",
+      guest.payment_intent_data?.receipt_email === "admin@team.test" && known.payment_intent_data?.receipt_email === "admin@team.test",
+      JSON.stringify({ guest: guest.payment_intent_data, known: known.payment_intent_data }));
+    check("…and still charges exactly the amount it credits",
+      guest.mode === "payment" && guest.line_items?.[0]?.price_data?.unit_amount === 1000 &&
+        guest.metadata?.amountUsd === "10" && guest.customer_email === "admin@team.test" && known.customer === "cus_1");
+    check("the top-up route builds its session with topUpSessionParams, from the signed-in user's email",
+      /topUpSessionParams\(\{[^}]*email: user\.email/.test(route));
   }
 
   // ─── 7. The price explanation ────────────────────────────────────────────
