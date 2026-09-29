@@ -3,7 +3,7 @@
 import { useClerk } from "@clerk/nextjs";
 import { useRef, type MouseEvent, type ReactNode } from "react";
 
-// #133 put `oidcPrompt="select_account"` on <SignIn>, and Google still
+// #133 put `oidcPrompt="select_account"` on the SignIn mount, and Google still
 // signed people straight into whatever account the browser held. The prop is
 // read, and then lost: clerk-js 6.34.1 `signIn.authenticateWithRedirect`
 // creates the sign-in without it (SignIn.ts, authenticateWithRedirectOrPopup →
