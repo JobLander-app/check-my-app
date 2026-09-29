@@ -153,8 +153,11 @@ export async function paidCheckState(
 // only when the dashboard's "Successful payments" email is on; the first paid
 // top-up (2026-09-29), made the same way, got none (src/lib/topup.ts).
 //
-// Called from the webhook only — one caller — and a charge that already names
-// an address is left alone, so a redelivered event does not mail twice.
+// Called from the webhook only — one caller. A charge that already names an
+// address is left alone, so a later redelivery does not mail twice; two
+// deliveries arriving together both read it empty, so the update carries an
+// idempotency key per charge and Stripe performs it once (a repeat within 24 h
+// replays the first result instead of sending another receipt).
 // Returns whether this call asked Stripe to send one.
 export async function sendPaidCheckReceipt(
   stripe: { paymentIntents: Pick<Stripe["paymentIntents"], "retrieve">; charges: Pick<Stripe["charges"], "update"> },
@@ -166,7 +169,7 @@ export async function sendPaidCheckReceipt(
   const intent = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
   const charge = intent.latest_charge;
   if (!charge || typeof charge === "string" || charge.receipt_email) return false;
-  await stripe.charges.update(charge.id, { receipt_email: email });
+  await stripe.charges.update(charge.id, { receipt_email: email }, { idempotencyKey: `one-check-receipt:${charge.id}` });
   return true;
 }
 

@@ -247,10 +247,13 @@ async function main() {
   // known after Checkout; the webhook names it on the charge, once.
   {
     const receiptStripe = (receipt_email: string | null) => {
-      const updates: { id: string; receipt_email?: string }[] = [];
+      const updates: { id: string; receipt_email?: string; key?: string }[] = [];
       const stripe = {
         paymentIntents: { retrieve: async () => ({ latest_charge: { id: "ch_1", receipt_email } }) },
-        charges: { update: async (id: string, p: { receipt_email?: string }) => (updates.push({ id, ...p }), {}) },
+        charges: {
+          update: async (id: string, p: { receipt_email?: string }, o?: { idempotencyKey?: string }) =>
+            (updates.push({ id, ...p, key: o?.idempotencyKey }), {}),
+        },
       } as never;
       return { stripe, updates };
     };
@@ -260,6 +263,12 @@ async function main() {
     check("receipt: a paid charge without an address is sent a receipt to the Checkout email",
       sent && fresh.updates.length === 1 && fresh.updates[0].id === "ch_1" && fresh.updates[0].receipt_email === "buyer@visitor.test",
       JSON.stringify(fresh.updates));
+    // Two deliveries arriving together both read the charge empty; the key is
+    // what makes Stripe perform the update — and send the receipt — once.
+    const twin = receiptStripe(null);
+    await Promise.all([sendPaidCheckReceipt(twin.stripe, session), sendPaidCheckReceipt(twin.stripe, session)]);
+    check("receipt: concurrent deliveries send the same idempotency key, stable per charge",
+      twin.updates.length === 2 && twin.updates.every((u) => u.key === "one-check-receipt:ch_1"), JSON.stringify(twin.updates));
     const named = receiptStripe("buyer@visitor.test");
     check("receipt: a redelivered event finds the address set and mails nothing twice",
       !(await sendPaidCheckReceipt(named.stripe, session)) && named.updates.length === 0);
