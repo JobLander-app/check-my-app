@@ -135,6 +135,18 @@ async function main(): Promise<void> {
     /^CheckMyApp <[^@\s>]+@checkmyapp\.dev>$/.test(from),
     from,
   );
+  // The documented value is what a new deployment copies; it must not bring
+  // the bare address back.
+  const envExample = readFileSync(
+    path.join(path.dirname(new URL(import.meta.url).pathname), "..", ".env.example"),
+    "utf8",
+  );
+  const documented = envExample.match(/^EMAIL_FROM="([^"]*)"/m)?.[1] ?? "";
+  check(
+    ".env.example: the documented EMAIL_FROM carries the same display name",
+    /^CheckMyApp <[^@\s>]+@checkmyapp\.dev>$/.test(documented),
+    documented,
+  );
 }
 
 main().then(
