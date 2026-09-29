@@ -14,9 +14,12 @@
   },
   // Public (non-secret) runtime vars. EMAIL_API_KEY is a secret — set it with
   // `wrangler secret put EMAIL_API_KEY --config wrangler-agent.jsonc`.
+  // EMAIL_FROM carries a display name (CHE-226): a bare address shows up in the
+  // inbox as "verdicts", which is how an unknown bot looks to a stranger's
+  // mail provider — and the first verdict to a customer went to spam.
   "vars": {
     "APP_URL": "https://checkmyapp.dev",
-    "EMAIL_FROM": "verdicts@checkmyapp.dev"
+    "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>"
   },
   "browser": {
     "binding": "MYBROWSER"
