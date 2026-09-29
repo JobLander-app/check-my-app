@@ -42,11 +42,17 @@ const files = walk(join(ROOT, "src")).map((f) => relative(ROOT, f));
 
 // ─── Every mount asks ────────────────────────────────────────────────────────
 
-const mounts: { file: string; tag: string; hasPrompt: boolean }[] = [];
+const mounts: { file: string; tag: string; hasPrompt: boolean; wrapped: boolean }[] = [];
 for (const file of files) {
   const text = readFileSync(join(ROOT, file), "utf8");
   for (const m of text.matchAll(/<(SignIn|SignUp)(\s[^>]*)?\/?>/g)) {
-    mounts.push({ file, tag: m[1], hasPrompt: (m[2] ?? "").includes(PROMPT) });
+    const before = text.slice(0, m.index);
+    mounts.push({
+      file,
+      tag: m[1],
+      hasPrompt: (m[2] ?? "").includes(PROMPT),
+      wrapped: /<GoogleAccountChooser>\s*$/.test(before),
+    });
   }
 }
 
@@ -56,6 +62,39 @@ check(
   "every Clerk auth surface asks which Google account",
   silent.length === 0,
   silent.map((m) => `${m.file} <${m.tag}>`).join(", ") || mounts.map((m) => `${m.file} <${m.tag}>`).join(", "),
+);
+
+// ─── …and on sign-in the prompt is sent by us, not by the prop ───────────────
+//
+// The prop alone did not reach Google on sign-in: clerk-js 6.34.1
+// `signIn.authenticateWithRedirect` creates the sign-in without `oidcPrompt`, so
+// production kept signing people into the browser's account while every check
+// above passed. GoogleAccountChooser starts the flow with `signIn.create`, which
+// does send it. A SignIn mount outside the wrapper, or a wrapper that stopped
+// passing the prompt, is the old behaviour again.
+
+const unwrapped = mounts.filter((m) => m.tag === "SignIn" && !m.wrapped);
+check(
+  "every sign-in mount sits inside GoogleAccountChooser",
+  mounts.some((m) => m.tag === "SignIn") && unwrapped.length === 0,
+  unwrapped.map((m) => `${m.file} <${m.tag}>`).join(", ") || "clean",
+);
+const CHOOSER = "src/components/google-account-chooser.tsx";
+const chooser = files.includes(CHOOSER) ? readFileSync(join(ROOT, CHOOSER), "utf8") : "";
+check(
+  "GoogleAccountChooser starts Google with signIn.create and the prompt",
+  /signIn\s*\.create\(\{[\s\S]{0,400}?strategy:\s*"oauth_google"[\s\S]{0,400}?oidcPrompt:\s*"select_account"/.test(chooser),
+  chooser ? CHOOSER : `${CHOOSER} missing`,
+);
+// The call only helps if it runs INSTEAD of Clerk's handler: bound in the
+// capture phase, on Clerk's Google button, with the event stopped. Bound as
+// onClick, Clerk's own prompt-less flow would start first and this file would
+// still pass on the create() call alone.
+check(
+  "…bound in the capture phase to Clerk's Google button, which it stops",
+  /onClickCapture=\{onClickCapture\}/.test(chooser) &&
+    chooser.includes(".cl-socialButtonsBlockButton__google") &&
+    /event\.stopPropagation\(\)/.test(chooser),
 );
 
 // ─── And the surface that cannot ask does not exist ──────────────────────────
