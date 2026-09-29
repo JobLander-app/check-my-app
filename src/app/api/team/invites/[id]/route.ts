@@ -16,7 +16,7 @@ import {
   inviteExpiry,
   inviteState,
 } from "@/lib/invites";
-import { sendTeamInvite } from "@/lib/email";
+import { sendInviteMail } from "@/lib/invite-mail";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://checkmyapp.dev";
@@ -104,15 +104,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
 
   const { env } = getCloudflareContext();
-  const bindings = env as Record<string, string | undefined>;
-  await sendTeamInvite({
+  await sendInviteMail(env as unknown as Record<string, unknown>, {
     to: invite.email,
     teamName: team.name,
     invitedBy: user.name?.trim() || user.email,
     scope: invite.scope,
     acceptUrl: `${APP_URL}/invite/${token}`,
-    apiKey: bindings.EMAIL_API_KEY,
-    from: bindings.EMAIL_FROM,
   });
 
   return NextResponse.json({ invite: fresh }, { status: 201 });

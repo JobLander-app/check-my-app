@@ -23,7 +23,7 @@ import {
   inviteExpiry,
   inviteState,
 } from "@/lib/invites";
-import { sendTeamInvite } from "@/lib/email";
+import { sendInviteMail } from "@/lib/invite-mail";
 import { recordTeamEvent } from "@/lib/team-events";
 import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
@@ -74,15 +74,12 @@ export async function inviteMemberAction(formData: FormData): Promise<void> {
   });
 
   const { env } = getCloudflareContext();
-  const bindings = env as Record<string, string | undefined>;
-  await sendTeamInvite({
+  await sendInviteMail(env as unknown as Record<string, unknown>, {
     to: parsed.email,
     teamName: team.name,
     invitedBy: user.name?.trim() || user.email,
     scope: parsed.scope,
     acceptUrl: `${APP_URL}/invite/${token}`,
-    apiKey: bindings.EMAIL_API_KEY,
-    from: bindings.EMAIL_FROM,
   });
   await recordTeamEvent(db, {
     teamId: team.id,

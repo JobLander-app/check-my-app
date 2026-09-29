@@ -14,7 +14,7 @@ import {
   hashInviteToken,
   inviteExpiry,
 } from "@/lib/invites";
-import { sendTeamInvite } from "@/lib/email";
+import { sendInviteMail } from "@/lib/invite-mail";
 import { seatGate, seatNotice } from "@/lib/seats";
 import type { UserPlan } from "@/lib/enums";
 import type { TeamScope } from "@/lib/scopes";
@@ -73,15 +73,12 @@ export async function POST(req: Request) {
   });
 
   const { env } = getCloudflareContext();
-  const bindings = env as Record<string, string | undefined>;
-  await sendTeamInvite({
+  await sendInviteMail(env as unknown as Record<string, unknown>, {
     to: parsed.email,
     teamName: team.name,
     invitedBy: user.name?.trim() || user.email,
     scope: parsed.scope,
     acceptUrl: `${APP_URL}/invite/${token}`,
-    apiKey: bindings.EMAIL_API_KEY,
-    from: bindings.EMAIL_FROM,
   });
 
   return NextResponse.json(

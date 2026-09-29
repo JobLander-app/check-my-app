@@ -322,6 +322,10 @@ interface TeamInviteArgs {
   from?: string;
 }
 
+// CHE-341: what the web worker hands the agent's Mailer — the invitation
+// without the key and sender, which only the agent worker holds.
+export type TeamInviteMail = Omit<TeamInviteArgs, "apiKey" | "from">;
+
 // CHE-257: the invitation. It says who is asking, which team, what the reader
 // will be able to do, and how long the link lasts — a person deciding whether
 // to click should not have to open the app to find out what they are joining.
