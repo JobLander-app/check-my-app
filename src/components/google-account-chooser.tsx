@@ -21,12 +21,19 @@ const GOOGLE_BUTTON = ".cl-socialButtonsBlockButton__google, .cl-socialButtonsIc
 export function GoogleAccountChooser({ children }: { children: ReactNode }) {
   const clerk = useClerk();
   const handingBack = useRef(false);
+  // One sign-in at a time: a second click while create() is pending would
+  // start another attempt on the same Clerk sign-in, and the two can resolve
+  // out of order with different Google URLs. Released once the redirect or
+  // the hand-back begins — not kept, so Back from Google finds a live button.
+  const starting = useRef(false);
 
   function onClickCapture(event: MouseEvent<HTMLDivElement>) {
     const button = (event.target as Element).closest<HTMLButtonElement>(GOOGLE_BUTTON);
     if (!button || handingBack.current || !clerk.client) return;
     event.preventDefault();
     event.stopPropagation();
+    if (starting.current) return;
+    starting.current = true;
 
     const params = new URLSearchParams(window.location.search);
     const callback = new URL("/sign-in/sso-callback", window.location.origin);
@@ -40,6 +47,7 @@ export function GoogleAccountChooser({ children }: { children: ReactNode }) {
         oidcPrompt: "select_account",
       })
       .then((signIn) => {
+        starting.current = false;
         const { status, externalVerificationRedirectURL } = signIn.firstFactorVerification;
         if (status === "unverified" && externalVerificationRedirectURL) {
           window.location.assign(externalVerificationRedirectURL);
@@ -47,7 +55,10 @@ export function GoogleAccountChooser({ children }: { children: ReactNode }) {
         }
         handBack(button);
       })
-      .catch(() => handBack(button));
+      .catch(() => {
+        starting.current = false;
+        handBack(button);
+      });
   }
 
   function handBack(button: HTMLButtonElement) {
