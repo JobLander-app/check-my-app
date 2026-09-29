@@ -29,6 +29,7 @@
     "agent:typecheck": "tsc --noEmit -p tsconfig.agent.json",
     "verify:all": "node scripts/verify-all.mjs",
     "verify:gates": "tsx --tsconfig tsconfig.json scripts/verify-credential-gate.ts",
+    "verify:invite-mail": "tsx --tsconfig tsconfig.json scripts/verify-invite-mail.ts",
     "verify:doer": "node scripts/verify-doer.mjs",
     "verify:machine": "node scripts/verify-machine.mjs",
     "verify:images": "tsx --tsconfig tsconfig.json scripts/verify-image-window.ts",
