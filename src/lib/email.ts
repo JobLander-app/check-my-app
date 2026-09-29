@@ -46,7 +46,9 @@ function whyThisMail(args: { appSlug: string; recurring: boolean; base: string }
 } {
   if (args.recurring) {
     const manage = `${args.base}/dashboard`;
-    const sentence = `You get this because daily checks of ${args.appSlug} report to this address.`;
+    // Cadence-neutral on purpose: a watch may run daily, every 6 hours, or only
+    // when someone presses re-check, and all of them reach this branch.
+    const sentence = `You get this because checks of ${args.appSlug} report to this address.`;
     return {
       html: `${escapeHtml(sentence)} <a href="${manage}" style="color:#888">Change or stop them</a>.`,
       text: `${sentence} Change or stop them: ${manage}`,
@@ -345,7 +347,9 @@ export async function sendTeamInvite({
     return null;
   }
 
-  const why = `You get this because ${invitedBy} entered this address. If you weren't expecting it, ignore this mail — nothing happens unless the link is opened.`;
+  // Opening the link is safe by design (a mail scanner may do it); only the
+  // Join button on that page creates the membership.
+  const why = `You get this because ${invitedBy} entered this address. If you weren't expecting it, ignore this mail — nothing happens unless you choose Join on the invitation page.`;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
