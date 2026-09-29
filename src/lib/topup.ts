@@ -23,6 +23,49 @@ export function topUpMetadata(teamId: string, amountUsd: TopUpAmount): Record<st
   return { kind: TOPUP_KIND, teamId, amountUsd: String(amountUsd) };
 }
 
+// The Checkout Session a top-up is paid through. Priced inline: the amount on
+// the button is the amount charged and the amount credited, with no Stripe
+// price object to keep in step.
+//
+// The receipt is asked for by name. A one-time payment gets Stripe's receipt
+// only when the dashboard's "Successful payments" email is on, or when the
+// payment carries `receipt_email` — which, in live mode, sends one regardless
+// of that setting. The first $10 top-up (2026-09-29) was created without it,
+// and its charge carries no receipt email and no receipt number: no receipt
+// went out. A receipt that depends on a dashboard toggle is a receipt nobody
+// can see is missing.
+export function topUpSessionParams(args: {
+  amountUsd: TopUpAmount;
+  teamId: string;
+  userId: string;
+  email: string | null;
+  customer: string | null;
+  appUrl: string;
+}): Stripe.Checkout.SessionCreateParams {
+  const { amountUsd, teamId, userId, email, customer, appUrl } = args;
+  return {
+    mode: "payment",
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          unit_amount: amountUsd * 100,
+          product_data: { name: `CheckMyApp balance top-up — $${amountUsd}` },
+        },
+        quantity: 1,
+      },
+    ],
+    // A team that already pays keeps one Stripe customer; one that does not
+    // pays as its admin's email.
+    ...(customer ? { customer } : { customer_email: email || undefined }),
+    ...(email ? { payment_intent_data: { receipt_email: email } } : {}),
+    client_reference_id: userId,
+    metadata: topUpMetadata(teamId, amountUsd),
+    success_url: `${appUrl}/dashboard?topped_up=${amountUsd}#balance`,
+    cancel_url: `${appUrl}/dashboard#balance`,
+  };
+}
+
 // A Checkout Session is a paid top-up when it is a settled one-time payment we
 // created for a team, and the amount it charged is the amount its metadata
 // names — which is one of the amounts we sell.

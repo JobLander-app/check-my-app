@@ -5,7 +5,7 @@ import { requireScope } from "@/lib/team-auth";
 import { BILLING_UNCONFIGURED, getStripe, getStripeEnv } from "@/lib/stripe";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 import { isTopUpAmount } from "@/lib/plans";
-import { topUpMetadata } from "@/lib/topup";
+import { topUpSessionParams } from "@/lib/topup";
 
 // Prod build inlines https://checkmyapp.dev (.env.production); local dev lands
 // back on localhost. Stripe requires absolute URLs here.
@@ -30,28 +30,10 @@ export async function POST(req: Request) {
   const amountUsd = json?.amountUsd;
   if (!isTopUpAmount(amountUsd)) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
 
-  const createSession = (customer: string | null) => stripe.checkout.sessions.create({
-    mode: "payment",
-    // Priced inline: the amount on the button is the amount charged and the
-    // amount credited, with no Stripe price object to keep in step.
-    line_items: [
-      {
-        price_data: {
-          currency: "usd",
-          unit_amount: amountUsd * 100,
-          product_data: { name: `CheckMyApp balance top-up — $${amountUsd}` },
-        },
-        quantity: 1,
-      },
-    ],
-    // A team that already pays keeps one Stripe customer; one that does not
-    // gets its receipt by email.
-    ...(customer ? { customer } : { customer_email: user.email || undefined }),
-    client_reference_id: user.id,
-    metadata: topUpMetadata(team.id, amountUsd),
-    success_url: `${APP_URL}/dashboard?topped_up=${amountUsd}#balance`,
-    cancel_url: `${APP_URL}/dashboard#balance`,
-  });
+  const createSession = (customer: string | null) =>
+    stripe.checkout.sessions.create(
+      topUpSessionParams({ amountUsd, teamId: team.id, userId: user.id, email: user.email || null, customer, appUrl: APP_URL }),
+    );
   let session;
   try {
     session = await createSession(team.stripeCustomerId);

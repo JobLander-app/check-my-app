@@ -17,15 +17,19 @@
 //   4. a session that is paid starts the run from the poll alone, without the
 //      webhook, and reports "started" with the run's public id;
 //   5. the janitor's sweep deletes only pending checks that are past expiry
-//      AND never got a run — a paid one is the payment's record and stays.
+//      AND never got a run — a paid one is the payment's record and stays;
+//   6. the buyer is sent Stripe's receipt, once, to the email typed into
+//      Checkout — set on the charge by the webhook, since an anonymous buyer's
+//      address is unknown when the session is created.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-one-check.ts
 
 process.env.CREDENTIALS_SECRET ??= "verify-one-check-secret";
 
+import { readFileSync } from "node:fs";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { isPaidOneCheck, paidCheckState, startPaidCheck } from "@/lib/one-check";
+import { isPaidOneCheck, paidCheckState, sendPaidCheckReceipt, startPaidCheck } from "@/lib/one-check";
 import { sweepExpiredPendingChecks } from "@/agent/janitor";
 import type { AgentEnv } from "@/agent/env";
 
@@ -237,6 +241,35 @@ async function main() {
     check("janitor: only the expired row without a run is deleted", removed === 1, `${removed} removed`);
     check("janitor: the filter is runId null AND expiresAt before now",
       where.runId === null && where.expiresAt?.lt.toISOString() === now.toISOString(), JSON.stringify(where));
+  }
+
+  // 6 — the buyer gets Stripe's receipt. Anonymous, so the address is only
+  // known after Checkout; the webhook names it on the charge, once.
+  {
+    const receiptStripe = (receipt_email: string | null) => {
+      const updates: { id: string; receipt_email?: string }[] = [];
+      const stripe = {
+        paymentIntents: { retrieve: async () => ({ latest_charge: { id: "ch_1", receipt_email } }) },
+        charges: { update: async (id: string, p: { receipt_email?: string }) => (updates.push({ id, ...p }), {}) },
+      } as never;
+      return { stripe, updates };
+    };
+    const session = { payment_intent: "pi_1", customer_details: { email: "buyer@visitor.test" } } as never;
+    const fresh = receiptStripe(null);
+    const sent = await sendPaidCheckReceipt(fresh.stripe, session);
+    check("receipt: a paid charge without an address is sent a receipt to the Checkout email",
+      sent && fresh.updates.length === 1 && fresh.updates[0].id === "ch_1" && fresh.updates[0].receipt_email === "buyer@visitor.test",
+      JSON.stringify(fresh.updates));
+    const named = receiptStripe("buyer@visitor.test");
+    check("receipt: a redelivered event finds the address set and mails nothing twice",
+      !(await sendPaidCheckReceipt(named.stripe, session)) && named.updates.length === 0);
+    const noEmail = receiptStripe(null);
+    check("receipt: no Checkout email, no update",
+      !(await sendPaidCheckReceipt(noEmail.stripe, { payment_intent: "pi_1", customer_details: null } as never)) &&
+        noEmail.updates.length === 0);
+    const hook = readFileSync("src/app/api/webhooks/stripe/route.ts", "utf8");
+    check("receipt: the webhook sends it for a paid one-off check, after the run is started",
+      /await startPaidCheck\(db, pendingCheckId, session\.id\);\s*(\/\/[^\n]*\n\s*)*await sendPaidCheckReceipt\(stripe, session\);/.test(hook));
   }
 
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);

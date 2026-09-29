@@ -145,6 +145,31 @@ export async function paidCheckState(
   return run ? { state: "started", runPublicId: run.publicId } : { state: "pending" };
 }
 
+// Send the $1 buyer Stripe's receipt. The buyer is anonymous, so their email
+// exists only once they have typed it into Checkout — too late for
+// `payment_intent_data.receipt_email` on the session. Setting the charge's
+// receipt_email afterwards sends the receipt ("if this field is updated, a new
+// email receipt will be sent"). Without it a one-time payment gets a receipt
+// only when the dashboard's "Successful payments" email is on; the first paid
+// top-up (2026-09-29), made the same way, got none (src/lib/topup.ts).
+//
+// Called from the webhook only — one caller — and a charge that already names
+// an address is left alone, so a redelivered event does not mail twice.
+// Returns whether this call asked Stripe to send one.
+export async function sendPaidCheckReceipt(
+  stripe: { paymentIntents: Pick<Stripe["paymentIntents"], "retrieve">; charges: Pick<Stripe["charges"], "update"> },
+  session: Pick<Stripe.Checkout.Session, "payment_intent" | "customer_details">,
+): Promise<boolean> {
+  const email = session.customer_details?.email;
+  const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+  if (!email || !paymentIntentId) return false;
+  const intent = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
+  const charge = intent.latest_charge;
+  if (!charge || typeof charge === "string" || charge.receipt_email) return false;
+  await stripe.charges.update(charge.id, { receipt_email: email });
+  return true;
+}
+
 // A Checkout Session is a paid one-off check when it is a one-time payment,
 // settled, and names the pending check it was created for.
 export function isPaidOneCheck(

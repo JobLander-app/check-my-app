@@ -17,7 +17,7 @@ import {
   stripeCryptoProvider,
   type StripeEnv,
 } from "@/lib/stripe";
-import { isPaidOneCheck, startPaidCheck } from "@/lib/one-check";
+import { isPaidOneCheck, sendPaidCheckReceipt, startPaidCheck } from "@/lib/one-check";
 import { creditTopUp, paidTopUp } from "@/lib/topup";
 import { personalTeamId } from "@/lib/teams";
 import { captureServer } from "@/lib/analytics-server";
@@ -89,6 +89,10 @@ export async function POST(req: Request) {
         const pendingCheckId = session.metadata?.pendingCheckId;
         if (pendingCheckId && isPaidOneCheck(session)) {
           await startPaidCheck(db, pendingCheckId, session.id);
+          // The buyer's receipt. After the run: a Stripe hiccup here fails the
+          // delivery, and Stripe's retry finds the run started and sends the
+          // receipt it missed.
+          await sendPaidCheckReceipt(stripe, session);
         }
         // CHE-327: a top-up of a team's balance. Credited once per session
         // however many times Stripe delivers it (src/lib/topup.ts); the event
