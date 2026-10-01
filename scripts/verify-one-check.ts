@@ -44,6 +44,8 @@ type PendingRow = {
   targetUrl: string;
   testEmail: string | null;
   testPasswordEnc: string | null;
+  // CHE-372
+  storePasswordEnc: string | null;
   userNotes: string | null;
   notifyEmail: string | null;
   anonKeyHash: string | null;
@@ -106,6 +108,7 @@ function pendingRow(over: Partial<PendingRow> = {}): PendingRow {
     targetUrl: "https://target.test/",
     testEmail: "qa@target.test",
     testPasswordEnc: encryptSecret("hunter2"),
+    storePasswordEnc: encryptSecret("storefront-pw"),
     userNotes: "do not delete the account",
     notifyEmail: "owner@target.test",
     anonKeyHash: "anon-hash",
@@ -127,6 +130,7 @@ async function main() {
   // 1 — the first start creates one run from the parked input.
   {
     const pending = pendingRow();
+    const parkedStore = pending.storePasswordEnc;
     const triggered: string[] = [];
     const { db, runs } = stubDb(pending);
     const run = await startPaidCheck(db, "pc_1", "cs_test_1", { trigger: async (id) => void triggered.push(id) });
@@ -144,6 +148,10 @@ async function main() {
     check("start: the agent is handed exactly this run", triggered.length === 1 && triggered[0] === "run_1", triggered.join());
     check("start: the pending row records the run and drops the password",
       pending.runId === "run_1" && pending.testPasswordEnc === null, `${pending.runId}/${pending.testPasswordEnc}`);
+    check("start (CHE-372): the store password lands on the run re-encrypted, and leaves the pending row",
+      typeof row.storePasswordEnc === "string" && row.storePasswordEnc !== parkedStore &&
+        decryptSecret(row.storePasswordEnc as string) === "storefront-pw" && pending.storePasswordEnc === null,
+      `${String(row.storePasswordEnc).slice(0, 12)}/${pending.storePasswordEnc}`);
 
     // 2a — a second start on the same payment: same run, no second insert.
     const again = await startPaidCheck(db, "pc_1", "cs_test_1", { trigger: async () => void triggered.push("again") });

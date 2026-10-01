@@ -724,7 +724,7 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     return `Refused: ${target.origin} is outside the target app (${env.targetOrigin}). Stay on the target.`;
   }
   const logBefore = env.networkLog.length;
-  const res = await env.page.goto(target.toString(), {
+  let res = await env.page.goto(target.toString(), {
     waitUntil: "domcontentloaded",
     timeout: 20_000,
   });
@@ -737,6 +737,15 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   // the gate, or the gate itself when the store refused us), and the model
   // never meets the gate unless the password we hold was turned away.
   const store = await passStoreGate(env);
+  // The store sends an unlocked visitor to its home page, not to the address
+  // they asked for, and `res` is still the gate's answer. A person would go on
+  // to that address, and so does the walk: the status everything below reads
+  // (the unpublished-404 guard among it) is the destination's, never the
+  // gate's 200 — and "/cart" does not read as a redirect to "/".
+  if (store === "unlocked") {
+    res = await env.page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await waitForHydration(env.page, 3_000);
+  }
   const status = res?.status() ?? null;
   // Resolved, not as the model typed it: a relative URL only means something
   // next to the page it was typed on, and a replay starts from a blank one.

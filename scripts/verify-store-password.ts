@@ -74,9 +74,9 @@ const WRONG = "stale-store-pw-77";
 // A fake password-protected store. Every address redirects to /password until
 // the right password is submitted there; after that the "cookie" lets every
 // page through. A wrong password re-renders /password, as Shopify does.
-function fakeStore(correct: string) {
+function fakeStore(correct: string, locked = true) {
   let url = "about:blank";
-  let unlocked = false;
+  let unlocked = !locked;
   let pending = "";
   const submitted: string[] = [];
   const onGate = () => {
@@ -107,7 +107,10 @@ function fakeStore(correct: string) {
     goto: async (to: string) => {
       const asked = new URL(to);
       url = unlocked || asked.pathname === "/password" ? asked.toString() : `${STORE}/password`;
-      return { status: () => 200 };
+      // Behind the gate, an address the store does not have answers 404 —
+      // the gate itself answers 200 for everything.
+      const status = unlocked && asked.pathname === "/no-such-page" ? 404 : 200;
+      return { status: () => status };
     },
     // Playwright resolves when the predicate holds and times out otherwise;
     // the fake times out at once rather than making the script wait.
@@ -223,9 +226,30 @@ async function main() {
       s.isUnlocked() && s.submitted.join() === RIGHT && !isStoreGateUrl(s.page.url(), STORE), `${result} / ${s.page.url()}`);
     check("navigate: the trail records where the navigation really ended — not the gate",
       action?.kind === "navigate" && !isStoreGateUrl(action.outcome.urlAfter, STORE), JSON.stringify(action));
+    check("navigate: the walk lands on the page it asked for, not on the home page the unlock redirects to",
+      s.page.url() === `${STORE}/collections/all` && action?.kind === "navigate" && action.outcome.urlAfter === `${STORE}/collections/all`,
+      s.page.url());
     check("navigate: the store password is in nothing the tool returns or records",
       !result.includes(RIGHT) && !JSON.stringify(env.actionTrail).includes(RIGHT), result);
     check("navigate: an accepted password leaves no lock behind", !env.storeLocked && recorded === 0);
+  }
+  {
+    // Codex review of #220: the status after the unlock is the destination's,
+    // not the gate's 200 — so an address nobody published still meets the
+    // CHE-171 guard instead of being remembered as a real page.
+    const s = fakeStore(RIGHT);
+    const env = toolEnv(s.page, {
+      storePassword: RIGHT,
+      storeAccess: { rejected: false },
+      knownUrls: new Set<string>([`${STORE}/`]),
+    });
+    const result = await executeTool(env, "navigate", { url: `${STORE}/no-such-page` });
+    const action = (env.actionTrail as RecordedAction[])[0];
+    check("navigate: after the unlock, the destination's own status is what is read and recorded",
+      action?.kind === "navigate" && action.outcome.status === 404 && /status 404/.test(result) && /not linked from any/.test(result),
+      `${JSON.stringify(action?.kind === "navigate" ? action.outcome : action)} ${result.slice(0, 80)}`);
+    check("navigate: an unpublished address behind the gate is not remembered as published",
+      !env.knownUrls?.has(`${STORE}/no-such-page`), JSON.stringify([...(env.knownUrls ?? [])]));
   }
   {
     const s = fakeStore(RIGHT);
@@ -287,7 +311,7 @@ async function main() {
 
   // ── 4 — the smoke pass ───────────────────────────────────────────────────
   {
-    const { smokeStoreGate, smokeOutcomeLine, STORE_LOCKED_SMOKE_FAILURE } = await import("@/agent/replay");
+    const { smokeStoreGate, smokeOutcomeLine, STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } = await import("@/agent/replay");
     const open = fakeStore(RIGHT);
     const ok = await smokeStoreGate(open.page as never, `${STORE}/`, { password: RIGHT, state: { rejected: false } });
     check("smoke: with the right password the pass probes the store, unlocked", ok === null && open.isUnlocked());
@@ -296,8 +320,16 @@ async function main() {
     check("smoke: a refused password fails the pass instead of calling the gate healthy",
       refused !== null && refused.failures.includes(STORE_LOCKED_SMOKE_FAILURE) && refused.healthy === 0,
       JSON.stringify(refused?.failures));
-    const none = await smokeStoreGate(fakeStore(RIGHT).page as never, `${STORE}/`, undefined);
-    check("smoke: no store password → the pass is unchanged", none === null);
+    const none = await smokeStoreGate(fakeStore(RIGHT, false).page as never, `${STORE}/`, undefined);
+    check("smoke: an open store with no store password → the pass is unchanged", none === null);
+    // Codex review of #220 (P1): a store that is locked while we hold no
+    // password — cleared by the owner, or locked since the last full walk —
+    // must not pass as thirty healthy copies of its password page.
+    const lockedNone = fakeStore(RIGHT);
+    const gated = await smokeStoreGate(lockedNone.page as never, `${STORE}/`, undefined);
+    check("smoke: a locked store with no store password fails the pass, nothing typed",
+      gated !== null && gated.failures.includes(STORE_GATED_SMOKE_FAILURE) && lockedNone.submitted.length === 0,
+      JSON.stringify(gated?.failures));
     const line = smokeOutcomeLine({ ok: false, healthy: 0, unreached: [], failures: [STORE_LOCKED_SMOKE_FAILURE], baselineRunNumber: 1 }, STORE);
     check("smoke: its feed line names the store password", line.includes("store password was not accepted"), line);
   }
@@ -364,8 +396,9 @@ async function main() {
     check("verdict: a sign-in page that is not the store gate keeps the generic ask",
       saas.verdict === "unverified" && /A password or a test login for it/.test(saas.bottomLine ?? ""), saas.bottomLine ?? "");
 
-    const { STORE_LOCKED_SMOKE_FAILURE } = await import("@/agent/replay");
+    const { STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } = await import("@/agent/replay");
     const customerText = [
+      STORE_GATED_SMOKE_FAILURE,
       none.bottomLine ?? "",
       refused.bottomLine ?? "",
       STORE_LOCKED_OBSERVED,

@@ -56,6 +56,7 @@ import { applyNameShim, launchAgentBrowser, newAgentContext } from "./browser";
 import { putScreenshot, type AgentEnv } from "./env";
 import { storeAccessFor } from "./credentials";
 import { storeRefused, unlockStoreGate, type StoreAccess, type UnlockPage } from "./store-password";
+import { isStoreGateUrl } from "@/lib/store-gate";
 import {
   MAX_SMOKE_PAGES,
   probeTargets,
@@ -404,32 +405,38 @@ async function probePages(
 // The feed reads "Smoke found trouble: <this> — running the full check": an
 // access fact about their store, never about our pass.
 export const STORE_LOCKED_SMOKE_FAILURE = "the store password was not accepted, so the store's pages could not be reached";
+export const STORE_GATED_SMOKE_FAILURE =
+  "every page of the store leads to its password page, so the store's pages could not be reached";
 
 /**
  * CHE-372: a locked store unlocks once per context; its cookie carries the
- * rest of the pass. A store that turns the password away cannot be probed at
- * all — every page would be its password page answering 200, which is exactly
- * the "all healthy" a carried-forward verdict must not rest on — so the pass
- * fails with the reason and the run goes on to the full check, whose verdict
- * asks for the right password. Null = probe as usual.
+ * rest of the pass. A store that stays locked — its password turned away, or
+ * none held at all (an owner who cleared it, a store that was public at the
+ * last full walk) — cannot be probed: every page would be its password page
+ * answering 200, which is exactly the "all healthy" a carried-forward verdict
+ * must not rest on. So the pass fails with the reason and the run goes on to
+ * the full check, whose verdict asks for the store password. Checked on every
+ * pass, password or not, for that reason. Null = probe as usual.
  */
 export async function smokeStoreGate(
   page: UnlockPage & Pick<Page, "goto">,
   targetUrl: string,
   store: StoreAccess | undefined,
 ): Promise<ProbeOutcome | null> {
-  if (!store?.password) return null;
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
-  return storeRefused(await unlockStoreGate(page, targetUrl, store)) ? storeLockedOutcome() : null;
+  const outcome = await unlockStoreGate(page, targetUrl, store ?? {});
+  if (storeRefused(outcome)) return storeLockedOutcome(STORE_LOCKED_SMOKE_FAILURE);
+  if (isStoreGateUrl(page.url(), targetUrl)) return storeLockedOutcome(STORE_GATED_SMOKE_FAILURE);
+  return null;
 }
 
-function storeLockedOutcome(): ProbeOutcome {
+function storeLockedOutcome(failure: string): ProbeOutcome {
   return {
     probes: [],
     healthy: 0,
     unreached: [],
     skipped: 0,
-    failures: [STORE_LOCKED_SMOKE_FAILURE],
+    failures: [failure],
     consoleErrors: 0,
     consoleBurstsSetAside: [],
     pageErrors: 0,
