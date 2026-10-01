@@ -149,10 +149,11 @@ check(
 
 // The mutating side is where a missing rule costs something. A POST, PATCH,
 // PUT or DELETE may not be `public` unless its reason is one of the two that
-// really are open by design — the anonymous funnel and a signed webhook.
+// really are open by design — the anonymous funnel and a verified webhook.
 const OPEN_TO_WRITES = new Set([
   "the anonymous funnel — a stranger's first check",
   "signature-verified webhook",
+  "secret-token-verified webhook",
 ]);
 const looseWrites = Object.entries(ROUTE_RULES).filter(
   ([key, rule]) =>

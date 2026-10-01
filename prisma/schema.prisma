@@ -1194,3 +1194,33 @@ model AppSnapshot {
   @@index([appSlug, takenAt])
   @@index([appId, takenAt])
 }
+
+// ─── The owner's Telegram channel (CHE-375) ──────────────────────────────────
+// Every message in the owner's chat with @checkmyapp_bot, both directions: the
+// webhook (src/app/api/webhooks/telegram/route.ts) stores what he writes,
+// scripts/tg-send.ts stores what we send. Operator data, not a team's: no
+// teamId, and no request-serving code reads it for a customer.
+
+model TelegramMessage {
+  id          String   @id @default(cuid())
+  // Telegram's update_id, as text (its ids may outgrow Prisma's 32-bit Int).
+  // Unique, because Telegram retries a delivery until it is acknowledged; NULL
+  // for a message we sent, which arrives through no update.
+  updateId    String?  @unique
+  messageId   String?
+  chatId      String
+  // "in" = written to the bot · "out" = sent by us.
+  direction   String
+  fromName    String?
+  // The text, or "<media>" (+ " " + caption) for a message without one.
+  text        String
+  // What this message replied to, cut to 200 chars.
+  replyToText String?
+  // An edit arrives as its own update and is stored as its own row.
+  edited      Boolean  @default(false)
+  // When Telegram says it was sent (or edited); createdAt is when we stored it.
+  sentAt      DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([chatId, createdAt])
+}

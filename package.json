@@ -96,7 +96,9 @@
     "verify:extension-runner": "tsx scripts/verify-extension-runner.ts",
     "verify:extension-screenshot": "node scripts/verify-extension-screenshot.mjs",
     "verify:extension-adoption": "tsx scripts/verify-extension-adoption.ts",
-    "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts"
+    "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
+    "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
+    "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
