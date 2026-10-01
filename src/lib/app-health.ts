@@ -89,6 +89,15 @@ const STRIP = 21;
 // Finished with a verdict; `failed` is ours, not the app's (latest-results.ts).
 const FINISHED = ["completed", "partial"];
 
+// The window a caller asked for, as a whole number of days from 1 to 90. The
+// pages pass it from a query string: anything that is not a number is the
+// default, 30 (NaN would make no series and an invalid date).
+const MAX_DAYS = 90;
+function windowDays(days: number | undefined): number {
+  if (days === undefined || !Number.isFinite(days)) return 30;
+  return Math.min(MAX_DAYS, Math.max(1, Math.floor(days)));
+}
+
 const toCents = (usd: number | null) => Math.round((usd ?? 0) * 100);
 const fromCents = (c: number) => c / 100;
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
@@ -98,19 +107,22 @@ export async function appHealth(
   teamId: string,
   opts: { days?: number; now?: Date } = {},
 ): Promise<AppHealthReport> {
-  const days = Math.max(1, Math.floor(opts.days ?? 30));
+  const days = windowDays(opts.days);
   const now = opts.now ?? new Date();
   const since = new Date(utcDayStart(now).getTime() - (days - 1) * DAY_MS);
   // Exclusive: the midnight after `now`. A `now` in the past (a report as of a
   // date) or a row stamped ahead of the clock must not land past the series.
   const until = new Date(utcDayStart(now).getTime() + DAY_MS);
   const inWindow = (d: Date) => d >= since && d < until;
-  // The same edge as D1 can test it. D1 compares DateTime as text, and rows
-  // written before 2026-09-04 spell it "2026-09-03 21:23:10", which sorts
-  // before the adapter's "2026-09-03T00:00:00.000+00:00". "< midnight" would
-  // let such a row from the next day in; "<= 23:59:59.999 of the last day"
-  // holds for both spellings: every row of that day sorts at or below it,
-  // every row of the next day above.
+  // The same edge as D1 can test it. D1 compares DateTime as text. Prisma
+  // writes "2026-09-03T00:00:00.000+00:00"; a row fixed by hand (a SQL UPDATE
+  // with datetime('now')) holds "2026-09-03 21:23:10", which sorts before
+  // every Prisma-spelled value of its day. Production has both: createdAt on
+  // runs up to 2026-09-03, completedAt on #191 and #203 (2026-09-14 and -16),
+  // so one can be written again any day. "< midnight" would let such a row
+  // from the next day in; "<= 23:59:59.999 of the last day" holds for both
+  // spellings: every row of that day sorts at or below it, every row of the
+  // next day above.
   const lastInstant = new Date(until.getTime() - 1);
 
   const [team, apps, runs] = await Promise.all([
@@ -163,26 +175,42 @@ export async function appHealth(
     apps.map(async (app): Promise<AppHealth> => {
       const t = tallies.get(app.id)!;
       const unique = bySlug.get(app.appSlug) === app;
-      const finished = await db.run.findMany({
+      const where = {
+        ...teamOwned(teamId),
+        OR: [{ appId: app.id }, ...(unique ? [{ appId: null, appSlug: app.appSlug }] : [])],
+        status: { in: FINISHED },
+        verdict: { not: null },
+        // As of `now`: nothing finished after the window's last day — a check
+        // that started at 23:50 and finished at 00:10 had no verdict yet. In
+        // the query, not after it, so a later run cannot take a place of the
+        // 21. (Spend stays placed by createdAt, as the balance places it.)
+        createdAt: { lte: lastInstant },
+        completedAt: { lte: lastInstant },
+      };
+      // D1 orders completedAt as text, so within one day the two spellings
+      // interleave out of time order (a hand-written 23:30 sorts before 22:00).
+      // Across days the text order is right: every day strictly between the
+      // newest and the 21st row's day is whole in `head`. So the two edge days
+      // are fetched whole and the strip is ordered by the parsed time.
+      const head = await db.run.findMany({
+        where: { ...teamOwned(teamId), ...where }, orderBy: { completedAt: "desc" }, take: STRIP, select: { completedAt: true },
+      });
+      const edge = (r: { completedAt: Date | null } | undefined) => utcDayStart(r!.completedAt!).getTime();
+      const finished = head.length === 0 ? [] : (await db.run.findMany({
         where: {
           ...teamOwned(teamId),
-          OR: [{ appId: app.id }, ...(unique ? [{ appId: null, appSlug: app.appSlug }] : [])],
-          status: { in: FINISHED },
-          verdict: { not: null },
-          // As of `now`: nothing finished after the window's last day — a check
-          // that started at 23:50 and finished at 00:10 had no verdict yet. In
-          // the query, not after it, so a later run cannot take a place of the
-          // 21. (Spend stays placed by createdAt, as the balance places it.)
-          createdAt: { lte: lastInstant },
-          completedAt: { lte: lastInstant },
+          ...where,
+          // The newest row's day through the 21st's, both whole, in either
+          // spelling (the same ±1 ms edges as lastInstant).
+          AND: [{ completedAt: { gt: new Date(edge(head.at(-1)) - 1), lte: new Date(edge(head[0]) + DAY_MS - 1) } }],
         },
-        orderBy: { completedAt: "desc" },
-        take: STRIP,
         select: {
           id: true, teamId: true, appSlug: true, runNumber: true, publicId: true, verdict: true, status: true,
           completedAt: true, priceUsd: true, quickPagesOpened: true,
         },
-      });
+      }))
+        .sort((a, b) => b.completedAt!.getTime() - a.completedAt!.getTime() || b.runNumber - a.runNumber)
+        .slice(0, STRIP);
       const priced = finished.find((r) => r.priceUsd !== null);
       const price = priced ? await explainPrice(db, priced, plan) : null;
       const checks = t.scheduled.count + t.onRequest.count;

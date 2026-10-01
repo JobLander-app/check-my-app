@@ -1,0 +1,15 @@
+[Unit]
+Description=Session host noVNC (websockify) on 127.0.0.1:6080 (CHE-378)
+After=session-x11vnc.service
+Requires=session-x11vnc.service
+
+[Service]
+User=session-host
+Group=session-host
+# Loopback only; cloudflared is the only client, and it sits behind Access.
+ExecStart=/usr/bin/websockify --web /opt/session-host/novnc 127.0.0.1:6080 127.0.0.1:5900
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

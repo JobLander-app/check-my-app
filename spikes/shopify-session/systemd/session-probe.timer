@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Shopify admin session probe every hour (CHE-378)
+
+[Timer]
+OnCalendar=hourly
+# A reboot or a stopped VM must not leave a silent hole in the log: run the
+# missed probe as soon as the host is back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -50,6 +50,8 @@ export interface CreateAppInput {
   testPassword?: string | null;
   // CHE-322: named accounts besides the default one above.
   testAccounts?: { label: string; email: string; password: string }[];
+  // CHE-372: a password-protected store's storefront password.
+  storePassword?: string | null;
   focusAreas?: string | null;
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
@@ -90,6 +92,7 @@ export async function createAppForTeam(
 
   const testEmail = input.testEmail?.trim() || null;
   const testPasswordEnc = input.testPassword ? encryptSecret(input.testPassword) : null;
+  const storePasswordEnc = input.storePassword ? encryptSecret(input.storePassword) : null;
   const frequency = input.frequency ?? "daily";
 
   // CHE-322: checked before the app exists, so a bad account refuses the whole
@@ -127,6 +130,7 @@ export async function createAppForTeam(
         appSlug,
         testEmail,
         testPasswordEnc,
+        storePasswordEnc,
         scopeHints: input.scopeHints?.trim() || null,
         userNotes: input.userNotes?.trim() || null,
         focusAreas: input.focusAreas?.trim() || null,
@@ -144,6 +148,7 @@ export async function createAppForTeam(
             teamId: actor.teamId,
             testEmail,
             testPasswordEnc,
+            storePasswordEnc,
             // CHE-54: a watch enabled on Free is a 7-day trial. Enabling from a
             // verdict stamped it; adding the app here did not, so a Free team's
             // one onboarded watch ran with no end at all.
@@ -185,6 +190,9 @@ export interface AppSettingsPatch {
   // CHE-322: add, rename, re-password or remove named accounts. Passwords here
   // are write-only exactly like the default's.
   testAccounts?: TestAccountsPatch;
+  // CHE-372: write-only exactly like testPassword — undefined keeps it, a
+  // string replaces it, null or "" removes it, on the App and its Watch.
+  storePassword?: string | null;
   focusAreas?: string | null;
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
@@ -252,6 +260,10 @@ export async function updateAppForTeam(
   if (patch.testPassword) {
     console.log(`[settings] test password saved for app ${app.id}: ${credentialFingerprint(patch.testPassword)}`);
   }
+  const storeUpdate =
+    patch.storePassword === undefined
+      ? {}
+      : { storePasswordEnc: patch.storePassword ? encryptSecret(patch.storePassword) : null };
   const testEmail = orNull(patch.testEmail);
 
   // App — creds/scope/notes (source of record for test creds).
@@ -265,6 +277,7 @@ export async function updateAppForTeam(
       allowedOrigins: origins?.ok ? serializeAllowedOrigins(origins.origins) : undefined,
       writeMode: patch.writeMode === undefined ? undefined : patch.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
       ...passwordUpdate,
+      ...storeUpdate,
       ...extensionUpdate,
     },
   });
@@ -274,7 +287,7 @@ export async function updateAppForTeam(
   if (app.watch) {
     await db.watch.update({ ...alreadyScoped("already read in this request"),
       where: { id: app.watch.id },
-      data: { frequency: patch.frequency, notifyEmail: orNull(patch.notifyEmail), testEmail, ...passwordUpdate },
+      data: { frequency: patch.frequency, notifyEmail: orNull(patch.notifyEmail), testEmail, ...passwordUpdate, ...storeUpdate },
     });
   }
 
@@ -309,6 +322,17 @@ export async function updateAppForTeam(
       summary: patch.testPassword
         ? `replaced the test password for ${app.appSlug}`
         : `removed the test password for ${app.appSlug}`,
+    });
+  }
+  if (patch.storePassword !== undefined && (patch.storePassword || app.storePasswordEnc)) {
+    await recordTeamEvent(db, {
+      teamId: actor.teamId,
+      actorUserId: actor.userId,
+      action: "app.credentials_written",
+      subject: app.appSlug,
+      summary: patch.storePassword
+        ? `replaced the store password for ${app.appSlug}`
+        : `removed the store password for ${app.appSlug}`,
     });
   }
   if (accountPlan?.ok) {

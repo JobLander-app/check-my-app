@@ -18,7 +18,7 @@
 // Same public client token as the browser and analytics-server.ts (project
 // 595090, US cloud). The flags endpoint takes the public token; no secret
 // ever reaches this file.
-const POSTHOG_FLAGS_TOKEN = "phc_yDqQQgx3vGfFvp97tEWsExEsLPnnGi6jp9XAqfooQTcn";
+export const POSTHOG_FLAGS_TOKEN ="phc_yDqQQgx3vGfFvp97tEWsExEsLPnnGi6jp9XAqfooQTcn";
 // https://posthog.com/docs/api/flags — `v=2` returns
 // `{ flags: { <key>: { enabled, variant, reason } } }`.
 export const POSTHOG_FLAGS_URL = "https://us.i.posthog.com/flags?v=2";
@@ -66,7 +66,8 @@ export const FLAG_PERSON_PROPERTIES = ["email", "is_test_account"] as const;
 export function buildFlagsPayload(key: string, person: FlagPerson) {
   const personProperties: Record<(typeof FLAG_PERSON_PROPERTIES)[number], string | boolean> = {
     // Sent with the request, not left for PostHog to remember: the browser
-    // sets `email` on identify, but only after a visit.
+    // sets `email` on identify, but only after a visit. Sent even when empty:
+    // an absent override would let a stored e-mail decide (CHE-381).
     email: person.email,
     // Always false here — a test account never reaches this request
     // (evaluateFlag, CHE-334) — and sent anyway so a stored "true" cannot
@@ -78,6 +79,10 @@ export function buildFlagsPayload(key: string, person: FlagPerson) {
     distinct_id: person.distinctId,
     person_properties: personProperties,
     flag_keys_to_evaluate: [key],
+    // The flags read here are declared server-only in PostHog (CHE-381), so
+    // posthog-js in the browser never receives them; a request that does not
+    // say it is a server gets no answer for them at all.
+    evaluation_runtime: "server",
   };
 }
 

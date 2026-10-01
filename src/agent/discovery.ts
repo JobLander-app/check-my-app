@@ -35,6 +35,9 @@ export interface RunInput {
   // CHE-322: the named accounts snapshotted onto the run (Run.testAccounts).
   // Optional: a probe that builds a bare input has none.
   testAccounts?: string | null;
+  // CHE-372: Run.storePasswordEnc — entered by code on a store's /password
+  // page, never shown to the model. Optional for the same reason as above.
+  storePasswordEnc?: string | null;
   scopeHints: string | null;
   userNotes: string | null;
   // CHE-81: owner's priority concerns, verbatim.

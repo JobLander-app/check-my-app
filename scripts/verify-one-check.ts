@@ -27,9 +27,10 @@
 process.env.CREDENTIALS_SECRET ??= "verify-one-check-secret";
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { isPaidOneCheck, paidCheckState, sendPaidCheckReceipt, startPaidCheck } from "@/lib/one-check";
+import { isPaidOneCheck, paidCheckState, parkedCredentials, sendPaidCheckReceipt, startPaidCheck } from "@/lib/one-check";
 import { sweepExpiredPendingChecks } from "@/agent/janitor";
 import type { AgentEnv } from "@/agent/env";
 
@@ -44,6 +45,8 @@ type PendingRow = {
   targetUrl: string;
   testEmail: string | null;
   testPasswordEnc: string | null;
+  // CHE-372
+  storePasswordEnc: string | null;
   userNotes: string | null;
   notifyEmail: string | null;
   anonKeyHash: string | null;
@@ -106,6 +109,7 @@ function pendingRow(over: Partial<PendingRow> = {}): PendingRow {
     targetUrl: "https://target.test/",
     testEmail: "qa@target.test",
     testPasswordEnc: encryptSecret("hunter2"),
+    storePasswordEnc: encryptSecret("storefront-pw"),
     userNotes: "do not delete the account",
     notifyEmail: "owner@target.test",
     anonKeyHash: "anon-hash",
@@ -127,6 +131,7 @@ async function main() {
   // 1 — the first start creates one run from the parked input.
   {
     const pending = pendingRow();
+    const parkedStore = pending.storePasswordEnc;
     const triggered: string[] = [];
     const { db, runs } = stubDb(pending);
     const run = await startPaidCheck(db, "pc_1", "cs_test_1", { trigger: async (id) => void triggered.push(id) });
@@ -144,6 +149,20 @@ async function main() {
     check("start: the agent is handed exactly this run", triggered.length === 1 && triggered[0] === "run_1", triggered.join());
     check("start: the pending row records the run and drops the password",
       pending.runId === "run_1" && pending.testPasswordEnc === null, `${pending.runId}/${pending.testPasswordEnc}`);
+    // CHE-372: what the route parks while the visitor pays — encrypted, never as typed.
+    const parked = parkedCredentials({ testEmail: "qa@target.test", testPassword: "hunter2", storePassword: "storefront-pw" });
+    check("park (CHE-372): the store password is parked encrypted, not as typed",
+      typeof parked.storePasswordEnc === "string" && parked.storePasswordEnc !== "storefront-pw" &&
+        decryptSecret(parked.storePasswordEnc) === "storefront-pw" &&
+        typeof parked.testPasswordEnc === "string" && decryptSecret(parked.testPasswordEnc) === "hunter2",
+      String(parked.storePasswordEnc).slice(0, 12));
+    const route = readFileSync(join(import.meta.dirname, "..", "src/app/api/billing/one-check/route.ts"), "utf8");
+    check("park (CHE-372): the route parks credentials through parkedCredentials, and nothing else",
+      /\.\.\.parkedCredentials\(input\)/.test(route) && !/PasswordEnc:/.test(route));
+    check("start (CHE-372): the store password lands on the run re-encrypted, and leaves the pending row",
+      typeof row.storePasswordEnc === "string" && row.storePasswordEnc !== parkedStore &&
+        decryptSecret(row.storePasswordEnc as string) === "storefront-pw" && pending.storePasswordEnc === null,
+      `${String(row.storePasswordEnc).slice(0, 12)}/${pending.storePasswordEnc}`);
 
     // 2a — a second start on the same payment: same run, no second insert.
     const again = await startPaidCheck(db, "pc_1", "cs_test_1", { trigger: async () => void triggered.push("again") });

@@ -63,6 +63,7 @@
 // exactly what runs.
 
 import type { Verdict } from "@/lib/enums";
+import { STORE_GATE_PATH } from "@/lib/store-gate";
 import type { RecordedAction } from "./tools";
 
 export interface IntegrityStep {
@@ -247,11 +248,40 @@ export function accessGate(journeys: IntegrityJourney[], targetUrl: string | nul
     .join(", ");
 }
 
+// CHE-372: what the run held for the store's password page, so the bottom line
+// asks for the input that would actually open it. Absent = not known, and the
+// generic sentence stands.
+export interface StoreAccessFacts {
+  /** The run carried a store password. */
+  storePassword: boolean;
+  /** The store turned it away (Run.storePasswordRejected). */
+  storePasswordRejected: boolean;
+}
+
+const GENERIC_ACCESS_ASK = "A password or a test login for it is what would let us check the rest.";
+
+// The ask at the end of rule 1b's bottom line. A Shopify-style /password gate
+// on the store's own site is opened by the store password, so that is what is
+// asked for, by name: "a password or a test login" made the owner of run #283
+// guess which. With a store password that was refused, the ask is for the
+// current one. With one we hold and were never refused, the gate was not that
+// password's to open, and the generic ask stands.
+function accessAsk(gate: string, access?: StoreAccessFacts): string {
+  const storeGate = gate.split(", ").includes(STORE_GATE_PATH);
+  if (!storeGate || !access) return GENERIC_ACCESS_ASK;
+  if (access.storePasswordRejected) {
+    return "The store password we were given was not accepted; the current store password is what would let us check the rest.";
+  }
+  if (!access.storePassword) return "The store password is what would let us check the rest.";
+  return GENERIC_ACCESS_ASK;
+}
+
 export function judgeVerdictIntegrity(
   journeys: IntegrityJourney[],
   findings: IntegrityFinding[],
   synth: { verdict: Verdict; bottomLine: string | null },
   targetUrl?: string | null,
+  access?: StoreAccessFacts,
 ): IntegrityResult {
   const walked = journeys.filter((j) => j.status !== "skipped");
   if (walked.length === 0) {
@@ -283,7 +313,7 @@ export function judgeVerdictIntegrity(
       bottomLine:
         `We couldn't get past the access gate this run — every page of the product we asked for led ` +
         `to a password or sign-in page (${gate}), so read this as no coverage of what is behind it, ` +
-        "not a clean bill of health. A password or a test login for it is what would let us check the rest." +
+        `not a clean bill of health. ${accessAsk(gate, access)}` +
         (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
       note: `Every page we asked for led to a sign-in page (${gate}) — recorded as Not verified`,
     };
