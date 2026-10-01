@@ -158,12 +158,20 @@ function owner(site: string): string {
   return site.split(".").slice(-2).join(".");
 }
 
-function accessPath(p: Place): boolean {
-  return p.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg));
+// The unambiguous subset, for a page we merely landed on. "session",
+// "sessions", "auth", "access" and "unlock" are also product words — an
+// interview app's /sessions/123 is the product (review of this rule, round
+// 3) — so they only count where the product redirected us there, which is
+// evidence of its own.
+const SIGN_IN_SEGMENT = /^(?:password|login|log-in|log_in|signin|sign-in|sign_in|sso)$/i;
+
+function signInPath(p: Place): boolean {
+  return p.path.split("/").some((seg) => SIGN_IN_SEGMENT.test(seg));
 }
 
 function namesAccess(gate: Place, targetSite: string): boolean {
-  return accessPath(gate) || (gate.site !== targetSite && ACCESS_HOST.test(gate.site));
+  if (gate.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg))) return true;
+  return gate.site !== targetSite && ACCESS_HOST.test(gate.site);
 }
 
 // The places the product redirected us to, shown the way the bottom line names
@@ -210,8 +218,9 @@ export function accessGate(journeys: IntegrityJourney[], targetUrl: string | nul
 
   // Was this landing a page of the product? Decided per landing, not per
   // host, because review found a hole in every per-host version:
-  //   - a gate, or any page whose path names sign-in (/login, /u/login,
-  //     /account/login), is the lock, not the product — wherever it is;
+  //   - a gate, or any page whose path unambiguously names sign-in (/login,
+  //     /u/login, /account/login — not /sessions/123), is the lock, not the
+  //     product — wherever it is;
   //   - a host with the target's owner is the product: the target itself,
   //     its own id.example.com sign-in (review of this rule, round 1) and a
   //     sibling it never redirected to, docs.example.com (round 2);
@@ -225,7 +234,7 @@ export function accessGate(journeys: IntegrityJourney[], targetUrl: string | nul
   const gateSites = new Set(gates.map((g) => g.site));
   const targetOwner = owner(target.site);
   const reachedProduct = (p: Place): boolean => {
-    if (gateKeys.has(p.key) || accessPath(p)) return false;
+    if (gateKeys.has(p.key) || signInPath(p)) return false;
     if (owner(p.site) === targetOwner) return true;
     if (gateSites.has(p.site)) return !ACCESS_HOST.test(p.site);
     return false;

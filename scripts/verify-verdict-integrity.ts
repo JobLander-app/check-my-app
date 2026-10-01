@@ -374,6 +374,25 @@ console.log("\n— left alone: something behind or beside the gate was really ve
 }
 
 {
+  // Review of this rule, round 3: "sessions" is a product word too.
+  const site = "https://coach.example.com";
+  const sessions: Journey[] = [
+    {
+      title: "Settings",
+      status: "partial",
+      steps: [ok("Open settings", trail(nav(`${site}/settings`, `${site}/login`))), gated("Sign in")],
+    },
+    {
+      title: "Shared session",
+      status: "ok",
+      steps: [ok("Open a shared practice session", trail(nav(`${site}/sessions/123`, `${site}/sessions/123`)))],
+    },
+  ];
+  const s = judgeVerdictIntegrity(sessions, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("a /login gate beside a product page at /sessions/123 → stays all_good", s.verdict === "all_good", s.verdict);
+}
+
+{
   // Fixtures come from production and land in source control.
   for (const name of ["fixtures-run-282.json", "fixtures-run-272.json"]) {
     const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
