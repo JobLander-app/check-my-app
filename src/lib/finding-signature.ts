@@ -113,3 +113,26 @@ export function pageOf(where: string | undefined): string | null {
   path = path.replace(/\/+$/, "");
   return path || "/";
 }
+
+// What on the page a finding is about, for telling apart two problems that
+// share a page signature: the first quoted name in detail.where ('Continue with
+// Google' button), else the first URL's host + path, else the words of `where`
+// left after the page. NOT part of findingSignature: it is the model's prose
+// and drifts — on meetbashar's Holotope finding it took three values in seven
+// checks (quoted "In his own words · watch the source", none, quoted "Why 15
+// minutes …"), and the URL was absent in three. src/lib/recurring.ts uses it
+// only for a signature that one check saw twice, where the page key is proven
+// to be too coarse.
+export function targetOf(detail: string | null): string {
+  const d = parseJson<FindingDetail>(detail) ?? {};
+  const where = d.where ?? "";
+  const quoted = where.match(/["'“‘]([^"'”’]{2,80})["'”’]/);
+  if (quoted) return quoted[1].toLowerCase().replace(/\s+/g, " ").trim();
+  const url = `${where} ${d.whatHappened ?? ""}`.match(/https?:\/\/([^\s/"')]+)(\/[^\s?#"')]*)?/i);
+  if (url) return `${url[1].replace(/^www\./i, "")}${url[2] ?? ""}`.toLowerCase().replace(/\/+$/, "");
+  return where
+    .replace(/(?:https?:\/\/[^\s/]+)?\/[^\s]*/g, " ")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}

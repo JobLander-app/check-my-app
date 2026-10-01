@@ -207,17 +207,54 @@ const fixedEarlier = recurrence(
   [],
 ).find((r) => r.issue.signature === sig)!.issue.state;
 check("marked fixed on #249 but seen again after → recurring (it came back)", fixedEarlier === "recurring", fixedEarlier);
-const link: RecurrenceLink = {
-  id: "link-1",
-  status: "suppressed",
-  dedupKey: dedupKeyForFinding(holotope[0].f, { appSlug: app.appSlug }),
-  findingId: null,
-};
+const link: RecurrenceLink = { id: "link-1", status: "suppressed", findingId: holotope[2].f.id };
 const suppressed = recurrence(app, runsOf(fixture), [link]).find((r) => r.issue.signature === sig)!.issue;
-check("a Canceled ticket (IssueLink suppressed), found by its old dedup key → not_a_bug with the link id",
+check("a Canceled ticket (IssueLink suppressed) pointing at one of its findings → not_a_bug with the link id",
   suppressed.state === "not_a_bug" && suppressed.issueLinkId === "link-1", `${suppressed.state} ${suppressed.issueLinkId}`);
 
-// ── 7. What the signature is made of ──────────────────────────────────────────
+// Our own [Checker gap] / [Checker defect] tickets have no findingId (on
+// checkmyapp.dev CHE-249 counts 58 occurrences). They are never an issue of
+// the app and never attach to one — not even when their dedupKey is a hash
+// one of the app's findings also produces.
+const ourTicket = {
+  id: "che-249",
+  status: "open",
+  findingId: null,
+  occurrences: 58,
+  dedupKey: dedupKeyForFinding(holotope[6].f, { appSlug: app.appSlug }),
+};
+const withOurTicket = recurrence(app, runsOf(fixture), [ourTicket]);
+check("an IssueLink with findingId NULL (×58) yields no issue and attaches to none",
+  withOurTicket.length === result.length && withOurTicket.every((r) => r.issue.issueLinkId === null),
+  `${withOurTicket.length} issues (as without it), linked: ${withOurTicket.filter((r) => r.issue.issueLinkId).length}`);
+
+// ── 7. One check, two problems, one page signature: split ─────────────────────
+// joblander.app #11 as stored (where + title): three different broken things
+// on /login, one page signature. Seen again together in a second check.
+const login = (id: string, title: string, where: string): RecurrenceFinding => ({
+  id, title, category: "broken", severity: "high", mark: "none", anchor: null, signature: null,
+  detail: JSON.stringify({ where, whatHappened: "Nothing happened." }),
+});
+const LOGIN = [
+  ["Google OAuth button gets stuck in permanent 'Loading' state", "/login — 'Continue with Google' button"],
+  ["'Send reset link' does nothing — no request, no feedback", "/login — password-reset view"],
+  ["Email/password 'Sign in' produces no network call and no feedback", "/login — Sign in button"],
+];
+const loginRuns: RecurrenceRun[] = [11, 12].map((runNumber) => ({
+  runNumber,
+  journeys: [{ identity: "login", carried: false, walked: true }],
+  findings: LOGIN.map(([title, where], i) => login(`${runNumber}-${i}`, title, where)),
+}));
+const loginSigs = new Set(LOGIN.map(([title, where]) => findingSignature({ appSlug: "joblander.app", ...login("x", title, where) })));
+check("the three /login findings of one check share one page signature (the merge to undo)", loginSigs.size === 1);
+const loginIssues = recurrence({ id: "jl", appSlug: "joblander.app" }, loginRuns, []);
+check("…recurrence splits them: three issues, each seen 2×, each under its own wording",
+  loginIssues.length === 3 && loginIssues.every((r) => r.issue.timesSeen === 2 && r.issue.state === "recurring") &&
+    new Set(loginIssues.map((r) => r.issue.title)).size === 3,
+  loginIssues.map((r) => `${r.issue.timesSeen}× ${r.issue.title.slice(0, 28)}`).join(" | "));
+check("…while the meetbashar seven, never two in one check, stay one", result.filter((r) => r.issue.signature.startsWith(sig)).length === 1);
+
+// ── 8. What the signature is made of ──────────────────────────────────────────
 const base = { appSlug: "app.example", title: "Pricing link 404s", category: "broken", anchor: null };
 const at = (where: string, extra: Partial<typeof base> = {}) =>
   findingSignature({ ...base, ...extra, detail: JSON.stringify({ where, whatHappened: "The link leads nowhere." }) });

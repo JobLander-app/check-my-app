@@ -79,7 +79,8 @@ const runs = query<RunRow>(`SELECT id, runNumber, appId, appSlug, status, verdic
 const journeys = query<JourneyRow>(
   `SELECT runId, "order", appJourneyId, journeyKey, title, carriedFromRunId, status FROM Journey ORDER BY runId, "order"`,
 );
-const links = query<RecurrenceLink & { appId: string }>(`SELECT id, appId, status, dedupKey, findingId FROM IssueLink`);
+// Only links that point at a Finding: the rest are our own tickets (recurring.ts).
+const links = query<RecurrenceLink & { appId: string }>(`SELECT id, appId, status, findingId FROM IssueLink WHERE findingId IS NOT NULL`);
 
 const runById = new Map(runs.map((r) => [r.id, r]));
 const computed = new Map<string, string>();

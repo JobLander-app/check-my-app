@@ -31,7 +31,8 @@
 //
 // States, first match wins:
 //   not_a_bug — marked false_positive, or its ticket was Canceled (IssueLink
-//               "suppressed");
+//               "suppressed", tied to the issue by IssueLink.findingId only —
+//               a link without one is our own ticket and is never listed);
 //   gone      — marked fixed on its latest sighting, or walked again and absent;
 //   known     — marked known ("that's fine");
 //   recurring — seen in two or more checks and still there at the latest look;
@@ -41,10 +42,10 @@
 // real meetbashar fixture; recurringByApp() loads a team's apps into it.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import { findingSignature, signatureKind } from "@/lib/finding-signature";
+import { dedupKey } from "@/lib/dedup";
+import { findingSignature, signatureKind, targetOf } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
-import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 
 export interface RecurringIssue {
@@ -84,7 +85,6 @@ export interface RecurrenceRun {
 export interface RecurrenceLink {
   id: string;
   status: string;
-  dedupKey: string;
   findingId: string | null;
 }
 
@@ -132,6 +132,26 @@ export function recurrence(
     }
   }
 
+  // One check does not normally report one problem twice, so a signature that
+  // one check saw twice is proven too coarse for this app: on joblander.app
+  // #11, "Continue with Google stuck", "Send reset link does nothing" and
+  // "Sign in fires no request" were all /login + broken. Such a group is split
+  // by what on the page each finding names (targetOf). Only then: that text
+  // drifts, and splitting every group by it would cut meetbashar's one dead
+  // link into three. The split can still leave one problem in two pieces
+  // (#242 filed one problem twice under two wordings) — it under-counts, it
+  // never claims a streak that is a mix.
+  for (const [signature, sightings] of [...groups]) {
+    const perRun = new Map<RecurrenceRun, number>();
+    for (const s of sightings) perRun.set(s.run, (perRun.get(s.run) ?? 0) + 1);
+    if ([...perRun.values()].every((n) => n < 2)) continue;
+    groups.delete(signature);
+    for (const s of sightings) {
+      const split = `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(s.finding.detail), failureSignature: "target" }).slice(0, 12)}`;
+      groups.set(split, [...(groups.get(split) ?? []), s]);
+    }
+  }
+
   // The first check after `seen` (and before `until`) by which every journey
   // the sighting could have come from had been walked again.
   const lookedAgain = (seen: Sighting, until = Infinity): RecurrenceRun | undefined => {
@@ -170,11 +190,13 @@ export function recurrence(
     for (const s of sightings) {
       if (["known", "fixed", "false_positive"].includes(s.finding.mark)) mark = { mark: s.finding.mark, runNumber: s.run.runNumber };
     }
+    // A ticket belongs to an issue only through IssueLink.findingId. Links
+    // without one are our own [Checker gap] / [Checker defect] tickets (rules
+    // 2 and 8 — on checkmyapp.dev CHE-249 counts 58 occurrences), never a
+    // problem of the customer's app; and matching by the old prose-hashed
+    // dedupKey would tie a ticket to whatever the hash happens to equal.
     const ids = new Set(sightings.map((s) => s.finding.id));
-    const link =
-      links.find((l) => l.findingId && ids.has(l.findingId)) ??
-      links.find((l) => sightings.some((s) => dedupKeyForFinding(s.finding, app) === l.dedupKey)) ??
-      null;
+    const link = links.find((l) => l.findingId !== null && ids.has(l.findingId)) ?? null;
 
     const state: RecurringIssue["state"] =
       mark?.mark === "false_positive" || link?.status === "suppressed"
@@ -247,8 +269,8 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
           },
         }),
         db.issueLink.findMany({
-          where: { appId: app.id },
-          select: { id: true, status: true, dedupKey: true, findingId: true },
+          where: { appId: app.id, findingId: { not: null } },
+          select: { id: true, status: true, findingId: true },
         }),
       ]);
       const published = runs.filter((r) => extensionReportPublished(r)).map(toRecurrenceRun);
