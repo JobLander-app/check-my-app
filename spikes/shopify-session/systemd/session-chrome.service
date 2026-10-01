@@ -1,0 +1,35 @@
+[Unit]
+Description=Session host Chrome, the profile a human signs into (CHE-378)
+After=session-xvfb.service
+Requires=session-xvfb.service
+
+[Service]
+User=session-host
+Group=session-host
+Environment=DISPLAY=:99
+Environment=HOME=/var/lib/session-host
+# The profile is the whole point of this host: a human signs in once and the
+# session lives here. It is never copied off the VM.
+#
+# DevTools is bound to loopback. The hourly probe on this VM connects to it
+# directly; anything off the VM reaches it only through an IAP SSH tunnel.
+#
+# --password-store=basic: there is no keyring daemon on a headless host, and
+# without this Chrome may block on a keyring prompt nobody can see.
+ExecStart=/usr/bin/google-chrome-stable \
+  --user-data-dir=/var/lib/session-host/profile \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic \
+  --hide-crash-restore-bubble \
+  --window-position=0,0 \
+  --window-size=1366,900 \
+  --start-maximized \
+  https://admin.shopify.com
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
