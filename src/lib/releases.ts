@@ -9,15 +9,18 @@
 // of a Shopify store that is a build of nothing (#281–283). An ephemeral check
 // WITH a sha is a PR preview and is a release in env "preview".
 //
-// The delta is release against release, matched by finding signature (CHE-354,
-// src/lib/finding-signature.ts), with the same caution recurrence takes:
+// The delta is release against release. Two findings are one problem by
+// recurrence's rule (sameIssue, src/lib/recurring.ts, CHE-354), and "looked"
+// is recurrence's second look (lookedAgainAt) — one definition for "is it
+// still there" and for "did this release fix it":
 //   broke     — seen in this release, not in the previous one, and the
-//               previous one walked the journey it was seen on;
+//               previous one looked where it was seen;
 //   fixed     — seen in the previous release, absent here, and THIS release
-//               walked its journey again;
+//               looked there again;
 //   unchanged — seen in both;
-//   notCompared — the other release did not walk that journey (a partial
-//               check carried it), so neither "broke" nor "fixed" is known.
+//   notCompared — the other release did not look there (a partial check
+//               carried the journey, or the walk skipped that step), so
+//               neither "broke" nor "fixed" is known.
 // A finding anchored to a journey its own check carried is a restatement, not
 // something that release saw (src/lib/recurring.ts), and is left out.
 //
@@ -29,9 +32,9 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
-import { findingSignature, signatureKind, targetSignature } from "@/lib/finding-signature";
+import { findingSignature, signatureKind, titleSimilarity } from "@/lib/finding-signature";
 import { parseJson } from "@/lib/json";
-import type { RecurrenceFinding } from "@/lib/recurring";
+import { lookedAgainAt, positionsSeen, sameIssue, type RecurrenceFinding, type RecurrenceJourney } from "@/lib/recurring";
 import { teamOwned } from "@/lib/tenant-db";
 
 export type Audience = "existing_users" | "new_visitors" | "unknown";
@@ -53,7 +56,7 @@ export interface ReleaseRunInput {
   priceUsd: number | null;
   completedAt: Date | null;
   // In journey order: Finding.anchor.stepRef indexes journeys and their steps.
-  journeys: Array<{ identity: string; carried: boolean; walked: boolean; steps: StepInput[] }>;
+  journeys: Array<{ identity: string; carried: boolean; steps: StepInput[] }>;
   findings: RecurrenceFinding[];
 }
 
@@ -145,35 +148,41 @@ function seenIn(run: ReleaseRunInput): Array<[string, Seen]> {
   return out;
 }
 
-// Both releases keyed the same way. A signature that either release saw twice
-// is proven to cover different problems (two broken things on one /login), so
-// in BOTH releases it is refined by its target, as recurrence does — otherwise
-// "X and Y before, only Y now" would read as Y unchanged and X never fixed.
-function keyed(before: Array<[string, Seen]>, now: Array<[string, Seen]>): [Map<string, Seen>, Map<string, Seen>] {
-  const twice = new Set<string>();
-  for (const list of [before, now]) {
-    const seen = new Set<string>();
-    for (const [sig] of list) (seen.has(sig) ? twice : seen).add(sig);
-  }
-  const key = (list: Array<[string, Seen]>) => {
-    const m = new Map<string, Seen>();
-    for (const [sig, s] of list) {
-      const k = twice.has(sig) ? targetSignature(sig, s.finding.detail) : sig;
-      if (!m.has(k)) m.set(k, s);
-    }
-    return m;
-  };
-  return [key(before), key(now)];
+// Two findings are one problem by recurrence's own rule (sameIssue): one
+// signature, and inside a "page" or "req" bucket a title that says the same
+// thing — one /login holds many problems, and "X and Y before, only Y now"
+// must read as Y unchanged and X fixed.
+const same = (a: [string, Seen], b: [string, Seen]) =>
+  sameIssue({ signature: a[0], title: a[1].finding.title }, { signature: b[0], title: b[1].finding.title });
+
+// One release may state a problem twice (two findings of one check that are
+// the same issue). It is one item of the delta, the first as the check wrote it.
+function distinct(list: Array<[string, Seen]>): Array<[string, Seen]> {
+  const out: Array<[string, Seen]> = [];
+  for (const entry of list) if (!out.some((kept) => same(kept, entry))) out.push(entry);
+  return out;
 }
 
-const walkedBy = (run: ReleaseRunInput) => new Set(run.journeys.filter((j) => j.walked).map((j) => j.identity));
+const statuses = (j: ReleaseRunInput["journeys"][number]): RecurrenceJourney => ({
+  identity: j.identity,
+  carried: j.carried,
+  steps: j.steps.map((s) => s.status),
+});
 
-// Did `other` walk where `seen` (from `from`) was seen? Anchored: its journey.
-// Unanchored: every journey `from` walked, since it came from one of them.
+// Did `other` look where `seen` (from `from`) was seen — by the rule
+// recurrence calls a second look (lookedAgainAt), not "the journey is in the
+// list": a walked journey can still skip the very step the problem was on.
+// Anchored: its journey, executed through the steps its own walk executed up
+// to the anchored one. Unanchored: every journey `from` walked, any step of each.
 function looked(other: ReleaseRunInput, seen: Seen, from: ReleaseRunInput): boolean {
-  const walked = walkedBy(other);
-  const where = seen.journey ? [seen.journey.identity] : [...walkedBy(from)];
-  return where.length > 0 && where.every((j) => walked.has(j));
+  const again = (identity: string, positions: number[] | "any") =>
+    other.journeys.some((j) => j.identity === identity && lookedAgainAt(statuses(j), positions));
+  if (seen.journey) {
+    const positions = positionsSeen(statuses(seen.journey), seen.stepIndex >= 0 ? seen.stepIndex : null);
+    return positions.length > 0 && again(seen.journey.identity, positions);
+  }
+  const walked = from.journeys.filter((j) => lookedAgainAt(statuses(j), "any"));
+  return walked.length > 0 && walked.every((j) => again(j.identity, "any"));
 }
 
 function item(signature: string, seen: Seen): ReleaseItem {
@@ -187,14 +196,24 @@ function item(signature: string, seen: Seen): ReleaseItem {
 }
 
 function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable<Release["delta"]> {
-  const [before, now] = keyed(seenIn(previous), seenIn(current));
+  const before = distinct(seenIn(previous));
+  const now = distinct(seenIn(current));
   const d: NonNullable<Release["delta"]> = { broke: [], fixed: [], unchanged: [], notCompared: [] };
-  for (const [sig, seen] of now) {
-    if (before.has(sig)) d.unchanged.push(item(sig, seen));
-    else (looked(previous, seen, current) ? d.broke : d.notCompared).push(item(sig, seen));
+  // Each earlier problem answers for one current problem at most, and the
+  // closest wording takes it (two problems of one bucket, both still there).
+  const taken = new Set<Seen>();
+  for (const entry of now) {
+    const [sig, seen] = entry;
+    const twin = before
+      .filter((b) => !taken.has(b[1]) && same(b, entry))
+      .sort((a, b) => titleSimilarity(b[1].finding.title, seen.finding.title) - titleSimilarity(a[1].finding.title, seen.finding.title))[0];
+    if (twin) {
+      taken.add(twin[1]);
+      d.unchanged.push(item(sig, seen));
+    } else (looked(previous, seen, current) ? d.broke : d.notCompared).push(item(sig, seen));
   }
   for (const [sig, seen] of before) {
-    if (now.has(sig)) continue;
+    if (taken.has(seen)) continue;
     (looked(current, seen, previous) ? d.fixed : d.notCompared).push(item(sig, seen));
   }
   return d;
@@ -347,7 +366,6 @@ export function releaseInputs(runs: ReleaseRow[], apps: Array<{ id: string; appS
       journeys: r.journeys.map((j) => ({
         identity: j.appJourneyId ?? j.journeyKey ?? j.title,
         carried: j.carriedFromRunId !== null,
-        walked: j.carriedFromRunId === null && j.status !== "skipped",
         steps: j.steps,
       })),
       findings: r.findings,

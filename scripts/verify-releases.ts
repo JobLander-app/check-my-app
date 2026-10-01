@@ -43,7 +43,6 @@ type J = ReleaseRunInput["journeys"][number];
 const account = (walked = true): J => ({
   identity: "aj_account",
   carried: !walked,
-  walked,
   steps: [
     { status: "ok", actions: SIGN_IN },
     { status: "ok", actions: ORDERS },
@@ -52,7 +51,6 @@ const account = (walked = true): J => ({
 const signup = (walked = true): J => ({
   identity: "aj_signup",
   carried: !walked,
-  walked,
   steps: [{ status: "ok", actions: SIGNUP }],
 });
 

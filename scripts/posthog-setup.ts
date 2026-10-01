@@ -35,7 +35,7 @@
 // Usage: npm run posthog:setup [-- --launch]
 
 import "dotenv/config";
-import { conditionsSignature, DECLARED_FLAGS, flagPlan, unsafeCondition, type DeclaredFlag } from "./posthog-flags";
+import { DECLARED_FLAGS, reconcileFlag } from "./posthog-flags";
 
 const PROJECT_ID = 595090;
 const APP_HOST = "https://us.posthog.com";
@@ -91,42 +91,14 @@ async function ensureFlag(): Promise<Flag> {
   return created;
 }
 
-// ─── 1b. Server-read boolean flags (CHE-320, CHE-352, CHE-367, CHE-380) ─────
+// ─── 1b. Server-read boolean flags (CHE-320, CHE-352, CHE-367, CHE-380/381) ─
 //
-// Declared in scripts/posthog-flags.ts. Unlike the objects above, these are
-// reconciled, not only created: a flag that exists with other conditions, or
-// inactive, is rewritten to the declaration. Create-only is how the
-// is_test_account condition CHE-334 removed in code stayed live on
-// `home-extension-check` until CHE-380 — a condition on a property anyone can
-// set for themselves with the public token.
-
-type BooleanFlag = { id: number; key: string; active: boolean; filters: { groups?: unknown } };
-
-async function reconcileFlag(declared: DeclaredFlag): Promise<BooleanFlag> {
-  const unsafe = unsafeCondition(declared.groups);
-  if (unsafe) throw new Error(`refusing to write ${declared.key}: ${unsafe}`);
-  const filters = { groups: declared.groups };
-  const found = (await api<Listed<BooleanFlag>>("GET", `/feature_flags/?search=${declared.key}&limit=50`)).results.find(
-    (f) => f.key === declared.key,
-  );
-  const plan = flagPlan(declared, found);
-  if (plan === "create") {
-    const created = await api<BooleanFlag>("POST", "/feature_flags/", { key: declared.key, name: declared.name, active: true, filters });
-    console.log(`flag        created id=${created.id} key=${created.key} active=${created.active} conditions=${conditionsSignature(created.filters.groups)}`);
-    return created;
-  }
-  if (!found) throw new Error(`flagPlan said ${plan} for ${declared.key}, which does not exist`);
-  const was = conditionsSignature(found.filters.groups);
-  if (plan === "keep") {
-    console.log(`flag        exists  id=${found.id} key=${found.key} active=${found.active} conditions=${was}`);
-    return found;
-  }
-  const updated = await api<BooleanFlag>("PATCH", `/feature_flags/${found.id}/`, { name: declared.name, active: true, filters });
-  console.log(`flag        updated id=${updated.id} key=${updated.key} active=${found.active}→${updated.active}`);
-  console.log(`              was ${was}`);
-  console.log(`              now ${conditionsSignature(updated.filters.groups)}`);
-  return updated;
-}
+// Declared in scripts/posthog-flags.ts and written by its reconcileFlag, the
+// same code scripts/verify-lens-flags.ts runs against a fake PostHog. Unlike
+// the objects above, these are reconciled, not only created, and read back
+// after the write. Create-only is how the is_test_account condition CHE-334
+// removed in code stayed live on `home-extension-check` until CHE-380 — a
+// condition on a property anyone can set for themselves with the public token.
 
 // ─── 2. Experiment ──────────────────────────────────────────────────────────
 
@@ -280,8 +252,8 @@ async function ensureInsight(spec: (typeof INSIGHTS)[number]): Promise<Insight> 
 
 async function main() {
   const flag = await ensureFlag();
-  const serverFlags: BooleanFlag[] = [];
-  for (const declared of DECLARED_FLAGS) serverFlags.push(await reconcileFlag(declared));
+  const serverFlags: { id: number; key: string }[] = [];
+  for (const declared of DECLARED_FLAGS) serverFlags.push(await reconcileFlag(api, declared));
   const experiment = await ensureExperiment();
   const insights: Insight[] = [];
   for (const spec of INSIGHTS) insights.push(await ensureInsight(spec));

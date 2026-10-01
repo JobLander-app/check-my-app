@@ -18,8 +18,8 @@
 //     walk happened to trip over it;
 //   - the step did not: index 1, 4, 4, 3, 3, 3, 3 and the labels were reworded;
 //   - the dead video id did not either: #246 wrote 4EjTHkgOgO8 for 4EjTHkgOgG8.
-// So the identity is built from machine facts first and the page second, and
-// title, severity, journey and step stay out of it:
+// So the stored signature is built from machine facts first and the page
+// second; title, severity, journey and step stay out of it:
 //
 //   ours: test records our own check left behind (OUR_LEFTOVERS_WHERE below);
 //   ext:  an extension's error signature (the extension-alert ticket key);
@@ -31,14 +31,15 @@
 //         would be a claim about the customer's product resting on our own
 //         bookkeeping (CLAUDE.md §8); a missed recurrence costs nothing.
 //
-// Known cost of "page": two different problems of one category on one page are
-// one signature. On prod (407 findings, 2026-10-01) a signature is shared by
-// two findings of the same check 20 times, 18 of them in checks from before
-// findings carried an anchor (CHE-215, when a check reported up to a dozen
-// findings, many on /login); the other 2 are the same problem written up twice
-// in #242. Across checks, src/lib/recurring.ts bounds the merge: a problem that
-// was gone and is seen again starts a new streak. Signatures are compared
-// within one app only.
+// "page" and "req" are too coarse to be a problem's identity: different
+// problems of one category on one page share a page signature (/login on
+// joblander.app holds a dozen), and one failing request is cited by findings
+// about different things. They are buckets. Inside a bucket,
+// src/lib/recurring.ts tells problems apart by how much their titles say the
+// same thing (sameProblem below) — measured on prod, see SAME_PROBLEM.
+//
+// The string carries a version (`page:v1:…`): a stored signature written by
+// one version of these rules is never silently compared with another's.
 //
 // Pure and free of Next / server-only imports: the agent worker writes it with
 // every finding (src/agent/workflow.ts persistFindings), and the backfill
@@ -59,6 +60,8 @@ export interface SignatureFinding {
 
 export type SignatureKind = "ours" | "ext" | "req" | "page" | "text";
 
+export const SIGNATURE_VERSION = "v1";
+
 export function signatureKind(signature: string): SignatureKind {
   return signature.slice(0, signature.indexOf(":")) as SignatureKind;
 }
@@ -70,28 +73,26 @@ export function signatureKind(signature: string): SignatureKind {
 // src/lib/recurring.ts leaves it out of the customer's count.
 export const OUR_LEFTOVERS_WHERE = "Records created during this check";
 
+const signed = (kind: SignatureKind, parts: Parameters<typeof dedupKey>[0]) => `${kind}:${SIGNATURE_VERSION}:${dedupKey(parts)}`;
+
 export function findingSignature(f: SignatureFinding): string {
   const errorSignature = parseJson<{ errorSignature?: string }>(f.anchor ?? null)?.errorSignature;
   if (f.appSlug.startsWith("extension:") && typeof errorSignature === "string" && /^[a-f0-9]{64}$/.test(errorSignature)) {
-    return `ext:${dedupKey({ journeyTitle: f.appSlug, stepLabel: errorSignature, failureSignature: "extension-alert" })}`;
+    return signed("ext", { journeyTitle: f.appSlug, stepLabel: errorSignature, failureSignature: "extension-alert" });
   }
   const detail = parseJson<FindingDetail>(f.detail) ?? {};
   if (detail.where === OUR_LEFTOVERS_WHERE) {
-    return `ours:${dedupKey({ journeyTitle: f.appSlug, stepLabel: OUR_LEFTOVERS_WHERE, failureSignature: "leftovers" })}`;
+    return signed("ours", { journeyTitle: f.appSlug, stepLabel: OUR_LEFTOVERS_WHERE, failureSignature: "leftovers" });
   }
   const request = requestSignature([detail.where, f.title, detail.whatHappened]);
   if (request) {
-    return `req:${dedupKey({ journeyTitle: f.appSlug, stepLabel: request, failureSignature: "request" })}`;
+    return signed("req", { journeyTitle: f.appSlug, stepLabel: request, failureSignature: "request" });
   }
   const page = pageOf(detail.where);
   if (page) {
-    return `page:${dedupKey({ journeyTitle: f.appSlug, stepLabel: page, failureSignature: `page/${f.category}` })}`;
+    return signed("page", { journeyTitle: f.appSlug, stepLabel: page, failureSignature: `page/${f.category}` });
   }
-  return `text:${dedupKey({
-    journeyTitle: f.appSlug,
-    stepLabel: `${detail.where ?? ""} | ${f.title}`,
-    failureSignature: `text/${f.category}`,
-  })}`;
+  return signed("text", { journeyTitle: f.appSlug, stepLabel: `${detail.where ?? ""} | ${f.title}`, failureSignature: `text/${f.category}` });
 }
 
 // The page a finding happened on, from the head of detail.where: the first
@@ -114,33 +115,70 @@ export function pageOf(where: string | undefined): string | null {
   return path || "/";
 }
 
-// What on the page a finding is about, for telling apart two problems that
-// share a page signature: the first quoted name in detail.where ('Continue with
-// Google' button), else the first URL's host + path, else the words of `where`
-// left after the page. NOT part of findingSignature: it is the model's prose
-// and drifts — on meetbashar's Holotope finding it took three values in seven
-// checks (quoted "In his own words · watch the source", none, quoted "Why 15
-// minutes …"), and the URL was absent in three. src/lib/recurring.ts uses it
-// only for a signature that one check saw twice, where the page key is proven
-// to be too coarse.
-// A signature refined by its target — the key for a finding whose signature
-// one check is known to share between different problems. One spelling, used
-// by recurrence (src/lib/recurring.ts) and the release delta
-// (src/lib/releases.ts), so both split a coarse signature the same way.
-export function targetSignature(signature: string, detail: string | null): string {
-  return `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(detail), failureSignature: "target" }).slice(0, 12)}`;
+// ─── Same problem, inside one bucket ──────────────────────────────────────────
+//
+// Two findings in one bucket ("page" or "req", see src/lib/recurring.ts) are
+// the same problem when their titles share at least SAME_PROBLEM of their
+// content words (Jaccard; stop words and our own coverage boilerplate — "could
+// not be confirmed this run" — dropped, a crude stem so "cites"/"cited" meet).
+// Title only: whatHappened adds shared boilerplate that pulled different
+// problems together.
+//
+// Measured on prod history, 2026-10-01 (407 findings of 284 checks, 19 apps;
+// each finding compared with the LATEST member of a candidate group, the way a
+// streak continues; scripts/measure/recurring-dump.ts prints every group):
+//   0.25  the seven Holotope findings are one group, but different problems
+//         merge too: "'Sign in' stays stuck in Loading" with "Successful login
+//         doesn't forward to the intended destination"; "Google OAuth
+//         initiates correctly" with "Google OAuth completion: could not be
+//         confirmed";
+//   0.30  Holotope one group; the 11 mixed pairs the cross-review listed are
+//         all apart; of the 27 groups seen in two or more checks, read one by
+//         one, none holds two problems;
+//   0.35  the Holotope seven split in two.
+// 0.30 is the highest value that keeps the Holotope seven together. The margin
+// above it is thin, and that is stated rather than hidden.
+//
+// The cost is on the safe side: a problem whose wording drifts further than
+// this is counted as two — joblander.app's sign-in button stuck in "Loading"
+// is one problem in #265, #274, #278 and #284 and is grouped only as #278 +
+// #284. A missed recurrence costs nothing; a merge of two problems is a claim
+// about the customer's product resting on our bookkeeping (CLAUDE.md §8).
+// Keeping the category in the page bucket is the same trade: without it three
+// more mixes appear ("'Send reset link' does nothing" with "'Send reset link'
+// button: could not be confirmed"), and a finding whose category flips
+// between checks starts a new group.
+export const SAME_PROBLEM = 0.3;
+
+const STOP = new Set(
+  (
+    "the a an and or of to in on for with is are was were be been it its this that from by as at our your their you we not no " +
+    "but into than then there here when while after before over under only also any all one two three can could may might " +
+    "will would should does did done has have had more most some same both each other such very just " +
+    // our coverage boilerplate, never the problem itself
+    "confirm confirmed run verified verify unverified test page"
+  ).split(" "),
+);
+const stem = (w: string) => w.replace(/ies$/, "y").replace(/(ing|ed|es|s)$/, "");
+
+export function titleWords(title: string): Set<string> {
+  return new Set(
+    (title.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+      .filter((w) => w.length > 2 && !STOP.has(w))
+      .map(stem)
+      .filter((w) => !STOP.has(w)),
+  );
 }
 
-export function targetOf(detail: string | null): string {
-  const d = parseJson<FindingDetail>(detail) ?? {};
-  const where = d.where ?? "";
-  const quoted = where.match(/["'“‘]([^"'”’]{2,80})["'”’]/);
-  if (quoted) return quoted[1].toLowerCase().replace(/\s+/g, " ").trim();
-  const url = `${where} ${d.whatHappened ?? ""}`.match(/https?:\/\/([^\s/"')]+)(\/[^\s?#"')]*)?/i);
-  if (url) return `${url[1].replace(/^www\./i, "")}${url[2] ?? ""}`.toLowerCase().replace(/\/+$/, "");
-  return where
-    .replace(/(?:https?:\/\/[^\s/]+)?\/[^\s]*/g, " ")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
+export function titleSimilarity(a: string, b: string): number {
+  const x = titleWords(a);
+  const y = titleWords(b);
+  let shared = 0;
+  for (const w of x) if (y.has(w)) shared++;
+  const union = x.size + y.size - shared;
+  return union === 0 ? 0 : shared / union;
+}
+
+export function sameProblem(a: { title: string }, b: { title: string }): boolean {
+  return titleSimilarity(a.title, b.title) >= SAME_PROBLEM;
 }
