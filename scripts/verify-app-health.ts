@@ -107,6 +107,10 @@ const RUNS: Seed[] = [
   run(803, "2026-09-27T12:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", priceUsd: 1.1 }),
   run(804, "2026-09-29T08:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0, status: "failed", verdict: null }),
   run(805, "2026-10-01T09:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0.25 }),
+  // tc: a check that started at 23:50 and gave its verdict at 00:10 the next day.
+  run(901, "2026-09-09T10:00:00Z", { teamId: "tc", appId: "c1", appSlug: "late.test", priceUsd: 0.3 }),
+  run(902, "2026-09-10T23:50:00Z", { teamId: "tc", appId: "c1", appSlug: "late.test", priceUsd: 0.5, verdict: "broken",
+    completedAt: at("2026-09-11T00:10:00Z") }),
   // Free, enterprise.
   run(501, "2026-09-20T10:00:00Z", { teamId: "t_free", appId: "f1", appSlug: "free.test", priceUsd: 0.3 }),
   run(601, "2026-09-20T10:00:00Z", { teamId: "t_ent", appId: "e1", appSlug: "ent.test", priceUsd: 7 }),
@@ -116,7 +120,7 @@ const { db, table } = createStubDb({
   team: [
     { id: "t", plan: "business" }, { id: "t2", plan: "business" }, { id: "t3", plan: "starter" },
     { id: "t_free", plan: "free" }, { id: "t_ent", plan: "enterprise" }, { id: "t_empty", plan: "growth" },
-    { id: "tw", plan: "business" },
+    { id: "tw", plan: "business" }, { id: "tc", plan: "business" },
   ],
   app: [
     { id: "a_shop", teamId: "t", appSlug: "shop.test", targetKind: "website", createdAt: at("2026-06-01") },
@@ -129,6 +133,7 @@ const { db, table } = createStubDb({
     { id: "e1", teamId: "t_ent", appSlug: "ent.test", targetKind: "website", createdAt: at("2026-06-01") },
     { id: "g1", teamId: "t_empty", appSlug: "new.test", targetKind: "website", createdAt: at("2026-06-01") },
     { id: "wk", teamId: "tw", appSlug: "week.test", targetKind: "website", createdAt: at("2026-06-01") },
+    { id: "c1", teamId: "tc", appSlug: "late.test", targetKind: "website", createdAt: at("2026-06-01") },
   ],
   run: RUNS,
 });
@@ -243,6 +248,18 @@ async function main() {
         past.apps.every((a) => Math.round(a.daily.reduce((x, d) => x + d.usd * 100, 0)) === Math.round(a.spendUsd * 100)));
     check("as of 2026-09-10: the strip ends at #104 and the latest check is #104",
       s.verdicts.at(-1)?.runNumber === 104 && s.latest?.runNumber === 104, JSON.stringify([s.verdicts.map((v) => v.runNumber), s.latest?.runNumber]));
+  }
+  {
+    // Spend is placed by when a check started (as the balance places it); a
+    // verdict by when it was given.
+    const late = (await appHealth(db, "tc", { now: at("2026-09-10T12:00:00Z") })).apps[0];
+    check("as of 2026-09-10: a check started 23:50 and finished 00:10 the next day is spent that day, but has no verdict yet — not in the strip, not the latest",
+      late.spendUsd === 0.8 && late.checks === 2 && same(late.verdicts.map((v) => v.runNumber), [901]) && late.latest?.runNumber === 901,
+      JSON.stringify([late.spendUsd, late.checks, late.verdicts.map((v) => v.runNumber), late.latest?.runNumber]));
+    const next = (await appHealth(db, "tc", { now: at("2026-09-11T12:00:00Z") })).apps[0];
+    check("as of 2026-09-11: its verdict is there, and it is the latest check",
+      same(next.verdicts.map((v) => v.runNumber), [901, 902]) && next.latest?.runNumber === 902,
+      JSON.stringify([next.verdicts.map((v) => v.runNumber), next.latest?.runNumber]));
   }
   {
     const week = await appHealth(db, "t", { now: NOW, days: 7 });

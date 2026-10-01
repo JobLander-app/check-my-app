@@ -31,7 +31,8 @@
 //     of the apps.
 //   - The verdict strip and the latest check do not start where the window
 //     starts — an app checked once a month still has a strip — but they end
-//     where it ends: nothing after `now`'s day. Only finished runs with a
+//     where it ends: nothing that finished after `now`'s day (a verdict is
+//     placed by when it was given; money by createdAt). Only finished runs with a
 //     verdict are in it — a failed run says nothing about the app (CLAUDE.md
 //     §4), and an extension report without a verdict is not published
 //     (extensionReportPublished). The latest check is the newest of those that
@@ -168,9 +169,12 @@ export async function appHealth(
           OR: [{ appId: app.id }, ...(unique ? [{ appId: null, appSlug: app.appSlug }] : [])],
           status: { in: FINISHED },
           verdict: { not: null },
-          // As of `now`: nothing started after the window's last day. In the
-          // query, not after it, so a later run cannot take a place of the 21.
+          // As of `now`: nothing finished after the window's last day — a check
+          // that started at 23:50 and finished at 00:10 had no verdict yet. In
+          // the query, not after it, so a later run cannot take a place of the
+          // 21. (Spend stays placed by createdAt, as the balance places it.)
           createdAt: { lte: lastInstant },
+          completedAt: { lte: lastInstant },
         },
         orderBy: { completedAt: "desc" },
         take: STRIP,
