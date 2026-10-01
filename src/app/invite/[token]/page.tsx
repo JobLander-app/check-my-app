@@ -51,7 +51,7 @@ export default async function InvitePage({
     <main className="mx-auto w-full max-w-lg px-4 py-16">
       {decision.kind === "already_member" ? (
         <section className="card p-6">
-          <h1 className="text-xl font-semibold">You are already on {invite?.team.name}</h1>
+          <h1 className="break-words text-xl font-semibold">You are already on {invite?.team.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">Nothing to accept — the team is in your dashboard.</p>
           <Link href="/dashboard" className={buttonClass("primary", "mt-6")}>
             Open the dashboard
@@ -67,7 +67,7 @@ export default async function InvitePage({
         </section>
       ) : (
         <section className="card p-6">
-          <h1 className="text-xl font-semibold">Join {invite!.team.name}</h1>
+          <h1 className="break-words text-xl font-semibold">Join {invite!.team.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">
             {decision.scope === "admin"
               ? "As an admin you will be able to run checks, change settings, and manage the team and its billing."
