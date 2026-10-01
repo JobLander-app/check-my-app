@@ -109,8 +109,8 @@ export async function surfaceScan(
   browser: Browser,
   // CHE-372: the run, so the scan reads a password-protected store and not its
   // /password page — the store password and its state are loaded here, from
-  // the run, so no caller can forget to pass them.
-  run: { targetUrl: string; id?: string; storePasswordEnc?: string | null },
+  // the run. Both fields required, so a caller that drops them does not compile.
+  run: { targetUrl: string; id: string; storePasswordEnc: string | null },
 ): Promise<SurfaceScanResult> {
   const targetUrl = run.targetUrl;
   const store = await storeAccessFor(env, run);
