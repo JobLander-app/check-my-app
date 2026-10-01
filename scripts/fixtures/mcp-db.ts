@@ -67,6 +67,28 @@ const DEFAULTS: Record<string, () => Row> = {
 let seq = 0;
 const nextId = (model: string) => `${model}_${(++seq).toString(36).padStart(6, "0")}`;
 
+// CHE-382: dates the way D1 holds them. D1 stores a DateTime as TEXT and
+// compares and orders it as text. Prisma's adapter writes and sends
+// "2026-09-03T00:00:00.000+00:00"; rows written by hand (a SQL UPDATE with
+// datetime('now')) hold "2026-09-03 21:23:10", which sorts before every
+// adapter-spelled value of the same day. A seed row may carry a DateTime
+// column as such a string: it is compared and ordered as that text, exactly
+// as D1 would, and read back as the Date Prisma would parse it.
+const D1_TEXT = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+const isDateField = (key: string) => /At$/.test(key);
+function d1Text(v: unknown): unknown {
+  if (v instanceof Date) return v.toISOString().replace("Z", "+00:00");
+  return v;
+}
+function parseD1(v: string): Date {
+  return new Date(/[zZ]|[+-]\d\d:\d\d$/.test(v) ? v : `${v.replace(" ", "T")}Z`);
+}
+type Cmp = string | number | Date;
+// SQL: a comparison with NULL is never true (CHE-327 for gt/lt, CHE-382 for
+// gte/lte — `null <= date` is true in JS and false in D1).
+const cmp = (value: unknown, bound: unknown, ok: (a: Cmp, b: Cmp) => boolean) =>
+  value != null && ok(d1Text(value) as Cmp, d1Text(bound) as Cmp);
+
 function matchValue(value: unknown, cond: unknown): boolean {
   if (cond !== null && typeof cond === "object" && !(cond instanceof Date) && !Array.isArray(cond)) {
     const c = cond as Record<string, unknown>;
@@ -74,14 +96,13 @@ function matchValue(value: unknown, cond: unknown): boolean {
     if ("notIn" in c && (c.notIn as unknown[]).includes(value)) return false;
     if ("not" in c && value === c.not) return false;
     if ("equals" in c && value !== c.equals) return false;
-    if ("gte" in c && !((value as Date | number) >= (c.gte as Date | number))) return false;
-    if ("lte" in c && !((value as Date | number) <= (c.lte as Date | number))) return false;
-    // CHE-327: a null never passes a comparison, as in SQL.
-    if ("gt" in c && (value == null || !((value as Date | number) > (c.gt as Date | number)))) return false;
-    if ("lt" in c && (value == null || !((value as Date | number) < (c.lt as Date | number)))) return false;
+    if ("gte" in c && !cmp(value, c.gte, (a, b) => a >= b)) return false;
+    if ("lte" in c && !cmp(value, c.lte, (a, b) => a <= b)) return false;
+    if ("gt" in c && !cmp(value, c.gt, (a, b) => a > b)) return false;
+    if ("lt" in c && !cmp(value, c.lt, (a, b) => a < b)) return false;
     return true;
   }
-  if (value instanceof Date && cond instanceof Date) return value.getTime() === cond.getTime();
+  if (cond instanceof Date) return d1Text(value) === d1Text(cond);
   return value === cond;
 }
 
@@ -118,8 +139,9 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
     return [...rows].sort((a, b) => {
       for (const o of list) {
         const [field, dir] = Object.entries(o)[0];
-        const av = a[field] as number | string | Date | null;
-        const bv = b[field] as number | string | Date | null;
+        // As D1 orders: a DateTime by its text (see d1Text).
+        const av = d1Text(a[field]) as number | string | null;
+        const bv = d1Text(b[field]) as number | string | null;
         if (av === bv) continue;
         if (av === null || av === undefined) return 1;
         if (bv === null || bv === undefined) return -1;
@@ -142,7 +164,10 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
     return rows.map((r) => project(rel.model, r, opts));
   }
 
-  function project(model: string, row: Row, args: Args = {}): Row {
+  function project(model: string, stored: Row, args: Args = {}): Row {
+    // A DateTime held as D1 text is read back as the Date Prisma parses.
+    const row: Row = Object.fromEntries(Object.entries(stored).map(([k, v]) =>
+      [k, isDateField(k) && typeof v === "string" && D1_TEXT.test(v) ? parseD1(v) : v]));
     const select = args.select as Args | undefined;
     const include = args.include as Args | undefined;
     if (select) {
