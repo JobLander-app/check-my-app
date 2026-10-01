@@ -48,6 +48,7 @@ function classOf(g: {
     text: gapEvidenceText(g.observed, g.attempted, g.label),
     actions: parseJson<RecordedAction[]>(g.actions),
     targetOrigin: g.targetOrigin,
+    targetUrl: g.targetOrigin,
   });
 }
 

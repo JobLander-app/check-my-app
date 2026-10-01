@@ -282,6 +282,9 @@ export async function walkOneJourney(args: {
               text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
               actions: actionTrail,
               targetOrigin: toolEnv.targetOrigin,
+              // CHE-374: the origin drops the path, and a store's /admin as
+              // the target is the Shopify admin itself.
+              targetUrl: run.targetUrl,
             });
         } else {
           step.gapClass = undefined;

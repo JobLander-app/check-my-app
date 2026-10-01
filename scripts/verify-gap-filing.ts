@@ -490,12 +490,12 @@ async function main() {
     check("every walked journey has a funnel → no ticket", w.filed.length === 0, w.filed.map((f) => f.title).join(" | "));
   }
 
-  // 8 — CHE-374: the Shopify admin is one capability, filed on CHE-333. Run
-  // #283's step (prod D1, step cmuptq3f7001ez90n9413w9zo, byte for byte,
-  // gapClass included) was classified third_party_block and counted on
-  // CHE-309; a sign-in page on accounts.shopify.com read as OAuth (CHE-94); an
-  // embedded app with no host named was unclassified (CHE-86). All three are
-  // CHE-333.
+  // 8 — CHE-374: the Shopify admin is one capability, filed on CHE-333, and it
+  // is decided by where the walk was, never by what a step says. Run #283's
+  // step (prod D1, step cmuptq3f7001ez90n9413w9zo, byte for byte, gapClass
+  // included) was classified third_party_block and counted on CHE-309; its 403
+  // came from a server-side link check, so no trail shows a landing and it
+  // keeps that class — a known limit, stated in gap-classes.ts.
   {
     const SHOPIFY_283: StoredStep = {
       label: 'Follow the "Log in here" link on the gate',
@@ -507,107 +507,92 @@ async function main() {
       actions: null,
       journey: { title: "Explore storefront (blocked by password gate)" },
     };
-    const store = "https://securify-demo.myshopify.com";
-    const shopifyTexts: [string, string, string | undefined][] = [
-      ["run #283: a 403 from admin.shopify.com (was third_party_block)", gapEvidenceText(SHOPIFY_283.observed, SHOPIFY_283.attempted, SHOPIFY_283.label), store],
-      ["a Google sign-in on accounts.shopify.com (was oauth)", "The store owner login on accounts.shopify.com offers Continue with Google; we could not sign in.", store],
-      ["a Cloudflare challenge on accounts.shopify.com (was third_party_block)", "accounts.shopify.com showed a Cloudflare security verification page.", store],
-      ["an embedded app named without a host (was unclassified)", "The embedded Shopify app could not be opened from here.", store],
-      ["a myshopify admin path", "Opening https://securify-demo.myshopify.com/admin/apps/securify needs the store owner's session.", store],
-    ];
-    for (const [name, text, targetOrigin] of shopifyTexts) {
-      const cls = classifyGap({ text, targetOrigin });
-      check(`shopify_admin: ${name}`, cls === "shopify_admin", cls);
-    }
-
-    // Every case below names its target, because the target is evidence:
-    // accounts.shopify.com and "inside the Shopify admin" mean the admin only
-    // for a Shopify store. S = a store, J/A = products that are not.
-    const S = store;
+    // Words never decide this class: the run's target and the machine trail
+    // do. S = a store's storefront, SA = a store's admin as the target, J/A =
+    // products that are not stores.
+    const S = "https://securify-demo.myshopify.com";
+    const SA = "https://securify-demo.myshopify.com/admin";
     const J = "https://joblander.app";
     const A = "https://acme.app";
     const sliderTrail: RecordedAction[] = JSON.parse(SLIDER_153.actions ?? "[]");
     const silentLink: RecordedAction[] = JSON.parse(NEW_TAB_154.actions ?? "[]");
-    const nav = (url: string, status: number | null): RecordedAction[] => [{ kind: "navigate", url, outcome: { urlAfter: url, status } }];
+    const nav = (url: string, urlAfter = url, status: number | null = 200): RecordedAction => ({ kind: "navigate", url, outcome: { urlAfter, status } });
+    const landedBy = (urlAfter: string): RecordedAction => ({
+      kind: "click",
+      role: "link",
+      name: "Log in here",
+      outcome: { urlAfter, navigated: true, requests: 4, mutations: 30 },
+    });
+    const fileChooser = (urlAfter: string): RecordedAction => ({
+      kind: "click",
+      selector: 'input[type="file"]',
+      outcome: { urlAfter, navigated: false, requests: 1, mutations: 2 },
+    });
+    const adminStore = "https://admin.shopify.com/store/securify-demo";
+    const said403 = "admin.shopify.com answered HTTP 403.";
     const cases: [string, GapEvidence, GapClass][] = [
-      // The admin host alone, on a product that is not a store.
-      ["run #283's words on a non-store target: the admin host alone decides", { text: gapEvidenceText(SHOPIFY_283.observed, SHOPIFY_283.attempted, SHOPIFY_283.label), targetOrigin: J }, "shopify_admin"],
-      ["UNREACHABLE (HTTP 403 from admin.shopify.com)", { text: "UNREACHABLE (HTTP 403 from admin.shopify.com) https://admin.shopify.com/store/x", targetOrigin: J }, "shopify_admin"],
-      ["upper-case admin URL", { text: "HTTPS://ADMIN.SHOPIFY.COM/STORE/X answered HTTP 403.", targetOrigin: J }, "shopify_admin"],
-      ["a store's /admin path, upper-case", { text: "X.MYSHOPIFY.COM/ADMIN needs the owner's session.", targetOrigin: J }, "shopify_admin"],
-      ["a store's /admin/apps path", { text: "Opening securify-demo.myshopify.com/admin/apps/securify needs the owner's session.", targetOrigin: J }, "shopify_admin"],
+      // (a) Landed at the admin and stopped there: the admin, whatever the words.
+      ["(a) landed on admin.shopify.com, label 'Import products from CSV', file-upload words", { text: `Import products from CSV · the file upload never appeared: ${said403}`, targetOrigin: S, actions: [landedBy(adminStore)] }, "shopify_admin"],
+      ["landed, with OAuth / CAPTCHA / new-tab words", { text: "We could not follow the link; the OAuth sign-in shows a reCAPTCHA and opens in a new tab.", targetOrigin: S, actions: [landedBy(adminStore)] }, "shopify_admin"],
+      ["landed on accounts.shopify.com (the store owner's sign-in)", { text: "The login page did not accept us.", targetOrigin: S, actions: [landedBy("https://accounts.shopify.com/lookup?rid=abc")] }, "shopify_admin"],
+      ["navigated to the store's /admin, redirected to accounts.shopify.com", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://accounts.shopify.com/lookup?rid=abc")] }, "shopify_admin"],
+      ["navigated to the store's /admin, which redirected off Shopify (the requested URL counts)", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://securify.example/login")] }, "shopify_admin"],
+      ["navigated to the store's /admin/apps, 403", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin/apps/securify`, `${S}/admin/apps/securify`, 403)] }, "shopify_admin"],
+      ["landed on 'admin.shopify.com.' (trailing dot, same host)", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com./store/securify-demo")] }, "shopify_admin"],
+      ["landed on an upper-case admin URL", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("HTTPS://ADMIN.SHOPIFY.COM/store/securify-demo")] }, "shopify_admin"],
+      ["navigated to an upper-case /ADMIN on the store", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/ADMIN`, `${S}/ADMIN`, 403)] }, "shopify_admin"],
+      ["the target is the store's /admin, no trail", { text: "The orders page did not load.", targetOrigin: S, targetUrl: SA }, "shopify_admin"],
+      ["the target is admin.shopify.com, no trail", { text: "The orders page did not load.", targetOrigin: "https://admin.shopify.com" }, "shopify_admin"],
 
-      // Raw words at report time, before productizeStep: the 403 is the cause.
-      ["raw: 'could not follow the link: admin.shopify.com answers HTTP 403'", { text: "Clicked Log in here. We could not follow the link: admin.shopify.com answers HTTP 403 to our automated browser.", targetOrigin: S }, "shopify_admin"],
-      ["raw: 'opens admin.shopify.com in a new tab, which answered HTTP 403'", { text: "The Log in here link opens admin.shopify.com in a new tab, which answered HTTP 403.", targetOrigin: S }, "shopify_admin"],
-      ["raw: the same, and the trail shows a new tab → new_tab", { text: "The Log in here link opens admin.shopify.com in a new tab, which answered HTTP 403.", targetOrigin: S, actions: silentLink }, "new_tab"],
-      ["a slider click on the trail, admin.shopify.com answered 403 → the 403 is the cause", { text: "admin.shopify.com answered HTTP 403.", targetOrigin: S, actions: sliderTrail }, "shopify_admin"],
-      ["trail: a navigation to the admin refused with 403", { text: "The page did not load.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 403) }, "shopify_admin"],
-      ["trail: the refused navigation is the gate that beats new-tab words", { text: "We could not follow the Log in here link.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 403) }, "shopify_admin"],
-      ["trail: an admin navigation that loaded is no gate, so the new-tab words stand", { text: "We could not follow the Log in here link.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 200) }, "new_tab"],
-      ["a mechanism word stands even beside a 403 (the import endpoint's, not the admin's)", { text: "Uploading the products CSV exported from admin.shopify.com failed: the import endpoint answered HTTP 403.", targetOrigin: J }, "file_transfer"],
-      ["trail: a navigation to admin.shopify.com.1337.io is not the admin", { text: "The page did not load.", targetOrigin: S, actions: nav("https://admin.shopify.com.1337.io/", 403) }, "unclassified"],
+      // (b) At the admin, a mechanism the trail shows was exercised is its own.
+      ["(b) landed, and a file input was clicked → file_transfer", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), fileChooser(`${adminStore}/products/import`)] }, "file_transfer"],
+      ["landed, and a file input was filled → file_transfer", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), { kind: "fill", selector: "input[type=file]", value: "products.csv", outcome: { urlAfter: adminStore } }] }, "file_transfer"],
+      ["landed, and a slider was driven → range_input", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), ...sliderTrail] }, "range_input"],
+      ["landed, and a link opened a new tab → new_tab", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), ...silentLink] }, "new_tab"],
+      ["the admin as target, and a slider was driven → range_input", { text: "The discount could not be set.", targetOrigin: S, targetUrl: SA, actions: sliderTrail }, "range_input"],
 
-      // The words that put the walk in the admin, on a store.
-      ["inside the Shopify admin", { text: "Inside the Shopify admin, the app list did not load.", targetOrigin: S }, "shopify_admin"],
-      ["within the store's Shopify admin", { text: "Within the store's Shopify admin the page stayed blank.", targetOrigin: S }, "shopify_admin"],
-      ["run #282's 'Sign in to the Shopify admin'", { text: "Sign in to the Shopify admin (expected 403 / no credentials)", targetOrigin: S }, "shopify_admin"],
-      ["logging into the Shopify admin", { text: "Logging into the Shopify admin was not possible.", targetOrigin: S }, "shopify_admin"],
-      ["the embedded Shopify app", { text: "The embedded Shopify app could not be opened from here.", targetOrigin: S }, "shopify_admin"],
-      ["upper-case words", { text: "INSIDE THE SHOPIFY ADMIN, NOTHING LOADED.", targetOrigin: S }, "shopify_admin"],
-      ["a mention that is not a walk, on a store", { text: "The storefront syncs orders to the Shopify admin; nothing loaded.", targetOrigin: S }, "unclassified"],
+      // (d) A "Connect Shopify" OAuth hop from another product is the admin sign-in.
+      ["(d) Connect Shopify landed on admin.shopify.com/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy("https://admin.shopify.com/oauth/authorize?client_id=x")] }, "shopify_admin"],
+      ["Connect Shopify landed on <store>/admin/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy(`${S}/admin/oauth/authorize?client_id=x`)] }, "shopify_admin"],
+      ["Connect Shopify landed on admin.shopify.com/store/x/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy(`${adminStore}/oauth/authorize?client_id=x`)] }, "shopify_admin"],
 
-      // The admin's doors are the admin.
-      ["door oauth: accounts.shopify.com Continue with Google", { text: "accounts.shopify.com asks to Continue with Google.", targetOrigin: S, actions: silentLink }, "shopify_admin"],
-      ["door passwordless", { text: "Inside the Shopify admin, sign-in is by magic link.", targetOrigin: S }, "shopify_admin"],
-      ["door verification_code", { text: "Signing in to the Shopify admin asks for a verification code sent by email.", targetOrigin: S }, "shopify_admin"],
-      ["door captcha", { text: "Inside the Shopify admin a reCAPTCHA appears.", targetOrigin: S }, "shopify_admin"],
-      ["door captcha, gated: hCaptcha on accounts.shopify.com", { text: "The login on accounts.shopify.com requires solving an hCaptcha.", targetOrigin: S }, "shopify_admin"],
-      ["door, gated: Cloudflare challenge on accounts.shopify.com", { text: "accounts.shopify.com showed a Cloudflare security verification page.", targetOrigin: S }, "shopify_admin"],
+      // (c) No trail landing: words about the admin change nothing — the class
+      // the rules gave before this change.
+      ["(c) run #283's words on its storefront target, no trail (known limit)", { text: gapEvidenceText(SHOPIFY_283.observed, SHOPIFY_283.attempted, SHOPIFY_283.label), targetOrigin: S, targetUrl: `${S}/` }, "third_party_block"],
+      ["UNREACHABLE (HTTP 403 from admin.shopify.com) on J", { text: "UNREACHABLE (HTTP 403 from admin.shopify.com) https://admin.shopify.com/store/x", targetOrigin: J }, "third_party_block"],
+      ["admin.shopify.com timed out on J", { text: "UNREACHABLE (timeout) https://admin.shopify.com/store/x", targetOrigin: J }, "egress_unreachable"],
+      ["a reCAPTCHA on a page that syncs to the Shopify admin", { text: "The signup page, which syncs orders to the Shopify admin, shows a reCAPTCHA.", targetOrigin: A }, "captcha"],
+      ["a markdown link to the admin", { text: "[Open the admin](https://admin.shopify.com/store/x) did nothing.", targetOrigin: J }, "unclassified"],
+      ["a JSON href to the admin", { text: '{"href":"https://admin.shopify.com/store/x"} did nothing.', targetOrigin: J }, "unclassified"],
+      ["'not inside the Shopify admin', on a store", { text: "The app is not inside the Shopify admin; nothing loaded.", targetOrigin: S }, "unclassified"],
+      ["'embedded Shopify app', on a store", { text: "The embedded Shopify app could not be opened from here.", targetOrigin: S }, "unclassified"],
+      ["Google sign-in words on a store, no trail", { text: "The store owner login on accounts.shopify.com offers Continue with Google.", targetOrigin: S }, "oauth"],
+      ["'footprint' is not an OTP", { text: "The footprint chart did not load.", targetOrigin: A }, "unclassified"],
+      ["the file-transfer words are back to what they were", { text: "Uploading the products CSV: Import did nothing.", targetOrigin: J }, "unclassified"],
 
-      // A mechanism is its own capability inside the admin too.
-      ["mechanism new_tab", { text: "Inside the Shopify admin, the Help link opens in a new tab.", targetOrigin: S }, "new_tab"],
-      ["mechanism range_input", { text: "Inside the Shopify admin, the discount slider would not move.", targetOrigin: S }, "range_input"],
-      ["mechanism undriven_control", { text: "Inside the Shopify admin, the Save button could not be driven.", targetOrigin: S }, "undriven_control"],
-      ["mechanism test_records", { text: "Inside the Shopify admin, records still present: product cma-1.", targetOrigin: S }, "test_records"],
-      ["mechanism media_devices", { text: "Inside the Shopify admin, the camera prompt for product photos stopped the step.", targetOrigin: S }, "media_devices"],
-      ["mechanism file_transfer: drag-and-drop", { text: "Inside the Shopify admin, drag-and-drop of the product images did nothing.", targetOrigin: S }, "file_transfer"],
-      ["mechanism file_transfer: CSV import from admin.shopify.com", { text: "Uploading the products CSV exported from admin.shopify.com: Import did nothing.", targetOrigin: J }, "file_transfer"],
-      ["mechanism file_transfer: file upload naming admin.shopify.com", { text: "The file upload failed for a CSV exported from admin.shopify.com.", targetOrigin: J }, "file_transfer"],
-      ["a mechanism word beats a different trail mechanism", { text: "Inside the Shopify admin, the file upload picker did nothing.", targetOrigin: S, actions: sliderTrail }, "file_transfer"],
-      ["words only place the step: the trail's slider decides", { text: "Inside the Shopify admin, the preference could not be checked.", targetOrigin: S, actions: sliderTrail }, "range_input"],
-      ["words only place the step: the trail's silent link decides", { text: "Inside the Shopify admin, the preference could not be checked.", targetOrigin: S, actions: silentLink }, "new_tab"],
-      ["words only place the step, no trail", { text: "Inside the Shopify admin, the preference could not be checked.", targetOrigin: S }, "shopify_admin"],
-
-      // Hosts that only look like the admin.
+      // Trail URLs that only look like the admin.
       ...(
         [
-          "admin.shopify.com.1337.io",
-          "accounts.shopify.com.0x.io",
+          "https://admin.shopify.com.1337.io/",
+          "https://accounts.shopify.com.0x.io/",
           "https://admin.shopify.com@evil.io/login",
-          "evil.io/go?next=admin.shopify.com",
-          "evil.io/admin.shopify.com",
-          "evil.io/x.myshopify.com/admin",
-          "admin.shopify.comé.io",
-          "admin.shopify.com.​evil.io",
-          "admin.shopify.com.evil.example",
-          "fakeaccounts.shopify.com",
-          "shop.admin.shopify.com",
-          "x.myshopify.com/administrator",
-          "x.myshopify.com/admin-tools",
-          "securify-demo.myshopify.com",
+          "https://evil.io/go?next=admin.shopify.com",
+          "https://evil.io/admin.shopify.com",
+          "https://evil.io/x.myshopify.com/admin",
+          "https://admin.shopify.comé.io/",
+          "https://admin.shopify.com.​evil.io/",
+          "https://shop.admin.shopify.com/",
+          "https://fakeaccounts.shopify.com/",
+          "https://x.myshopify.com/administrator",
+          "https://x.myshopify.com/admin-tools",
+          "https://myshopify.com/admin",
+          "https://securify-demo.myshopify.com/products/x",
+          "not a url",
         ] as const
-      ).map((host): [string, GapEvidence, GapClass] => [`look-alike ${JSON.stringify(host)} answered 403`, { text: `${host} answered HTTP 403.`, targetOrigin: J }, "third_party_block"]),
-
-      // Other products' Shopify hops and passing mentions keep their classes.
-      ["another product's Connect Shopify OAuth hop", { text: "Connect Shopify redirects to admin.shopify.com/oauth/authorize; the OAuth sign-in could not be completed.", targetOrigin: A }, "oauth"],
-      ["the Shopify Community sign-in on accounts.shopify.com", { text: "The community sign-in on accounts.shopify.com offers Continue with Google; we could not sign in.", targetOrigin: "https://community.shopify.com" }, "oauth"],
-      ["a reCAPTCHA on a page that syncs to the Shopify admin", { text: "The signup page, which syncs orders to the Shopify admin, shows a reCAPTCHA.", targetOrigin: A }, "captcha"],
-      ["Google-only login on a product that exports to the Shopify admin", { text: "Sign in with Google is the only login; the product exports to the Shopify admin.", targetOrigin: A }, "oauth"],
-      ["a docs page about installing into the Shopify admin, 403", { text: "The docs page about installing into the Shopify admin on help.example.com answered HTTP 403.", targetOrigin: A }, "third_party_block"],
-      ["an apps.shopify.com listing linking to the admin, 403", { text: "The apps.shopify.com listing links to the Shopify admin; apps.shopify.com answered HTTP 403.", targetOrigin: A }, "third_party_block"],
-      ["a blog post 'How to log in to the Shopify admin' timed out", { text: "The blog post How to log in to the Shopify admin on blog.example.com timed out.", targetOrigin: A }, "egress_unreachable"],
-      ["'footprint' is not an OTP", { text: "The footprint chart links to the Shopify admin.", targetOrigin: A }, "unclassified"],
+      ).map((url): [string, GapEvidence, GapClass] => [`look-alike landing ${JSON.stringify(url)}`, { text: "The page did not load.", targetOrigin: J, actions: [landedBy(url)] }, "unclassified"]),
+      ["a look-alike target: x.myshopify.com/administrator", { text: "The page did not load.", targetOrigin: J, targetUrl: "https://x.myshopify.com/administrator" }, "unclassified"],
+      ["a look-alike target: admin.shopify.com.1337.io", { text: "The page did not load.", targetOrigin: "https://admin.shopify.com.1337.io" }, "unclassified"],
+      ["the storefront as target is not the admin", { text: "The page did not load.", targetOrigin: S, targetUrl: `${S}/` }, "unclassified"],
 
       // The neighbours stay where they were.
       ["unchanged: Google sign-in on the product → oauth", { text: "Sign in with Google via OAuth popup", targetOrigin: J }, "oauth"],
@@ -625,19 +610,31 @@ async function main() {
     check("the shopify_admin key is the seeded one", seedKey === "44180f6e9c56bab68cd7084eb555927a", seedKey);
     check("the class key is its own", !Object.values(PROD_KEYS).some((p) => p.key === seedKey) && seedKey !== keyFor("third_party_block"));
 
-    // Run #283's row as stored keeps the class it was given then: filing reads
-    // the class and never re-guesses it, so history stays on CHE-309.
+    // (e) Run #283's row as stored keeps the class it was given then: filing
+    // reads the class and never re-guesses it, so history stays on CHE-309.
     const stored = stubWorld([SHOPIFY_283], { targetUrl: S });
     await fileCapabilityGaps(stored.env, "run-1", { board: stored.board });
-    check("the stored #283 row files where it always did (CHE-309's key)", stored.filed[0]?.dedupKey === keyFor("third_party_block"), stored.filed[0]?.dedupKey);
+    check("(e) the stored #283 row files where it always did (CHE-309's key)", stored.filed[0]?.dedupKey === keyFor("third_party_block"), stored.filed[0]?.dedupKey);
 
-    // The same step reported after this change carries the class decided on
-    // its words, and the real filer keys it on the seeded key.
+    // The same gate met by a click that landed on the admin: reported after
+    // this change it carries shopify_admin, and the real filer keys it on the
+    // seeded key.
+    const LANDED: StoredStep = {
+      ...SHOPIFY_283,
+      gapClass: null,
+      label: 'Click "Log in here" on the password page',
+      actions: JSON.stringify([landedBy(adminStore)]),
+    };
     const reportedNow = (s: StoredStep): StoredStep => ({
       ...s,
-      gapClass: classifyGap({ text: gapEvidenceText(s.label, s.attempted, s.observed), targetOrigin: S }),
+      gapClass: classifyGap({
+        text: gapEvidenceText(s.label, s.attempted, s.observed),
+        actions: JSON.parse(s.actions ?? "[]"),
+        targetOrigin: S,
+      }),
     });
-    const fresh = stubWorld([reportedNow(SHOPIFY_283)], { targetUrl: S });
+    check("a landed step reported now is shopify_admin", reportedNow(LANDED).gapClass === "shopify_admin", reportedNow(LANDED).gapClass ?? "");
+    const fresh = stubWorld([reportedNow(LANDED)], { targetUrl: S });
     await fileCapabilityGaps(fresh.env, "run-1", { board: fresh.board });
     check(
       "the filer keys the class on the seeded key",
@@ -646,9 +643,16 @@ async function main() {
     );
 
     // With the seeded row in place, a Shopify-admin run counts on CHE-333 and
-    // opens nothing — reported rows and a legacy row without a class alike.
-    const google: StoredStep = { ...SHOPIFY_283, gapClass: null, label: "Sign in to the Shopify admin", observed: "accounts.shopify.com: Continue with Google" };
-    const seeded = stubWorld([reportedNow(SHOPIFY_283), google], { existing: { [seedKey]: CHE_333.identifier }, targetUrl: S });
+    // opens nothing — a reported row, and a legacy row without a class that
+    // the filer classifies from its stored trail.
+    const legacy: StoredStep = {
+      ...SHOPIFY_283,
+      gapClass: null,
+      label: "Sign in to the Shopify admin",
+      observed: "Continue with Google was offered; the sign-in could not be completed.",
+      actions: JSON.stringify([nav(`${S}/admin`, "https://accounts.shopify.com/lookup?rid=abc")]),
+    };
+    const seeded = stubWorld([reportedNow(LANDED), legacy], { existing: { [seedKey]: CHE_333.identifier }, targetUrl: S });
     await fileCapabilityGaps(seeded.env, "run-1", { board: seeded.board });
     check(
       "with the seed, every Shopify-admin gap comments on CHE-333 and creates nothing",
@@ -656,34 +660,65 @@ async function main() {
       JSON.stringify(seeded.filed),
     );
 
-    // The seed statement itself, run against the real schema in SQLite: it
-    // writes one open row on our app (not a newer checkmyapp.dev row with no
-    // tracker), a second run changes nothing, and a key already taken by
-    // another ticket is left alone and reported.
-    const db = new DatabaseSync(":memory:");
+    // The seed statement itself, run against the real schema in SQLite. CHE-329
+    // fixture: a NEWER checkmyapp.dev row (another account saved our URL) that
+    // holds someone else's tracker — the seed must pick ours, by our board.
     const migrations = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "prisma", "migrations");
-    for (const f of readdirSync(migrations).filter((n) => n.endsWith(".sql")).sort()) db.exec(readFileSync(path.join(migrations, f), "utf8"));
-    db.exec(`INSERT INTO User (id, clerkUserId, email, updatedAt) VALUES ('u1','c1','o@x.dev','x'), ('u2','c2','s@x.dev','x');
-      INSERT INTO App (id, ownerId, targetUrl, appSlug, updatedAt, createdAt) VALUES
+    const schemaDb = () => {
+      const d = new DatabaseSync(":memory:");
+      for (const f of readdirSync(migrations).filter((n) => n.endsWith(".sql")).sort()) d.exec(readFileSync(path.join(migrations, f), "utf8"));
+      d.exec(`INSERT INTO User (id, clerkUserId, email, updatedAt) VALUES ('u1','c1','o@x.dev','x'), ('u2','c2','s@x.dev','x');`);
+      return d;
+    };
+    const seedRun = (d: DatabaseSync): { changes: number; error?: string } => {
+      try {
+        return { changes: Number(d.prepare(seedSql()).run().changes) };
+      } catch (err) {
+        return { changes: -1, error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+
+    const empty = schemaDb();
+    const none = seedRun(empty);
+    check("seed: without our app it writes nothing and does not fail", none.changes === 0 && !none.error, JSON.stringify(none));
+    empty.close();
+
+    const db = schemaDb();
+    db.exec(`INSERT INTO App (id, ownerId, targetUrl, appSlug, updatedAt, createdAt) VALUES
         ('app-ours','u1','https://checkmyapp.dev','checkmyapp.dev','x','2026-07-25T13:06:19.499+00:00'),
         ('app-newer','u2','https://checkmyapp.dev','checkmyapp.dev','x','2026-09-28T00:00:00.000+00:00');
-      INSERT INTO TrackerIntegration (id, appId, accessTokenEnc, teamId, updatedAt) VALUES ('t1','app-ours','x','b9503451-107e-41b6-a933-5959324a72af','x');`);
-    const first = db.prepare(seedSql()).run();
+      INSERT INTO TrackerIntegration (id, appId, accessTokenEnc, teamId, updatedAt) VALUES
+        ('t1','app-ours','x','b9503451-107e-41b6-a933-5959324a72af','x'),
+        ('t2','app-newer','x','someone-elses-linear-team','x');`);
+    const first = seedRun(db);
     const afterFirst = db.prepare(readBackSql()).all() as unknown as LinkRow[];
+    const written = db.prepare("SELECT appId, createdAt, lastSeenAt, updatedAt FROM IssueLink").all() as unknown as {
+      appId: string;
+      createdAt: string;
+      lastSeenAt: string;
+      updatedAt: string;
+    }[];
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM IssueLink").all());
-    const second = db.prepare(seedSql()).run();
-    check("seed: the first run writes one row", Number(first.changes) === 1, String(first.changes));
+    const second = seedRun(db);
+    check("seed: the first run writes one row", first.changes === 1, JSON.stringify(first));
+    check("seed: the row is on our app, not the newer row with another team's tracker", written.length === 1 && written[0].appId === "app-ours", JSON.stringify(written));
     check(
       "seed: on our app, open, CHE-333, under the pinned key",
       afterFirst.length === 1 && afterFirst[0].appId === "app-ours" && seedProblem(afterFirst[0]) === null && afterFirst[0].dedupKey === seedKey,
       JSON.stringify(afterFirst),
     );
-    check("seed: a second run changes nothing", Number(second.changes) === 0 && JSON.stringify(db.prepare("SELECT * FROM IssueLink").all()) === snapshot, String(second.changes));
+    const prismaTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00$/;
+    check(
+      "seed: timestamps in the shape Prisma writes on D1",
+      written.length === 1 && [written[0].createdAt, written[0].lastSeenAt, written[0].updatedAt].every((t) => prismaTime.test(t)),
+      JSON.stringify(written[0]),
+    );
+    check("seed: a second run changes nothing", second.changes === 0 && JSON.stringify(db.prepare("SELECT * FROM IssueLink").all()) === snapshot, JSON.stringify(second));
     db.exec("DELETE FROM IssueLink");
     db.exec(`INSERT INTO IssueLink (id, appId, dedupKey, externalIssueId, updatedAt) VALUES ('cuid-x','app-ours','${seedKey}','CHE-400','x')`);
-    const taken = db.prepare(seedSql()).run();
+    const taken = seedRun(db);
     const takenRow = (db.prepare(readBackSql()).all() as unknown as LinkRow[])[0];
-    check("seed: a key held by another ticket is not overwritten", Number(taken.changes) === 0 && takenRow?.externalIssueId === "CHE-400", JSON.stringify(takenRow));
+    check("seed: a key held by another ticket is not overwritten", taken.changes === 0 && takenRow?.externalIssueId === "CHE-400", JSON.stringify(takenRow));
     check("seed: …and the script reports it instead of claiming success", seedProblem(takenRow) !== null);
     check("seed: a link that is not open is reported", seedProblem({ ...afterFirst[0], status: "suppressed" }) !== null);
     db.close();
