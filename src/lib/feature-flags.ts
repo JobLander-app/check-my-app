@@ -30,6 +30,17 @@ export const POSTHOG_FLAGS_URL = "https://us.i.posthog.com/flags?v=2";
  */
 export const HOME_EXTENSION_CHECK_FLAG = "home-extension-check";
 
+/**
+ * The beta lenses of the redesign (CHE-348), read by the sidebar and the
+ * lens routes. Created by `npm run posthog:setup`: Product (CHE-352) and
+ * Release (CHE-367) on for the owner's e-mail only, the same condition as
+ * the extension flag; Marketing (CHE-352) off for everyone, with no teaser.
+ * Never on for a test account (see evaluateFlag).
+ */
+export const LENS_PRODUCT_FLAG = "lens-product";
+export const LENS_MARKETING_FLAG = "lens-marketing";
+export const LENS_RELEASE_FLAG = "lens-release";
+
 /** Who the flag is asked about. The distinct id is the Clerk user id — the id the browser identifies with. */
 export type FlagPerson = { distinctId: string; email: string; isTestAccount: boolean };
 
