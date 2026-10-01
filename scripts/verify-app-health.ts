@@ -239,8 +239,8 @@ async function main() {
       same(s.verdicts, shop.verdicts) && s.latest?.runNumber === shop.latest?.runNumber);
   }
   {
-    // Week by week is how the UI opens (7 days, 30 a click away); the money
-    // line stays monthly. One team, both windows, every number.
+    // `days` is a parameter: one team read over 7 days and over 30, every
+    // number; the money line stays monthly whatever the window.
     const [week, month] = await Promise.all([7, 30].map((days) => appHealth(db, "tw", { now: NOW, days })));
     const w = week.apps[0];
     const m = month.apps[0];
