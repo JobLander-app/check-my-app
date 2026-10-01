@@ -29,6 +29,9 @@ import { APP_SHELL_PREFIXES, isAppShellPath } from "../src/lib/app-shell";
 import { MOVED_ROUTES } from "../src/lib/moved-routes.mjs";
 import { BALANCE_PATH } from "../src/lib/balance-links";
 import robots from "../src/app/robots";
+import { loadShellData } from "../src/lib/shell-data";
+import { appHealth } from "../src/lib/app-health";
+import type { PrismaClient } from "../src/generated/prisma/client";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP_DIR = path.join(repoRoot, "src/app");
@@ -138,7 +141,10 @@ check(
 // ── 3. Nothing links to an old address ──────────────────────────────────────
 
 const OLD = /["'`](\/dashboard(?:[/?#][^"'`]*)?|\/team|\/team[?#][^"'`]*)["'`]/;
-const OLD_TEMPLATE = /`\/dashboard\/\$\{/;
+// …and inside templates, where a host comes first: `${APP_URL}/team` was the
+// Stripe portal's return_url and slipped past the quote-delimited pattern
+// (Codex P2 on #230).
+const OLD_TEMPLATE = /`\/dashboard\/\$\{|\}\/(dashboard|team)(?=[`/?#"'])/;
 const stale: string[] = [];
 for (const file of [...walk(path.join(repoRoot, "src")), path.join(repoRoot, "mcp/server.ts")]) {
   const rel = path.relative(repoRoot, file);
@@ -173,5 +179,87 @@ const shellFiles = [...walk(path.join(repoRoot, "src/components/shell")), path.j
 const effects = shellFiles.filter((f) => /\buse(Layout)?Effect\b/.test(readFileSync(f, "utf8")));
 check("the shell has no useEffect", effects.length === 0, effects.map((f) => path.relative(repoRoot, f)).join(", "));
 
-console.log(failures ? `\n${failures} FAILED` : "\nall passed");
-process.exit(failures ? 1 : 0);
+// ── 6. The sidebar costs the same whatever the team's size ──────────────────
+// Every signed-in page renders it (Codex P1 on #230: the first version ran the
+// whole appHealth report, ~5 queries per app, on every page). Over a stub
+// database that counts calls: three queries for one app and for sixty, the
+// verdicts and open findings in one statement with one bound parameter (D1
+// caps a statement at 100), and the month equal to appHealth's run rate on
+// the same runs — window edges included.
+
+type Call = { op: string; args: unknown };
+function stubDb(appCount: number, runs: { appId: string | null; appSlug: string; watchId: string | null; priceUsd: number | null; createdAt: Date }[]) {
+  const calls: Call[] = [];
+  const apps = Array.from({ length: appCount }, (_, i) => ({
+    id: `app_${i}`,
+    appSlug: i === 1 ? "chromewebstore.google.com" : `app${i}.example`,
+    targetKind: i === 1 ? "extension" : "website",
+    targetUrl: i === 1 ? "https://chromewebstore.google.com/detail/x/abcdefghijklmnopabcdefghijklmnop" : `https://app${i}.example`,
+  }));
+  const latest = [
+    { appId: "app_0", verdict: "broken", open: BigInt(2) },
+    ...(appCount > 2 ? [{ appId: "app_2", verdict: "all_good", open: 1 }] : []),
+  ];
+  const db = {
+    team: { findUnique: async (args: unknown) => (calls.push({ op: "team.findUnique", args }), { plan: "growth" }) },
+    app: { findMany: async (args: unknown) => (calls.push({ op: "app.findMany", args }), apps) },
+    run: {
+      findMany: async (args: { where?: { OR?: unknown } }) => {
+        calls.push({ op: "run.findMany", args });
+        // appHealth's per-app "finished" query carries an OR; the window query does not.
+        return args.where?.OR ? [] : runs;
+      },
+    },
+    $queryRaw: async (sql: { values: unknown[] }) => (calls.push({ op: "$queryRaw", args: sql }), latest),
+  };
+  return { db: db as unknown as PrismaClient, calls };
+}
+
+async function shellChecks() {
+  const shellSrc = read("src/lib/shell-data.ts");
+  check(
+    "the shell's data does not run the full health report or explain prices",
+    !/from ["']@\/lib\/app-health["']|explainPrice|from ["']@\/lib\/check-price["']/.test(shellSrc),
+  );
+  check(
+    "it is cached per request, and the layout reads it through the cache",
+    /export const shellData = cache\(/.test(shellSrc) && /shellData\(db, team\.id\)/.test(read("src/app/(app)/layout.tsx")),
+  );
+
+  const now = new Date("2026-10-01T12:00:00.000Z");
+  const runs = [
+    { appId: "app_0", appSlug: "app0.example", watchId: null, priceUsd: 5, createdAt: new Date("2026-09-01T23:00:00.000Z") }, // day before the window
+    { appId: "app_0", appSlug: "app0.example", watchId: "w", priceUsd: 1, createdAt: new Date("2026-09-02T00:30:00.000Z") }, // first day
+    { appId: "app_2", appSlug: "app2.example", watchId: null, priceUsd: 0.72, createdAt: new Date("2026-09-20T09:00:00.000Z") },
+    { appId: null, appSlug: "preview.example", watchId: null, priceUsd: 0.5, createdAt: new Date("2026-09-25T09:00:00.000Z") }, // the team's, in no app
+    { appId: "app_0", appSlug: "app0.example", watchId: null, priceUsd: null, createdAt: new Date("2026-09-30T09:00:00.000Z") }, // failed: $0
+    { appId: "app_0", appSlug: "app0.example", watchId: null, priceUsd: 0.04, createdAt: new Date("2026-10-01T23:59:00.000Z") }, // last minute
+    { appId: "app_0", appSlug: "app0.example", watchId: null, priceUsd: 9, createdAt: new Date("2026-10-02T00:10:00.000Z") }, // after
+  ];
+
+  const one = stubDb(1, runs);
+  const sixty = stubDb(60, runs);
+  const small = await loadShellData(one.db, "team_x", now);
+  const big = await loadShellData(sixty.db, "team_x", now);
+  check("the sidebar's data is three queries for one app", one.calls.length === 3, one.calls.map((c) => c.op).join(", "));
+  check("…and three for sixty", sixty.calls.length === 3, sixty.calls.map((c) => c.op).join(", "));
+  const raw = sixty.calls.find((c) => c.op === "$queryRaw")?.args as { values: unknown[]; sql?: string } | undefined;
+  check("verdicts and open findings come in one statement bound to the team alone", raw?.values.length === 1 && raw.values[0] === "team_x", JSON.stringify(raw?.values));
+  check(
+    "each app gets its latest verdict, an app with none gets none",
+    big.apps.find((a) => a.id === "app_0")?.verdict === "broken" &&
+      big.apps.find((a) => a.id === "app_2")?.verdict === "all_good" &&
+      big.apps.find((a) => a.id === "app_3")?.verdict === null,
+  );
+  check("open findings add up across apps (a BigInt count included)", big.openIssues === 3, String(big.openIssues));
+  check("an extension is named, not shown as a store host", big.apps.find((a) => a.id === "app_1")?.label !== "chromewebstore.google.com", big.apps.find((a) => a.id === "app_1")?.label);
+  check("the month is the window's priced runs: $1 + $0.72 + $0.50 + $0.04", small.monthlyCostUsd === 2.26, String(small.monthlyCostUsd));
+
+  const health = await appHealth(stubDb(3, runs).db, "team_x", { now });
+  check("…the same number appHealth reports as the run rate", health.monthlyRunRateUsd === small.monthlyCostUsd, `${health.monthlyRunRateUsd} vs ${small.monthlyCostUsd}`);
+}
+
+shellChecks().then(() => {
+  console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+  process.exit(failures ? 1 : 0);
+});
