@@ -57,13 +57,13 @@ export default async function AppSettingsPage({
     return (
       <main className="mx-auto w-full max-w-2xl px-4 py-16">
         <section className="card p-6">
-          <h1 className="text-xl font-semibold">{elsewhere.appSlug} belongs to {elsewhere.team?.name}</h1>
+          <h1 className="break-words text-xl font-semibold">{elsewhere.appSlug} belongs to {elsewhere.team?.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">
             You are on that team, but you are currently acting as {team.name}. Switching changes which
             team&apos;s plan pays for anything you start.
           </p>
           <form action={switchTeamAction.bind(null, elsewhere.teamId, `/dashboard/${appId}`)}>
-            <button type="submit" className="btn-primary mt-6">Switch to {elsewhere.team?.name}</button>
+            <Button type="submit" className="mt-6">Switch to {elsewhere.team?.name}</Button>
           </form>
         </section>
       </main>
@@ -322,7 +322,7 @@ export default async function AppSettingsPage({
               </span>
             </label>
           ))}
-          <button type="submit" className="btn-secondary text-sm">Save who hears about it</button>
+          <Button type="submit" variant="outline">Save who hears about it</Button>
         </form>
       </section>
 
@@ -372,7 +372,7 @@ export default async function AppSettingsPage({
             </div>
             <a
               href={`/api/integrations/linear/start?appId=${app.id}`}
-              className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-ink-500 hover:text-fg"
+              className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
             >
               {tracker ? "Reconnect →" : "Connect →"}
             </a>

@@ -6,6 +6,7 @@ import { PLAN_LIMITS, teamBalance, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import type { TeamScope } from "@/lib/scopes";
 import { ManageBillingButton } from "@/components/manage-billing-button";
+import { buttonClass } from "@/components/ui/button";
 import { teamOwned } from "@/lib/tenant-db";
 
 // CHE-277 — the team's settings: everything where one person spends the team's
@@ -59,7 +60,7 @@ export default async function TeamSettingsPage() {
           {pendingInvites > 0 &&
             ` ${pendingInvites} invitation${pendingInvites === 1 ? "" : "s"} waiting to be accepted.`}
         </p>
-        <Link href="/team" className="btn-secondary mt-4 inline-flex text-sm">
+        <Link href="/team" className={buttonClass("outline", "mt-4")}>
           {mayInvite ? "Manage people and invitations" : "See who is on the team"}
         </Link>
       </section>
@@ -99,7 +100,7 @@ export default async function TeamSettingsPage() {
           A key carries its own access: a reader key can read every verdict over the API and start
           nothing.
         </p>
-        <Link href="/dashboard" className="btn-secondary mt-4 inline-flex text-sm">
+        <Link href="/dashboard" className={buttonClass("outline", "mt-4")}>
           {can(scope, "apikey.manage") ? "Manage API keys" : "See API keys"}
         </Link>
       </section>
@@ -111,7 +112,7 @@ export default async function TeamSettingsPage() {
           here; which project or board a given app uses is set on that app, next to everything else
           about it.
         </p>
-        <Link href="/dashboard" className="btn-secondary mt-4 inline-flex text-sm">
+        <Link href="/dashboard" className={buttonClass("outline", "mt-4")}>
           Open the dashboard
         </Link>
       </section>
@@ -121,7 +122,7 @@ export default async function TeamSettingsPage() {
         <p className="mt-2 text-sm text-fg-muted">
           Invitations, access changes and billing are recorded with who did them and when.
         </p>
-        <Link href="/team" className="btn-secondary mt-4 inline-flex text-sm">
+        <Link href="/team" className={buttonClass("outline", "mt-4")}>
           See the team log
         </Link>
       </section>

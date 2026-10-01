@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import { Button, buttonClass } from "@/components/ui/button";
 import { decideAccept, hashInviteToken, inviteState } from "@/lib/invites";
 import { acceptInviteAction } from "./actions";
 
@@ -52,7 +53,7 @@ export default async function InvitePage({
         <section className="card p-6">
           <h1 className="text-xl font-semibold">You are already on {invite?.team.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">Nothing to accept — the team is in your dashboard.</p>
-          <Link href="/dashboard" className="btn-primary mt-6 inline-flex">
+          <Link href="/dashboard" className={buttonClass("primary", "mt-6")}>
             Open the dashboard
           </Link>
         </section>
@@ -60,7 +61,7 @@ export default async function InvitePage({
         <section className="card p-6">
           <h1 className="text-xl font-semibold">This invitation can&apos;t be used</h1>
           <p className="mt-2 text-sm text-fg-muted">{error ?? decision.reason}</p>
-          <Link href="/dashboard" className="btn-secondary mt-6 inline-flex">
+          <Link href="/dashboard" className={buttonClass("outline", "mt-6")}>
             Go to your dashboard
           </Link>
         </section>
@@ -84,9 +85,9 @@ export default async function InvitePage({
               await acceptInviteAction(token);
             }}
           >
-            <button type="submit" className="btn-primary mt-6">
+            <Button type="submit" className="mt-6">
               Join {invite!.team.name}
-            </button>
+            </Button>
           </form>
           <p className="mt-3 text-xs text-fg-muted">
             {inviteState(invite!) === "pending"

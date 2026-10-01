@@ -95,7 +95,7 @@ export function AnalyticsProject({
               <select
                 name="posthogProject"
                 defaultValue={selectedValue(chosen, choices)}
-                className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[13px] text-fg"
+                className="w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-2 font-mono text-[13px] text-fg"
               >
                 <option value="">— none: keep our own estimate —</option>
                 {choices.projects.map((p) => (

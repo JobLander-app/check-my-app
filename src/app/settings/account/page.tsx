@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { teamsOf } from "@/lib/teams";
 import { TeamSwitcher } from "@/components/team-switcher";
+import { Button } from "@/components/ui/button";
 import { teamOwned } from "@/lib/tenant-db";
 import { toggleOwnNotifications } from "@/app/dashboard/actions";
 
@@ -27,7 +28,7 @@ export default async function AccountSettingsPage() {
     <main className="mx-auto w-full max-w-3xl px-4 py-12">
       <header className="mb-8">
         <p className="font-mono text-xs uppercase tracking-wider text-fg-muted">Your settings</p>
-        <h1 className="mt-1 text-2xl font-semibold">{user.name?.trim() || user.email}</h1>
+        <h1 className="mt-1 break-words text-2xl font-semibold">{user.name?.trim() || user.email}</h1>
         <p className="mt-2 text-sm text-fg-muted">
           Only you are affected by anything on this page. What your colleagues see — people,
           billing, integrations — is on{" "}
@@ -59,9 +60,9 @@ export default async function AccountSettingsPage() {
               <li key={app.id} className="flex items-center justify-between gap-3">
                 <span className="text-sm">{app.appSlug}</span>
                 <form action={toggleOwnNotifications.bind(null, app.id)}>
-                  <button type="submit" className="btn-secondary text-sm">
+                  <Button type="submit" variant="outline" className="py-1.5">
                     {app.notifiers.length > 0 ? "Stop emailing me" : "Email me"}
-                  </button>
+                  </Button>
                 </form>
               </li>
             ))}

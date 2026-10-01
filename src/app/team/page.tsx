@@ -5,6 +5,9 @@ import { inviteState } from "@/lib/invites";
 import { describeEvent } from "@/lib/team-events";
 import { seatSummary } from "@/lib/seats";
 import type { UserPlan } from "@/lib/enums";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import {
   changeScopeAction,
   inviteMemberAction,
@@ -72,10 +75,10 @@ export default async function TeamPage() {
 
       <section className="card p-6">
         <h2 className="text-lg font-medium">People</h2>
-        <ul className="mt-4 divide-y divide-border">
+        <ul className="mt-4 divide-y divide-ink-700">
           {memberships.map((m) => (
             <li key={m.userId} className="flex flex-wrap items-center justify-between gap-3 py-3">
-              <div>
+              <div className="min-w-0 flex-1 basis-64">
                 <p className="text-sm">
                   {m.user.name?.trim() || m.user.email}
                   {m.userId === user.id && <span className="text-fg-muted"> — you</span>}
@@ -89,20 +92,23 @@ export default async function TeamPage() {
               </div>
               <div className="flex items-center gap-2">
                 {mayManage ? (
-                  <form action={changeScopeAction.bind(null, m.userId)} className="flex items-center gap-2">
-                    <select name="scope" defaultValue={m.scope} className="input text-sm" aria-label={`Access for ${m.user.email}`}>
+                  // Keyed on the scope: after Save, React resets the form to the
+                  // select's mount-time default, which would show the old scope
+                  // until a reload. A new scope is a new form.
+                  <form key={m.scope} action={changeScopeAction.bind(null, m.userId)} className="flex items-center gap-2">
+                    <Select name="scope" defaultValue={m.scope} className="w-auto py-1.5" aria-label={`Access for ${m.user.email}`}>
                       <option value="admin">admin</option>
                       <option value="member">member</option>
                       <option value="reader">reader</option>
-                    </select>
-                    <button type="submit" className="btn-secondary text-sm">Save</button>
+                    </Select>
+                    <Button type="submit" variant="outline" className="py-1.5">Save</Button>
                   </form>
                 ) : (
                   <span className="text-sm text-fg-muted">{m.scope}</span>
                 )}
                 {mayManage && m.userId !== user.id && (
                   <form action={removeMemberAction.bind(null, m.userId)}>
-                    <button type="submit" className="btn-secondary text-sm">Remove</button>
+                    <Button type="submit" variant="outline" className="py-1.5">Remove</Button>
                   </form>
                 )}
               </div>
@@ -117,32 +123,32 @@ export default async function TeamPage() {
         <section className="card mt-6 p-6">
           <h2 className="text-lg font-medium">Invite someone</h2>
           <form action={inviteMemberAction} className="mt-4 flex flex-wrap items-end gap-3">
-            <label className="flex-1">
+            <label className="w-full">
               <span className="text-xs text-fg-muted">Email</span>
-              <input name="email" type="email" required className="input mt-1 w-full" placeholder="colleague@company.com" />
+              <Input name="email" type="email" required className="mt-1" placeholder="colleague@company.com" />
             </label>
-            <label>
+            <label className="min-w-0 flex-1 basis-64">
               <span className="text-xs text-fg-muted">Access</span>
-              <select name="scope" defaultValue="member" className="input mt-1">
+              <Select name="scope" defaultValue="member" className="mt-1">
                 <option value="admin">admin — everything, including billing</option>
                 <option value="member">member — run checks and act on findings</option>
                 <option value="reader">reader — read everything, spend nothing</option>
-              </select>
+              </Select>
             </label>
-            <button type="submit" className="btn-primary">Send invitation</button>
+            <Button type="submit">Send invitation</Button>
           </form>
 
           {pending.length > 0 && (
             <>
               <h3 className="mt-6 text-sm font-medium">Waiting to be accepted</h3>
-              <ul className="mt-2 divide-y divide-border">
+              <ul className="mt-2 divide-y divide-ink-700">
                 {pending.map((i) => (
                   <li key={i.id} className="flex items-center justify-between gap-3 py-2">
                     <span className="text-sm">
                       {i.email} <span className="text-fg-muted">· {i.scope} · expires {i.expiresAt.toISOString().slice(0, 10)}</span>
                     </span>
                     <form action={revokeInviteAction.bind(null, i.id)}>
-                      <button type="submit" className="btn-secondary text-sm">Cancel</button>
+                      <Button type="submit" variant="outline" className="py-1.5">Cancel</Button>
                     </form>
                   </li>
                 ))}
@@ -176,7 +182,7 @@ export default async function TeamPage() {
               You lose access to its apps and checks. Nothing you did is removed.
             </p>
             <form action={leaveTeamAction}>
-              <button type="submit" className="btn-secondary mt-4">Leave {team.name}</button>
+              <Button type="submit" variant="outline" className="mt-4">Leave {team.name}</Button>
             </form>
           </>
         ) : (

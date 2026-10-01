@@ -43,6 +43,13 @@ async function membersOf(db: PrismaClient, teamId: string): Promise<MemberRow[]>
   return rows.map((r) => ({ userId: r.userId, scope: r.scope as TeamScope }));
 }
 
+// The team log names people by their email, never by an id (TeamEvent.subject):
+// "changed someone's access" answers nothing the log exists to answer.
+async function emailOf(db: PrismaClient, userId: string): Promise<string> {
+  const row = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+  return row?.email || "a former member";
+}
+
 export async function inviteMemberAction(formData: FormData): Promise<void> {
   const { user, db, team } = await requireActionScope("member.invite");
   const parsed = checkInviteRequest({
@@ -128,12 +135,13 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
   // from the memberships rather than incremented, so a missed sync is put right
   // by the next change instead of compounding.
   await syncTeamSeats(db, getStripeEnv(getCloudflareContext().env as Record<string, unknown>), team.id);
+  const email = await emailOf(db, userId);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
     action: "member.scope_changed",
-    subject: userId,
-    summary: `changed someone's access to ${scope}`,
+    subject: email,
+    summary: `changed ${email}'s access to ${scope}`,
   });
   revalidatePath("/team");
 }
@@ -147,12 +155,13 @@ export async function removeMemberAction(userId: string): Promise<void> {
   // team, and ownerId on those rows is attribution — the record of who did it.
   await db.membership.deleteMany({ where: { teamId: team.id, userId } });
   await syncTeamSeats(db, getStripeEnv(getCloudflareContext().env as Record<string, unknown>), team.id);
+  const email = await emailOf(db, userId);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
     action: "member.removed",
-    subject: userId,
-    summary: "removed someone from the team — their apps, checks and tickets stayed",
+    subject: email,
+    summary: `removed ${email} from the team — their apps, checks and tickets stayed`,
   });
   revalidatePath("/team");
 }
