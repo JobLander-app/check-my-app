@@ -41,9 +41,13 @@ eq("view: an unknown cookie is ignored", appsView(undefined, "<script>"), "cards
 eq("filter: nothing said → all", appsFilter(undefined), "all");
 eq("filter: an unknown value → all", appsFilter("everything"), "all");
 eq("filter: attention", appsFilter("attention"), "attention");
-const daily = { active: true, frequency: "daily" };
-const paused = { active: false, frequency: "daily" };
-const manual = { active: true, frequency: "manual" };
+const daily = { active: true, frequency: "daily", trialEnded: false };
+const paused = { active: false, frequency: "daily", trialEnded: false };
+const manual = { active: true, frequency: "manual", trialEnded: false };
+// Codex P1 on #233: a Free team's watch stays active after its trial, and the
+// scheduler (shouldSkipWatch) never starts it again.
+const expired = { active: true, frequency: "daily", trialEnded: true };
+check("scheduled: a watch past its trial is not on a schedule, and says so", !isScheduled(expired) && scheduleLabel(expired) === "Trial ended" && !inFilter("scheduled", { latestVerdict: null, watch: expired }));
 check("attention: broken and needs_attention are in", ["broken", "needs_attention"].every((v) => inFilter("attention", { latestVerdict: v, watch: undefined })));
 check("attention: all_good, mostly_ok, unverified and never-checked are out",
   ["all_good", "mostly_ok", "unverified", null].every((v) => !inFilter("attention", { latestVerdict: v, watch: daily })));
@@ -51,7 +55,7 @@ check("scheduled: an active daily watch is in; paused, manual and no watch are o
   isScheduled(daily) && !isScheduled(paused) && !isScheduled(manual) && !isScheduled(undefined));
 check("all: everything is in", inFilter("all", { latestVerdict: null, watch: undefined }));
 eq("schedule: daily", scheduleLabel(daily), "Daily");
-eq("schedule: every 6 hours", scheduleLabel({ active: true, frequency: "every_6h" }), "Every 6 hours");
+eq("schedule: every 6 hours", scheduleLabel({ active: true, frequency: "every_6h", trialEnded: false }), "Every 6 hours");
 eq("schedule: paused", scheduleLabel(paused), "Paused");
 eq("schedule: manual is not a schedule", scheduleLabel(manual), "Not scheduled");
 eq("schedule: no watch", scheduleLabel(undefined), "Not scheduled");
@@ -64,7 +68,10 @@ eq("story: never checked", stripStory([]), "Not checked yet.");
 eq("story: one good check", stripStory(s("g")), "All good in its first check.");
 eq("story: one broken check", stripStory(s("b")), "Broken in its first check.");
 eq("story: all fine", stripStory(s("g,m,m,g,m")), "Steady: nothing broken in the last 5 checks.");
-eq("story: an unverified check among fine ones is not trouble", stripStory(s("u,g,m")), "Steady: nothing broken in the last 3 checks.");
+eq("story: a check that verified nothing is not counted as clean (Codex P1 on #233)", stripStory(s("u,g,m")),
+  "Nothing broken in the 2 checks that verified something; 1 of the last 3 verified nothing.");
+check("story: 'Steady' is never said over a strip holding an unverified check",
+  ["u,g", "g,u,g", "u,u,m,g", "g,m,u,m"].every((spec) => !/^Steady/.test(stripStory(s(spec)))));
 eq("story: broken before, fine since (the dead link that went away)", stripStory(s("b,m,m,b,b,b,g,g")), "Broken in 4 of the 6 checks before; fine for the last 2.");
 eq("story: needed attention before, never broken", stripStory(s("n,g,n,g,g,g")), "Needed attention in 2 of the 3 checks before; fine for the last 3.");
 eq("story: one check before", stripStory(s("b,g")), "Broken in the check before; fine in the latest check.");
@@ -94,9 +101,12 @@ check("the toggle writes the cookie in its click handler, with no effect",
   /onClick=\{\(\) => \{\s*document\.cookie = `\$\{APPS_VIEW_COOKIE\}=/.test(toggle) && !/use(Layout)?Effect/.test(toggle));
 check("the page reads the same cookie on the server", /jar\.get\(APPS_VIEW_COOKIE\)/.test(page));
 check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
-check("the latest check's price opens its reason", /<CheckPrice explanation=\{app\.latest\.price\}/.test(page));
+check("the latest check's price opens its reason — in the cards and in the list (§10: never a bare price)",
+  (page.match(/<CheckPrice explanation=\{app\.latest\.price\}/g) ?? []).length === 2 && !/usd\(app\.latest\.priceUsd\)/.test(page));
+check("the schedule is the scheduler's rule: the page asks shouldSkipWatch with the team's plan",
+  /trialEnded: shouldSkipWatch\(w, team\.plan as UserPlan\)/.test(page) && /trialEndsAt: true/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
-check("the watches it reads are the team's", /db\.watch\.findMany\(\{ where: \{ \.\.\.teamOwned\(team\.id\) \}/.test(page));
+check("the watches it reads are the team's", /db\.watch\.findMany\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\) \}/.test(page));
 
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);

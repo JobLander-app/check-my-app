@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 import { requireUser } from "@/lib/auth";
 import { appHealth, type AppHealth } from "@/lib/app-health";
 import { VERDICT_META } from "@/lib/status";
-import { usd } from "@/lib/plans";
+import { shouldSkipWatch, usd } from "@/lib/plans";
+import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { shellData } from "@/lib/shell-data";
@@ -116,7 +117,9 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
               </td>
               <td className={`${TD} text-right font-mono`}>{usd(app.spendUsd)}</td>
               <td className={`${TD} text-right font-mono`}>{usd(app.perDayUsd)}</td>
-              <td className={`${TD} text-right font-mono`}>{app.latest ? usd(app.latest.priceUsd) : "—"}</td>
+              <td className={`${TD} text-right font-mono`}>
+                {app.latest ? <CheckPrice explanation={app.latest.price} label={null} /> : "—"}
+              </td>
               <td className={`${TD} text-right font-mono`}>{app.checks}</td>
               <td className={`${TD} whitespace-nowrap text-right font-mono`}>
                 {app.scheduled.count} · {app.onRequest.count}
@@ -155,10 +158,17 @@ export default async function AllAppsPage({
   const [health, shell, watches] = await Promise.all([
     appHealth(db, team.id),
     shellData(db, team.id),
-    db.watch.findMany({ where: { ...teamOwned(team.id) }, select: { appId: true, active: true, frequency: true } }),
+    db.watch.findMany({
+      where: { ...teamOwned(team.id) },
+      select: { appId: true, active: true, frequency: true, trialEndsAt: true },
+    }),
   ]);
   const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
-  const watchOf = new Map(watches.map((w) => [w.appId, w]));
+  // "On a schedule" is the scheduler's own rule: a Free team's watch stays
+  // active after its trial and is never started again.
+  const watchOf = new Map(
+    watches.map((w) => [w.appId, { active: w.active, frequency: w.frequency, trialEnded: shouldSkipWatch(w, team.plan as UserPlan) }]),
+  );
   const all: Row[] = health.apps.map((a) => ({ ...a, name: nameOf.get(a.appId) ?? a.appSlug, watch: watchOf.get(a.appId) }));
   const apps = all.filter((a) => inFilter(filter, { latestVerdict: a.latest?.verdict ?? null, watch: a.watch }));
 

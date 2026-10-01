@@ -35,16 +35,20 @@ export function appsFilter(param: string | undefined): AppsFilter {
 const TROUBLE = new Set(["needs_attention", "broken"]);
 const FINE = new Set(["all_good", "mostly_ok"]);
 
-export type WatchState = { active: boolean; frequency: string } | undefined;
+// `trialEnded` is the scheduler's own rule (shouldSkipWatch in src/lib/plans.ts),
+// decided by the page: a Free team's watch stays `active` after its trial, and
+// the scheduler never starts it again.
+export type WatchState = { active: boolean; frequency: string; trialEnded: boolean } | undefined;
 
-/** A watch that will start checks by itself: active, and not "manual". */
+/** A watch that will start checks by itself: active, not "manual", and not past its trial. */
 export function isScheduled(watch: WatchState): boolean {
-  return watch !== undefined && watch.active && watch.frequency !== "manual";
+  return watch !== undefined && watch.active && watch.frequency !== "manual" && !watch.trialEnded;
 }
 
 export function scheduleLabel(watch: WatchState): string {
   if (!watch || watch.frequency === "manual") return "Not scheduled";
   if (!watch.active) return "Paused";
+  if (watch.trialEnded) return "Trial ended";
   return watch.frequency === "every_6h" ? "Every 6 hours" : "Daily";
 }
 
@@ -87,7 +91,13 @@ export function stripStory(verdicts: string[]): string {
     const broken = before.filter((v) => v === "broken").length;
     const trouble = before.filter((v) => TROUBLE.has(v)).length;
     if (trouble === 0) {
-      return n === 1 ? `${label} in its first check.` : `Steady: nothing broken in the last ${checks(n)}.`;
+      if (n === 1) return `${label} in its first check.`;
+      // A check that verified nothing is not a check that found nothing: it is
+      // counted apart, never folded into "nothing broken".
+      const blind = verdicts.filter((v) => group(v) === "none").length;
+      return blind === 0
+        ? `Steady: nothing broken in the last ${checks(n)}.`
+        : `Nothing broken in the ${checks(n - blind)} that verified something; ${blind} of the last ${n} verified nothing.`;
     }
     const since = streak === 1 ? "fine in the latest check" : `fine for the last ${streak}`;
     if (before.length === 1) return `${broken ? "Broken" : "Needed attention"} in the check before; ${since}.`;
