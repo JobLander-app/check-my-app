@@ -29,7 +29,7 @@ import { walkingVision } from "./harness";
 import { deriveFunnel } from "@/lib/funnel";
 import { parseJson } from "@/lib/json";
 import { adjudicateStep } from "./judge";
-import { classifyGap, gapEvidenceText } from "./gap-classes";
+import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk } from "./summary";
@@ -275,20 +275,15 @@ export async function walkOneJourney(args: {
         // machine trail, before productizeStep cuts every sentence that names
         // our side. The filer (capability-gaps.ts) used to re-read the stored
         // text and could not find the words it keyed on.
-        if (step.unverifiedReason === "our_capability") {
-          step.gapClass =
-            machineClass ??
-            classifyGap({
-              text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
-              actions: actionTrail,
-              targetOrigin: toolEnv.targetOrigin,
-              // CHE-374: the origin drops the path, and a store's /admin as
-              // the target is the Shopify admin itself.
-              targetUrl: run.targetUrl,
-            });
-        } else {
-          step.gapClass = undefined;
-        }
+        // The trail is handed over by the same call that classifies it.
+        const trail = settleStepGap({
+          reported,
+          step,
+          machineClass,
+          actionTrail,
+          targetOrigin: toolEnv.targetOrigin,
+          targetUrl: run.targetUrl,
+        });
         // CHE-180: the customer's words, decided after the judge has seen the
         // model's. Nothing between here and the row may reintroduce ours.
         productizeStep(step);
@@ -297,7 +292,6 @@ export async function walkOneJourney(args: {
         // up to the guard.
         if (countsTowardJourney(step)) stepStatuses.push(step.status as StepStatus);
         if (step.selfCheckGuardSeen) metOwnGuard = true;
-        const trail = actionTrail.splice(0);
         // CHE-219: the same rows the summary below is judged against, kept as
         // they are written so the cut sees this journey's own evidence.
         walkedSteps.push({

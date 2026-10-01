@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { AgentEnv } from "@/agent/env";
 import { fileCapabilityGaps, type GapBoard } from "@/agent/capability-gaps";
-import { GAP_CLASSES, classifyGap, gapEvidenceText, type GapClass, type GapEvidence } from "@/agent/gap-classes";
+import { GAP_CLASSES, classifyGap, gapEvidenceText, settleStepGap, type GapClass, type GapEvidence } from "@/agent/gap-classes";
 import type { RecordedAction, ReportedStep } from "@/agent/tools";
 import { productizeStep } from "@/agent/tools";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -529,26 +529,43 @@ async function main() {
       outcome: { urlAfter, navigated: false, requests: 1, mutations: 2 },
     });
     const adminStore = "https://admin.shopify.com/store/securify-demo";
+    // Inside an app in the admin — past the door.
+    const insideApp = `${adminStore}/apps/securify`;
+    const AT = "https://admin.shopify.com";
+    // The door: Shopify's sign-in, where an unsigned visit to the admin ends.
+    const signIn = "https://accounts.shopify.com/lookup?rid=abc";
     const said403 = "admin.shopify.com answered HTTP 403.";
     const cases: [string, GapEvidence, GapClass][] = [
-      // (a) Landed at the admin and stopped there: the admin, whatever the words.
-      ["(a) landed on admin.shopify.com, label 'Import products from CSV', file-upload words", { text: `Import products from CSV · the file upload never appeared: ${said403}`, targetOrigin: S, actions: [landedBy(adminStore)] }, "shopify_admin"],
-      ["landed, with OAuth / CAPTCHA / new-tab words", { text: "We could not follow the link; the OAuth sign-in shows a reCAPTCHA and opens in a new tab.", targetOrigin: S, actions: [landedBy(adminStore)] }, "shopify_admin"],
-      ["landed on accounts.shopify.com (the store owner's sign-in)", { text: "The login page did not accept us.", targetOrigin: S, actions: [landedBy("https://accounts.shopify.com/lookup?rid=abc")] }, "shopify_admin"],
-      ["navigated to the store's /admin, redirected to accounts.shopify.com", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://accounts.shopify.com/lookup?rid=abc")] }, "shopify_admin"],
-      ["navigated to the store's /admin, which redirected off Shopify (the requested URL counts)", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://securify.example/login")] }, "shopify_admin"],
+      // (a) The step's walk ended at the admin's door: the admin, whatever the
+      // step set out to do and whatever its words say.
+      ["(a) the admin answered 403, label 'Import products from CSV', file-upload words", { text: `Import products from CSV · the file upload never appeared: ${said403}`, targetOrigin: S, actions: [nav(adminStore, adminStore, 403)] }, "shopify_admin"],
+      ["ended on the sign-in, with OAuth / CAPTCHA / new-tab words", { text: "We could not follow the link; the OAuth sign-in shows a reCAPTCHA and opens in a new tab.", targetOrigin: S, actions: [landedBy(signIn)] }, "shopify_admin"],
+      ["ended on accounts.shopify.com (the store owner's sign-in)", { text: "The login page did not accept us.", targetOrigin: S, actions: [landedBy(signIn)] }, "shopify_admin"],
+      ["navigated to the store's /admin, redirected to accounts.shopify.com", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, signIn)] }, "shopify_admin"],
       ["navigated to the store's /admin/apps, 403", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin/apps/securify`, `${S}/admin/apps/securify`, 403)] }, "shopify_admin"],
-      ["landed on 'admin.shopify.com.' (trailing dot, same host)", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com./store/securify-demo")] }, "shopify_admin"],
-      ["landed on an upper-case admin URL", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("HTTPS://ADMIN.SHOPIFY.COM/store/securify-demo")] }, "shopify_admin"],
+      ["ended on admin.shopify.com's own /login", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com/login?errorHint=no_cookie_session")] }, "shopify_admin"],
+      ["ended on 'admin.shopify.com.' (trailing dot, same host)", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com./login")] }, "shopify_admin"],
+      ["ended on an upper-case admin URL", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("HTTPS://ADMIN.SHOPIFY.COM/LOGIN")] }, "shopify_admin"],
       ["navigated to an upper-case /ADMIN on the store", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/ADMIN`, `${S}/ADMIN`, 403)] }, "shopify_admin"],
+      ["a slider was driven, then the walk ended on the sign-in", { text: "The discount could not be set.", targetOrigin: AT, actions: [...sliderTrail, landedBy(signIn)] }, "shopify_admin"],
       ["the target is the store's /admin, no trail", { text: "The orders page did not load.", targetOrigin: S, targetUrl: SA }, "shopify_admin"],
-      ["the target is admin.shopify.com, no trail", { text: "The orders page did not load.", targetOrigin: "https://admin.shopify.com" }, "shopify_admin"],
+      ["the target is admin.shopify.com, no trail", { text: "The orders page did not load.", targetOrigin: AT }, "shopify_admin"],
 
-      // (b) At the admin, a mechanism the trail shows was exercised is its own.
-      ["(b) landed, and a file input was clicked → file_transfer", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), fileChooser(`${adminStore}/products/import`)] }, "file_transfer"],
-      ["landed, and a file input was filled → file_transfer", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), { kind: "fill", selector: "input[type=file]", value: "products.csv", outcome: { urlAfter: adminStore } }] }, "file_transfer"],
-      ["landed, and a slider was driven → range_input", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), ...sliderTrail] }, "range_input"],
-      ["landed, and a link opened a new tab → new_tab", { text: said403, targetOrigin: S, actions: [landedBy(adminStore), ...silentLink] }, "new_tab"],
+      // The landing decides, not the address a navigation asked for, and only
+      // the LAST landing of the step.
+      ["the store's /admin redirected to the store's own /password page", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, `${S}/password`)] }, "unclassified"],
+      ["the store's /admin redirected off Shopify", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://securify.example/login")] }, "unclassified"],
+      ["an early hop through the sign-in, then the storefront and a third party's timeout", { text: "The reviews widget on reviews.io timed out.", targetOrigin: S, actions: [nav(`${S}/admin`, signIn), nav(`${S}/`)] }, "egress_unreachable"],
+
+      // (b) Past the door — inside an app in the admin — every other class
+      // decides as it always did, so this class can empty once we sign in.
+      ["(b) inside the app: a camera prompt → media_devices", { text: "The camera prompt for product photos stopped the step.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "media_devices"],
+      ["inside the app: records left behind → test_records", { text: "Records still present: product cma-1.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "test_records"],
+      ["inside the app: a third party's 403 → third_party_block", { text: "youtube.com answered HTTP 403.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "third_party_block"],
+      ["inside the app: a file input was clicked, upload words → file_transfer", { text: "The file upload did not start.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), fileChooser(`${adminStore}/products/import`)] }, "file_transfer"],
+      ["inside the app: a slider was driven → range_input", { text: "The discount could not be set.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), ...sliderTrail] }, "range_input"],
+      ["inside the app: a link opened a new tab → new_tab", { text: "Nothing happened.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), ...silentLink] }, "new_tab"],
+      ["an app inside the admin as the target, no trail: not the door", { text: "The page did not load.", targetOrigin: AT, targetUrl: insideApp }, "unclassified"],
       ["the admin as target, and a slider was driven → range_input", { text: "The discount could not be set.", targetOrigin: S, targetUrl: SA, actions: sliderTrail }, "range_input"],
 
       // (d) A "Connect Shopify" OAuth hop from another product is the admin sign-in.
@@ -623,7 +640,7 @@ async function main() {
       ...SHOPIFY_283,
       gapClass: null,
       label: 'Click "Log in here" on the password page',
-      actions: JSON.stringify([landedBy(adminStore)]),
+      actions: JSON.stringify([landedBy(signIn)]),
     };
     const reportedNow = (s: StoredStep): StoredStep => ({
       ...s,
@@ -648,15 +665,38 @@ async function main() {
     await fileCapabilityGaps(onAdmin.env, "run-1", { board: onAdmin.board });
     check("a legacy row on an admin target files on the seeded key", onAdmin.filed[0]?.dedupKey === seedKey, onAdmin.filed[0]?.dedupKey);
 
-    // Report time is where the class is decided (execution.ts), and it must
-    // hand the classifier the trail and the full target URL — the origin
-    // alone drops a store's /admin. A source pin: that call is inside the
-    // walk and runs only against a live browser.
-    const execution = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "execution.ts"), "utf8");
-    check(
-      "report time passes actions: actionTrail and targetUrl: run.targetUrl to classifyGap",
-      /classifyGap\(\{[^}]*actions:\s*actionTrail,[^}]*targetUrl:\s*run\.targetUrl,/.test(execution),
-    );
+    // Report time is where the class is decided (execution.ts → settleStepGap):
+    // on the step's own trail and the run's full target URL, and the trail is
+    // handed over and emptied by that same call. Run here, not pattern-matched
+    // in the caller's source: a caller that drained the trail first satisfied
+    // the old pattern while classifying nothing (review of PR #217).
+    {
+      const live: RecordedAction[] = [nav(`${S}/admin`, signIn)];
+      const step: { unverifiedReason: string; observed: string; gapClass?: GapClass } = { unverifiedReason: "our_capability", observed: "The page did not load." };
+      const handed = settleStepGap({ reported: { label: "Open the app", attempted: "Opened the app", observed: "The page did not load." }, step, machineClass: undefined, actionTrail: live, targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: the step is classified on its own trail", step.gapClass === "shopify_admin", step.gapClass ?? "");
+      check("report time: the trail is handed over and emptied for the next step", handed.length === 1 && live.length === 0, `${handed.length}/${live.length}`);
+
+      const onTarget: typeof step = { unverifiedReason: "our_capability", observed: "The orders page did not load." };
+      settleStepGap({ reported: { label: "Open orders" }, step: onTarget, machineClass: undefined, actionTrail: [], targetOrigin: S, targetUrl: SA });
+      check("report time: the run's full target URL reaches the classifier (a store's /admin)", onTarget.gapClass === "shopify_admin", onTarget.gapClass ?? "");
+
+      const machine: typeof step = { unverifiedReason: "our_capability", observed: "x" };
+      settleStepGap({ reported: {}, step: machine, machineClass: "undriven_control", actionTrail: [nav(`${S}/admin`, signIn)], targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: a class the tools already decided stands", machine.gapClass === "undriven_control", machine.gapClass ?? "");
+
+      const access: typeof step = { unverifiedReason: "missing_access", observed: "x", gapClass: "oauth" };
+      const accessTrail: RecordedAction[] = [nav(`${S}/admin`, signIn)];
+      const accessHanded = settleStepGap({ reported: {}, step: access, machineClass: undefined, actionTrail: accessTrail, targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: a step that is not our gap carries no class, and its trail is still handed over", access.gapClass === undefined && accessHanded.length === 1 && accessTrail.length === 0);
+
+      // The caller makes that one call and drains the trail nowhere else.
+      const execution = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "execution.ts"), "utf8");
+      check(
+        "execution.ts settles the step through settleStepGap, with run.targetUrl, and never drains the trail itself",
+        /settleStepGap\(\{[^}]*actionTrail,[^}]*targetUrl:\s*run\.targetUrl,/.test(execution) && !/actionTrail\.(splice|length\s*=)/.test(execution) && !/classifyGap\(/.test(execution),
+      );
+    }
 
     // With the seeded row in place, a Shopify-admin run counts on CHE-333 and
     // opens nothing — a reported row, and a legacy row without a class that

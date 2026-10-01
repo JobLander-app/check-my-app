@@ -254,19 +254,19 @@ export interface GapEvidence {
 // holes — a host in a query string, a "not inside the Shopify admin", a CSV
 // "exported from admin.shopify.com". The class rests on two facts the walk
 // records and the model does not write:
-// - the run's target is the admin (admin.shopify.com, or a store's /admin);
-// - or the machine trail (CHE-129) shows the browser landed there: a
-//   navigation's requested or final URL, or the URL a click or a fill left
-//   the page on — parsed with the URL parser and compared by exact hostname,
-//   so admin.shopify.com.1337.io is the host it really is.
-// At the admin, a mechanism the trail shows was exercised (a slider driven, a
-// link that opened a new tab, a file input) is its own capability; anything
-// else — whatever the step's label or words say — is the admin stopping us.
+// - where the step's walk ended, on the machine trail (CHE-129): the address
+//   its last action left the page on — parsed with the URL parser and compared
+//   by exact hostname, so admin.shopify.com.1337.io is the host it really is;
+// - or, for a step with no trail, the run's target.
+// And it is the class of being stopped at the admin's DOOR (atAdminGate), not
+// of being anywhere in it: inside an app, every other class decides as it
+// always did, so this ticket's count can fall once we can sign in.
 //
-// Known limits, accepted: a store on its own domain, and a step whose only
-// contact with the admin was a server-side link check (run #283's 403 came
-// from verify_links, which leaves no trail), keep the class the rules below
-// give them.
+// Known limits, accepted: a store on its own domain; a step whose only contact
+// with the admin was a server-side link check (run #283's 403 came from
+// verify_links, which leaves no trail); and a link into the admin that opens
+// in a new tab, which the walk does not follow (that is new_tab). They keep
+// the class the rules below give them.
 const ADMIN_HOST = "admin.shopify.com";
 const ACCOUNTS_HOST = "accounts.shopify.com";
 const STORE_SUFFIX = ".myshopify.com";
@@ -292,39 +292,62 @@ function isStoreAdmin(u: URL): boolean {
   return host.endsWith(STORE_SUFFIX) && host.length > STORE_SUFFIX.length && (path === "/admin" || path.startsWith("/admin/"));
 }
 
-function isAdminTarget(u: URL | null): boolean {
-  return u !== null && (hostOf(u) === ADMIN_HOST || isStoreAdmin(u));
-}
+// The statuses a door answers with when it will not let an automated visitor in.
+const ADMIN_GATE_STATUSES = new Set([401, 403, 429, 503]);
 
-function landedOnAdmin(u: URL | null): boolean {
-  if (!u) return false;
+// Is this address the admin's GATE — the sign-in, or the admin turning us away
+// — rather than a page inside it? (Third review pass of PR #217.) The class
+// must be able to empty: once a run is signed in and the walk stands inside an
+// app (admin.shopify.com/store/<store>/apps/<app>), a camera prompt or a
+// third party's 403 there is its own capability again, and counts on its own
+// ticket. So "at the admin" means "stopped at its door":
+// - accounts.shopify.com, Shopify's sign-in;
+// - a store's own /admin… address — signed in, the store sends it on to
+//   admin.shopify.com, so standing on it means we never got in;
+// - admin.shopify.com answering with a gate status, or anywhere on it outside
+//   /store/<store>/… (its /login, an /oauth/authorize grant — another
+//   product's "Connect Shopify" included).
+function atAdminGate(u: URL, status: number | null): boolean {
   const host = hostOf(u);
-  return host === ADMIN_HOST || host === ACCOUNTS_HOST || isStoreAdmin(u);
+  if (host === ACCOUNTS_HOST) return true;
+  if (isStoreAdmin(u)) return true;
+  if (host !== ADMIN_HOST) return false;
+  if (status !== null && ADMIN_GATE_STATUSES.has(status)) return true;
+  const path = u.pathname.toLowerCase();
+  const inside = /^\/store\/[^/]+(\/|$)/.test(path) && !/\/oauth(\/|$)/.test(path);
+  return !inside;
 }
 
-function trailUrls(actions: RecordedAction[]): string[] {
-  return actions.flatMap((a) => (a.kind === "navigate" ? [a.url, a.outcome.urlAfter] : [a.outcome.urlAfter]));
+// Where the step's walk ended: the address the LAST recorded action left the
+// page on. Not any address on the way — an early hop through the admin's
+// sign-in followed by the storefront and a third party's timeout is that third
+// party's gap. The landing decides; the address a navigation merely asked for
+// stands in only when no landing was recorded (a store's /admin that redirects
+// to its /password page landed on the store's own lock, not on the admin).
+function lastLanding(actions: RecordedAction[]): { url: URL; status: number | null } | null {
+  for (let i = actions.length - 1; i >= 0; i--) {
+    const a = actions[i];
+    const url = absoluteUrl(a.outcome.urlAfter) ?? (a.kind === "navigate" ? absoluteUrl(a.url) : null);
+    if (url) return { url, status: a.kind === "navigate" ? (a.outcome.status ?? null) : null };
+  }
+  return null;
 }
 
-// The mechanisms the trail can show were exercised: the slider and new-tab
-// readings trailClass already makes, and a file input the walk clicked or
-// filled.
-function exercisedMechanism(actions: RecordedAction[]): GapClass | null {
-  const trail = trailClass(actions);
-  if (trail) return trail;
-  const fileInput = actions.some((a) => a.kind !== "navigate" && /type\s*=\s*["']?file\b/i.test(a.selector ?? ""));
-  return fileInput ? "file_transfer" : null;
-}
-
+// With a trail, its last landing decides. Without one (a step skipped before
+// anything was done) the run's target does, by the same rule.
 function atShopifyAdmin(evidence: GapEvidence): boolean {
-  if (isAdminTarget(absoluteUrl(evidence.targetUrl ?? evidence.targetOrigin))) return true;
-  return trailUrls(evidence.actions ?? []).some((url) => landedOnAdmin(absoluteUrl(url)));
+  const landing = lastLanding(evidence.actions ?? []);
+  if (landing) return atAdminGate(landing.url, landing.status);
+  const target = absoluteUrl(evidence.targetUrl ?? evidence.targetOrigin);
+  return target !== null && atAdminGate(target, null);
 }
 
 // Never null: "unclassified" is the last resort, and it still files.
 export function classifyGap(evidence: GapEvidence): GapClass {
   const text = evidence.text;
-  if (atShopifyAdmin(evidence)) return exercisedMechanism(evidence.actions ?? []) ?? "shopify_admin";
+  // Stopped at the admin's door: whatever the step set out to do — its label
+  // may say "Import products from CSV" — it never got there.
+  if (atShopifyAdmin(evidence)) return "shopify_admin";
   const textHit = TEXT_RULES.find((r) => r.match.test(text))?.cls;
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
@@ -336,6 +359,42 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
   return trailClass(evidence.actions ?? []) ?? "unclassified";
+}
+
+// Report time (execution.ts): the capability is named on the model's own words
+// and the step's machine trail, and the trail is then handed over and emptied
+// for the next step. One function, so the classification can never be given a
+// trail that was already drained — the order used to be pinned only by a
+// pattern over the caller's source, which a rearranged caller satisfied while
+// classifying an empty trail (third review pass of PR #217).
+export function settleStepGap(input: {
+  /** The step as the model reported it. */
+  reported: { label?: string; attempted?: string; observed?: string };
+  /** The step as it will be written (the judge may have replaced its words). */
+  step: { unverifiedReason?: string | null; observed?: string; gapClass?: GapClass };
+  /** A class the tools already decided from the machine (CHE-214). */
+  machineClass: GapClass | undefined;
+  /** The live trail of the step; emptied here. */
+  actionTrail: RecordedAction[];
+  targetOrigin?: string;
+  targetUrl?: string | null;
+}): RecordedAction[] {
+  const { reported, step, actionTrail } = input;
+  if (step.unverifiedReason === "our_capability") {
+    step.gapClass =
+      input.machineClass ??
+      classifyGap({
+        text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
+        actions: actionTrail,
+        targetOrigin: input.targetOrigin,
+        // CHE-374: the origin drops the path, and a store's /admin as the
+        // target is the Shopify admin itself.
+        targetUrl: input.targetUrl ?? undefined,
+      });
+  } else {
+    step.gapClass = undefined;
+  }
+  return actionTrail.splice(0);
 }
 
 // The words a step carries, in one string, for the rules above. Every field
