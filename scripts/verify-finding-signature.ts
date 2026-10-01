@@ -17,7 +17,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { findingSignature, OUR_LEFTOVERS_WHERE, pageOf, signatureKind } from "@/lib/finding-signature";
-import { recurrence, type RecurrenceFinding, type RecurrenceLink, type RecurrenceRun, type RecurringIssue } from "@/lib/recurring";
+import {
+  recurrence,
+  retiredSinceRun,
+  type RecurrenceFinding,
+  type RecurrenceLink,
+  type RecurrenceRun,
+  type RecurringIssue,
+} from "@/lib/recurring";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 
 let failures = 0;
@@ -67,7 +74,7 @@ check("fixture: severity flips between high and medium", new Set(holotope.map((h
 // ── 1. Today's key: seven problems where there is one ─────────────────────────
 const oldKeys = new Set(holotope.map((h) => oldKey({ ...h.f, signature: null }, app.appSlug)));
 check("today's dedupKeyForFinding splits the one problem into 7 keys (the CHE-354 bug)", oldKeys.size === 7, `${oldKeys.size} keys`);
-const underOldKey = recurrence(app, runsOf(fixture), [], oldKey);
+const underOldKey = recurrence(app, runsOf(fixture), [], { signatureOf: oldKey });
 check(
   "today's key cannot say \"seen 7 times\": no issue reaches 7",
   underOldKey.every((r) => r.issue.timesSeen < 7),
@@ -81,7 +88,7 @@ const sig = [...sigs][0];
 check("…keyed on the page (no request, no extension error behind it)", !signatureOf && signatureKind(sig) === "page", sig);
 
 // ── 3. Recurrence: seen 7 times, gone since #275 ──────────────────────────────
-const result = recurrence(app, runsOf(fixture), [], signatureOf);
+const result = recurrence(app, runsOf(fixture), [], { signatureOf });
 const issue = result.find((r) => r.issue.timesSeen === 7 || r.issue.signature === sig);
 check("one issue carries the Holotope signature", Boolean(issue));
 check("seen 7 times", issue?.issue.timesSeen === 7, String(issue?.issue.timesSeen));
@@ -137,21 +144,35 @@ check("unanchored: one partial check covering 3 of the 5 journeys #267 walked �
 check("unanchored: the next check walks the other 2 → gone since #271",
   split([...without275, firstHalf, secondHalf])?.goneSinceRunNumber === 271, String(split([...without275, firstHalf, secondHalf])?.goneSinceRunNumber));
 
-// A journey the app no longer has is never walked again; it is not waited for.
-const retired = {
+// A check whose list lacks the journey. Before CHE-331 a full or on-demand
+// check listed only what it walked (src/agent/partial.ts), so absence alone
+// proves nothing (Codex round 2, P1) — only the app retiring the journey does.
+const MEDITATION = "ajmu1nd2h1ey1orc03";
+const notListed = {
   runNumber: 276,
-  journeys: fixture.runs[7].journeys.filter((j) => j.id !== "ajmu1nd2h1ey1orc03").map((j) => ({ ...j, carried: true })),
+  journeys: fixture.runs[7].journeys.filter((j) => j.id !== MEDITATION),
   findings: [],
 };
-const afterRetire = recurrence(app, runsOf({ ...fixture, runs: [...without275, retired] }), []).find((r) => r.issue.signature === sig);
-check("its journey gone from the app's list → gone since the check that no longer listed it",
+const afterNotListed = recurrence(app, runsOf({ ...fixture, runs: [...without275, notListed] }), []).find((r) => r.issue.signature === sig);
+check("a later check that simply does not list its journey → still recurring (a legacy list is not a retirement)",
+  afterNotListed?.issue.state === "recurring", afterNotListed?.issue.state);
+const afterRetire = recurrence(app, runsOf({ ...fixture, runs: [...without275, notListed] }), [], {
+  retiredSince: new Map([[MEDITATION, 276]]),
+}).find((r) => r.issue.signature === sig);
+check("its journey retired before #276 → gone since #276",
   afterRetire?.issue.state === "gone" && afterRetire.goneSinceRunNumber === 276, `${afterRetire?.issue.state} ${afterRetire?.goneSinceRunNumber}`);
-// Codex round 1 on #223: carried in one check, dropped in a later one. The
-// carrying check did not look; the drop is dated to the check that dropped it.
-const carriedThenDropped = recurrence(app, runsOf({ ...fixture, runs: [...without275, partial276, { ...retired, runNumber: 277 }] }), [])
-  .find((r) => r.issue.signature === sig);
-check("carried in #276, dropped in #277 → gone since #277, not #276",
-  carriedThenDropped?.goneSinceRunNumber === 277, String(carriedThenDropped?.goneSinceRunNumber));
+// Codex round 1: carried in one check, retired before a later one. The
+// carrying check did not look; the release is dated to the check after the retirement.
+const carriedThenRetired = recurrence(app, runsOf({ ...fixture, runs: [...without275, partial276, { ...notListed, runNumber: 277 }] }), [], {
+  retiredSince: new Map([[MEDITATION, 277]]),
+}).find((r) => r.issue.signature === sig);
+check("carried in #276, retired before #277 → gone since #277, not #276",
+  carriedThenRetired?.goneSinceRunNumber === 277, String(carriedThenRetired?.goneSinceRunNumber));
+check("retiredSinceRun dates a retirement to the first check that started after it",
+  retiredSinceRun([{ id: "j", retiredAt: "2026-09-02T00:00:00Z" }], [
+    { runNumber: 1, startedAt: "2026-09-01T00:00:00Z" },
+    { runNumber: 2, startedAt: "2026-09-03T00:00:00Z" },
+  ]).get("j") === 2);
 const quick = { runNumber: 276, journeys: [], findings: [] };
 const afterQuick = recurrence(app, runsOf({ ...fixture, runs: [...without275, quick] }), []).find((r) => r.issue.signature === sig);
 check("a quick check that lists no journeys says nothing → still recurring", afterQuick?.issue.state === "recurring", afterQuick?.issue.state);
@@ -206,7 +227,13 @@ const fixedLast = recurrence(
   runsOf({ ...fixture, runs: without275 }, (f) => (f.id === holotope[6].f.id ? { ...f, mark: "fixed" } : f)),
   [],
 ).find((r) => r.issue.signature === sig)!.issue.state;
-check("marked fixed on its latest sighting → gone", fixedLast === "gone", fixedLast);
+check("marked fixed on its latest sighting, nothing has looked again → known, not gone (Codex round 2)", fixedLast === "known", fixedLast);
+const fixedAndLooked = recurrence(
+  app,
+  runsOf(fixture, (f) => (f.id === holotope[6].f.id ? { ...f, mark: "fixed" } : f)),
+  [],
+).find((r) => r.issue.signature === sig)!.issue.state;
+check("marked fixed and #275 walked its journey without it → gone", fixedAndLooked === "gone", fixedAndLooked);
 const fixedEarlier = recurrence(
   app,
   runsOf({ ...fixture, runs: without275 }, (f) => (f.id === holotope[2].f.id ? { ...f, mark: "fixed" } : f)),
@@ -233,6 +260,17 @@ const withOurTicket = recurrence(app, runsOf(fixture), [ourTicket]);
 check("an IssueLink with findingId NULL (×58) yields no issue and attaches to none",
   withOurTicket.length === result.length && withOurTicket.every((r) => r.issue.issueLinkId === null),
   `${withOurTicket.length} issues (as without it), linked: ${withOurTicket.filter((r) => r.issue.issueLinkId).length}`);
+
+// Codex round 2: one signature folds reworded findings that each got a ticket.
+// Any Canceled one settles it, whatever order the links come in, and the link
+// shown is the latest sighting's.
+const openEarly: RecurrenceLink = { id: "open-241", status: "open", findingId: holotope[0].f.id };
+const canceledLate: RecurrenceLink = { id: "canceled-259", status: "suppressed", findingId: holotope[5].f.id };
+for (const order of [[openEarly, canceledLate], [canceledLate, openEarly]]) {
+  const r = recurrence(app, runsOf(fixture), order).find((x) => x.issue.signature === sig)!.issue;
+  check(`two tickets on one signature (${order.map((l) => l.id).join(", ")}) → not_a_bug, link of the latest sighting`,
+    r.state === "not_a_bug" && r.issueLinkId === "canceled-259", `${r.state} ${r.issueLinkId}`);
+}
 
 // ── 7. One check, two problems, one page signature: split ─────────────────────
 // joblander.app #11 as stored (where + title): three different broken things

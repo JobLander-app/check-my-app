@@ -1,4 +1,5 @@
-// CHE-354 backfill: Finding.signature for rows written before the column.
+// CHE-354 backfill: Finding.signature for rows written before the column, and
+// IssueLink.findingId for customer tickets filed before CHE-103 (see below).
 //
 // Reads production D1 through wrangler (SELECT only) and computes each row's
 // signature with the same function the agent now writes it with
@@ -20,7 +21,8 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { findingSignature, signatureKind } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
-import { recurrence, toRecurrenceRun, type RecurrenceLink } from "@/lib/recurring";
+import { recurrence, retiredSinceRun, toRecurrenceRun, type RecurrenceLink } from "@/lib/recurring";
+import { dedupKeyForFinding } from "@/lib/tracker/file";
 
 function query<T>(sql: string): T[] {
   const out = execFileSync("npx", ["wrangler", "d1", "execute", "checkmyapp", "--remote", "--json", "--command", sql], {
@@ -51,6 +53,7 @@ interface RunRow {
   status: string;
   verdict: string | null;
   targetKind: string;
+  startedAt: string;
 }
 interface JourneyRow {
   runId: string;
@@ -75,18 +78,50 @@ try {
   columnExists = false;
   findings = query<Omit<FindingRow, "signature">>(`SELECT ${COLS} FROM Finding`).map((f) => ({ ...f, signature: null }));
 }
-const runs = query<RunRow>(`SELECT id, runNumber, appId, appSlug, status, verdict, targetKind FROM Run`);
+const runs = query<RunRow>(`SELECT id, runNumber, appId, appSlug, status, verdict, targetKind, startedAt FROM Run`);
 const journeys = query<JourneyRow>(
   `SELECT runId, "order", appJourneyId, journeyKey, title, carriedFromRunId, status FROM Journey ORDER BY runId, "order"`,
 );
-// Only links that point at a Finding: the rest are our own tickets (recurring.ts).
-const links = query<RecurrenceLink & { appId: string }>(`SELECT id, appId, status, findingId FROM IssueLink WHERE findingId IS NOT NULL`);
+const retiredJourneys = query<{ id: string; appId: string; retiredAt: string }>(
+  `SELECT id, appId, retiredAt FROM AppJourney WHERE retiredAt IS NOT NULL`,
+);
+const allLinks = query<RecurrenceLink & { appId: string; dedupKey: string; externalIssueId: string; firstSeenRunId: string | null }>(
+  `SELECT id, appId, status, findingId, dedupKey, externalIssueId, firstSeenRunId FROM IssueLink`,
+);
 
 const runById = new Map(runs.map((r) => [r.id, r]));
 const computed = new Map<string, string>();
 for (const f of findings) {
   const run = runById.get(f.runId);
   if (run) computed.set(f.id, findingSignature({ appSlug: run.appSlug, ...f }));
+}
+
+// ── IssueLink.findingId for customer tickets filed before CHE-103 ─────────────
+// recurring.ts ties a ticket to an issue only through findingId, because a
+// link without one is usually our own [Checker gap]/[Checker defect] ticket.
+// But customer tickets filed before CHE-103 have none either (CHE-79 and CHE-87
+// were Canceled = not a bug). Recover their finding exactly the way reconcile
+// does (originalFinding): the finding of the first-seen run whose CHE-59 key
+// equals the link's — else the earliest finding of the app with that key. A
+// link no finding produces is our own ticket and stays NULL.
+const appIdOfRun = (runId: string) => runById.get(runId)?.appId ?? null;
+const linkPointers: Array<{ link: (typeof allLinks)[number]; finding: FindingRow }> = [];
+for (const link of allLinks.filter((l) => l.findingId === null)) {
+  const candidates = findings
+    .filter((f) => appIdOfRun(f.runId) === link.appId && dedupKeyForFinding(f, runById.get(f.runId)!) === link.dedupKey)
+    .sort((a, b) => runById.get(a.runId)!.runNumber - runById.get(b.runId)!.runNumber);
+  const finding = candidates.find((f) => f.runId === link.firstSeenRunId) ?? candidates[0];
+  if (finding) linkPointers.push({ link, finding });
+}
+const pointed = new Map(linkPointers.map((p) => [p.link.id, p.finding.id]));
+const links = allLinks
+  .map((l) => ({ ...l, findingId: l.findingId ?? pointed.get(l.id) ?? null }))
+  .filter((l) => l.findingId !== null);
+console.log(`IssueLink without findingId: ${allLinks.filter((l) => l.findingId === null).length}` +
+  ` · customer tickets recovered: ${linkPointers.length} · left NULL (our own tickets): ` +
+  `${allLinks.filter((l) => l.findingId === null).length - linkPointers.length}`);
+for (const p of linkPointers) {
+  console.log(`  ${p.link.externalIssueId} (${p.link.status}) → #${runById.get(p.finding.runId)!.runNumber} "${p.finding.title}"`);
 }
 
 // ── What the backfill would write ─────────────────────────────────────────────
@@ -129,9 +164,11 @@ console.log(`\nrecurring per app (finished checks only):`);
 console.log(`  app                                  checks  issues  recurring  new  gone  known  not_a_bug`);
 const meetbashar: string[] = [];
 for (const [appId, appSlug] of [...apps.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
-  const appRuns = runs
+  const finished = runs
     .filter((r) => r.appId === appId && ["completed", "partial"].includes(r.status) && extensionReportPublished(r))
-    .sort((a, b) => a.runNumber - b.runNumber)
+    .sort((a, b) => a.runNumber - b.runNumber);
+  const retiredSince = retiredSinceRun(retiredJourneys.filter((j) => j.appId === appId), finished);
+  const appRuns = finished
     .map((r) =>
       toRecurrenceRun({
         runNumber: r.runNumber,
@@ -139,7 +176,7 @@ for (const [appId, appSlug] of [...apps.entries()].sort((a, b) => a[1].localeCom
         findings: (findingsByRun.get(r.id) ?? []).sort((a, b) => a.number - b.number).map((f) => ({ ...f, signature: computed.get(f.id)! })),
       }),
     );
-  const result = recurrence({ id: appId, appSlug }, appRuns, links.filter((l) => l.appId === appId));
+  const result = recurrence({ id: appId, appSlug }, appRuns, links.filter((l) => l.appId === appId), { retiredSince });
   const n = (s: string) => result.filter((r) => r.issue.state === s).length;
   console.log(`  ${appSlug.padEnd(36)} ${String(appRuns.length).padStart(6)}  ${String(result.length).padStart(6)}` +
     `  ${String(n("recurring")).padStart(9)}  ${String(n("new")).padStart(3)}  ${String(n("gone")).padStart(4)}` +
@@ -157,7 +194,11 @@ for (const [appId, appSlug] of [...apps.entries()].sort((a, b) => a[1].localeCom
 console.log(`\nmeetbashar.com, every issue:\n${meetbashar.join("\n")}`);
 
 if (sqlOut) {
-  const statements = unfilled.map((f) => `UPDATE "Finding" SET "signature" = '${computed.get(f.id)}' WHERE "id" = '${f.id}' AND "signature" IS NULL;`);
+  const statements = [
+    ...unfilled.map((f) => `UPDATE "Finding" SET "signature" = '${computed.get(f.id)}' WHERE "id" = '${f.id}' AND "signature" IS NULL;`),
+    ...linkPointers.map((p) => `UPDATE "IssueLink" SET "findingId" = '${p.finding.id}' WHERE "id" = '${p.link.id}' AND "findingId" IS NULL;`),
+  ];
   writeFileSync(sqlOut, `${statements.join("\n")}\n`);
-  console.log(`\nwrote ${statements.length} UPDATE statements to ${sqlOut} — NOT applied.`);
+  console.log(`\nwrote ${statements.length} UPDATE statements (${unfilled.length} Finding.signature, ` +
+    `${linkPointers.length} IssueLink.findingId) to ${sqlOut} — NOT applied.`);
 }

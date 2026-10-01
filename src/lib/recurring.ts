@@ -14,8 +14,8 @@
 //     across any number of later checks, not necessarily in one.
 // A check "walked" a journey when the journey was not carried forward and not
 // skipped — the same test reconcile uses before it verifies a fix. A journey
-// the app dropped (a later check lists journeys and not this one) will never
-// be walked again and stops being waited for at that check. A quick check
+// the app retired (AppJourney.retiredAt) will never be walked again and stops
+// being waited for from the first check after its retirement. A quick check
 // lists no journeys and says nothing either way.
 //
 // A problem that was gone and then seen again starts a new streak; first seen
@@ -33,8 +33,9 @@
 //   not_a_bug — marked false_positive, or its ticket was Canceled (IssueLink
 //               "suppressed", tied to the issue by IssueLink.findingId only —
 //               a link without one is our own ticket and is never listed);
-//   gone      — marked fixed on its latest sighting, or walked again and absent;
-//   known     — marked known ("that's fine");
+//   gone      — walked again and absent;
+//   known     — marked known ("that's fine"), or marked fixed on its latest
+//               sighting while no check has looked again yet;
 //   recurring — seen in two or more checks and still there at the latest look;
 //   new       — seen once and still there.
 //
@@ -109,8 +110,16 @@ export function recurrence(
   app: { id: string; appSlug: string },
   runs: RecurrenceRun[],
   links: RecurrenceLink[],
-  signatureOf: SignatureOf = storedOrComputed,
+  opts: {
+    signatureOf?: SignatureOf;
+    // Journey identity → the first check of this app that started after the
+    // journey was retired (AppJourney.retiredAt). From that check on it is no
+    // longer waited for.
+    retiredSince?: Map<string, number>;
+  } = {},
 ): Recurrence[] {
+  const signatureOf = opts.signatureOf ?? storedOrComputed;
+  const retiredSince = opts.retiredSince ?? new Map<string, number>();
   const ordered = [...runs].sort((a, b) => a.runNumber - b.runNumber);
   const walkedIn = new Map(ordered.map((r) => [r, new Set(r.journeys.filter((j) => j.walked).map((j) => j.identity))]));
 
@@ -149,18 +158,21 @@ export function recurrence(
   }
 
   // The first check after `seen` (and before `until`) by which every journey
-  // the sighting could have come from had been walked again.
-  // A journey stops being waited for when a check walks it, or when a check
-  // that lists journeys no longer lists it — at THAT check, not judged by
-  // today's list: a journey carried in #2 and dropped in #3 was not looked at
-  // in #2.
+  // the sighting could have come from had been walked again. A journey stops
+  // being waited for when a check walks it, or once the app retired it — from
+  // the first check after its retirement, never judged by today's catalog (a
+  // journey carried in #2 and retired before #3 was not looked at in #2).
+  // A journey merely missing from a check's list is NOT released: until CHE-331
+  // a full or on-demand check listed only the journeys it walked
+  // (src/agent/partial.ts knownJourneysToList), so absence says nothing.
   const lookedAgain = (seen: Sighting, until = Infinity): RecurrenceRun | undefined => {
     const waitingFor = new Set(seen.journey ? [seen.journey] : walkedIn.get(seen.run)!);
     for (const r of ordered) {
       if (r.runNumber <= seen.run.runNumber || r.journeys.length === 0) continue;
       if (r.runNumber >= until) return undefined;
-      const listed = new Set(r.journeys.map((j) => j.identity));
-      for (const j of [...waitingFor]) if (walkedIn.get(r)!.has(j) || !listed.has(j)) waitingFor.delete(j);
+      for (const j of [...waitingFor]) {
+        if (walkedIn.get(r)!.has(j) || (retiredSince.get(j) ?? Infinity) <= r.runNumber) waitingFor.delete(j);
+      }
       if (waitingFor.size === 0) return r;
     }
     return undefined;
@@ -194,15 +206,28 @@ export function recurrence(
     // 2 and 8 — on checkmyapp.dev CHE-249 counts 58 occurrences), never a
     // problem of the customer's app; and matching by the old prose-hashed
     // dedupKey would tie a ticket to whatever the hash happens to equal.
-    const ids = new Set(sightings.map((s) => s.finding.id));
-    const link = links.find((l) => l.findingId !== null && ids.has(l.findingId)) ?? null;
+    // Customer tickets filed before CHE-103 get their findingId from
+    // scripts/backfill-finding-signature.ts (CHE-79, CHE-87 … on prod).
+    //
+    // A signature can fold several reworded findings that each got a ticket:
+    // any Canceled one settles it as not a bug, and the link shown is the one
+    // on the latest sighting that has a link — never whichever the database
+    // happened to return first.
+    const linked = sightings
+      .map((s) => links.find((l) => l.findingId !== null && l.findingId === s.finding.id))
+      .filter((l): l is RecurrenceLink => Boolean(l));
+    const link = linked[linked.length - 1] ?? null;
 
+    // A "fixed" mark is someone's word, and reconcile sets it the moment a
+    // ticket moves to Done, before any re-walk. It takes the issue out of
+    // "recurring" (the ticket's rule) but does not make it gone: until a check
+    // has looked again it is acknowledged — "known".
     const state: RecurringIssue["state"] =
-      mark?.mark === "false_positive" || link?.status === "suppressed"
+      mark?.mark === "false_positive" || linked.some((l) => l.status === "suppressed")
         ? "not_a_bug"
-        : (mark?.mark === "fixed" && mark.runNumber >= last.run.runNumber) || again
+        : again
           ? "gone"
-          : mark?.mark === "known"
+          : mark?.mark === "known" || (mark?.mark === "fixed" && mark.runNumber >= last.run.runNumber)
             ? "known"
             : checks.length >= 2
               ? "recurring"
@@ -238,13 +263,14 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
   });
   const entries = await Promise.all(
     apps.map(async (app): Promise<[string, RecurringIssue[]]> => {
-      const [runs, links] = await Promise.all([
+      const [runs, links, retired] = await Promise.all([
         db.run.findMany({
           ...alreadyScoped("the caller resolved this app"),
           where: { appId: app.id, status: { in: FINISHED } },
           orderBy: { runNumber: "asc" },
           select: {
             runNumber: true,
+            startedAt: true,
             status: true,
             verdict: true,
             targetKind: true,
@@ -271,12 +297,34 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
           where: { appId: app.id, findingId: { not: null } },
           select: { id: true, status: true, findingId: true },
         }),
+        db.appJourney.findMany({
+          where: { appId: app.id, retiredAt: { not: null } },
+          select: { id: true, retiredAt: true },
+        }),
       ]);
-      const published = runs.filter((r) => extensionReportPublished(r)).map(toRecurrenceRun);
-      return [app.id, recurrence(app, published, links).map((r) => r.issue)];
+      const published = runs.filter((r) => extensionReportPublished(r));
+      const retiredSince = retiredSinceRun(retired, published);
+      return [app.id, recurrence(app, published.map(toRecurrenceRun), links, { retiredSince }).map((r) => r.issue)];
     }),
   );
   return new Map(entries);
+}
+
+// AppJourney.id → the first of these checks that started at or after the
+// journey's retirement. A journey retired after the last check is not in it.
+export function retiredSinceRun(
+  retired: Array<{ id: string; retiredAt: Date | string | null }>,
+  runs: Array<{ runNumber: number; startedAt: Date | string }>,
+): Map<string, number> {
+  const ordered = [...runs].sort((a, b) => a.runNumber - b.runNumber);
+  const out = new Map<string, number>();
+  for (const j of retired) {
+    if (!j.retiredAt) continue;
+    const at = new Date(j.retiredAt).getTime();
+    const first = ordered.find((r) => new Date(r.startedAt).getTime() >= at);
+    if (first) out.set(j.id, first.runNumber);
+  }
+  return out;
 }
 
 export function toRecurrenceRun(run: {
