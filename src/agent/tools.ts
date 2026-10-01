@@ -294,8 +294,7 @@ export function scrubSecrets(env: ToolEnv, text: string): string {
   // echoing the admin's email is the same leak as the default one echoing its.
   const accounts = (env.testAccounts ?? []).flatMap((a) => [a.password, a.email]);
   // Longest first, so a password that contains an email is redacted whole.
-  // CHE-372: and the store password, which the page itself may echo back.
-  const secrets = [env.testPassword, env.testEmail, ...accounts, env.store?.password]
+  const secrets = [env.testPassword, env.testEmail, ...accounts]
     .filter((s): s is string => Boolean(s))
     .sort((a, b) => b.length - a.length);
   for (const secret of secrets) {
@@ -304,7 +303,42 @@ export function scrubSecrets(env: ToolEnv, text: string): string {
       out = out.split(encodeURIComponent(secret)).join("[redacted]");
     }
   }
-  return out;
+  return scrubStorePassword(env, out);
+}
+
+// CHE-372: the store password, which a page or an address may echo back.
+//
+// A store password is often a plain word — "demo" on securify-demo.myshopify.com.
+// Replaced wherever it occurs, it would rewrite the store's own address in
+// every tool result and in the stored trail ("securify-[redacted].myshopify.com"),
+// and the walk and every replay would navigate to an address that does not
+// exist. So the target's host is never touched, a strong password is redacted
+// wherever it stands, and a plain word only where it stands as a value: a
+// query parameter, which is how a form leaks one into an address.
+const STORE_SUBSTRING_MIN = 8;
+
+function scrubStorePassword(env: ToolEnv, text: string): string {
+  const secret = env.store?.password;
+  if (!secret) return text;
+  const forms = [...new Set([secret, encodeURIComponent(secret)])];
+  let host = "";
+  try {
+    host = new URL(env.targetOrigin).host;
+  } catch {
+    /* no target host to protect */
+  }
+  const SHIELD = "\u0000store-host\u0000";
+  let out = host ? text.split(host).join(SHIELD) : text;
+  const strong = secret.length >= STORE_SUBSTRING_MIN && !/^[a-z]+$/i.test(secret);
+  for (const form of forms) {
+    if (strong) {
+      out = out.split(form).join("[redacted]");
+    } else {
+      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(`([?&][^=&#\\s]*=)${escaped}(?=[&#\\s"'<>)\\]]|$)`, "g"), "$1[redacted]");
+    }
+  }
+  return host ? out.split(SHIELD).join(host) : out;
 }
 
 // ─── CHE-322: which account a placeholder names ───────────────────────────────

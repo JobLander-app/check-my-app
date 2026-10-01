@@ -141,7 +141,13 @@ export async function unlockStoreGate(
   }
   // The attempt is on the run before it happens. If it cannot be recorded,
   // it does not happen.
-  if (access.persist && !(await access.persist("pending"))) return "undriven";
+  if (access.persist && !(await access.persist("pending"))) {
+    // The password is in the field and the attempt is not on the run. Taken
+    // back out, so nothing — a later click on the form's own button included —
+    // can submit what was never recorded.
+    await field.fill("", { timeout: 8_000 }).catch(() => {});
+    return "undriven";
+  }
   state.status = "pending";
   let submitted = true;
   try {

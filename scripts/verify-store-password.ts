@@ -314,6 +314,9 @@ async function main() {
     const a: StoreAccess = { password: RIGHT, state: { status: "untried" }, persist: async () => false };
     const out = await unlockStoreGate(asPage(s.page), STORE, a);
     check("unlock: when the attempt cannot be recorded first, it is not made", out === "undriven" && s.submitted.length === 0, out);
+    // …and the password does not stay in the field, where a later click on the
+    // form's own button would submit what the run never recorded.
+    check("unlock: an unrecorded attempt leaves the field empty", s.fills.at(-1) === "" && (await s.page.locator().inputValue()) === "", JSON.stringify(s.fills.map((f) => f.length)));
   }
   {
     const s = fakeStore(RIGHT);
@@ -351,6 +354,33 @@ async function main() {
       !echoed.includes(RIGHT) && !echoed.includes(encodeURIComponent(RIGHT)) && echoed.includes("[redacted]"), echoed);
     check("leak: …and in the recorded trail (Step.actions)", !trail.includes(RIGHT) && trail.includes("[redacted]"), trail.slice(-160));
     check("leak: a page that shows the store password is scrubbed in read_page", !read.includes(RIGHT) && read.includes("[redacted]"), read.slice(0, 120));
+  }
+  {
+    // A store password is often a plain word that the store's own address
+    // contains ("demo" on securify-demo.myshopify.com). Redacting it wherever
+    // it occurs would rewrite the address in every result and in the stored
+    // trail, and the walk and each replay would navigate to a host that does
+    // not exist.
+    for (const [pw, why] of [
+      ["demo", "a plain word inside the host"],
+      ["securify", "a longer plain word inside the host"],
+      ["securify-demo", "a strong-looking password that is the host's own label"],
+    ] as const) {
+      const s = fakeStore(pw);
+      const env = toolEnv(s.page, access(pw).access);
+      const result = await executeTool(env, "navigate", { url: `${STORE}/collections/all` });
+      const action = (env.actionTrail as RecordedAction[])[0];
+      check(`scrub, ${why}: the store's address is intact in the result and the trail`,
+        s.isUnlocked() && result.includes(`${STORE}/collections/all`) && action?.kind === "navigate" &&
+          action.url === `${STORE}/collections/all` && action.outcome.urlAfter === `${STORE}/collections/all`,
+        `${result.slice(0, 90)} / ${JSON.stringify(action)}`);
+      const echoed = await executeTool(env, "navigate", { url: `${STORE}/echo` });
+      const trail = JSON.stringify(env.actionTrail);
+      check(`scrub, ${why}: as a value in an address it is still redacted`,
+        echoed.includes(`${STORE}/echo?token=[redacted]`) && trail.includes(`${STORE}/echo?token=[redacted]`) &&
+          !echoed.includes(`token=${encodeURIComponent(pw)}`),
+        echoed.slice(0, 110));
+    }
   }
   {
     const s = fakeStore(RIGHT);
