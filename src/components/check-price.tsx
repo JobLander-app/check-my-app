@@ -8,12 +8,12 @@ import type { PriceExplanation } from "@/lib/check-price";
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
-export function CheckPrice({ explanation }: { explanation: PriceExplanation }) {
+export function CheckPrice({ explanation, label = "This check" }: { explanation: PriceExplanation; label?: string }) {
   const e = explanation;
   return (
     <details className="group mt-1 font-mono text-xs text-fg-faint">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1 hover:text-fg-muted">
-        This check: <span className="text-fg-muted">{money(e.price_usd)}</span>
+        {label}: <span className="text-fg-muted">{money(e.price_usd)}</span>
         <span className="underline decoration-dotted underline-offset-2">why?</span>
       </summary>
       <div className="mt-2 max-w-md space-y-2 rounded-md border border-ink-700 bg-ink-850 p-3 font-sans text-xs leading-5 text-fg-muted">
