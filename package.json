@@ -43,6 +43,7 @@
     "verify:synthesis-fallback": "tsx --tsconfig tsconfig.json scripts/verify-synthesis-fallback.ts",
     "verify:harness": "tsx --tsconfig tsconfig.json scripts/verify-harness.ts",
     "verify:viewer": "tsx --tsconfig tsconfig.json scripts/verify-viewer-capabilities.ts",
+    "verify:lens-flags": "tsx --tsconfig tsconfig.json scripts/verify-lens-flags.ts",
     "verify:unpublished-404": "tsx --tsconfig tsconfig.json scripts/verify-unpublished-404.ts",
     "verify:site-quota": "tsx --tsconfig tsconfig.json scripts/verify-site-quota.ts",
     "verify:smoke-gate": "tsx --tsconfig tsconfig.json scripts/verify-smoke-gate.ts",
@@ -74,6 +75,7 @@
     "verify:known-journeys-listed": "tsx --tsconfig tsconfig.json scripts/verify-known-journeys-listed.ts",
     "verify:failed-run": "tsx --tsconfig tsconfig.json scripts/verify-failed-run.ts",
     "verify:paid-retry": "tsx --tsconfig tsconfig.json scripts/verify-paid-retry.ts",
+    "verify:app-health": "tsx --tsconfig tsconfig.json scripts/verify-app-health.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",
@@ -97,6 +99,7 @@
     "verify:extension-screenshot": "node scripts/verify-extension-screenshot.mjs",
     "verify:extension-adoption": "tsx scripts/verify-extension-adoption.ts",
     "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
+    "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
