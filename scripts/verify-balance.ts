@@ -300,6 +300,29 @@ async function main() {
     const some = await cp.explainRunPrice(skipDb, "t", "pub_some");
     check("one journey of three skipped: Walked 2 journeys, 5 steps", some?.work === "Walked 2 journeys, 5 steps" && some.journeys_walked === 2,
       some?.work ?? "");
+    // Codex on #229: with earlier all-skipped checks the usual is 0 journeys
+    // and 0 steps, so neither differs, and the comparison fell through to "the
+    // journeys took longer than usual" — next to "no journey was walked".
+    {
+      const history = Array.from({ length: 6 }, (_, i) => ({ id: `h${i}`, publicId: `pub_h${i}`, teamId: "t", appSlug: "skip.test", status: "completed",
+        costUsd: 0.1, priceUsd: 0.25, quickPagesOpened: null, createdAt: new Date(2026, 8, 1 + i) }));
+      const { db: zeroDb } = createStubDb({
+        team: [{ id: "t", plan: "growth", topupUsd: 0 }],
+        run: [...history, { id: "z", publicId: "pub_z", teamId: "t", appSlug: "skip.test", status: "completed", costUsd: 0.4, priceUsd: 1, quickPagesOpened: null, createdAt: new Date(2026, 8, 10) }],
+        journey: [...history, { id: "z" }].map((r) => ({ id: `j${r.id}`, runId: r.id, order: 0, title: "Sign in", carriedFromRunId: null })),
+        step: [...history, { id: "z" }].map((r) => ({ id: `s${r.id}`, journeyId: `j${r.id}`, order: 0, status: "skipped" })),
+        llmUsage: [{ id: "zu", runId: "z", phase: "discovery", journeyId: null, costUsd: 0.4 }],
+      });
+      const z = await cp.explainRunPrice(zeroDb, "t", "pub_z");
+      check("nothing walked, above a usual of earlier all-skipped checks: the comparison names no journey or step",
+        z !== null && /^Above this app's usual \$0\.25–\$0\.25\.$/.test(z.comparison ?? "") && !/journey|step/i.test(z.comparison ?? ""),
+        z?.comparison ?? "");
+      for (const usualJourneys of [0, 4]) {
+        const line = cp.comparePrice({ kind: "walk", price: 0.1, usual: { low: 0.4, high: 0.8 }, journeys: 0, steps: 0, usualJourneys, usualSteps: usualJourneys * 3 }) ?? "";
+        check(`nothing walked, below a usual of ${usualJourneys} journeys: the price is not explained by journeys or steps`,
+          line === "Below this app's usual $0.40–$0.80." , line);
+      }
+    }
     for (const [name, e] of [["walk", walk], ["quick", quick], ["skipped", none]] as const) {
       const text = JSON.stringify(e);
       check(`${name}: no cost, token or multiplier anywhere in the explanation`, !/cost|token|multipl|markup|×/i.test(text), text);

@@ -78,6 +78,11 @@ export function comparePrice(input: {
   const range = `${usd(usual.low)}–${usd(usual.high)}`;
   if (input.price >= usual.low && input.price <= usual.high) return `In this app's usual range (${range}).`;
   const above = input.price > usual.high;
+  // CHE-379: nothing was walked, so no journey or step explains the price —
+  // the work line already says what it paid for. Without this, a usual of
+  // earlier all-skipped checks (0 vs 0) fell through to "the journeys took
+  // longer than usual".
+  if (input.journeys === 0) return `${above ? "Above" : "Below"} this app's usual ${range}.`;
   const why = (() => {
     if (input.usualJourneys !== null && input.journeys !== input.usualJourneys) {
       const d = Math.abs(input.journeys - input.usualJourneys);
