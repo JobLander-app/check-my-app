@@ -100,6 +100,13 @@ const RUNS: Seed[] = [
   // Two members of t3 each saved dup.test; a run with no appId is neither's.
   run(401, "2026-09-20T10:00:00Z", { teamId: "t3", appId: null, appSlug: "dup.test", priceUsd: 1 }),
   run(402, "2026-09-20T11:00:00Z", { teamId: "t3", appId: "b1", appSlug: "dup.test", priceUsd: 0.5 }),
+  // tw: a team read week by week (the UI's default) and by the month.
+  run(806, "2026-09-10T09:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 2 }),
+  run(801, "2026-09-24T23:59:59Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0.9 }),
+  run(802, "2026-09-25T00:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0.4 }),
+  run(803, "2026-09-27T12:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", priceUsd: 1.1 }),
+  run(804, "2026-09-29T08:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0, status: "failed", verdict: null }),
+  run(805, "2026-10-01T09:00:00Z", { teamId: "tw", appId: "wk", appSlug: "week.test", watchId: "w_wk", priceUsd: 0.25 }),
   // Free, enterprise.
   run(501, "2026-09-20T10:00:00Z", { teamId: "t_free", appId: "f1", appSlug: "free.test", priceUsd: 0.3 }),
   run(601, "2026-09-20T10:00:00Z", { teamId: "t_ent", appId: "e1", appSlug: "ent.test", priceUsd: 7 }),
@@ -109,6 +116,7 @@ const { db, table } = createStubDb({
   team: [
     { id: "t", plan: "business" }, { id: "t2", plan: "business" }, { id: "t3", plan: "starter" },
     { id: "t_free", plan: "free" }, { id: "t_ent", plan: "enterprise" }, { id: "t_empty", plan: "growth" },
+    { id: "tw", plan: "business" },
   ],
   app: [
     { id: "a_shop", teamId: "t", appSlug: "shop.test", targetKind: "website", createdAt: at("2026-06-01") },
@@ -120,6 +128,7 @@ const { db, table } = createStubDb({
     { id: "f1", teamId: "t_free", appSlug: "free.test", targetKind: "website", createdAt: at("2026-06-01") },
     { id: "e1", teamId: "t_ent", appSlug: "ent.test", targetKind: "website", createdAt: at("2026-06-01") },
     { id: "g1", teamId: "t_empty", appSlug: "new.test", targetKind: "website", createdAt: at("2026-06-01") },
+    { id: "wk", teamId: "tw", appSlug: "week.test", targetKind: "website", createdAt: at("2026-06-01") },
   ],
   run: RUNS,
 });
@@ -228,6 +237,36 @@ async function main() {
     check("days: 7 → Business's $499 covers that 3838.5 times", week.planCoversTimes === 3838.5, String(week.planCoversTimes));
     check("days: 7 → the verdict strip and latest check do not depend on the window",
       same(s.verdicts, shop.verdicts) && s.latest?.runNumber === shop.latest?.runNumber);
+  }
+  {
+    // Week by week is how the UI opens (7 days, 30 a click away); the money
+    // line stays monthly. One team, both windows, every number.
+    const [week, month] = await Promise.all([7, 30].map((days) => appHealth(db, "tw", { now: NOW, days })));
+    const w = week.apps[0];
+    const m = month.apps[0];
+    check("7 days (from 2026-09-25 00:00): $1.75 over 4 checks — #801 one second earlier is out, the failed #804 is a $0 check",
+      w.spendUsd === 1.75 && w.checks === 4 && same(w.scheduled, { count: 3, usd: 0.65 }) && same(w.onRequest, { count: 1, usd: 1.1 }),
+      JSON.stringify([w.spendUsd, w.checks, w.scheduled, w.onRequest]));
+    check("7 days: $0.25 a day for the app and the team ($1.75 / 7)", w.perDayUsd === 0.25 && week.perDayUsd === 0.25,
+      JSON.stringify([w.perDayUsd, week.perDayUsd]));
+    check("7 days: 7 points 2026-09-25 … 2026-10-01 — 09-25 $0.40, 09-27 $1.10, 10-01 $0.25 — adding up to the spend",
+      w.daily.length === 7 && w.daily[0].date === "2026-09-25" && w.daily[6].date === "2026-10-01" &&
+        same(w.daily.filter((d) => d.usd).map((d) => [d.date, d.usd]), [["2026-09-25", 0.4], ["2026-09-27", 1.1], ["2026-10-01", 0.25]]) &&
+        Math.round(w.daily.reduce((x, d) => x + d.usd * 100, 0)) === 175,
+      JSON.stringify(w.daily));
+    check("7 days: still a month in money — $7.50 a month (1.75 / 7 × 30), Business's $499 covers it 66.5 times",
+      week.totalSpendUsd === 1.75 && week.monthlyRunRateUsd === 7.5 && week.planCoversTimes === 66.5,
+      JSON.stringify([week.totalSpendUsd, week.monthlyRunRateUsd, week.planCoversTimes]));
+    check("30 days, same team: $4.65 over 6 checks, 5 scheduled / $3.55, $0.16 a day, 30 points adding up",
+      m.spendUsd === 4.65 && m.checks === 6 && same(m.scheduled, { count: 5, usd: 3.55 }) && same(m.onRequest, { count: 1, usd: 1.1 }) &&
+        m.perDayUsd === 0.16 && m.daily.length === 30 && Math.round(m.daily.reduce((x, d) => x + d.usd * 100, 0)) === 465,
+      JSON.stringify([m.spendUsd, m.checks, m.scheduled, m.perDayUsd, m.daily.length]));
+    check("30 days: $4.65 a month, covered 107.3 times", month.monthlyRunRateUsd === 4.65 && month.planCoversTimes === 107.3,
+      JSON.stringify([month.monthlyRunRateUsd, month.planCoversTimes]));
+    check("7 and 30 days: the same strip (#806 #801 #802 #803 #805) and the same latest check (#805)",
+      same(w.verdicts.map((v) => v.runNumber), [806, 801, 802, 803, 805]) && same(w.verdicts, m.verdicts) &&
+        w.latest?.runNumber === 805 && same(w.latest, m.latest),
+      JSON.stringify(w.verdicts.map((v) => v.runNumber)));
   }
 
   // ─── 3. The daily series ─────────────────────────────────────────────────
