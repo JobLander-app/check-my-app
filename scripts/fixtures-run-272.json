@@ -1,0 +1,312 @@
+{
+  "runNumber": 272,
+  "appSlug": "joblander.app",
+  "targetUrl": "https://joblander.app",
+  "verdict": "needs_attention",
+  "findings": 0,
+  "bottomLine": "Re-checked 3 of 9 journeys (2 couldn't be re-walked this run); 4 carried forward from 3 earlier runs (last walked Sep 26). The core product — signup submit, login into /practice, and the live AI coaching session — sits behind an auth gate we couldn't open, so add test-account credentials in your dashboard and we'll verify the full paid journey next run. The public surface is healthy: pricing, roles and all 10 localized routes load cleanly, though the \"My favourite top 10\" heading stays in English on every translated roles page. Not opened this run: /ru, /zh, /de/about, /es/about and 14 more — so nothing here speaks to them.",
+  "journeys": [
+    {
+      "title": "Sign up for a new account",
+      "status": "partial",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Reach signup page from homepage",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/\",\"outcome\":{\"urlAfter\":\"https://joblander.app/\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/signup\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\",\"status\":200}},{\"kind\":\"fill\",\"selector\":\"input[placeholder=\\\"Your full name\\\"]\",\"value\":\"QA Test User\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}},{\"kind\":\"fill\",\"selector\":\"input[placeholder=\\\"Email address\\\"]\",\"value\":\"qa.testuser@example.com\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}},{\"kind\":\"fill\",\"selector\":\"input[placeholder=\\\"Password\\\"]\",\"value\":\"S3curePass!2024\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}},{\"kind\":\"click\",\"role\":\"button\",\"name\":\"Show\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\",\"navigated\":false,\"requests\":2,\"mutations\":13}},{\"kind\":\"click\",\"role\":\"button\",\"name\":\"Continue with Google\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\",\"navigated\":false,\"requests\":0,\"mutations\":14}}]"
+        },
+        {
+          "label": "Signup page fields present",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Continue with Google OAuth",
+          "status": "skipped",
+          "unverifiedReason": "our_capability",
+          "actions": null
+        },
+        {
+          "label": "Fill signup credentials",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Submit signup",
+          "status": "skipped",
+          "unverifiedReason": "not_applicable",
+          "actions": null
+        },
+        {
+          "label": "Post-signup /practice access",
+          "status": "skipped",
+          "unverifiedReason": "not_applicable",
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "Browse pricing and purchase minutes",
+      "status": "partial",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Navigate to /pricing via header link",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/\",\"outcome\":{\"urlAfter\":\"https://joblander.app/\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"navigated\":true,\"requests\":10,\"mutations\":769}},{\"kind\":\"click\",\"role\":\"heading\",\"name\":\"When are minutes consumed?\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"navigated\":false,\"requests\":1,\"mutations\":0}},{\"kind\":\"click\",\"role\":\"heading\",\"name\":\"How do I get a refund?\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"navigated\":false,\"requests\":2,\"mutations\":0}}]"
+        },
+        {
+          "label": "Review the three minute packs",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Read FAQ about minute consumption, expiration, refunds",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click \"Create an account — 40 minutes free\" and fill signup form",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/signup\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\",\"status\":200}},{\"kind\":\"fill\",\"label\":\"Your full name\",\"value\":\"QA Tester\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}},{\"kind\":\"fill\",\"label\":\"Email address\",\"value\":\"qa-test@example.com\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}},{\"kind\":\"fill\",\"label\":\"Password\",\"value\":\"TestPass123!\",\"outcome\":{\"urlAfter\":\"https://joblander.app/signup\"}}]"
+        },
+        {
+          "label": "Purchase a minute pack from the pricing page",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"status\":200}}]"
+        }
+      ]
+    },
+    {
+      "title": "Explore interview roles and start practicing",
+      "status": "risky",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Open /roles directory",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/\",\"outcome\":{\"urlAfter\":\"https://joblander.app/\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/roles\",\"outcome\":{\"urlAfter\":\"https://joblander.app/roles\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/en/roles\",\"outcome\":{\"urlAfter\":\"https://joblander.app/roles\",\"status\":200}},{\"kind\":\"click\",\"role\":\"heading\",\"name\":\"Hundreds of real roles, exactly as people typed them\",\"outcome\":{\"urlAfter\":\"https://joblander.app/roles\",\"navigated\":false,\"requests\":1,\"mutations\":0}}]"
+        },
+        {
+          "label": "Browse full roles directory",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click \"Practice your role\" from /roles",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Practice your role\",\"outcome\":{\"urlAfter\":\"https://joblander.app/login?back=%2Fpractice\",\"navigated\":true,\"requests\":16,\"mutations\":1024}}]"
+        },
+        {
+          "label": "Sign in to reach /practice",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/practice\",\"outcome\":{\"urlAfter\":\"https://joblander.app/login?back=%2Fpractice\",\"status\":200}}]"
+        },
+        {
+          "label": "Check localized /de pages (changed area)",
+          "status": "risky",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/de\",\"outcome\":{\"urlAfter\":\"https://joblander.app/de\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/de/roles\",\"outcome\":{\"urlAfter\":\"https://joblander.app/de/roles\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Deine Rolle üben\",\"outcome\":{\"urlAfter\":\"https://joblander.app/de/login?back=%2Fde%2Fpractice\",\"navigated\":true,\"requests\":20,\"mutations\":1026}}]"
+        },
+        {
+          "label": "Check other locale routes (changed area)",
+          "status": "risky",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/ja/roles\",\"outcome\":{\"urlAfter\":\"https://joblander.app/ja/roles\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"概要\",\"outcome\":{\"urlAfter\":\"https://joblander.app/ja/about\",\"navigated\":true,\"requests\":8,\"mutations\":1012}}]"
+        },
+        {
+          "label": "Select a role and start live AI practice",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "Purchase a minute pack to add interview time",
+      "status": "skipped",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Log in to JobLander",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/\",\"outcome\":{\"urlAfter\":\"https://joblander.app/\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/login\",\"outcome\":{\"urlAfter\":\"https://joblander.app/login\",\"status\":200}}]"
+        },
+        {
+          "label": "Select a minute pack on the pricing page",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://joblander.app/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"status\":200}},{\"kind\":\"click\",\"name\":\"100 minutes\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"navigated\":false,\"requests\":1,\"mutations\":0}},{\"kind\":\"click\",\"name\":\"$27\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"navigated\":false,\"requests\":0,\"mutations\":0}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/de/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/de/pricing\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/de/pricing\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://joblander.app/en/pricing\",\"outcome\":{\"urlAfter\":\"https://joblander.app/pricing\",\"status\":200}}]"
+        }
+      ]
+    },
+    {
+      "title": "Practice Interview with AI Coach",
+      "status": "skipped",
+      "carriedFromRunId": null,
+      "steps": []
+    },
+    {
+      "title": "Log In",
+      "status": "partial",
+      "carriedFromRunId": "cmumsao9b0002qf1o0di2a7uf",
+      "steps": [
+        {
+          "label": "Open /login",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click Continue with Google",
+          "status": "skipped",
+          "unverifiedReason": "our_capability",
+          "actions": null
+        },
+        {
+          "label": "Enter email and password",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Click Sign in",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Protected page redirects to login with return path",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "Sign-up / Login and start an AI practice interview",
+      "status": "partial",
+      "carriedFromRunId": "cmumoub8d0008vd1r1pxh9rmf",
+      "steps": [
+        {
+          "label": "Load homepage and hero CTA",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click \"Practice with AI\" (gated)",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Fill email and password",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click \"Sign in\"",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Create account (signup form)",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Load authenticated practice area (/practice)",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Check changed pages (/about, /de, /es and locale sub-pages)",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "Try the live AI insight demo on the homepage",
+      "status": "partial",
+      "carriedFromRunId": "cmumoub8d0008vd1r1pxh9rmf",
+      "steps": [
+        {
+          "label": "Type an interview question in the homepage demo",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Click 'Try it' to generate the live insight",
+          "status": "skipped",
+          "unverifiedReason": "our_capability",
+          "actions": null
+        },
+        {
+          "label": "Click 'Sign up free to continue' from the demo gate",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Submit 'Create account' to unlock the full insight",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "First-time sign-up and onboarding",
+      "status": "partial",
+      "carriedFromRunId": "cmuiscgxz0002200nzxpvn2gt",
+      "steps": [
+        {
+          "label": "Landing page value proposition & How it works",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Signup form (Create account)",
+          "status": "skipped",
+          "unverifiedReason": "not_applicable",
+          "actions": null
+        },
+        {
+          "label": "Sign in and land on dashboard",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Getting Started / first-time tutorial flow",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        }
+      ]
+    }
+  ]
+}
