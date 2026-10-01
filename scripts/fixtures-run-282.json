@@ -1,0 +1,103 @@
+{
+  "runNumber": 282,
+  "appSlug": "securify-demo.myshopify.com",
+  "targetUrl": "https://securify-demo.myshopify.com/",
+  "verdict": "needs_attention",
+  "findings": 0,
+  "bottomLine": "Nothing broke this run — but the store is fully password-locked, so no shopper-facing journey (catalog, cart, checkout) could be reached or verified, and we had no store password or owner credentials to go behind either gate. The gate and the owner-login path into Shopify admin both work cleanly; to let us verify the storefront and checkout, share the store password, and add test-account credentials for the signed-in admin experience.",
+  "journeys": [
+    {
+      "title": "Enter store password to access the storefront",
+      "status": "partial",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Open storefront URL",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}}]"
+        },
+        {
+          "label": "Enter store password and click Enter",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"fill\",\"label\":\"Enter store password\",\"value\":\"not-the-store-password\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\"}}]"
+        }
+      ]
+    },
+    {
+      "title": "Log in to Shopify admin",
+      "status": "risky",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Click \"Log in here\" on the password page",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Log in here\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED\",\"navigated\":true,\"requests\":33,\"mutations\":2555}}]"
+        },
+        {
+          "label": "Shopify admin login screen is presented",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        },
+        {
+          "label": "Log in with store owner credentials",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Storefront is password-locked",
+          "status": "risky",
+          "unverifiedReason": null,
+          "actions": null
+        }
+      ]
+    },
+    {
+      "title": "Browse products and purchase (hypothetical – requires password)",
+      "status": "partial",
+      "carriedFromRunId": null,
+      "steps": [
+        {
+          "label": "Open the storefront home page",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/collections/all\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/products.json\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"fill\",\"label\":\"Enter store password\",\"value\":\"not-the-real-store-password\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\"}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/admin\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/cart\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}}]"
+        },
+        {
+          "label": "Enter the store password to get past the gate",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Browse a collection or product page",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Open the cart",
+          "status": "skipped",
+          "unverifiedReason": "missing_access",
+          "actions": null
+        },
+        {
+          "label": "Proceed to checkout and complete a purchase",
+          "status": "skipped",
+          "unverifiedReason": "not_applicable",
+          "actions": null
+        },
+        {
+          "label": "Follow \"Are you the store owner? Log in here\"",
+          "status": "ok",
+          "unverifiedReason": null,
+          "actions": null
+        }
+      ]
+    }
+  ]
+}

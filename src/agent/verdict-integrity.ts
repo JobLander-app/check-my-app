@@ -32,6 +32,25 @@
 //      its address names sign-in (/password, /login, auth.example.com). The
 //      bottom line calls it a password or sign-in page; this is what earns
 //      that sentence.
+//
+//      Run #282 (same store, the live check of the version above) slipped
+//      past every precondition that was NOT the trail. Synthesis said
+//      needs_attention, not all_good — with zero findings, so the yellow pill
+//      rested on nothing but the lock. One journey was `risky` because its
+//      risky step sat on Shopify's own sign-in page, off the product. One skip
+//      was `not_applicable` (checkout, unreachable behind the lock). And
+//      /admin redirected to accounts.shopify.com, a second gate beside
+//      /password. Its trail was as clear as #281's: every product page we
+//      asked for ended at a sign-in. So the trail is now the precondition and
+//      the rest is dropped — any synthesized verdict, any journey status, any
+//      mix of skip reasons, as long as there are no findings and some skip is
+//      missing_access (that is what makes asking for a password honest,
+//      CLAUDE.md rule 2). Every redirect target must ask for access, and a
+//      sign-in provider's own host is not the product, so its later pages do
+//      not count as product reached. "needs_attention requires a finding" is
+//      NOT the rule: runs #272, #266 and #229 are honest needs_attention with
+//      no findings of their own (re-checks carrying earlier findings), and
+//      their trails reach real pages.
 //   2. "Broken" needs a body. Run #20 called an app broken off eight risky /
 //      confusing / polish findings; without a broken/exposed finding or an
 //      observed broken/exposed step, it downgrades to "needs attention".
@@ -131,21 +150,43 @@ const ACCESS_SEGMENT =
 // The first label of a host that exists to sign people in.
 const ACCESS_HOST = /^(?:auth|login|signin|sso|accounts?|id|identity)\./i;
 
+// The last two labels of a host. Not a public-suffix lookup: under a suffix
+// like co.uk (or myshopify.com) it treats unrelated hosts as one owner, which
+// only makes the rule below count more pages as the product and fire less
+// often — the safe direction for a rule that withdraws a verdict.
+function owner(site: string): string {
+  return site.split(".").slice(-2).join(".");
+}
+
+// The unambiguous subset, for a page we merely landed on. "session",
+// "sessions", "auth", "access" and "unlock" are also product words — an
+// interview app's /sessions/123 is the product (review of this rule, round
+// 3) — so they only count where the product redirected us there, which is
+// evidence of its own.
+const SIGN_IN_SEGMENT = /^(?:password|login|log-in|log_in|signin|sign-in|sign_in|sso)$/i;
+
+function signInPath(p: Place): boolean {
+  return p.path.split("/").some((seg) => SIGN_IN_SEGMENT.test(seg));
+}
+
 function namesAccess(gate: Place, targetSite: string): boolean {
   if (gate.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg))) return true;
   return gate.site !== targetSite && ACCESS_HOST.test(gate.site);
 }
 
-// The one place the product redirected every walked journey to, shown the way
-// the bottom line names it — or null when the trail does not prove a gate.
-export function accessGate(walked: IntegrityJourney[], targetUrl: string | null | undefined): string | null {
+// The places the product redirected us to, shown the way the bottom line names
+// them (the target's own gate first) — or null when the trail does not prove
+// that every product page we asked for ended at a sign-in.
+export function accessGate(journeys: IntegrityJourney[], targetUrl: string | null | undefined): string | null {
   const target = place(targetUrl);
   if (!target) return null;
 
   const redirectedTo = new Map<string, Place>();
   const landings: Place[] = [];
   const credentialFillsAt = new Set<string>();
-  for (const j of walked) {
+  // Skipped journeys are read too: a page a skipped journey reached is still
+  // a page reached. Only walked ones must show where they stopped.
+  for (const j of journeys) {
     let landed = 0;
     for (const s of j.steps) {
       for (const a of trailOf(s.actions)) {
@@ -163,23 +204,47 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
         }
       }
     }
-    // A journey with no recorded landing tells us nothing about where it
-    // stopped, so it cannot be counted as stopped at the gate.
-    if (landed === 0) return null;
+    // A walked journey with no recorded landing tells us nothing about where
+    // it stopped — a carried-forward journey from an earlier run is the usual
+    // one — so it cannot be counted as stopped at the gate.
+    if (j.status !== "skipped" && landed === 0) return null;
   }
 
-  if (redirectedTo.size !== 1) return null;
-  const [gate] = redirectedTo.values();
-  if (!credentialFillsAt.has(gate.key) && !namesAccess(gate, target.site)) return null;
-  // The product lives on the target's site AND on whatever site it sent us
-  // to: example.com redirecting to app.example.com is the product moving
-  // house, not a gate, and every page we then reached on app.example.com is
-  // coverage (review of the first version of this rule). On either site the
-  // gate is the only place we may have been. Landings on any other site are
-  // the sign-in provider's later pages or an outbound link — not the product.
-  const productSites = new Set([target.site, gate.site]);
-  for (const p of landings) if (productSites.has(p.site) && p.key !== gate.key) return null;
-  return gate.display(target.site);
+  if (redirectedTo.size === 0) return null;
+  const gates = [...redirectedTo.values()];
+  // Every place the product sent us must ask for access. One redirect to a
+  // page that asks for nothing (/en, /maintenance) means a page reached.
+  if (gates.some((g) => !credentialFillsAt.has(g.key) && !namesAccess(g, target.site))) return null;
+
+  // Was this landing a page of the product? Decided per landing, not per
+  // host, because review found a hole in every per-host version:
+  //   - a gate, or any page whose path unambiguously names sign-in (/login,
+  //     /u/login, /account/login — not /sessions/123), is the lock, not the
+  //     product — wherever it is;
+  //   - a host with the target's owner is the product: the target itself,
+  //     its own id.example.com sign-in (review of this rule, round 1) and a
+  //     sibling it never redirected to, docs.example.com (round 2);
+  //   - a host the product REDIRECTED us to, with another owner, is the
+  //     product moved house (brand.com → brandapp.io) unless it is a sign-in
+  //     provider: its name says so (accounts.shopify.com, run #282's admin
+  //     login) — or, for a tenant-named one like tenant.auth0.com (round
+  //     2), its pages name sign-in, which the first case already caught;
+  //   - any other host is an outbound link, not the product.
+  const gateKeys = new Set(gates.map((g) => g.key));
+  const gateSites = new Set(gates.map((g) => g.site));
+  const targetOwner = owner(target.site);
+  const reachedProduct = (p: Place): boolean => {
+    if (gateKeys.has(p.key) || signInPath(p)) return false;
+    if (owner(p.site) === targetOwner) return true;
+    if (gateSites.has(p.site)) return !ACCESS_HOST.test(p.site);
+    return false;
+  };
+  if (landings.some(reachedProduct)) return null;
+
+  return gates
+    .sort((a, b) => Number(b.site === target.site) - Number(a.site === target.site))
+    .map((g) => g.display(target.site))
+    .join(", ");
 }
 
 export function judgeVerdictIntegrity(
@@ -203,33 +268,24 @@ export function judgeVerdictIntegrity(
     };
   }
 
-  // Only a passing verdict is corrected: needs_attention or broken already
-  // tells the owner not to relax, and a finding is evidence we saw something.
-  // Every skip must be missing_access — access is theirs to grant, so the ask
-  // is allowed (CLAUDE.md rule 2). A journey that also stopped on
-  // our_capability or not_applicable did not stop only at the gate, and a
-  // password would not have finished it.
-  const passing = synth.verdict === "all_good" || synth.verdict === "mostly_ok";
-  const stoppedOnlyForAccess =
-    findings.length === 0 &&
-    walked.every((j) => {
-      const skipped = j.steps.filter((s) => s.status === "skipped");
-      return (
-        j.status === "partial" &&
-        skipped.length > 0 &&
-        skipped.every((s) => s.unverifiedReason === "missing_access")
-      );
-    });
-  const gate = passing && stoppedOnlyForAccess ? accessGate(walked, targetUrl) : null;
+  // A finding is evidence we saw something behind or beside the gate, so the
+  // rule needs none. Whatever synthesis called it — all_good, mostly_ok,
+  // needs_attention or broken — a verdict over a run that reached only the
+  // lock is not about the product (run #282). Placed before rule 2 so a
+  // body-less "broken" over a lock reads Not verified, not Needs attention.
+  const askedForAccess = journeys.some((j) =>
+    j.steps.some((s) => s.status === "skipped" && s.unverifiedReason === "missing_access"),
+  );
+  const gate = findings.length === 0 && askedForAccess ? accessGate(journeys, targetUrl) : null;
   if (gate) {
     return {
       verdict: "unverified",
       bottomLine:
-        `We couldn't get past the access gate this run — every journey ended at the same password ` +
-        `or sign-in page (${gate}), so read this as no coverage of what is behind it, not a clean ` +
-        "bill of health. A password or a test login for it is what would let us check the rest." +
+        `We couldn't get past the access gate this run — every page of the product we asked for led ` +
+        `to a password or sign-in page (${gate}), so read this as no coverage of what is behind it, ` +
+        "not a clean bill of health. A password or a test login for it is what would let us check the rest." +
         (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
-      note: `Every journey stopped at the same sign-in page (${gate}) — recorded as Not verified`,
+      note: `Every page we asked for led to a sign-in page (${gate}) — recorded as Not verified`,
     };
   }
 

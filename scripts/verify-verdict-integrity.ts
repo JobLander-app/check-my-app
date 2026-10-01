@@ -17,11 +17,30 @@
 // pages and then meets the sign-in is ALSO partial with a missing_access
 // skip, and it verified something. Only the trail tells the two apart.
 //
+// Run #282 (same store, publicId cmuprx4mb00030v1ovh5rlsft) is the live check
+// of the first version of the rule, and it slipped past: synthesis said
+// needs_attention with zero findings, one journey was `risky` (its risky step
+// sits on Shopify's own sign-in host), one skip was `not_applicable`, and
+// /admin redirected to accounts.shopify.com — a second gate. Every
+// precondition that was not the trail failed, while the trail was as clear as
+// #281's. `fixtures-run-282.json` is that run straight out of production D1.
+//
+// Run #272 (joblander.app) is the negative it must not touch:
+// needs_attention with zero findings of its own, a re-check that carries
+// journeys forward, with a real login redirect AND public pages reached.
+// `fixtures-run-272.json` is that run from D1. Signed sign-in tokens in a
+// URL's query are replaced with REDACTED: the rule reads no query, and a live
+// login signature has no place in source control.
+//
 // Pure: no database, no model. Every case is the exact shape the workflow
-// hands judgeVerdictIntegrity.
+// hands judgeVerdictIntegrity. To see what the rules would do to recent
+// production runs, scripts/replay-verdict-integrity.ts reads them from D1.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-verdict-integrity.ts
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { Verdict } from "@/lib/enums";
 import {
   judgeVerdictIntegrity,
   type IntegrityFinding,
@@ -38,6 +57,18 @@ function check(name: string, ok: boolean, detail = "") {
 
 type Step = IntegrityStep & { label: string };
 type Journey = IntegrityJourney & { title: string; steps: Step[] };
+
+interface RunFixture {
+  runNumber: number;
+  targetUrl: string;
+  verdict: Verdict;
+  findings: number;
+  bottomLine: string;
+  journeys: Array<Journey & { carriedFromRunId: string | null }>;
+}
+
+const fixture = (name: string): RunFixture =>
+  JSON.parse(readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8"));
 
 const trail = (...actions: unknown[]) => JSON.stringify(actions);
 const nav = (url: string, urlAfter: string) => ({ kind: "navigate", url, outcome: { urlAfter, status: 200 } });
@@ -83,7 +114,9 @@ const RUN_281: Journey[] = [
         trail(
           click(
             "Log in here",
-            "https://accounts.shopify.com/lookup?rid=0c358f68-68e8-4816-9c10-27f531c84aad&verify=1790871311-bnLkLuIdRSxeQ6eir93XzYPzrp9vo%2BaLJ9ECl6ilQGs%3D",
+            // Query redacted: it was a live signed Shopify login token, and
+            // the rule never reads a query.
+            "https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED",
           ),
         ),
       ),
@@ -209,7 +242,177 @@ for (const verdict of ["all_good", "mostly_ok"] as const) {
   check("a neutral address where we typed into a password field → a gate", byFill.verdict === "unverified", byFill.verdict);
 }
 
+console.log("\n— run #282: the gate, whatever synthesis called it —\n");
+
+const RUN_282 = fixture("fixtures-run-282.json");
+
+{
+  const out = judgeVerdictIntegrity(
+    RUN_282.journeys,
+    [],
+    { verdict: RUN_282.verdict, bottomLine: RUN_282.bottomLine },
+    RUN_282.targetUrl,
+  );
+  check(`run #282 as recorded (${RUN_282.verdict}, 0 findings) → unverified`, out.verdict === "unverified", out.verdict);
+  const line = out.bottomLine ?? "";
+  check("…names both gates: the store's own and Shopify's sign-in",
+    line.includes("(/password, accounts.shopify.com/lookup)"), line);
+  check("…keeps what was seen, as an outside observation",
+    line.includes(`What we saw from the outside: ${RUN_282.bottomLine}`), line);
+  check("…note in product language", !!out.note && !INTERNAL_WORDS.test(out.note), out.note ?? "(none)");
+  check("…no homework, narration or machinery", !hasHomework(line) && !hasNarration(line) && !hasEnvironmentLeak(line), line);
+
+  // Shopify's sign-in host is the provider, not the product: its later pages
+  // are not "product reached".
+  const providerOnward: RunFixture["journeys"] = RUN_282.journeys.map((j, i) =>
+    i === 1
+      ? {
+          ...j,
+          steps: [
+            ...j.steps,
+            ok("Continue to the password step", trail(click("Continue with email", "https://accounts.shopify.com/login"))),
+          ],
+        }
+      : j,
+  );
+  const po = judgeVerdictIntegrity(providerOnward, [], { verdict: "needs_attention", bottomLine: null }, RUN_282.targetUrl);
+  check("a later page on the sign-in provider's host is not the product → still unverified", po.verdict === "unverified", po.verdict);
+}
+
+for (const verdict of ["all_good", "mostly_ok", "needs_attention", "broken"] as const) {
+  const out = judgeVerdictIntegrity(RUN_281, [], { verdict, bottomLine: null }, RUN_281_TARGET);
+  check(`run #281's trail with synth ${verdict} and no findings → unverified`, out.verdict === "unverified", out.verdict);
+}
+
 console.log("\n— left alone: something behind or beside the gate was really verified —\n");
+
+{
+  const RUN_272 = fixture("fixtures-run-272.json");
+  const out = judgeVerdictIntegrity(
+    RUN_272.journeys,
+    [],
+    { verdict: RUN_272.verdict, bottomLine: RUN_272.bottomLine },
+    RUN_272.targetUrl,
+  );
+  check(`run #272 as recorded (re-check, ${RUN_272.verdict}, 0 findings of its own) → stays ${RUN_272.verdict}`,
+    out.verdict === RUN_272.verdict, out.verdict);
+  check("…bottom line untouched", out.bottomLine === RUN_272.bottomLine, out.bottomLine ?? "(null)");
+
+  // Only the fresh journeys, carried ones dropped: it still reached /, /pricing,
+  // /roles — real pages beside the /login redirect.
+  const fresh = RUN_272.journeys.filter((j) => j.carriedFromRunId === null);
+  const f = judgeVerdictIntegrity(fresh, [], { verdict: "needs_attention", bottomLine: null }, RUN_272.targetUrl);
+  check("…its fresh journeys alone still reached public pages → stays needs_attention", f.verdict === "needs_attention", f.verdict);
+}
+
+{
+  // Review of this rule, round 1: id.example.com is the customer's own
+  // sign-in, not a third party's. A page reached there is the product.
+  const site = "https://example.com";
+  const own = "https://id.example.com";
+  const ownSignIn = (extra: Step[]): Journey[] =>
+    [1, 2].map((n) => ({
+      title: `Journey ${n}`,
+      status: "partial",
+      steps: [ok("Open the app", trail(nav(`${site}/app`, `${own}/sign-in`))), ...extra, gated("Sign in")],
+    }));
+  const pricing = judgeVerdictIntegrity(
+    ownSignIn([ok("Read pricing", trail(click("Pricing", `${own}/pricing`)))]),
+    [],
+    { verdict: "all_good", bottomLine: null },
+    `${site}/`,
+  );
+  check("a page reached on the customer's own id.* subdomain → stays all_good", pricing.verdict === "all_good", pricing.verdict);
+
+  const onlyGate = judgeVerdictIntegrity(ownSignIn([]), [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("…while only its sign-in page reached → unverified", onlyGate.verdict === "unverified", onlyGate.verdict);
+}
+
+{
+  // Review of this rule, round 2.
+  const app = "https://app.customer.com";
+  const tenant = "https://tenant.auth0.com";
+  const auth0: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the dashboard", trail(nav(`${app}/dashboard`, `${tenant}/login`))),
+      ok("Continue to the password step", trail(click("Continue", `${tenant}/u/login`))),
+      gated("Sign in"),
+    ],
+  }));
+  const a0 = judgeVerdictIntegrity(auth0, [], { verdict: "all_good", bottomLine: null }, `${app}/`);
+  check("a tenant-named provider's later sign-in page is not the product → unverified", a0.verdict === "unverified", a0.verdict);
+
+  const site = "https://example.com";
+  const docs: Journey[] = [
+    {
+      title: "Dashboard",
+      status: "partial",
+      steps: [ok("Open the dashboard", trail(nav(`${site}/dashboard`, `${site}/login`))), gated("Sign in")],
+    },
+    {
+      title: "Docs",
+      status: "ok",
+      steps: [ok("Read pricing in the docs", trail(click("Pricing", "https://docs.example.com/pricing")))],
+    },
+  ];
+  const d = judgeVerdictIntegrity(docs, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("a page on a sibling subdomain it never redirected to is the product → stays all_good", d.verdict === "all_good", d.verdict);
+
+  const moved: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the app", trail(nav("https://brand.com/app", "https://brandapp.io/login"))),
+      ok("Read pricing", trail(click("Pricing", "https://brandapp.io/pricing"))),
+      gated("Sign in"),
+    ],
+  }));
+  const m = judgeVerdictIntegrity(moved, [], { verdict: "all_good", bottomLine: null }, "https://brand.com/");
+  check("the product moved to another domain and a page was read there → stays all_good", m.verdict === "all_good", m.verdict);
+}
+
+{
+  // Review of this rule, round 3: "sessions" is a product word too.
+  const site = "https://coach.example.com";
+  const sessions: Journey[] = [
+    {
+      title: "Settings",
+      status: "partial",
+      steps: [ok("Open settings", trail(nav(`${site}/settings`, `${site}/login`))), gated("Sign in")],
+    },
+    {
+      title: "Shared session",
+      status: "ok",
+      steps: [ok("Open a shared practice session", trail(nav(`${site}/sessions/123`, `${site}/sessions/123`)))],
+    },
+  ];
+  const s = judgeVerdictIntegrity(sessions, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("a /login gate beside a product page at /sessions/123 → stays all_good", s.verdict === "all_good", s.verdict);
+}
+
+{
+  // Fixtures come from production and land in source control.
+  for (const name of ["fixtures-run-282.json", "fixtures-run-272.json"]) {
+    const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
+    check(`${name} carries no live sign-in token`, !/verify=(?!REDACTED)/.test(text));
+  }
+}
+
+{
+  // A gate proven, and one product page reached on the side: not gate-only.
+  const withPage: Journey[] = [
+    ...RUN_281,
+    {
+      title: "Read the shipping policy",
+      status: "ok",
+      steps: [ok("Open the policy", trail(nav(`${SHOP}/policies/shipping-policy`, `${SHOP}/policies/shipping-policy`)))],
+    },
+  ];
+  const out = judgeVerdictIntegrity(withPage, [], { verdict: "needs_attention", bottomLine: null }, RUN_281_TARGET);
+  check("a proven gate plus one product page reached → stays needs_attention", out.verdict === "needs_attention", out.verdict);
+}
 
 {
   // Review, third round: a canonical redirect to a public page is one
@@ -296,7 +499,7 @@ const SAAS = "https://saas.example.com";
     },
   ];
   const out = judgeVerdictIntegrity(twoGates, [], { verdict: "all_good", bottomLine: null }, `${SAAS}/`);
-  check("redirects to two different places → not one gate → stays all_good", out.verdict === "all_good", out.verdict);
+  check("redirects to a sign-in AND to a page that asks for nothing → stays all_good", out.verdict === "all_good", out.verdict);
 }
 
 {
@@ -353,8 +556,10 @@ const SAAS = "https://saas.example.com";
 }
 
 {
-  // A gated journey that ALSO stopped for our own reason: a password would
-  // not have finished it, and our_capability is our ticket (CLAUDE.md rule 2).
+  // Run #282 showed the skip reasons are not the evidence: one of its skips
+  // was not_applicable ("checkout" — never reachable behind the gate). The
+  // trail is what says nothing behind the gate was reached, so an extra
+  // our_capability or not_applicable skip does not rescue the pass.
   const alsoOurs: Journey[] = [
     {
       ...RUN_281[0],
@@ -367,15 +572,17 @@ const SAAS = "https://saas.example.com";
     RUN_281[2],
   ];
   const out = judgeVerdictIntegrity(alsoOurs, [], { verdict: "all_good", bottomLine: null }, RUN_281_TARGET);
-  check("a gated journey with an our_capability skip too → stays all_good", out.verdict === "all_good", out.verdict);
+  check("a proven gate with an our_capability skip too → unverified", out.verdict === "unverified", out.verdict);
 
-  const notApplicable: Journey[] = [
-    { ...RUN_281[0], steps: RUN_281[0].steps.map((s) => (s.status === "skipped" ? { ...s, unverifiedReason: "not_applicable" } : s)) },
-    RUN_281[1],
-    RUN_281[2],
-  ];
-  const na = judgeVerdictIntegrity(notApplicable, [], { verdict: "all_good", bottomLine: null }, RUN_281_TARGET);
-  check("a journey skipped as not_applicable → stays all_good", na.verdict === "all_good", na.verdict);
+  // But some skip must be missing_access: that is what makes "a password or
+  // a test login" the honest ask. A gate whose every skip is ours is our
+  // ticket (CLAUDE.md rule 2), not their access to grant.
+  const noneAccess: Journey[] = RUN_281.map((j) => ({
+    ...j,
+    steps: j.steps.map((s) => (s.status === "skipped" ? { ...s, unverifiedReason: "our_capability" } : s)),
+  }));
+  const na = judgeVerdictIntegrity(noneAccess, [], { verdict: "all_good", bottomLine: null }, RUN_281_TARGET);
+  check("a proven gate with no missing_access skip anywhere → stays all_good", na.verdict === "all_good", na.verdict);
 }
 
 console.log("\n— left alone: a verdict that already says something is wrong —\n");
