@@ -38,6 +38,7 @@ import {
   productizeStep,
   scrubSecrets,
   STORE_LOCKED_OBSERVED,
+  STORE_UNDRIVEN_OBSERVED,
   type RecordedAction,
   type ReportedStep,
   type ToolEnv,
@@ -290,6 +291,44 @@ async function main() {
     check("report_step: the lock is drained with the step it belonged to", reported[1]?.status === "ok", JSON.stringify(reported[1]));
   }
   {
+    // Codex review of #220, round 2: a password we could not enter is our
+    // hands, not the store — never judged as the product, never a rejection.
+    const s = fakeStore(RIGHT);
+    s.page.locator = () => ({
+      first() {
+        return this;
+      },
+      count: async () => 1,
+      fill: async () => {
+        throw new Error("locator.fill: Timeout 8000ms exceeded.");
+      },
+      press: async () => {},
+    }) as never;
+    let recorded = 0;
+    const reported: ReportedStep[] = [];
+    const env = toolEnv(
+      s.page,
+      { storePassword: RIGHT, storeAccess: { rejected: false }, onStorePasswordRejected: async () => void recorded++ },
+      reported,
+    );
+    const result = await executeTool(env, "navigate", { url: `${STORE}/` });
+    check("navigate, password could not be entered: told it is our limitation, to skip as our_capability",
+      result.includes("our_capability") && /could not be entered/.test(result) && !result.includes(RIGHT), result.slice(0, 160));
+    check("navigate, password could not be entered: not recorded as the store refusing it",
+      recorded === 0 && env.storeAccess?.rejected === false);
+    await executeTool(env, "report_step", {
+      label: "Open the store",
+      status: "broken",
+      attempted: "Opened the home page",
+      observed: "The storefront is hidden behind a password form.",
+    });
+    const step = reported[0];
+    check("report_step after an undriven unlock: skipped / our_capability, our gap — not a finding about the store",
+      step?.status === "skipped" && step.unverifiedReason === "our_capability" && step.gapClass === "undriven_control" &&
+        step.observed === STORE_UNDRIVEN_OBSERVED,
+      JSON.stringify(step));
+  }
+  {
     const s = fakeStore(RIGHT);
     await s.page.goto(`${STORE}/`);
     const env = toolEnv(s.page, { storePassword: RIGHT, storeAccess: { rejected: false } });
@@ -399,6 +438,7 @@ async function main() {
     const { STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } = await import("@/agent/replay");
     const customerText = [
       STORE_GATED_SMOKE_FAILURE,
+      STORE_UNDRIVEN_OBSERVED,
       none.bottomLine ?? "",
       refused.bottomLine ?? "",
       STORE_LOCKED_OBSERVED,

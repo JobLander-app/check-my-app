@@ -126,10 +126,11 @@ export interface ToolEnv {
   // again this run.
   storeAccess?: { rejected: boolean };
   onStorePasswordRejected?: () => Promise<void>;
-  // CHE-372: the walk stood on the store's password page, locked out by a
-  // store password that was turned away, since the last report_step. Written
-  // by the tools, drained by report_step (coerceStoreLocked).
-  storeLocked?: boolean;
+  // CHE-372: the walk stood on the store's password page since the last
+  // report_step — "refused": the store turned our password away (access);
+  // "undriven": we could not enter it (our capability). Written by the
+  // tools, drained by report_step (coerceStoreLocked).
+  storeLocked?: "refused" | "undriven";
 }
 
 // CHE-193: is this run checking CheckMyApp itself?
@@ -758,6 +759,10 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     console.warn(`[navigate] store password page, password not accepted: ${env.page.url()}`);
     return `Navigated to ${env.page.url()} (status ${status ?? "?"}). ${STORE_PASSWORD_REFUSED}`;
   }
+  if (store === "undriven" || store === "no_field") {
+    console.warn(`[navigate] store password page, could not enter the password (${store}): ${env.page.url()}`);
+    return `Navigated to ${env.page.url()} (status ${status ?? "?"}). ${STORE_UNLOCK_UNDRIVEN}`;
+  }
   // CHE-171: a 404/410 on an address nothing has published is not a fact
   // about the product — no user arrives there. Decided against the set, not
   // the model's story about the URL ("the documented landing URL" was the
@@ -807,6 +812,19 @@ export const STORE_PASSWORD_REFUSED =
 export const STORE_LOCKED_OBSERVED =
   "The store password was not accepted, so the store behind its password page could not be checked this run.";
 
+// What the model is told when we hold a store password and could not enter it
+// (the field would not fill, the form would not submit, no field to fill).
+// Our hands, not the store (CHE-214's rule for an undriven control).
+export const STORE_UNLOCK_UNDRIVEN =
+  "This is the store's password page. The store password we hold could not be entered here — " +
+  "that is our limitation and says nothing about the store. Do not judge this page, and do not " +
+  'report it as broken, risky or confusing. Report this step "skipped" with unverifiedReason "our_capability".';
+
+// The observed sentence for a step we could not take past the gate ourselves.
+// Customer-facing coverage language; the gap is ours and goes to our board.
+export const STORE_UNDRIVEN_OBSERVED =
+  "We could not get past the store's password page this run, so the store behind it was not checked.";
+
 async function passStoreGate(env: ToolEnv) {
   const outcome = await unlockStoreGate(env.page, env.targetOrigin, {
     password: env.storePassword,
@@ -814,25 +832,36 @@ async function passStoreGate(env: ToolEnv) {
     onRejected: env.onStorePasswordRejected,
   });
   if (outcome === "unlocked") await waitForHydration(env.page, 3_000);
-  if (storeRefused(outcome)) env.storeLocked = true;
+  if (storeRefused(outcome)) env.storeLocked = "refused";
+  // "no_field" is only returned while we hold a password that was never
+  // refused: the gate's address with nothing we could fill is our miss too.
+  if (outcome === "undriven" || outcome === "no_field") env.storeLocked = "undriven";
   return outcome;
 }
 
 /**
- * A step reported while the store kept us on its password page, because the
- * store password we hold was turned away, is about our access and nothing
- * else: whatever the model called it — "ok" included, since the one page that
- * rendered was the lock, not the product — it is written skipped /
- * missing_access with the sentence that names the input to fix. A step that
- * already says missing_access keeps its own words. Drains the flag either way.
+ * A step reported while the store kept us on its password page is about the
+ * gate and nothing else: whatever the model called it — "ok" included, since
+ * the one page that rendered was the lock, not the product — it is written
+ * skipped. With the store password turned away, missing_access with the
+ * sentence that names the input to fix; with a password we could not enter,
+ * our_capability (a gap on our board, never the store's defect). A step that
+ * already carries the right reason keeps its own words. Drains the flag.
  */
 export function coerceStoreLocked(step: ReportedStep, env: Pick<ToolEnv, "storeLocked">): void {
-  if (!env.storeLocked) return;
-  env.storeLocked = false;
-  if (step.status === "skipped" && step.unverifiedReason === "missing_access") return;
+  const locked = env.storeLocked;
+  if (!locked) return;
+  env.storeLocked = undefined;
+  const reason = locked === "refused" ? "missing_access" : "our_capability";
+  if (step.status === "skipped" && step.unverifiedReason === reason) return;
   step.status = "skipped";
-  step.unverifiedReason = "missing_access";
-  step.observed = STORE_LOCKED_OBSERVED;
+  step.unverifiedReason = reason;
+  if (locked === "refused") {
+    step.observed = STORE_LOCKED_OBSERVED;
+  } else {
+    step.observed = STORE_UNDRIVEN_OBSERVED;
+    step.gapClass = "undriven_control";
+  }
 }
 
 // ─── CHE-169: vision on demand ───────────────────────────────────────────────
