@@ -82,8 +82,13 @@ export function serializeAllowedOrigins(origins: readonly string[]): string | nu
  * The stored column read back. Anything unparsable or invalid is dropped rather
  * than trusted: a row that says less than it should costs reach, one that says
  * more than it should costs a credential.
+ *
+ * `selfCheckHosts` is the agent's SELF_CHECK_HOSTS binding (staging, previews):
+ * the web app cannot see it when the list is saved, so the run drops those
+ * hosts here — before the list reaches the tools, the evidence rules or the
+ * prompt that calls every allowed origin part of the customer's product.
  */
-export function parseAllowedOrigins(stored: string | null | undefined): string[] {
+export function parseAllowedOrigins(stored: string | null | undefined, selfCheckHosts?: string): string[] {
   if (!stored) return [];
   let value: unknown;
   try {
@@ -96,7 +101,7 @@ export function parseAllowedOrigins(stored: string | null | undefined): string[]
   for (const item of value) {
     if (typeof item !== "string") continue;
     const origin = normalizeAllowedOrigin(item);
-    if (origin && !out.includes(origin)) out.push(origin);
+    if (origin && !isSelfUrl(origin, selfCheckHosts) && !out.includes(origin)) out.push(origin);
   }
   return out.slice(0, MAX_ALLOWED_ORIGINS);
 }

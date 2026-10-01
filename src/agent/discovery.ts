@@ -160,7 +160,7 @@ export async function discoverApp(args: {
     extension,
     targetOrigin: originOf(extension?.identity.targetUrl ?? run.targetUrl),
     // CHE-373: the origins the owner allowed besides the target's.
-    allowedOrigins: parseAllowedOrigins(run.allowedOrigins),
+    allowedOrigins: parseAllowedOrigins(run.allowedOrigins, env.bindings.SELF_CHECK_HOSTS),
     // CHE-193: lets the click gate know which extra hosts are ours.
     selfCheckHosts: env.bindings.SELF_CHECK_HOSTS,
     visionScreenshots: mode.visionScreenshots,

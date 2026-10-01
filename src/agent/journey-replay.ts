@@ -222,7 +222,7 @@ export async function replayJourney(
     const toolEnv: ToolEnv = {
       page,
       targetOrigin: originOf(run.targetUrl),
-      allowedOrigins: parseAllowedOrigins(run.allowedOrigins),
+      allowedOrigins: parseAllowedOrigins(run.allowedOrigins, env.bindings?.SELF_CHECK_HOSTS),
       // CHE-193: lets the click gate know which extra hosts are ours. Optional
       // chaining because verify-replay-actions.ts drives this loop with a bare
       // env (db only); production always has bindings.

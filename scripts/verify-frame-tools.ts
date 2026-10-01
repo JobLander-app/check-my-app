@@ -160,6 +160,10 @@ async function main() {
     isAllowedOrigin({ targetOrigin: TOP, allowedOrigins: [staging, APP], selfCheckHosts: "cma-staging.test" }, APP),
   );
   check(
+    "parseAllowedOrigins: the run drops our SELF_CHECK_HOSTS before tools, evidence or prompt see the list",
+    JSON.stringify(parseAllowedOrigins(JSON.stringify([staging, APP]), "cma-staging.test")) === JSON.stringify([APP]),
+  );
+  check(
     "isAllowedOrigin: our own target is still our target (the self-check)",
     isAllowedOrigin({ targetOrigin: "https://checkmyapp.dev", allowedOrigins: [] }, "https://checkmyapp.dev"),
   );
