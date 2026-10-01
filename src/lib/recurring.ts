@@ -161,6 +161,16 @@ export function lookedAgainAt(j: RecurrenceJourney, positions: number[] | "any")
   return positions.length > 0 && positions.every((p) => j.steps[Math.min(p, j.steps.length - 1)] !== "skipped");
 }
 
+// What a later walk of `journey` must execute to have looked again at a
+// finding anchored to step `stepIndex` of it: the positions its own walk
+// executed up to that step, and that step itself. With no step (the anchor
+// names only the journey), everything the walk executed. One rule for
+// recurrence and for the release delta (src/lib/releases.ts).
+export function positionsSeen(journey: RecurrenceJourney, stepIndex: number | null): number[] {
+  const upTo = stepIndex ?? undefined;
+  return [...new Set([...executed(journey, upTo), ...(upTo === undefined ? [] : [upTo])])];
+}
+
 interface Sighting {
   run: RecurrenceRun;
   finding: RecurrenceFinding;
@@ -246,8 +256,7 @@ export function recurrence(
     // journey its check walked.
     const waitingFor = new Map<string, number[] | "any">();
     if (seen.journey) {
-      const upTo = seen.stepIndex ?? undefined;
-      const positions = [...new Set([...executed(seen.journey, upTo), ...(upTo === undefined ? [] : [upTo])])];
+      const positions = positionsSeen(seen.journey, seen.stepIndex);
       if (positions.length > 0) waitingFor.set(seen.journey.identity, positions);
     } else {
       for (const j of seen.run.journeys) if (!j.carried && executed(j).length > 0) waitingFor.set(j.identity, "any");
