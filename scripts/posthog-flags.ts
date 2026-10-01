@@ -79,7 +79,14 @@ export const DECLARED_FLAGS: DeclaredFlag[] = [
  */
 export const SERVER_RUNTIME = "server";
 
-/** The one body posthog:setup writes for a declared flag, on create and on update. */
+/**
+ * The one body posthog:setup writes for a declared flag, on create and on
+ * update. A PATCH changes only the fields it carries, so every writable field
+ * flagState compares is spelled out at its declared value — a default left
+ * implicit is a drift the update cannot undo. Checked live on 2026-10-01:
+ * `bucketing_identifier` and `evaluation_contexts` drift and reset through a
+ * PATCH like this one.
+ */
 export function flagWriteBody(declared: DeclaredFlag) {
   return {
     key: declared.key,
@@ -87,6 +94,8 @@ export function flagWriteBody(declared: DeclaredFlag) {
     active: true,
     evaluation_runtime: SERVER_RUNTIME,
     ensure_experience_continuity: false,
+    bucketing_identifier: "distinct_id",
+    evaluation_contexts: [] as string[],
     filters: { groups: declared.groups },
   };
 }

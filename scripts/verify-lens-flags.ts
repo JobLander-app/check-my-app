@@ -353,6 +353,8 @@ function declarationChecks(): void {
     ["linked to an early-access feature", { ...held, features: [{ id: 7 }] }, "update"],
     ["linked to an experiment", { ...held, experiment_set: [11] }, "update"],
     ["with experience continuity", { ...held, ensure_experience_continuity: true }, "update"],
+    ["bucketed by device", { ...held, bucketing_identifier: "device_id" }, "update"],
+    ["limited to evaluation contexts", { ...held, evaluation_contexts: ["web"] }, "update"],
     ["made multivariate", { ...held, filters: { ...heldFilters, multivariate: { variants: [{ key: "a", rollout_percentage: 100 }] } } }, "update"],
     ["deleted", { ...held, deleted: true }, "update"],
   ];
@@ -420,6 +422,7 @@ async function reconcileChecks(): Promise<void> {
     ["the stale 913845", { ...held, evaluation_runtime: "all", filters: { ...heldFilters, groups: STALE_GROUPS } }],
     ["an early-access enrollment condition", { ...held, filters: { ...heldFilters, super_groups: ENROLLMENT(ext.key) } }],
     ["icontains", { ...held, filters: { ...heldFilters, groups: [{ ...ext.groups[0], properties: [{ ...ext.groups[0].properties[0], operator: "icontains" }] }] } }],
+    ["a drifted bucketing identifier and evaluation contexts", { ...held, bucketing_identifier: "device_id", evaluation_contexts: ["web"] }],
   ];
   for (const [name, start] of fixable) {
     const { api, writes, flagsById } = fakeAdmin([start]);
