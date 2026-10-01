@@ -314,13 +314,21 @@ export function scrubSecrets(env: ToolEnv, text: string): string {
 // and the walk and every replay would navigate to an address that does not
 // exist. So the target's host is never touched, a strong password is redacted
 // wherever it stands, and a plain word only where it stands as a value: a
-// query parameter, which is how a form leaks one into an address.
+// parameter of a query or a fragment, which is how a form leaks one into an
+// address. The value ends where nothing that can continue a value follows — a
+// sentence's full stop included, since the model's own step text quotes
+// addresses mid-sentence (review of this rule).
+//
+// Left alone on purpose: a plain word in running text ("the demo store"). It
+// cannot be told from the word, and redacting it would rewrite the page.
 const STORE_SUBSTRING_MIN = 8;
 
 function scrubStorePassword(env: ToolEnv, text: string): string {
   const secret = env.store?.password;
   if (!secret) return text;
-  const forms = [...new Set([secret, encodeURIComponent(secret)])];
+  // As written, percent-encoded, and the way a form writes a space ("+").
+  const encoded = encodeURIComponent(secret);
+  const forms = [...new Set([secret, encoded, encoded.replace(/%20/g, "+")])];
   let host = "";
   try {
     host = new URL(env.targetOrigin).host;
@@ -335,7 +343,7 @@ function scrubStorePassword(env: ToolEnv, text: string): string {
       out = out.split(form).join("[redacted]");
     } else {
       const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      out = out.replace(new RegExp(`([?&][^=&#\\s]*=)${escaped}(?=[&#\\s"'<>)\\]]|$)`, "g"), "$1[redacted]");
+      out = out.replace(new RegExp(`([?&#][^=&#\\s]*=)${escaped}(?![A-Za-z0-9_%~+-])`, "g"), "$1[redacted]");
     }
   }
   return host ? out.split(SHIELD).join(host) : out;

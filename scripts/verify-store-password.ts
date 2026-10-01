@@ -39,6 +39,7 @@ import { unlockStoreGate, type StoreAccess, type StoreState, type UnlockPage } f
 import {
   executeTool,
   productizeStep,
+  scrubSecrets,
   STORE_LOCKED_OBSERVED,
   STORE_MISSING_OBSERVED,
   STORE_UNDRIVEN_OBSERVED,
@@ -381,6 +382,28 @@ async function main() {
           !echoed.includes(`token=${encodeURIComponent(pw)}`),
         echoed.slice(0, 110));
     }
+  }
+  {
+    // Review of that fix: where the value ends, and how it is written. A
+    // sentence ends in punctuation, a fragment carries parameters too, and a
+    // form writes a space as "+".
+    const scrubWith = (pw: string, text: string) => scrubSecrets(toolEnv({}, access(pw).access), text);
+    for (const tail of [".", ",", ";", "`", "}"]) {
+      const out = scrubWith("demo", `Navigated to ${STORE}/?password=demo${tail}`);
+      check(`scrub: a plain-word value followed by ${JSON.stringify(tail)} is redacted`, out === `Navigated to ${STORE}/?password=[redacted]${tail}`, out);
+    }
+    const fragment = scrubWith("demo", `${STORE}/password#password=demo`);
+    check("scrub: a plain-word value in a fragment parameter is redacted", fragment === `${STORE}/password#password=[redacted]`, fragment);
+    const plus = scrubWith("pass word", `${STORE}/?password=pass+word`);
+    check("scrub: a value with a space written as + is redacted", plus === `${STORE}/?password=[redacted]`, plus);
+    const strongPlus = scrubWith("open sesame 9431", `saw ${STORE}/?password=open+sesame+9431 there`);
+    check("scrub: a strong password with spaces written as + is redacted", !strongPlus.includes("open+sesame+9431") && strongPlus.includes("[redacted]"), strongPlus);
+    // Not redacted, on purpose: a plain word in running text cannot be told
+    // from the word, and a longer value that merely starts with it is another value.
+    const prose = scrubWith("demo", "The demo store shows a demo banner.");
+    check("scrub: a plain word in running text is left alone", prose === "The demo store shows a demo banner.", prose);
+    const longer = scrubWith("demo", `${STORE}/?theme=demolition`);
+    check("scrub: a longer value that starts with the word is another value", longer === `${STORE}/?theme=demolition`, longer);
   }
   {
     const s = fakeStore(RIGHT);
