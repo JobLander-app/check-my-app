@@ -146,8 +146,8 @@ printed, never in this repo, never in a unit file.
 
 ## Cost
 
-e2-medium in europe-west1 ≈ $24.5/month, 30 GB balanced disk ≈ $3, static IP
-in use ≈ $3.6 → about **$31/month**. Cloudflare Tunnel and Access (Zero Trust
+e2-medium in europe-west1 ≈ $26.9/month ($0.0369/h on demand), 30 GB balanced
+disk ≈ $3.3, static IP in use ≈ $3.6 → about **$34/month**. Cloudflare Tunnel and Access (Zero Trust
 free plan) cost nothing; one Browser Run session a day is a minute of browser
 time.
 
