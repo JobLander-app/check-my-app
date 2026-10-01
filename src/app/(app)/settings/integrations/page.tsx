@@ -6,6 +6,7 @@ import { missingScopes } from "@/lib/posthog/oauth";
 import { AnalyticsConnection } from "@/components/analytics-connection";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
+import { extensionDisplayName } from "@/lib/extension-target";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -54,7 +55,7 @@ export default async function IntegrationsPage({
     db.app.findMany({
       where: { ...teamOwned(team.id) },
       orderBy: { createdAt: "desc" },
-      select: { id: true, appSlug: true, tracker: { select: { externalOrg: true } } },
+      select: { id: true, appSlug: true, targetKind: true, targetUrl: true, tracker: { select: { externalOrg: true } } },
     }),
   ]);
   const notice = integrationNotice(integration);
@@ -84,7 +85,9 @@ export default async function IntegrationsPage({
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
               <li key={app.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
-                <span className="min-w-0 truncate font-mono text-sm">{app.appSlug}</span>
+                <span className="min-w-0 truncate font-mono text-sm">
+                  {app.targetKind === "extension" ? extensionDisplayName(app.targetUrl) : app.appSlug}
+                </span>
                 {app.tracker ? (
                   <span className="text-xs text-status-ok">✓ Linear · {app.tracker.externalOrg ?? "connected"}</span>
                 ) : (

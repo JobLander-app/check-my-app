@@ -4,13 +4,17 @@ import { appHealth } from "@/lib/app-health";
 import { VERDICT_META } from "@/lib/status";
 import { usd } from "@/lib/plans";
 import { appPath } from "@/lib/app-shell";
+import { shellData } from "@/lib/shell-data";
 
 // Health → All apps (CHE-351 shell). One row per app: the colour of its latest
 // verdict, what it costs a month at the rate of the last 30 days, and its
 // latest check. The lanes and the strip of 21 checks are CHE-357.
 export default async function AllAppsPage() {
   const { db, team } = await requireUser();
-  const health = await appHealth(db, team.id);
+  // The names are the sidebar's (an extension is called by its name, not its
+  // slug); the layout has already asked, so this costs nothing.
+  const [health, shell] = await Promise.all([appHealth(db, team.id), shellData(db, team.id)]);
+  const labelOf = new Map(shell.apps.map((a) => [a.id, a.label]));
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">
@@ -39,7 +43,7 @@ export default async function AllAppsPage() {
               <li key={app.appId} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
                 <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${meta?.dotClassName ?? "bg-ink-600"}`} />
                 <Link href={appPath.page(app.appId)} className="min-w-0 flex-1 truncate font-mono text-sm text-fg hover:underline">
-                  {app.appSlug}
+                  {labelOf.get(app.appId) ?? app.appSlug}
                 </Link>
                 <span className={`text-xs ${meta?.textClassName ?? "text-fg-faint"}`}>
                   {meta ? meta.label : "no check yet"}

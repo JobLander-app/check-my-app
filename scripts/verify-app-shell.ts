@@ -22,6 +22,8 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-app-shell.ts
 
+import "./fixtures/wasm-module-loader.mjs";
+import { realD1 } from "./fixtures/real-d1";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -259,7 +261,93 @@ async function shellChecks() {
   check("…the same number appHealth reports as the run rate", health.monthlyRunRateUsd === small.monthlyCostUsd, `${health.monthlyRunRateUsd} vs ${small.monthlyCostUsd}`);
 }
 
-shellChecks().then(() => {
+// ── 7. The statement itself, in a real D1 ───────────────────────────────────
+// The stub above answers $queryRaw with canned rows, so it cannot say whether
+// the SQL picks the right check. A local D1 with every migration applied can:
+// which check is an app's latest, whose check an unattached one is (Codex P2 on
+// #230: a check that predates its app left the dot grey), that another team's
+// rows stay out, and that each lookup seeks on the index instead of reading the
+// team's history.
+
+async function realChecks() {
+  const real = await realD1();
+  try {
+    const T = "tr";
+    const at = (s: string) => new Date(s);
+    await real.db.user.create({ data: { id: "ur", clerkUserId: "ck_ur", email: "shell@example.test" } });
+    await real.db.team.create({ data: { id: T, name: "Shell", plan: "business" } });
+    await real.db.team.create({ data: { id: "to", name: "Other", plan: "business" } });
+    await real.db.user.create({ data: { id: "ur2", clerkUserId: "ck_ur2", email: "shell2@example.test" } });
+    const app = (id: string, slug = `${id}.test`, ownerId = "ur") =>
+      real.db.app.create({ data: { id, teamId: T, ownerId, appSlug: slug, targetUrl: `https://${slug}`, targetKind: "website" } });
+    for (const id of ["own", "loose", "both", "failed", "none"]) await app(id);
+    // One slug, two apps in the team: two teammates each added it (an owner has one app per slug).
+    await app("twin1", "twin.test");
+    await app("twin2", "twin.test", "ur2");
+
+    let n = 0;
+    const run = async (
+      appId: string | null, slug: string, completedAt: string, verdict: string | null,
+      over: { teamId?: string; status?: string; priceUsd?: number | null; marks?: string[] } = {},
+    ) => {
+      const id = `r${++n}`;
+      await real.db.run.create({
+        data: {
+          id, publicId: `p${n}`, runNumber: n, teamId: over.teamId ?? T, appId, appSlug: slug, targetUrl: `https://${slug}`,
+          targetKind: "website", status: over.status ?? "completed", verdict,
+          priceUsd: over.priceUsd === undefined ? 0.5 : over.priceUsd,
+          createdAt: at(completedAt), completedAt: at(completedAt),
+        } as never,
+      });
+      for (const [i, mark] of (over.marks ?? []).entries()) {
+        await real.db.finding.create({ data: { runId: id, number: i + 1, title: `f${i}`, category: "bug", severity: "high", mark } });
+      }
+    };
+    // own: the newer attached check wins; of its four findings two are open.
+    await run("own", "own.test", "2026-09-20T10:00:00Z", "broken", { marks: ["none", "none", "none"] });
+    await run("own", "own.test", "2026-09-28T10:00:00Z", "all_good", { marks: ["none", "watch", "known", "false_positive"] });
+    // loose: its only check predates the app. Another team's newer check of the
+    // same slug is not its check.
+    await run(null, "loose.test", "2026-09-10T10:00:00Z", "mostly_ok", { marks: ["none"] });
+    await run(null, "loose.test", "2026-09-29T10:00:00Z", "broken", { teamId: "to", marks: ["none", "none"] });
+    // both: an attached check, and a newer unattached one — the newer wins.
+    await run("both", "both.test", "2026-09-12T10:00:00Z", "all_good");
+    await run(null, "both.test", "2026-09-14T10:00:00Z", "broken", { marks: ["none"] });
+    // failed: the newest check failed and has no verdict; the one before stands.
+    await run("failed", "failed.test", "2026-09-15T10:00:00Z", "broken");
+    await run("failed", "failed.test", "2026-09-30T10:00:00Z", null, { status: "failed", priceUsd: null });
+    // twins: two apps share a slug, so an unattached check is neither's.
+    await run(null, "twin.test", "2026-09-16T10:00:00Z", "broken", { marks: ["none"] });
+
+    const shell = await loadShellData(real.db, T, new Date("2026-10-01T12:00:00.000Z"));
+    const verdict = (id: string) => shell.apps.find((a) => a.id === id)?.verdict;
+    check("real D1: an app's latest attached check gives its verdict", verdict("own") === "all_good", String(verdict("own")));
+    check("real D1: a check that predates its app is that app's check", verdict("loose") === "mostly_ok", String(verdict("loose")));
+    check("real D1: a newer unattached check outranks an older attached one", verdict("both") === "broken", String(verdict("both")));
+    check("real D1: a failed check does not take the verdict away", verdict("failed") === "broken", String(verdict("failed")));
+    check("real D1: two apps sharing a slug claim no unattached check", verdict("twin1") === null && verdict("twin2") === null, `${verdict("twin1")} / ${verdict("twin2")}`);
+    check("real D1: an app never checked has no verdict", verdict("none") === null, String(verdict("none")));
+    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1", shell.openIssues === 4, String(shell.openIssues));
+
+    const shellSrc = read("src/lib/shell-data.ts");
+    const sql = shellSrc.slice(shellSrc.indexOf("Prisma.sql`") + "Prisma.sql`".length, shellSrc.indexOf("`;", shellSrc.indexOf("Prisma.sql`")));
+    const plan = (await real.db.$queryRawUnsafe(`EXPLAIN QUERY PLAN ${sql.replace("${teamId}", "'tr'")}`)) as { detail: string }[];
+    // `o` and `l` are the statement's two lookups (attached, unattached); no
+    // table of the statement may be read whole.
+    const details = plan.map((p) => p.detail);
+    const seeks = (alias: string) =>
+      details.some((d) => d.startsWith(`SEARCH ${alias} USING INDEX Run_teamId_appId_completedAt_idx (teamId=? AND appId=?)`));
+    check(
+      "real D1: each latest-check lookup seeks on Run(teamId, appId, completedAt), and no table is read whole",
+      seeks("o") && seeks("l") && !details.some((d) => /^SCAN [a-z]\b/.test(d)),
+      details.join(" | "),
+    );
+  } finally {
+    await real.dispose();
+  }
+}
+
+shellChecks().then(realChecks).then(() => {
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");
   process.exit(failures ? 1 : 0);
 });

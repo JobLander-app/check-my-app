@@ -8,8 +8,8 @@
 //
 //   1. the apps;
 //   2. one statement for each app's latest priced verdict and the open
-//      findings on it (a window function, one bound parameter — D1 caps a
-//      statement at 100, so an IN list of app ids would break at 50 apps);
+//      findings on it (one bound parameter — D1 caps a statement at 100, so
+//      an IN list of app ids would break at 50 apps);
 //   3. the window's priced runs, for the monthly figure.
 //
 // The month is appHealth's run rate (CHE-353), computed the same way: the last
@@ -42,17 +42,33 @@ const WINDOW_DAYS = 30;
 // as fixed" and "Dispute" (false_positive) close it; "Watch it" keeps it open.
 // The latest check is the newest finished one with a verdict and a price, as
 // appHealth's `latest` is.
+//
+// Per app, two candidates and the newer wins: the latest check attached to the
+// app, and — when the app is the team's only one with that slug, as appHealth
+// decides it — the latest check of that slug that predates the app and so has
+// no appId. Each is one seek on Run(teamId, appId, completedAt), newest first:
+// the cost follows the number of apps, not the length of the history (Codex P2
+// on #230: a window over every finished run of the team, on every page).
 const LATEST_WITH_OPEN = (teamId: string) => Prisma.sql`
-  SELECT l.appId AS appId, l.verdict AS verdict,
-    (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = l.id AND f.mark IN ('none', 'watch')) AS open
-  FROM (
-    SELECT id, appId, verdict,
-      ROW_NUMBER() OVER (PARTITION BY appId ORDER BY completedAt DESC) AS rn
-    FROM "Run"
-    WHERE teamId = ${teamId} AND appId IS NOT NULL
-      AND status IN ('completed', 'partial') AND verdict IS NOT NULL AND priceUsd IS NOT NULL
-  ) l
-  WHERE l.rn = 1`;
+  SELECT appId, verdict, open FROM (
+    SELECT a.id AS appId, r.verdict AS verdict,
+      (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = r.id AND f.mark IN ('none', 'watch')) AS open,
+      ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY r.completedAt DESC) AS rn
+    FROM "App" a
+    JOIN "Run" r ON r.id IN (
+      (SELECT o.id FROM "Run" o
+        WHERE o.teamId = a.teamId AND o.appId = a.id
+          AND o.status IN ('completed', 'partial') AND o.verdict IS NOT NULL AND o.priceUsd IS NOT NULL
+        ORDER BY o.completedAt DESC LIMIT 1),
+      (SELECT l.id FROM "Run" l
+        WHERE l.teamId = a.teamId AND l.appId IS NULL AND l.appSlug = a.appSlug
+          AND l.status IN ('completed', 'partial') AND l.verdict IS NOT NULL AND l.priceUsd IS NOT NULL
+          AND (SELECT COUNT(*) FROM "App" b WHERE b.teamId = a.teamId AND b.appSlug = a.appSlug) = 1
+        ORDER BY l.completedAt DESC LIMIT 1)
+    )
+    WHERE a.teamId = ${teamId}
+  )
+  WHERE rn = 1`;
 
 export async function loadShellData(db: PrismaClient, teamId: string, now: Date = new Date()): Promise<ShellData> {
   const since = new Date(utcDayStart(now).getTime() - (WINDOW_DAYS - 1) * DAY_MS);
