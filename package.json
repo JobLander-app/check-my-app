@@ -100,7 +100,8 @@
     "verify:extension-adoption": "tsx scripts/verify-extension-adoption.ts",
     "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
     "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
-    "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts"
+    "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
+    "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
