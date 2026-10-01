@@ -75,9 +75,11 @@ if (!teamId) {
 }
 
 const now = new Date();
-// The module's window: the last DAYS UTC days, today included, from midnight.
-// A YYYY-MM-DD prefix sorts correctly against both spellings of createdAt.
+// The module's window: the last DAYS UTC days, today included, from midnight
+// to the next one. A YYYY-MM-DD prefix sorts correctly against both spellings
+// of createdAt.
 const sinceDay = new Date(utcDayStart(now).getTime() - (DAYS - 1) * 86400000).toISOString().slice(0, 10);
+const untilDay = new Date(utcDayStart(now).getTime() + 86400000).toISOString().slice(0, 10);
 const ofTeam = `SELECT id FROM Run WHERE teamId = ${q(teamId)}`;
 
 async function main() {
@@ -107,7 +109,7 @@ async function main() {
       FROM Run r
       LEFT JOIN (SELECT appSlug, MIN(id) id FROM App WHERE teamId = ${q(teamId!)} GROUP BY appSlug HAVING COUNT(*) = 1) solo
         ON r.appId IS NULL AND solo.appSlug = r.appSlug
-     WHERE r.teamId = ${q(teamId!)} AND r.createdAt >= ${q(sinceDay)}
+     WHERE r.teamId = ${q(teamId!)} AND r.createdAt >= ${q(sinceDay)} AND r.createdAt < ${q(untilDay)}
      GROUP BY COALESCE(r.appId, solo.id)`);
   const bySql = new Map(sql.map((r) => [r.appId, r]));
   const sqlTotal = Math.round(sql.reduce((s, r) => s + r.usd * 100, 0)) / 100;

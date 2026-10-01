@@ -7,8 +7,10 @@
 //   1. spend per app and in total, per day, scheduled (watchId set) vs on
 //      request, each with its count; a failed, canceled or in-flight run is a
 //      check at $0;
-//   2. the window: the last N UTC days, today included, from midnight — a run
-//      one second before it is out, one at midnight is in;
+//   2. the window: the last N UTC days, today included, from midnight to the
+//      midnight after `now` — a run one second before it is out, one at its
+//      first midnight is in, one at the midnight after `now` or stamped days
+//      ahead is out, and a report as of a past date ends on that date;
 //   3. the daily series: one point per day of the window, adding up to the
 //      spend to the cent;
 //   4. the verdict strip: the last 21 finished verdicts, oldest first, not
@@ -74,6 +76,9 @@ const RUNS: Seed[] = [
   run(106, "2026-09-21T12:00:00Z", { appId: null, priceUsd: 0.33 }), // checked before the app was saved
   run(107, "2026-10-01T10:00:00Z", { watchId: W, priceUsd: 0.03, quickPagesOpened: 3 }), // a quick check
   run(108, "2026-10-01T14:00:00Z", { status: "walking", verdict: null }), // in flight
+  // After the window: the midnight after NOW, and a row stamped days ahead.
+  run(113, "2026-10-02T00:00:00Z", { watchId: W, priceUsd: 4 }),
+  run(114, "2026-10-05T09:00:00Z", { priceUsd: 2, verdict: "broken" }),
   // A PR preview of the team's: the team paid, no app owns it.
   run(110, "2026-09-15T10:00:00Z", { appId: null, appSlug: "pr-7.preview.test", priceUsd: 0.4, ephemeral: true }),
   // Another team's app on the same host, and an anonymous check of it.
@@ -166,9 +171,12 @@ async function main() {
     const legacy = createStubDb({
       team: [{ id: "tl", plan: "business" }],
       app: [{ id: "l1", teamId: "tl", appSlug: "legacy.test", targetKind: "website", createdAt: at("2026-06-01") }],
-      run: [run(701, "2026-09-02T21:23:10Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 1.61 })],
+      run: [
+        run(701, "2026-09-02T21:23:10Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 1.61 }),
+        run(702, "2026-10-02T05:00:00Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 0.7 }),
+      ],
     });
-    const STORED: Record<string, string> = { r701: "2026-09-02 21:23:10" };
+    const STORED: Record<string, string> = { r701: "2026-09-02 21:23:10", r702: "2026-10-02 05:00:00" };
     const asD1 = (d: Date) => d.toISOString().replace("Z", "+00:00");
     const inner = legacy.db as unknown as Record<string, Record<string, (a: Record<string, unknown>) => Promise<unknown>>>;
     const d1Db = new Proxy({}, {
@@ -176,19 +184,36 @@ async function main() {
         ...inner.run,
         findMany: async (args: Record<string, unknown>) => {
           const where = (args.where ?? {}) as Record<string, unknown>;
-          const gte = (where.createdAt as { gte?: unknown } | undefined)?.gte;
-          if (!(gte instanceof Date)) return inner.run.findMany(args);
+          const { gte, lt } = (where.createdAt ?? {}) as { gte?: Date; lt?: Date };
+          if (!gte && !lt) return inner.run.findMany(args);
+          const text = (r: Record<string, unknown>) => STORED[r.id as string] ?? asD1(r.createdAt as Date);
           const ids = legacy.table("run")
-            .filter((r) => (STORED[r.id as string] ?? asD1(r.createdAt as Date)) >= asD1(gte))
+            .filter((r) => (!gte || text(r) >= asD1(gte)) && (!lt || text(r) < asD1(lt)))
             .map((r) => r.id);
           return inner.run.findMany({ ...args, where: { ...where, createdAt: undefined, id: { in: ids } } });
         },
       },
     }) as typeof db;
     const l = await appHealth(d1Db, "tl", { now: NOW });
-    check("a run stored in the old \"YYYY-MM-DD HH:MM:SS\" spelling on the window's first day is counted",
+    check("a run stored in the old \"YYYY-MM-DD HH:MM:SS\" spelling on the window's first day is counted, one on the day after it is not",
       l.totalSpendUsd === 1.61 && l.apps[0].checks === 1 && l.apps[0].daily[0].usd === 1.61,
       JSON.stringify([l.totalSpendUsd, l.apps[0].checks]));
+  }
+  check("runs after NOW's day — at the next midnight, or stamped days ahead — are in no number, strip or latest",
+    report.totalSpendUsd === 3.43 && shop.checks === 8 && !shop.verdicts.some((v) => v.runNumber >= 113) && shop.latest?.runNumber === 107);
+  {
+    // A report as of a past date: the window ends at the midnight after it.
+    const past = await appHealth(db, "t", { now: at("2026-09-10T12:00:00Z") });
+    const s = app("shop.test", past);
+    check("as of 2026-09-10 12:00: shop.test is #101–#104 — $7.45, 4 checks, 3 scheduled / $6.25 — and nothing later",
+      s.spendUsd === 7.45 && s.checks === 4 && same(s.scheduled, { count: 3, usd: 6.25 }) && same(s.onRequest, { count: 1, usd: 1.2 }) &&
+        past.totalSpendUsd === 7.45,
+      JSON.stringify([s.spendUsd, s.checks, s.scheduled, s.onRequest, past.totalSpendUsd]));
+    check("as of 2026-09-10: 30 points 2026-08-12 … 2026-09-10, adding up to the spend",
+      s.daily.length === 30 && s.daily[0].date === "2026-08-12" && s.daily[29].date === "2026-09-10" &&
+        past.apps.every((a) => Math.round(a.daily.reduce((x, d) => x + d.usd * 100, 0)) === Math.round(a.spendUsd * 100)));
+    check("as of 2026-09-10: the strip ends at #104 and the latest check is #104",
+      s.verdicts.at(-1)?.runNumber === 104 && s.latest?.runNumber === 104, JSON.stringify([s.verdicts.map((v) => v.runNumber), s.latest?.runNumber]));
   }
   {
     const week = await appHealth(db, "t", { now: NOW, days: 7 });

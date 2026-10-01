@@ -15,9 +15,9 @@
 // The rules, each one a decision rather than an accident:
 //
 //   - The window is the last `days` UTC days, today included, from midnight
-//     UTC — so the daily series has exactly `days` points and adds up to the
-//     spend to the cent. Runs are placed by createdAt, as the balance places
-//     them (plans.ts windowWhere).
+//     UTC to the midnight after `now` — so the daily series has exactly `days`
+//     points and adds up to the spend to the cent. Runs are placed by
+//     createdAt, as the balance places them (plans.ts windowWhere).
 //   - A check is every run of the app started in the window, whatever became of
 //     it. A failed run counts as a check at $0 (our failure is free, rule 4 —
 //     its price is 0); one still in flight counts at $0 until it is priced.
@@ -29,8 +29,9 @@
 //     that app. Anything else — a PR preview, a host the team never saved —
 //     counts in the team's total and in no app, so the total can exceed the sum
 //     of the apps.
-//   - The verdict strip and the latest check are not limited to the window: an
-//     app checked once a month still has a strip. Only finished runs with a
+//   - The verdict strip and the latest check do not start where the window
+//     starts — an app checked once a month still has a strip — but they end
+//     where it ends: nothing after `now`'s day. Only finished runs with a
 //     verdict are in it — a failed run says nothing about the app (CLAUDE.md
 //     §4), and an extension report without a verdict is not published
 //     (extensionReportPublished). The latest check is the newest of those that
@@ -99,6 +100,10 @@ export async function appHealth(
   const days = Math.max(1, Math.floor(opts.days ?? 30));
   const now = opts.now ?? new Date();
   const since = new Date(utcDayStart(now).getTime() - (days - 1) * DAY_MS);
+  // Exclusive: the midnight after `now`. A `now` in the past (a report as of a
+  // date) or a row stamped ahead of the clock must not land past the series.
+  const until = new Date(utcDayStart(now).getTime() + DAY_MS);
+  const inWindow = (d: Date) => d >= since && d < until;
 
   const [team, apps, runs] = await Promise.all([
     db.team.findUnique({ where: { id: teamId }, select: { plan: true } }),
@@ -108,12 +113,14 @@ export async function appHealth(
       select: { id: true, appSlug: true, targetKind: true },
     }),
     // The one pass over the window's money, on the [teamId, createdAt] index.
-    // A day of slack, with the exact edge drawn below: D1 compares DateTime as
-    // text, and rows written before 2026-09-04 spell it "2026-09-03 21:23:10",
-    // which sorts before the adapter's "2026-09-03T00:00:00.000+00:00" — so on
-    // the window's first day such a run would silently drop out (Run #137).
+    // A day of slack at the start, and both edges drawn exactly in code: D1
+    // compares DateTime as text, and rows written before 2026-09-04 spell it
+    // "2026-09-03 21:23:10", which sorts before the adapter's
+    // "2026-09-03T00:00:00.000+00:00" — so on the window's first day such a run
+    // would silently drop out (Run #137), and on the day after its last it
+    // would slip in.
     db.run.findMany({
-      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS) } },
+      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lt: until } },
       select: { appId: true, appSlug: true, watchId: true, priceUsd: true, createdAt: true },
     }),
   ]);
@@ -133,7 +140,7 @@ export async function appHealth(
   );
   let totalCents = 0;
   for (const r of runs) {
-    if (r.createdAt < since) continue;
+    if (!inWindow(r.createdAt)) continue;
     const c = toCents(r.priceUsd);
     totalCents += c;
     const app = ownerOf(r);
@@ -157,6 +164,8 @@ export async function appHealth(
           OR: [{ appId: app.id }, ...(unique ? [{ appId: null, appSlug: app.appSlug }] : [])],
           status: { in: FINISHED },
           verdict: { not: null },
+          // As of `now`: nothing started after the window's last day.
+          createdAt: { lt: until },
         },
         orderBy: { completedAt: "desc" },
         take: STRIP,
