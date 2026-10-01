@@ -246,20 +246,57 @@ check("a Canceled ticket (IssueLink suppressed) pointing at one of its findings 
   suppressed.state === "not_a_bug" && suppressed.issueLinkId === "link-1", `${suppressed.state} ${suppressed.issueLinkId}`);
 
 // Our own [Checker gap] / [Checker defect] tickets have no findingId (on
-// checkmyapp.dev CHE-249 counts 58 occurrences). They are never an issue of
-// the app and never attach to one — not even when their dedupKey is a hash
-// one of the app's findings also produces.
+// checkmyapp.dev CHE-249 counts 58 occurrences), and their key is hashed from
+// a synthetic finding no walk of the app produces (19 of 19 on prod). They are
+// never an issue of the app and never attach to one.
 const ourTicket = {
   id: "che-249",
   status: "open",
   findingId: null,
   occurrences: 58,
-  dedupKey: dedupKeyForFinding(holotope[6].f, { appSlug: app.appSlug }),
+  dedupKey: dedupKeyForFinding(
+    { title: "[Checker gap] A React-controlled form our browser cannot submit", category: "broken", severity: "high", detail: null, anchor: null },
+    { appSlug: app.appSlug },
+  ),
 };
 const withOurTicket = recurrence(app, runsOf(fixture), [ourTicket]);
 check("an IssueLink with findingId NULL (×58) yields no issue and attaches to none",
   withOurTicket.length === result.length && withOurTicket.every((r) => r.issue.issueLinkId === null),
   `${withOurTicket.length} issues (as without it), linked: ${withOurTicket.filter((r) => r.issue.issueLinkId).length}`);
+
+// Codex round 3: a customer ticket filed before CHE-103 has no findingId. It is
+// tied to its finding by its CHE-59 key and first-seen check — before the
+// backfill has written the pointer, not only after.
+const legacyCanceled: RecurrenceLink = {
+  id: "che-79",
+  status: "suppressed",
+  findingId: null,
+  dedupKey: dedupKeyForFinding(holotope[3].f, { appSlug: app.appSlug }),
+  firstSeenRunNumber: 252,
+};
+const legacy = recurrence(app, runsOf(fixture), [legacyCanceled]).find((r) => r.issue.signature === sig)!.issue;
+check("a Canceled pre-CHE-103 ticket (findingId NULL) → not_a_bug with its id, before any backfill",
+  legacy.state === "not_a_bug" && legacy.issueLinkId === "che-79", `${legacy.state} ${legacy.issueLinkId}`);
+
+// Codex round 3: a restatement is not a sighting, but its triage counts. #276
+// carries the meditation journey and restates the dead link; the owner marks
+// that copy "known".
+const restatedKnown = {
+  ...partial276,
+  findings: [{ ...holotope[6].f, id: "restated-276", mark: "known", anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 3 } }) }],
+};
+const triagedCopy = recurrence(app, runsOf({ ...fixture, runs: [...without275, restatedKnown] }), []).find((r) => r.issue.signature === sig)!.issue;
+check("a restated copy marked known → known, and still seen 7× (the copy is not a sighting)",
+  triagedCopy.state === "known" && triagedCopy.timesSeen === 7, `${triagedCopy.state} ${triagedCopy.timesSeen}×`);
+
+// Codex round 3: a check with no journeys (smoke, replay-complete) still
+// carries a retirement.
+const smokeAfterRetire = recurrence(app, runsOf({ ...fixture, runs: [...without275, { runNumber: 276, journeys: [], findings: [] }] }), [], {
+  retiredSince: new Map([[MEDITATION, 276]]),
+}).find((r) => r.issue.signature === sig)!;
+check("journey retired, next check is a smoke pass with no journeys → gone since that check (#276)",
+  smokeAfterRetire.issue.state === "gone" && smokeAfterRetire.goneSinceRunNumber === 276,
+  `${smokeAfterRetire.issue.state} ${smokeAfterRetire.goneSinceRunNumber}`);
 
 // Codex round 2: one signature folds reworded findings that each got a ticket.
 // Any Canceled one settles it, whatever order the links come in, and the link

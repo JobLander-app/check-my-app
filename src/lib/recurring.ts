@@ -28,11 +28,13 @@
 // a restatement of an earlier walk ("from an earlier walk, not re-verified
 // today" — meetbashar #246, #255, #259). It is not a sighting: counting it would
 // make "seen 7 times" rest on our own copy, not on the product (CLAUDE.md §8).
+// Its marks and tickets still count: the owner may have triaged the copy.
 //
 // States, first match wins:
 //   not_a_bug — marked false_positive, or its ticket was Canceled (IssueLink
-//               "suppressed", tied to the issue by IssueLink.findingId only —
-//               a link without one is our own ticket and is never listed);
+//               "suppressed", tied to the issue by IssueLink.findingId, or for
+//               a pre-CHE-103 customer ticket by pointLegacyLinks — a link no
+//               finding produces is our own ticket and is never listed);
 //   gone      — walked again and absent;
 //   known     — marked known ("that's fine"), or marked fixed on its latest
 //               sighting while no check has looked again yet;
@@ -47,6 +49,7 @@ import { dedupKey } from "@/lib/dedup";
 import { findingSignature, signatureKind, targetOf } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
+import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 
 export interface RecurringIssue {
@@ -87,6 +90,10 @@ export interface RecurrenceLink {
   id: string;
   status: string;
   findingId: string | null;
+  // For a link with no findingId: its CHE-59 key and the check it was first
+  // seen in, so a pre-CHE-103 customer ticket can be tied to its finding.
+  dedupKey?: string;
+  firstSeenRunNumber?: number | null;
 }
 
 export interface Recurrence {
@@ -124,18 +131,20 @@ export function recurrence(
   const walkedIn = new Map(ordered.map((r) => [r, new Set(r.journeys.filter((j) => j.walked).map((j) => j.identity))]));
 
   const groups = new Map<string, Sighting[]>();
+  // Restatements: not sightings, but the owner may have triaged them (a mark,
+  // a ticket), and that triage is about the problem — Codex round 3.
+  const restated = new Map<string, Sighting[]>();
   for (const run of ordered) {
     for (const finding of run.findings) {
       const ref = parseJson<{ stepRef?: { journeyIndex?: number } | null }>(finding.anchor)?.stepRef;
       const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] ?? null : null;
-      if (journey?.carried) continue; // a restatement, not a sighting
       const signature = signatureOf(finding, app.appSlug);
       if (signatureKind(signature) === "ours") continue;
-      const list = groups.get(signature) ?? [];
-      list.push({ run, finding, journey: journey?.identity ?? null });
-      groups.set(signature, list);
+      const into = journey?.carried ? restated : groups;
+      into.set(signature, [...(into.get(signature) ?? []), { run, finding, journey: journey?.identity ?? null }]);
     }
   }
+  const resolvedLinks = pointLegacyLinks(app, ordered, links);
 
   // One check does not normally report one problem twice, so a signature that
   // one check saw twice is proven too coarse for this app: on joblander.app
@@ -151,10 +160,11 @@ export function recurrence(
     for (const s of sightings) perRun.set(s.run, (perRun.get(s.run) ?? 0) + 1);
     if ([...perRun.values()].every((n) => n < 2)) continue;
     groups.delete(signature);
-    for (const s of sightings) {
-      const split = `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(s.finding.detail), failureSignature: "target" }).slice(0, 12)}`;
-      groups.set(split, [...(groups.get(split) ?? []), s]);
-    }
+    const splitOf = (s: Sighting) =>
+      `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(s.finding.detail), failureSignature: "target" }).slice(0, 12)}`;
+    for (const s of sightings) groups.set(splitOf(s), [...(groups.get(splitOf(s)) ?? []), s]);
+    for (const s of restated.get(signature) ?? []) restated.set(splitOf(s), [...(restated.get(splitOf(s)) ?? []), s]);
+    restated.delete(signature);
   }
 
   // The first check after `seen` (and before `until`) by which every journey
@@ -168,12 +178,15 @@ export function recurrence(
   const lookedAgain = (seen: Sighting, until = Infinity): RecurrenceRun | undefined => {
     const waitingFor = new Set(seen.journey ? [seen.journey] : walkedIn.get(seen.run)!);
     for (const r of ordered) {
-      if (r.runNumber <= seen.run.runNumber || r.journeys.length === 0) continue;
+      if (r.runNumber <= seen.run.runNumber) continue;
       if (r.runNumber >= until) return undefined;
+      // A check with no journeys (a smoke pass, replay-complete) walked nothing,
+      // but a retirement still takes effect at it — Codex round 3.
+      let released = false;
       for (const j of [...waitingFor]) {
-        if (walkedIn.get(r)!.has(j) || (retiredSince.get(j) ?? Infinity) <= r.runNumber) waitingFor.delete(j);
+        if (walkedIn.get(r)!.has(j) || (retiredSince.get(j) ?? Infinity) <= r.runNumber) released = waitingFor.delete(j);
       }
-      if (waitingFor.size === 0) return r;
+      if (waitingFor.size === 0 && (released || r.journeys.length > 0)) return r;
     }
     return undefined;
   };
@@ -197,8 +210,10 @@ export function recurrence(
 
     // Marks from the whole history: "not a bug" and "known" are about the
     // problem, and persistFindings carries them onto later findings anyway.
+    // Restatements of it count here (not in timesSeen).
+    const triaged = [...sightings, ...(restated.get(signature) ?? [])].sort((a, b) => a.run.runNumber - b.run.runNumber);
     let mark: { mark: string; runNumber: number } | null = null;
-    for (const s of sightings) {
+    for (const s of triaged) {
       if (["known", "fixed", "false_positive"].includes(s.finding.mark)) mark = { mark: s.finding.mark, runNumber: s.run.runNumber };
     }
     // A ticket belongs to an issue only through IssueLink.findingId. Links
@@ -206,15 +221,16 @@ export function recurrence(
     // 2 and 8 — on checkmyapp.dev CHE-249 counts 58 occurrences), never a
     // problem of the customer's app; and matching by the old prose-hashed
     // dedupKey would tie a ticket to whatever the hash happens to equal.
-    // Customer tickets filed before CHE-103 get their findingId from
-    // scripts/backfill-finding-signature.ts (CHE-79, CHE-87 … on prod).
+    // Customer tickets filed before CHE-103 have no findingId either; their
+    // finding is recovered by pointLegacyLinks (and persisted by
+    // scripts/backfill-finding-signature.ts: CHE-79, CHE-87 … on prod).
     //
     // A signature can fold several reworded findings that each got a ticket:
     // any Canceled one settles it as not a bug, and the link shown is the one
     // on the latest sighting that has a link — never whichever the database
     // happened to return first.
-    const linked = sightings
-      .map((s) => links.find((l) => l.findingId !== null && l.findingId === s.finding.id))
+    const linked = triaged
+      .map((s) => resolvedLinks.find((l) => l.findingId !== null && l.findingId === s.finding.id))
       .filter((l): l is RecurrenceLink => Boolean(l));
     const link = linked[linked.length - 1] ?? null;
 
@@ -269,6 +285,7 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
           where: { appId: app.id, status: { in: FINISHED } },
           orderBy: { runNumber: "asc" },
           select: {
+            id: true,
             runNumber: true,
             startedAt: true,
             status: true,
@@ -294,8 +311,8 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
           },
         }),
         db.issueLink.findMany({
-          where: { appId: app.id, findingId: { not: null } },
-          select: { id: true, status: true, findingId: true },
+          where: { appId: app.id },
+          select: { id: true, status: true, findingId: true, dedupKey: true, firstSeenRunId: true },
         }),
         db.appJourney.findMany({
           where: { appId: app.id, retiredAt: { not: null } },
@@ -304,10 +321,46 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
       ]);
       const published = runs.filter((r) => extensionReportPublished(r));
       const retiredSince = retiredSinceRun(retired, published);
-      return [app.id, recurrence(app, published.map(toRecurrenceRun), links, { retiredSince }).map((r) => r.issue)];
+      const runNumberOf = new Map(runs.map((r) => [r.id, r.runNumber]));
+      const recurrenceLinks = links.map((l) => ({
+        id: l.id,
+        status: l.status,
+        findingId: l.findingId,
+        dedupKey: l.dedupKey,
+        firstSeenRunNumber: l.firstSeenRunId ? runNumberOf.get(l.firstSeenRunId) ?? null : null,
+      }));
+      return [app.id, recurrence(app, published.map(toRecurrenceRun), recurrenceLinks, { retiredSince }).map((r) => r.issue)];
     }),
   );
   return new Map(entries);
+}
+
+// A customer ticket filed before CHE-103 has no findingId. Its finding is
+// recovered the way reconcile.originalFinding recovers it: the finding of the
+// first-seen check whose CHE-59 key equals the link's, else the earliest such
+// finding. A link no finding produces is our own [Checker gap] / [Checker
+// defect] ticket (19 of 29 null pointers on prod, 2026-10-01) and stays
+// unattached. scripts/backfill-finding-signature.ts persists the same answer,
+// so after the backfill this finds nothing left to do.
+export function pointLegacyLinks<L extends RecurrenceLink>(
+  app: { appSlug: string },
+  runs: RecurrenceRun[],
+  links: L[],
+): L[] {
+  if (links.every((l) => l.findingId !== null || !l.dedupKey)) return links;
+  const byKey = new Map<string, Array<{ runNumber: number; id: string }>>();
+  for (const run of [...runs].sort((a, b) => a.runNumber - b.runNumber)) {
+    for (const f of run.findings) {
+      const key = dedupKeyForFinding(f, app);
+      byKey.set(key, [...(byKey.get(key) ?? []), { runNumber: run.runNumber, id: f.id }]);
+    }
+  }
+  return links.map((l) => {
+    if (l.findingId !== null || !l.dedupKey) return l;
+    const candidates = byKey.get(l.dedupKey) ?? [];
+    const pick = candidates.find((c) => c.runNumber === l.firstSeenRunNumber) ?? candidates[0];
+    return pick ? { ...l, findingId: pick.id } : l;
+  });
 }
 
 // AppJourney.id → the first of these checks that started at or after the
