@@ -41,6 +41,9 @@ export type PublicReason =
   | "the anonymous funnel — a stranger's first check"
   | "addressed by an unguessable id"
   | "signature-verified webhook"
+  // Not a signature: the sender echoes a shared secret we gave it (Telegram's
+  // X-Telegram-Bot-Api-Secret-Token). Said apart so nobody reads it as stronger.
+  | "secret-token-verified webhook"
   | "public by design — today's checks are readable by anyone";
 
 // Keyed "METHOD /path" with Next's own bracket segments, so an entry can be
@@ -73,6 +76,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   // Signature-verified: the proof is the signature, not a session.
   "POST /api/webhooks/stripe": { kind: "public", why: "signature-verified webhook" },
   "POST /api/webhooks/clerk": { kind: "public", why: "signature-verified webhook" },
+  // CHE-375: the owner's chat with @checkmyapp_bot, stored in D1. Only chats on
+  // TELEGRAM_ALLOWED_CHAT_IDS are written.
+  "POST /api/webhooks/telegram": { kind: "public", why: "secret-token-verified webhook" },
 
   // CHE-315: the remote MCP server. One URL, many actions: the API key names
   // the team and the scope, and each tool asks the scope table for its own
