@@ -546,6 +546,25 @@ async function main() {
       classifyGap({ text: "The file upload failed for a CSV exported from admin.shopify.com.", targetOrigin: "https://joblander.app" }) === "file_transfer",
       classifyGap({ text: "The file upload failed for a CSV exported from admin.shopify.com.", targetOrigin: "https://joblander.app" }),
     );
+    // Round 3: the machine trail names a mechanism the words do not.
+    const insideAdmin = "Inside the Shopify admin, the preference could not be checked.";
+    const sliderTrail: RecordedAction[] = JSON.parse(SLIDER_153.actions ?? "[]");
+    const silentLink: RecordedAction[] = JSON.parse(NEW_TAB_154.actions ?? "[]");
+    check(
+      "inside the admin with a slider click on the trail → range_input",
+      classifyGap({ text: insideAdmin, actions: sliderTrail }) === "range_input",
+      classifyGap({ text: insideAdmin, actions: sliderTrail }),
+    );
+    check(
+      "inside the admin with a silent link click on the trail → new_tab",
+      classifyGap({ text: insideAdmin, actions: silentLink }) === "new_tab",
+      classifyGap({ text: insideAdmin, actions: silentLink }),
+    );
+    check("inside the admin with no trail → shopify_admin", classifyGap({ text: insideAdmin }) === "shopify_admin");
+    check(
+      "a door in the words still beats the trail: Google sign-in on accounts.shopify.com → shopify_admin",
+      classifyGap({ text: "accounts.shopify.com asks to Continue with Google.", actions: silentLink }) === "shopify_admin",
+    );
     check(
       "an hCaptcha on accounts.shopify.com is still the admin's door → shopify_admin",
       classifyGap({ text: "The login on accounts.shopify.com requires solving an hCaptcha.", targetOrigin: "https://securify-demo.myshopify.com" }) === "shopify_admin",

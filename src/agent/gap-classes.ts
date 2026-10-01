@@ -246,9 +246,10 @@ export interface GapEvidence {
 // (sign-in, codes, CAPTCHA, a foreign host's 403, a host we cannot reach) and
 // the unclassified bucket.
 //
-// It does not outrank a mechanism (PR #217 review): an upload, a slider, a
-// camera, a new tab or a control we cannot drive is its own missing
-// capability wherever the admin is mentioned — "the CSV exported from
+// It does not outrank a mechanism (PR #217 review), in the words or on the
+// machine trail: an upload, a slider, a camera, a new tab or a control we
+// cannot drive is its own missing capability wherever the admin is
+// mentioned — "the CSV exported from
 // admin.shopify.com" is an upload, and stays one. And it must be the admin
 // itself, not the name in passing: the exact hosts, bounded so
 // admin.shopify.com.evil.example is not one of them; a store's /admin path; or
@@ -266,8 +267,11 @@ const SHOPIFY_ADMIN = [
 export function classifyGap(evidence: GapEvidence): GapClass {
   const text = evidence.text;
   const textHit = TEXT_RULES.find((r) => r.match.test(text))?.cls;
-  if ((!textHit || SHOPIFY_DOORS.has(textHit)) && SHOPIFY_ADMIN.some((rule) => rule.test(text))) {
-    return "shopify_admin";
+  if (SHOPIFY_ADMIN.some((rule) => rule.test(text))) {
+    if (textHit && SHOPIFY_DOORS.has(textHit)) return "shopify_admin";
+    // Words that only say where the step was leave the trail to name the
+    // mechanism (a slider click, a silent link) before the admin claims it.
+    if (!textHit) return trailClass(evidence.actions ?? []) ?? "shopify_admin";
   }
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
