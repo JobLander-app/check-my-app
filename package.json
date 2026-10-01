@@ -98,7 +98,8 @@
     "verify:extension-runner": "tsx scripts/verify-extension-runner.ts",
     "verify:extension-screenshot": "node scripts/verify-extension-screenshot.mjs",
     "verify:extension-adoption": "tsx scripts/verify-extension-adoption.ts",
-    "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts"
+    "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
+    "verify:shopify-session": "node scripts/verify-shopify-session.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",

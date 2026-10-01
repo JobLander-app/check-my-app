@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare tunnel checkmyapp-session-host -> session.checkmyapp.dev (CHE-378)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# TUNNEL_TOKEN lives in a root-only file, not in this unit: unit files are
+# world-readable and `cloudflared service install <token>` would put it here.
+EnvironmentFile=/etc/cloudflared/tunnel.env
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
+Restart=always
+RestartSec=5
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
