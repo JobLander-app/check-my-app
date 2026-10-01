@@ -97,6 +97,10 @@ const median = (xs: number[]) => {
   return s[Math.floor(s.length / 2)];
 };
 
+// Journeys with at least one step that was not skipped; `_count.steps` counts
+// only those.
+const walkedJourneys = (journeys: { _count: { steps: number } }[]) => journeys.filter((j) => j._count.steps > 0).length;
+
 // The explanation for a run addressed by its public id, within one team — the
 // shape the MCP tools and the verdict page ask for.
 export async function explainRunPrice(db: PrismaClient, teamId: string, publicId: string): Promise<PriceExplanation | null> {
@@ -122,11 +126,16 @@ export async function explainPrice(
     select: { id: true, title: true, _count: { select: { steps: { where: { status: { not: "skipped" } } } } } },
   });
   const steps = journeys.reduce((s, j) => s + j._count.steps, 0);
+  // CHE-379: a journey was walked when at least one of its steps was. Every
+  // journey of run #221 was skipped, and it read "Walked 5 journeys, 0 steps".
+  const walked = walkedJourneys(journeys);
   const kind: "quick" | "walk" = journeys.length === 0 && run.quickPagesOpened !== null ? "quick" : "walk";
   const work =
     kind === "quick"
       ? `Quick check — nothing had changed, ${plural(run.quickPagesOpened ?? 0, "page")} opened`
-      : `Walked ${plural(journeys.length, "journey")}, ${plural(steps, "step")}`;
+      : walked > 0
+        ? `Walked ${plural(walked, "journey")}, ${plural(steps, "step")}`
+        : null;
 
   const usage = await db.llmUsage.findMany({ where: { runId: run.id }, select: { phase: true, journeyId: true, costUsd: true } });
   const byJourney = new Map<string, number>();
@@ -137,6 +146,8 @@ export async function explainPrice(
     else if (u.phase === "discovery") mapping += u.costUsd;
     else writing += u.costUsd;
   }
+  // Nothing walked: the price paid for what was done instead.
+  const workLine = work ?? (mapping > 0 ? "Mapped the app; no journey was walked" : "No journey was walked");
   const parts = splitByCost(run.priceUsd, [
     ...(mapping > 0 ? [{ label: "Mapping the app", cost: mapping }] : []),
     ...journeys.map((j) => ({ label: j.title, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
@@ -151,17 +162,17 @@ export async function explainPrice(
     take: 20,
     select: { journeys: { where: { carriedFromRunId: null }, select: { _count: { select: { steps: { where: { status: { not: "skipped" } } } } } } } },
   });
-  const usualJourneys = history.length >= 3 ? median(history.map((h) => h.journeys.length)) : null;
+  const usualJourneys = history.length >= 3 ? median(history.map((h) => walkedJourneys(h.journeys))) : null;
   const usualSteps = history.length >= 3 ? median(history.map((h) => h.journeys.reduce((s, j) => s + j._count.steps, 0))) : null;
 
   return {
     price_usd: run.priceUsd,
     kind,
-    work,
-    journeys_walked: journeys.length,
+    work: workLine,
+    journeys_walked: walked,
     steps_walked: steps,
     parts,
     usual: usual ? { low: usual.low, high: usual.high } : null,
-    comparison: comparePrice({ kind, price: run.priceUsd, usual, journeys: journeys.length, steps, usualJourneys, usualSteps }),
+    comparison: comparePrice({ kind, price: run.priceUsd, usual, journeys: walked, steps, usualJourneys, usualSteps }),
   };
 }

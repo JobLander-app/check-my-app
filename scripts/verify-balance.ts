@@ -265,7 +265,42 @@ async function main() {
     check("quick: the work is the pages opened, and the reason is that nothing changed",
       quick?.work === "Quick check — nothing had changed, 3 pages opened" && quick.kind === "quick" && /only a quick pass/.test(quick.comparison ?? ""),
       JSON.stringify(quick));
-    for (const [name, e] of [["walk", walk], ["quick", quick]] as const) {
+    // CHE-379: run #221 (an extension check, every journey skipped) read
+    // "Walked 5 journeys, 0 steps". A journey counts as walked when at least
+    // one of its steps was; the work line says so when none was.
+    const { db: skipDb } = createStubDb({
+      team: [{ id: "t", plan: "growth", topupUsd: 0 }],
+      run: [
+        { id: "none", publicId: "pub_none", teamId: "t", appSlug: "ext.test", status: "completed", costUsd: 0.11, priceUsd: 0.27, quickPagesOpened: null, createdAt: new Date(2026, 8, 14) },
+        { id: "some", publicId: "pub_some", teamId: "t", appSlug: "ext.test", status: "completed", costUsd: 0.2, priceUsd: 0.5, quickPagesOpened: null, createdAt: new Date(2026, 8, 15) },
+      ],
+      journey: [
+        ...["A", "B", "C", "D", "E"].map((t, i) => ({ id: `n${i}`, runId: "none", order: i, title: t, carriedFromRunId: null })),
+        { id: "s0", runId: "some", order: 0, title: "Sign in", carriedFromRunId: null },
+        { id: "s1", runId: "some", order: 1, title: "Practice", carriedFromRunId: null },
+        { id: "s2", runId: "some", order: 2, title: "History", carriedFromRunId: null },
+      ],
+      step: [
+        // #221's shape: four journeys with only skipped steps, one with none.
+        ...["n0", "n0", "n1", "n2", "n3"].map((j, i) => ({ id: `ns${i}`, journeyId: j, order: i, status: "skipped" })),
+        ...step("s0", 3), ...step("s1", 2),
+        { id: "ss", journeyId: "s2", order: 0, status: "skipped" },
+      ],
+      llmUsage: [
+        { id: "nu1", runId: "none", phase: "discovery", journeyId: null, costUsd: 0.08 },
+        { id: "nu2", runId: "none", phase: "walking", journeyId: "n0", costUsd: 0.03 },
+      ],
+    });
+    const none = await cp.explainRunPrice(skipDb, "t", "pub_none");
+    check("every journey skipped: it does not say it walked them — 0 journeys, 0 steps, and the work names what was done",
+      none?.journeys_walked === 0 && none.steps_walked === 0 && none.work === "Mapped the app; no journey was walked",
+      JSON.stringify(none && { work: none.work, journeys_walked: none.journeys_walked }));
+    check("…and its price is still accounted for, part by part, summing to the price",
+      none !== null && Math.round(none.parts.reduce((s, p) => s + p.price_usd * 100, 0)) === 27, JSON.stringify(none?.parts));
+    const some = await cp.explainRunPrice(skipDb, "t", "pub_some");
+    check("one journey of three skipped: Walked 2 journeys, 5 steps", some?.work === "Walked 2 journeys, 5 steps" && some.journeys_walked === 2,
+      some?.work ?? "");
+    for (const [name, e] of [["walk", walk], ["quick", quick], ["skipped", none]] as const) {
       const text = JSON.stringify(e);
       check(`${name}: no cost, token or multiplier anywhere in the explanation`, !/cost|token|multipl|markup|×/i.test(text), text);
       const words = [e?.work, e?.comparison, ...(e?.parts ?? []).map((p) => p.label)].filter(Boolean).join(". ");
