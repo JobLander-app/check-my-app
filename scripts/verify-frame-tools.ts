@@ -57,11 +57,16 @@ const PAGES: Record<string, string> = {
     <iframe name="app-iframe" src="${APP}/" width="800" height="400"></iframe>
     <iframe name="vendor-login" src="${LOGIN}/" width="400" height="200"></iframe>
     <iframe src="${PIXEL}/" width="1" height="1"></iframe>
-    <iframe name="challenge" src="${CHALLENGE}/" width="300" height="80"></iframe>`,
+    <iframe name="challenge" src="${CHALLENGE}/" width="300" height="80"></iframe>
+    <div id="host-modal"></div>
+    <script>addEventListener("message", (e) => {
+      if (e.origin === "${APP}" && e.data === "open-modal") document.getElementById("host-modal").textContent = "Host modal open";
+    });</script>`,
   [`${APP}/`]: `<!doctype html><title>Securify</title>
     <h2>Securify settings</h2>
     <p id="status">Report not opened</p>
     <button onclick="document.getElementById('status').textContent='Report ready'">Open report</button>
+    <button onclick="parent.postMessage('open-modal', '*')">Open host modal</button>
     <label for="email">Store email</label><input id="email" type="email">`,
   [`${LOGIN}/`]: `<!doctype html><title>Vendor login</title>
     <h2>Vendor sign-in</h2>
@@ -242,6 +247,13 @@ async function main() {
       check("click: the app really changed", (await appFrame(env.page).textContent("#status")) === "Report ready");
       const trail = (env.actionTrail ?? []) as Array<{ kind: string; frame?: string }>;
       check("click: the recorded action names its frame, for a replay", trail.at(-1)?.kind === "click" && trail.at(-1)?.frame === "app-iframe", JSON.stringify(trail.at(-1)));
+
+      // An embedded app that answers through the host page (postMessage → a
+      // host-rendered modal) changes nothing in its own document. Counted in
+      // the frame alone, that real reaction read as a dead control.
+      const viaHost = await executeTool(env, "click", { role: "button", name: "Open host modal" });
+      check("click: the host page's reaction is the frame click's reaction too", viaHost.startsWith("Clicked inside FRAME 1") && !viaHost.includes("did not react AT ALL"), viaHost.slice(0, 300));
+      check("click: …the host modal really opened", (await env.page.textContent("#host-modal")) === "Host modal open");
 
       // A third party's frame is read, never acted in — searched or named.
       const vendorClick = await executeTool(env, "click", { role: "button", name: "Vendor help" });

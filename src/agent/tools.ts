@@ -899,17 +899,26 @@ interface ReactionSnapshot {
   net: number;
   mut: number;
   url: string;
-  // CHE-373: set when the control is inside a frame.
+  // CHE-373: set when the control is inside a frame. `mut` is then the frame's
+  // counter and `hostMut` the page's.
   frameUrl?: string;
+  hostMut?: number;
 }
 
-// CHE-373: the mutation counter of the document the click landed in. A click
-// inside an embedded app changes the frame's DOM, not the page's; counted on
-// the page it read as "did not react AT ALL" — our blindness, written up as
-// their dead button.
+const mutationCount = (doc: Page | Frame) =>
+  doc.evaluate("window.__cmaMutations || 0").then((n) => Number(n) || 0, () => 0);
+
+// CHE-373: the mutation counters of every document a click can move. A click
+// inside an embedded app changes the frame's DOM — or, when the app talks to
+// its host (postMessage, a host-rendered modal), only the page's. Counted in
+// one document alone, either reads as "did not react AT ALL": our blindness,
+// written up as their dead button.
 async function snapshotReaction(env: ToolEnv, frame?: Frame | null): Promise<ReactionSnapshot> {
-  const mut = await (frame ?? env.page).evaluate("window.__cmaMutations || 0").catch(() => 0);
-  return { net: env.networkLog.length, mut: Number(mut) || 0, url: env.page.url(), ...(frame ? { frameUrl: frame.url() } : {}) };
+  const net = env.networkLog.length;
+  const url = env.page.url();
+  if (!frame) return { net, mut: await mutationCount(env.page), url };
+  const [mut, hostMut] = await Promise.all([mutationCount(frame), mutationCount(env.page)]);
+  return { net, mut, url, frameUrl: frame.url(), hostMut };
 }
 
 interface Reaction {
@@ -925,10 +934,15 @@ async function settleAndMeasure(env: ToolEnv, before: ReactionSnapshot, frame?: 
   await env.page.waitForLoadState("domcontentloaded").catch(() => {});
   await env.page.waitForTimeout(1_200);
   const after = await snapshotReaction(env, frame);
-  const navigated = after.url !== before.url || after.frameUrl !== before.frameUrl;
+  const pageNavigated = after.url !== before.url;
+  const navigated = pageNavigated || after.frameUrl !== before.frameUrl;
+  // A fresh document starts its counter at zero, so after a navigation its
+  // whole count is the reaction.
+  const delta = (now: number, then: number, fresh: boolean) => (fresh ? now : Math.max(now - then, 0));
+  const hostMutations = frame ? delta(after.hostMut ?? 0, before.hostMut ?? 0, pageNavigated) : 0;
   return {
     requests: Math.max(after.net - before.net, 0),
-    mutations: navigated ? after.mut : Math.max(after.mut - before.mut, 0),
+    mutations: delta(after.mut, before.mut, navigated) + hostMutations,
     navigated,
   };
 }
