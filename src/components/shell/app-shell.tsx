@@ -26,7 +26,14 @@ export function AppShell({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="min-h-screen min-[900px]:flex">
+    // Escape is heard on the whole frame, not on the drawer: right after the
+    // menu button opens it, focus is still on that button, outside the drawer.
+    <div
+      className="min-h-screen min-[900px]:flex"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") setOpen(false);
+      }}
+    >
       <div className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-ink-700 bg-ink-900 px-4 min-[900px]:hidden">
         <button
           type="button"
@@ -60,9 +67,6 @@ export function AppShell({
         aria-label="Main"
         onClick={(e) => {
           if ((e.target as HTMLElement).closest("a")) setOpen(false);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") setOpen(false);
         }}
         className={cn(
           // The slide is the drawer's only: on a desktop the sidebar never moves.

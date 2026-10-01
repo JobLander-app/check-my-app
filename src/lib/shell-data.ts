@@ -49,22 +49,37 @@ const WINDOW_DAYS = 30;
 // no appId. Each is one seek on Run(teamId, appId, completedAt), newest first:
 // the cost follows the number of apps, not the length of the history (Codex P2
 // on #230: a window over every finished run of the team, on every page).
+//
+// "Newest" is by time, not by text. D1 compares completedAt as text, and prod
+// holds two spellings of it ("2026-09-14 23:30:00", written by hand, sorts
+// before "2026-09-14T22:00:00.000+00:00"). Across days the text order is right,
+// so the seek finds the newest day; within that day the candidates are ordered
+// with the two spellings made one — what appHealth does with parsed dates
+// (CHE-382), so the sidebar's dot and All apps never name different checks.
 const LATEST_WITH_OPEN = (teamId: string) => Prisma.sql`
   SELECT appId, verdict, open FROM (
     SELECT a.id AS appId, r.verdict AS verdict,
       (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = r.id AND f.mark IN ('none', 'watch')) AS open,
-      ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY r.completedAt DESC) AS rn
+      ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY replace(r.completedAt, ' ', 'T') DESC) AS rn
     FROM "App" a
     JOIN "Run" r ON r.id IN (
       (SELECT o.id FROM "Run" o
         WHERE o.teamId = a.teamId AND o.appId = a.id
           AND o.status IN ('completed', 'partial') AND o.verdict IS NOT NULL AND o.priceUsd IS NOT NULL
-        ORDER BY o.completedAt DESC LIMIT 1),
+          AND o.completedAt >= (SELECT substr(d.completedAt, 1, 10) FROM "Run" d
+            WHERE d.teamId = a.teamId AND d.appId = a.id
+              AND d.status IN ('completed', 'partial') AND d.verdict IS NOT NULL AND d.priceUsd IS NOT NULL
+            ORDER BY d.completedAt DESC LIMIT 1)
+        ORDER BY replace(o.completedAt, ' ', 'T') DESC LIMIT 1),
       (SELECT l.id FROM "Run" l
         WHERE l.teamId = a.teamId AND l.appId IS NULL AND l.appSlug = a.appSlug
           AND l.status IN ('completed', 'partial') AND l.verdict IS NOT NULL AND l.priceUsd IS NOT NULL
           AND (SELECT COUNT(*) FROM "App" b WHERE b.teamId = a.teamId AND b.appSlug = a.appSlug) = 1
-        ORDER BY l.completedAt DESC LIMIT 1)
+          AND l.completedAt >= (SELECT substr(e.completedAt, 1, 10) FROM "Run" e
+            WHERE e.teamId = a.teamId AND e.appId IS NULL AND e.appSlug = a.appSlug
+              AND e.status IN ('completed', 'partial') AND e.verdict IS NOT NULL AND e.priceUsd IS NOT NULL
+            ORDER BY e.completedAt DESC LIMIT 1)
+        ORDER BY replace(l.completedAt, ' ', 'T') DESC LIMIT 1)
     )
     WHERE a.teamId = ${teamId}
   )

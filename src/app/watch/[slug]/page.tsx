@@ -11,10 +11,18 @@ import { appPath } from "@/lib/app-shell";
 export default async function WatchMoved({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const { user, db, team } = await requireUser();
-  const here = await db.app.findFirst({ where: { ...teamOwned(team.id), appSlug: slug }, select: { id: true } });
+  // The old route named one row: the caller's own app of that slug. A slug can
+  // now be several apps — a teammate's in this team, one in another team of
+  // yours — so the caller's own comes first, as the link meant it.
+  const pickOwn = <T extends { ownerId: string }>(rows: T[]) => rows.find((a) => a.ownerId === user.id) ?? rows[0];
+  const here = pickOwn(
+    await db.app.findMany({ where: { ...teamOwned(team.id), appSlug: slug }, select: { id: true, ownerId: true } }),
+  );
   if (here) redirect(appPath.schedule(here.id));
   // In another team of yours: the settings page offers the switch (CHE-261).
-  const elsewhere = await db.app.findFirst({ where: { ...memberOfRows(user.id), appSlug: slug }, select: { id: true } });
+  const elsewhere = pickOwn(
+    await db.app.findMany({ where: { ...memberOfRows(user.id), appSlug: slug }, select: { id: true, ownerId: true } }),
+  );
   if (elsewhere) redirect(appPath.settings(elsewhere.id));
   notFound();
 }

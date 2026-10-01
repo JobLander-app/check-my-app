@@ -76,6 +76,7 @@
     "verify:failed-run": "tsx --tsconfig tsconfig.json scripts/verify-failed-run.ts",
     "verify:paid-retry": "tsx --tsconfig tsconfig.json scripts/verify-paid-retry.ts",
     "verify:app-health": "tsx --tsconfig tsconfig.json scripts/verify-app-health.ts",
+    "verify:app-shell": "tsx --tsconfig tsconfig.json scripts/verify-app-shell.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",

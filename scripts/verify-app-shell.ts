@@ -280,7 +280,7 @@ async function realChecks() {
     await real.db.user.create({ data: { id: "ur2", clerkUserId: "ck_ur2", email: "shell2@example.test" } });
     const app = (id: string, slug = `${id}.test`, ownerId = "ur") =>
       real.db.app.create({ data: { id, teamId: T, ownerId, appSlug: slug, targetUrl: `https://${slug}`, targetKind: "website" } });
-    for (const id of ["own", "loose", "both", "failed", "none"]) await app(id);
+    for (const id of ["own", "loose", "both", "failed", "none", "mixed", "mixedloose"]) await app(id);
     // One slug, two apps in the team: two teammates each added it (an owner has one app per slug).
     await app("twin1", "twin.test");
     await app("twin2", "twin.test", "ur2");
@@ -302,6 +302,7 @@ async function realChecks() {
       for (const [i, mark] of (over.marks ?? []).entries()) {
         await real.db.finding.create({ data: { runId: id, number: i + 1, title: `f${i}`, category: "bug", severity: "high", mark } });
       }
+      return id;
     };
     // own: the newer attached check wins; of its four findings two are open.
     await run("own", "own.test", "2026-09-20T10:00:00Z", "broken", { marks: ["none", "none", "none"] });
@@ -318,6 +319,19 @@ async function realChecks() {
     await run("failed", "failed.test", "2026-09-30T10:00:00Z", null, { status: "failed", priceUsd: null });
     // twins: two apps share a slug, so an unattached check is neither's.
     await run(null, "twin.test", "2026-09-16T10:00:00Z", "broken", { marks: ["none"] });
+    // mixed: two checks on one day in the two spellings prod holds. The later
+    // one (23:30) is in the hand-written spelling, which text puts BEFORE the
+    // 22:00 one — the latest is the 23:30 check only if time decides (Codex P2
+    // on #230). An older day's check must not come back through the day edge.
+    await run("mixed", "mixed.test", "2026-09-13T23:59:00Z", "needs_attention", { marks: ["none", "none", "none"] });
+    await run("mixed", "mixed.test", "2026-09-14T22:00:00Z", "all_good");
+    const late = await run("mixed", "mixed.test", "2026-09-14T23:30:00Z", "broken", { marks: ["none"] });
+    await real.exec(`UPDATE Run SET completedAt = '2026-09-14 23:30:00' WHERE id = ?`, late);
+    // mixedloose: the same day, the two spellings split between an attached
+    // check and an unattached one — the comparison between the two candidates.
+    await run("mixedloose", "mixedloose.test", "2026-09-14T22:00:00Z", "all_good");
+    const lateLoose = await run(null, "mixedloose.test", "2026-09-14T23:30:00Z", "broken", { marks: ["none"] });
+    await real.exec(`UPDATE Run SET completedAt = '2026-09-14 23:30:00' WHERE id = ?`, lateLoose);
 
     const shell = await loadShellData(real.db, T, new Date("2026-10-01T12:00:00.000Z"));
     const verdict = (id: string) => shell.apps.find((a) => a.id === id)?.verdict;
@@ -327,7 +341,12 @@ async function realChecks() {
     check("real D1: a failed check does not take the verdict away", verdict("failed") === "broken", String(verdict("failed")));
     check("real D1: two apps sharing a slug claim no unattached check", verdict("twin1") === null && verdict("twin2") === null, `${verdict("twin1")} / ${verdict("twin2")}`);
     check("real D1: an app never checked has no verdict", verdict("none") === null, String(verdict("none")));
-    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1", shell.openIssues === 4, String(shell.openIssues));
+    check("real D1: of two same-day checks in two spellings, the later by time is the latest", verdict("mixed") === "broken", String(verdict("mixed")));
+    check("real D1: …also when one of the two is attached and the other is not", verdict("mixedloose") === "broken", String(verdict("mixedloose")));
+    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1 + 1 + 1", shell.openIssues === 6, String(shell.openIssues));
+    const health = await appHealth(real.db, T, { now: new Date("2026-10-01T12:00:00.000Z") });
+    const differ = health.apps.filter((a) => (a.latest?.verdict ?? null) !== (verdict(a.appId) ?? null)).map((a) => `${a.appId}: ${a.latest?.verdict} vs ${verdict(a.appId)}`);
+    check("real D1: the sidebar and appHealth name the same latest verdict for every app", differ.length === 0, differ.join("; "));
 
     const shellSrc = read("src/lib/shell-data.ts");
     const sql = shellSrc.slice(shellSrc.indexOf("Prisma.sql`") + "Prisma.sql`".length, shellSrc.indexOf("`;", shellSrc.indexOf("Prisma.sql`")));
@@ -336,10 +355,12 @@ async function realChecks() {
     // table of the statement may be read whole.
     const details = plan.map((p) => p.detail);
     const seeks = (alias: string) =>
-      details.some((d) => d.startsWith(`SEARCH ${alias} USING INDEX Run_teamId_appId_completedAt_idx (teamId=? AND appId=?)`));
+      details.some((d) => d.startsWith(`SEARCH ${alias} USING INDEX Run_teamId_appId_completedAt_idx (teamId=? AND appId=?`));
+    // `d` and `e` find the newest day (a seek, newest first); `o` and `l` then
+    // read that day only (appId and a completedAt range).
     check(
       "real D1: each latest-check lookup seeks on Run(teamId, appId, completedAt), and no table is read whole",
-      seeks("o") && seeks("l") && !details.some((d) => /^SCAN [a-z]\b/.test(d)),
+      ["o", "l", "d", "e"].every(seeks) && !details.some((d) => /^SCAN [a-z]\b/.test(d)),
       details.join(" | "),
     );
   } finally {
