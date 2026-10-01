@@ -41,6 +41,7 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
+import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
 import { loadKnownMap } from "./known-map";
 import { loadAppKnowledge, type AppKnowledge } from "./knowledge";
@@ -1724,6 +1725,8 @@ async function persistFindings(env: AgentEnv, runId: string, findings: Synthesiz
         number: number++,
         ...shaped,
         anchor,
+        // CHE-354: the identity recurrence is counted by (src/lib/recurring.ts).
+        signature: run ? findingSignature({ appSlug: run.appSlug, ...shaped, anchor }) : null,
         ...(mark ? { mark } : {}),
         evidence: shot
           ? { create: [{ type: "screenshot", storageUrl: shot.storageUrl, sha256: shot.sha256 }] }

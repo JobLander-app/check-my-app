@@ -1,0 +1,315 @@
+{
+ "source": "prod D1, 2026-10-01: every Finding and Journey of meetbashar.com runs #241, #246, #249, #252, #255, #259, #267 and #275, copied as stored (journey ids, keys, carried or not, status; finding id, title, category, severity, mark, detail, anchor). Read by scripts/verify-finding-signature.ts (CHE-354).",
+ "app": { "id": "cmtadwfpk0004xn1rhkg4a8lc", "appSlug": "meetbashar.com" },
+ "runs": [
+  {
+   "runNumber": 241,
+   "journeys": [
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": false, "status": "partial"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmudah5so003tyv0nwemw4j91",
+     "number": 1,
+     "title": "Holotope guide links twice to a removed YouTube video",
+     "category": "broken",
+     "severity": "high",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation — \\\"In his own words · watch the source\\\" list\",\"whatWeTried\":[\"Collected every outbound video link from the meditations pages and checked each\",\"Followed the two \\\"watch the source\\\" entries on the Holotope guide\"],\"whatHappened\":\"Both entries — \\\"Why 15 minutes — hardwiring a new neurological pathway\\\" (108:55) and \\\"The 15-minute Holotope experience & the solidification span\\\" (also 108:55) — point at the same video, 4EjTHkgOgG8, which returns 404. A reader clicking either lands on a YouTube error page instead of the quoted passage.\",\"whyItMatters\":\"The source citation is the credibility of this whole product; swap 4EjTHkgOgG8 for a live upload of the same talk (or hide the two entries) so the \\\"watch the source\\\" promise holds.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":4,\"stepIndex\":1},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmudah5ul003vyv0nf7z77yt8",
+     "number": 2,
+     "title": "Sources panel renders raw HTML entities instead of real text",
+     "category": "confusing",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"Chat answer → \\\"📺 Sources\\\" / \\\"TRANSMISSIONS REFERENCED\\\" panel\",\"whatWeTried\":[\"Asked \\\"What is the highest excitement?\\\" and opened the Sources panel\"],\"whatHappened\":\"Several excerpts show escaped entities instead of characters — e.g. \\\"&amp;gt;&amp;gt; And they weren&amp;#39;t...\\\" and \\\"the body&amp;#39;s physical translation\\\" — so quotes read as garbled code.\",\"whyItMatters\":\"These quotes are the proof that the answer is grounded; double-decode the excerpt text before rendering so readers see clean, quotable sentences.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":5},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmudah5zi003yyv0nq50snotl",
+     "number": 3,
+     "title": "Source titles hard-truncated mid-word",
+     "category": "polish",
+     "severity": "low",
+     "mark": "none",
+     "detail": "{\"where\":\"\\\"TRANSMISSIONS REFERENCED\\\" source panel\",\"whatWeTried\":[\"Read the 8 cited source titles in the panel\"],\"whatHappened\":\"Titles are cut with \\\"…\\\" mid-word, e.g. \\\"BASHAR'S \\\\\\\"MIRROR MIRROR\\\\\\\" SECRET: YOU ARE LOOKING AT A PA…\\\", making them hard to identify.\",\"whyItMatters\":\"Let titles wrap to two lines or show the full name on hover so users can tell which transmission they're about to open.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":5},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmudah6520041yv0ncairaeyb",
+     "number": 4,
+     "title": "Answer takes tens of seconds with only a bare header showing",
+     "category": "confusing",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"Chat — after submitting a question in Grounded mode\",\"whatWeTried\":[\"Submitted \\\"What is the highest excitement?\\\" and waited for the answer\"],\"whatHappened\":\"The answer took noticeably long (several tens of seconds) to appear, with only the \\\"BASHAR · TRANSMISSION\\\" header visible in the meantime — no progress indicator.\",\"whyItMatters\":\"A long silent wait reads as a hang; add a typing/streaming indicator or skeleton so users know Bashar is composing rather than abandon the chat.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":4},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 246,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": false, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmueq4eoo0046uc0nptt793ht",
+     "number": 1,
+     "title": "Dead YouTube source link on the Holotope meditation guide (used twice)",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation — \\\"In his own words · watch the source\\\" block\",\"whatWeTried\":[\"Checked every YouTube source link in the source blocks on the Holotope and Spiral guides\"],\"whatHappened\":\"https://www.youtube.com/watch?v=4EjTHkgOgO8 returns 404 — the video is deleted or private. It backs two entries (\\\"Why 15 minutes — hardwiring a new neurological pathway\\\" and \\\"The 15-minute Holotope experience & the solidification span\\\", both timestamp 1:48:55), so a visitor clicking either lands on YouTube's \\\"Video unavailable\\\" page.\",\"whyItMatters\":\"Sourced quotes are the credibility backbone of the guides; a dead source on your flagship meditation page undercuts trust. Repoint both entries to a live upload of the same talk or swap in another cited source.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":4},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmueq4eq90048uc0nii6zynco",
+     "number": 2,
+     "title": "Chat answer cites a removed YouTube video",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"Sources panel under a Bashar chat answer\",\"whatWeTried\":[\"From an earlier walk: checked the 8 timestamped YouTube citations returned for \\\"What is the highest excitement?\\\"\"],\"whatHappened\":\"Seven of eight citations resolve to playable videos, but https://www.youtube.com/watch?v=IaKCz-jXd9I (the \\\"BASHAR's ULTIMATE GUIDE TO PARALLEL LIVES\\\" source) returns 404. This is from the earlier chat journey, not re-walked today.\",\"whyItMatters\":\"A cited-but-missing source makes the answer look unverifiable.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":7,\"stepIndex\":2},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmueq4erw004auc0nvo4mne0o",
+     "number": 3,
+     "title": "Sources panel renders raw HTML entities instead of real characters",
+     "category": "polish",
+     "severity": "low",
+     "mark": "none",
+     "detail": "{\"where\":\"\\\"TRANSMISSIONS REFERENCED\\\" overlay on chat answers\",\"whatWeTried\":[\"From an earlier walk: opened the Sources panel and read the quoted excerpts\"],\"whatHappened\":\"Several excerpts show escaped markup instead of text — e.g. \\\"&amp;gt;&amp;gt; And they weren&amp;#39;t...\\\" and \\\"the body&amp;#39;s physical translation\\\". Titles are also hard-truncated with \\\"…\\\". Observed in the earlier chat walk.\",\"whyItMatters\":\"Double-encoded entities make your best trust signal — the verbatim quote — look broken. Decode the excerpt text once before rendering so apostrophes and quote marks display normally.\"}",
+     "anchor": "{\"stepRef\":null,\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 249,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmug5neyl0059rr0nhcr693he",
+     "number": 1,
+     "title": "Holotope guide cites a deleted YouTube video — twice",
+     "category": "broken",
+     "severity": "high",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation\",\"whatWeTried\":[\"Collected every YouTube source link on the Holotope guide\",\"Checked each one against YouTube\"],\"whatHappened\":\"https://www.youtube.com/watch?v=4EjTHkgOgG8 returns 404 (deleted or made private). It is cited twice — for \\\"Why 15 minutes — hardwiring a new neurological pattern\\\" and \\\"The 15-minute Holotope experience & the solidification.\\\" Every other link on the page works.\",\"whyItMatters\":\"This is a curated, static page you control, so the fix is direct: repoint both citations to a live talk or remove them. A dead source on your flagship meditation guide undercuts the site's credibility as a sourced archive.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":4},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmug5nezc005brr0noom8klk7",
+     "number": 2,
+     "title": "Chat Sources panel links to removed videos with no \"unavailable\" indication",
+     "category": "risky",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"Chat answer → \\\"Transmissions referenced\\\" panel\",\"whatWeTried\":[\"Asked \\\"What does Bashar say about following your highest excitement?\\\"\",\"Expanded the Sources panel and checked all 8 cited YouTube deep-links\"],\"whatHappened\":\"6 of 8 cited videos play; 2 do not exist any more — 3wvSG1cSR5Q (cited at 0:03) and F5-GwIxC26g both return YouTube's \\\"video unavailable.\\\" They render identically to the working citations, with nothing marking them dead. An earlier walk saw the same pattern (a dead IaKCz-jXd9I citation and a 403).\",\"whyItMatters\":\"Because your corpus draws on public YouTube uploads that can be pulled at any time, dead citations will keep appearing.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":4,\"stepIndex\":6},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 252,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": false, "status": "skipped"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": false, "status": "risky"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmuhkvo01003zti0nwe1twnx3",
+     "number": 1,
+     "title": "Dead YouTube video cited twice on the Holotope meditation guide",
+     "category": "broken",
+     "severity": "high",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation source links\",\"whatWeTried\":[\"Collected every YouTube link on the Holotope guide and checked each server-side\",\"Followed the two timestamped citations \\\"Why 15 minutes — hardwiring a new neurological pattern\\\" and \\\"The 15-minute Holotope experience & the solidification\\\"\"],\"whatHappened\":\"Both citations point to video 4EjTHkgOgG8, which returns 404 — the video is private, removed, or deleted. The embed on the page (Y2obGoGLo_w) and all other source links play fine.\",\"whyItMatters\":\"This is the one clear defect on the site and it appears twice on a flagship meditation guide. Because the whole product's credibility rests on 'every claim is watchable,' a visible dead source undermines trust — swap 4EjTHkgOgG8 for the correct clip (or remove both references).\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":3},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmuhkvo0r0041ti0na4stxj92",
+     "number": 2,
+     "title": "AI chat cited a removed YouTube video as a source",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"Sources panel of an AI chat answer (POST /api/chat)\",\"whatWeTried\":[\"Asked \\\"What is Bashar's teaching on parallel realities?\\\" in Free mode\",\"Expanded the Sources panel (8 citations) and checked each YouTube link\"],\"whatHappened\":\"7 of 8 cited links played, but https://www.youtube.com/watch?v=3DM3QV_yo2g&t=716s returned 404 — a removed/private video presented as a source. Earlier walks of the chat hit similar dead citations (IaKCz-jXd9I 404, another 403), suggesting the corpus contains video IDs that no longer resolve.\",\"whyItMatters\":\"Citations are the trust mechanism of the whole product; a dead source makes the grounded answer look fabricated. Run a validation pass over the citation corpus to flag or drop video IDs that no longer resolve before they're served in answers.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":1,\"stepIndex\":5},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 255,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": false, "status": "skipped"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmuj0dmm5003uw30nrigx3rnl",
+     "number": 1,
+     "title": "Dead YouTube source link (404) cited twice on the Holotope guide",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation — \\\"In his own words · watch the source\\\" section\",\"whatWeTried\":[\"Checked every YouTube source link on the Holotope guide server-side\",\"Confirmed which video IDs still resolve\"],\"whatHappened\":\"The video https://www.youtube.com/watch?v=4EjTHkgOgG8&t=6535s returns 404 (removed/private), and the same dead ID is cited twice — under \\\"Why 15 minutes — hardwiring a new neurological pattern\\\" and \\\"The 15-minute Holotope experience & the solidification\\\". The guide's other three sources resolve fine.\",\"whyItMatters\":\"Both backup citations for the 15-minute explanation lead nowhere, undermining the site's core credibility promise of sourced answers. Swap in a live video ID or remove the two citations.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":3},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmuj0dmr5003xw30nvh2zuoju",
+     "number": 2,
+     "title": "Chat citation returned a dead 404 link in an earlier walk",
+     "category": "risky",
+     "severity": "low",
+     "mark": "none",
+     "detail": "{\"where\":\"Chat \\\"Sources\\\" panel for \\\"What is the highest excitement?\\\" (from an earlier walk, not re-verified today)\",\"whatWeTried\":[\"Reviewed the cited sources returned with a grounded chat answer\",\"Checked the cited YouTube video IDs\"],\"whatHappened\":\"In a prior run, one of the 8 cited sources (IaKCz-jXd9I) was a dead 404 YouTube video and another returned 403. This comes from the earlier walk and was not re-verified this run.\",\"whyItMatters\":\"Citations are what make the chat trustworthy; if the answer pipeline can surface removed videos, users lose confidence.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":11,\"stepIndex\":0},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 259,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": false, "status": "partial"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": false, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": true, "status": "ok"}
+   ],
+   "findings": [
+    {
+     "id": "cmukg76u3003uvn0nj9xw0opg",
+     "number": 1,
+     "title": "Dead YouTube source video cited twice on the Holotope meditation guide",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation — \\\"In his own words · watch the source\\\" section\",\"whatWeTried\":[\"Collected every YouTube source link in the Holotope and Spiral guides and checked each one\",\"Resolved https://www.youtube.com/watch?v=4EjTHkgOgG8 via YouTube oEmbed\"],\"whatHappened\":\"Six of seven source links resolve to playable videos, but https://www.youtube.com/watch?v=4EjTHkgOgG8 returns 404 (removed/private). It backs two claims on the page — \\\"Why 15 minutes — hardwiring a new neurological pattern\\\" and \\\"The 15-minute Holotope experience & the solidification…\\\" — so both \\\"watch the source\\\" links go nowhere.\",\"whyItMatters\":\"The whole value of these guides is traceability to the real talk; a dead citation on your most-visited meditation quietly undercuts that trust. Swap in a live replacement clip for 4EjTHkgOgG8 or remove the two source links.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":3},\"hands\":[],\"trail\":\"present\"}"
+    },
+    {
+     "id": "cmukg76yi003xvn0nhdalwud3",
+     "number": 2,
+     "title": "Dead citation surfaced in the chat Sources panel (from an earlier walk)",
+     "category": "risky",
+     "severity": "low",
+     "mark": "none",
+     "detail": "{\"where\":\"Home chat — \\\"Sources 8\\\" panel after asking a question\",\"whatWeTried\":[\"From an earlier walk of the chat flow, opened the cited YouTube sources returned with an answer\"],\"whatHappened\":\"In that earlier walk, one cited video (IaKCz-jXd9I) returned 404 and another returned 403, while the rest opened correctly. This was not re-verified in today's run.\",\"whyItMatters\":\"Citations that 404 make a sourced answer look unsourced.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":7,\"stepIndex\":0},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 267,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "broken"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"}
+   ],
+   "findings": [
+    {
+     "id": "cmulw7swq003txz0n3v3681hx",
+     "number": 1,
+     "title": "Dead YouTube source video cited twice on the Holotope guide",
+     "category": "broken",
+     "severity": "medium",
+     "mark": "none",
+     "detail": "{\"where\":\"/learn/holotope-meditation — \\\"Why 15 minutes — hardwiring a new neurological pathway\\\" and \\\"The 15-minute Holotope experience & the solidification span\\\" source cards (both timestamped 1:48:55)\",\"whatWeTried\":[\"Collected every YouTube source link on the Holotope and Spiral guides and checked each server-side\",\"Re-checked the bare video ID via watch?v=, youtu.be/, and oEmbed\"],\"whatHappened\":\"Both cards link to video 4EjTHkgOgG8, which returns HTTP 404 — the video is deleted, private, or otherwise unavailable — so both \\\"watch the source\\\" links dead-end. The guide's other source videos (QV-k69UoTkM, hPmj-qpyrdc, MX2SQTK7KSM) and its embed all resolve fine.\",\"whyItMatters\":\"The whole value proposition is answers you can trace back to a real source; a citation that 404s undercuts trust exactly on the point it's meant to prove. Swap in a live replacement clip for the 1:48:55 reference, or remove those two cards.\"}",
+     "anchor": "{\"stepRef\":{\"journeyIndex\":0,\"stepIndex\":3},\"hands\":[],\"trail\":\"present\"}"
+    }
+   ]
+  },
+  {
+   "runNumber": 275,
+   "journeys": [
+    {"id": "ajmu1nd2h1ey1orc03", "key": "practic-bashar-meditation", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gyaigav23o", "key": "settings", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy9ttv7e9x", "key": "ask-bashar", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2h7btaiv7qf", "key": "tutorial-about-access", "carried": false, "status": "skipped"},
+    {"id": "ajmu1nd2h50u01lg6t", "key": "study-bashar-concept", "carried": false, "status": "ok"},
+    {"id": "ajmu1nd2gy3oo6z3ue", "key": "login", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy2aps95mr", "key": "speak-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gz64q2h8fe", "key": "signup", "carried": true, "status": "partial"},
+    {"id": "ajmu1nd2gy5a6yowih", "key": "view-bashar-concept", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy0xcc6ets", "key": "view-transmission-archiv", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2h27vzxpfze", "key": "chat-bashar", "carried": true, "status": "ok"},
+    {"id": "ajmu1nd2gy1q4sw7dg", "key": "tutorials", "carried": true, "status": "ok"}
+   ],
+   "findings": []
+  }
+ ]
+}

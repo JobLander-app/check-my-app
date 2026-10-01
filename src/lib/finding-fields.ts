@@ -32,7 +32,9 @@ export const FINDING_PUBLIC_FIELDS = [
 ] as const;
 
 /** Columns that are ours: never rendered, never serialized, never emailed. */
-export const FINDING_INTERNAL_FIELDS = ["anchor"] as const;
+// CHE-354: `signature` is our identity for a problem across checks
+// (src/lib/finding-signature.ts) — its kind prefix says how we keyed it.
+export const FINDING_INTERNAL_FIELDS = ["anchor", "signature"] as const;
 
 export type FindingPublicField = (typeof FINDING_PUBLIC_FIELDS)[number];
 

@@ -479,6 +479,12 @@ model Finding {
   // screenshot row existed, because persistence read it and dropped it. NULL
   // on every row written before the column.
   anchor    String?
+  // CHE-354: which problem this is, across checks, however it was worded —
+  // src/lib/finding-signature.ts. Title and severity are not part of it. NULL
+  // on rows written before the column until the backfill
+  // (scripts/backfill-finding-signature.ts); src/lib/recurring.ts computes it
+  // for those on the fly.
+  signature String?
   mark      String          @default("none") // FindingMark
 
   evidence  Evidence[]
@@ -486,6 +492,7 @@ model Finding {
   createdAt DateTime @default(now())
 
   @@index([runId])
+  @@index([signature])
 }
 
 // ─── Evidence (first-class) ──────────────────────────────────────────────────
