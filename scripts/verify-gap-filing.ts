@@ -543,6 +543,9 @@ async function main() {
       ["raw: the same, and the trail shows a new tab → new_tab", { text: "The Log in here link opens admin.shopify.com in a new tab, which answered HTTP 403.", targetOrigin: S, actions: silentLink }, "new_tab"],
       ["a slider click on the trail, admin.shopify.com answered 403 → the 403 is the cause", { text: "admin.shopify.com answered HTTP 403.", targetOrigin: S, actions: sliderTrail }, "shopify_admin"],
       ["trail: a navigation to the admin refused with 403", { text: "The page did not load.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 403) }, "shopify_admin"],
+      ["trail: the refused navigation is the gate that beats new-tab words", { text: "We could not follow the Log in here link.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 403) }, "shopify_admin"],
+      ["trail: an admin navigation that loaded is no gate, so the new-tab words stand", { text: "We could not follow the Log in here link.", targetOrigin: S, actions: nav("https://admin.shopify.com/store/securify-demo", 200) }, "new_tab"],
+      ["a mechanism word stands even beside a 403 (the import endpoint's, not the admin's)", { text: "Uploading the products CSV exported from admin.shopify.com failed: the import endpoint answered HTTP 403.", targetOrigin: J }, "file_transfer"],
       ["trail: a navigation to admin.shopify.com.1337.io is not the admin", { text: "The page did not load.", targetOrigin: S, actions: nav("https://admin.shopify.com.1337.io/", 403) }, "unclassified"],
 
       // The words that put the walk in the admin, on a store.
