@@ -1530,7 +1530,11 @@ async function checkVerdictIntegrity(
     select: { category: true, severity: true },
   });
   const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
-  return judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
+  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
+  if (checked.verdict !== synth.verdict) {
+    console.log(`[verdict] run ${runId}: synthesis said ${synth.verdict}, recorded ${checked.verdict}`);
+  }
+  return checked;
 }
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was

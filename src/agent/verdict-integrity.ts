@@ -60,6 +60,9 @@ export interface IntegrityFinding {
 export interface IntegrityResult {
   verdict: Verdict;
   bottomLine: string | null;
+  // Appended to the run feed, which the verdict page shows: product language
+  // only. What synthesis had said before the correction is ours and goes to
+  // the worker log (workflow.ts), never here.
   note: string | null;
 }
 
@@ -112,7 +115,7 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
   if (!target) return null;
 
   const redirectedTo = new Map<string, Place>();
-  const landedOnSite = new Set<string>();
+  const landings: Place[] = [];
   for (const j of walked) {
     let landed = 0;
     for (const s of j.steps) {
@@ -120,7 +123,7 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
         const after = place(a.outcome?.urlAfter);
         if (!after) continue;
         landed++;
-        if (after.site === target.site) landedOnSite.add(after.key);
+        landings.push(after);
         if (a.kind !== "navigate") continue;
         const asked = place(a.url);
         if (asked && asked.site === target.site && asked.key !== after.key) {
@@ -135,9 +138,14 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
 
   if (redirectedTo.size !== 1) return null;
   const [gate] = redirectedTo.values();
-  // Off-site landings are the sign-in provider or an outbound link — not the
-  // product. On-site, the gate is the only place we may have been.
-  for (const key of landedOnSite) if (key !== gate.key) return null;
+  // The product lives on the target's site AND on whatever site it sent us
+  // to: example.com redirecting to app.example.com is the product moving
+  // house, not a gate, and every page we then reached on app.example.com is
+  // coverage (review of the first version of this rule). On either site the
+  // gate is the only place we may have been. Landings on any other site are
+  // the sign-in provider's later pages or an outbound link — not the product.
+  const productSites = new Set([target.site, gate.site]);
+  for (const p of landings) if (productSites.has(p.site) && p.key !== gate.key) return null;
   return gate.display(target.site);
 }
 
@@ -158,7 +166,7 @@ export function judgeVerdictIntegrity(
         "We couldn't verify anything this run — no user journey was walked, so read this as " +
         "zero coverage, not a clean bill of health." +
         (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
-      note: `Zero journeys walked — verdict recorded as Not verified, not ${synth.verdict}`,
+      note: "Zero journeys walked — recorded as Not verified",
     };
   }
 
@@ -188,7 +196,7 @@ export function judgeVerdictIntegrity(
         `or sign-in page (${gate}), so read this as no coverage of what is behind it, not a clean ` +
         "bill of health. A password or a test login for it is what would let us check the rest." +
         (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
-      note: `Every journey stopped at an access gate (${gate}) — verdict recorded as Not verified, not ${synth.verdict}`,
+      note: `Every journey stopped at the same sign-in page (${gate}) — recorded as Not verified`,
     };
   }
 

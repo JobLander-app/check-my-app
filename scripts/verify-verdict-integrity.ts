@@ -127,10 +127,15 @@ const RUN_281_BOTTOM_LINE =
 
 console.log("\n— run #281: every journey stopped at the access gate —\n");
 
+// The note goes to the run feed, which the verdict page shows: no verdict
+// enum, no word about synthesis correcting itself (review, second round).
+const INTERNAL_WORDS = /\b(?:all_good|mostly_ok|needs_attention|unverified|broken_|synth\w*|model)\b/i;
+
 for (const verdict of ["all_good", "mostly_ok"] as const) {
   const out = judgeVerdictIntegrity(RUN_281, [], { verdict, bottomLine: RUN_281_BOTTOM_LINE }, RUN_281_TARGET);
   check(`synth ${verdict} → unverified`, out.verdict === "unverified", out.verdict);
   check(`synth ${verdict} → a note is recorded`, !!out.note, out.note ?? "(none)");
+  check(`synth ${verdict} → the note is in product language`, !INTERNAL_WORDS.test(out.note ?? ""), out.note ?? "");
 }
 
 {
@@ -235,6 +240,26 @@ const SAAS = "https://saas.example.com";
 }
 
 {
+  // Review, second round: the target redirects to the real product on another
+  // host, and the walk then reads real pages there before meeting a step that
+  // needs access. The product moved house; it did not lock the door.
+  const marketing = "https://example.com";
+  const app = "https://app.example.com";
+  const movedHouse: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the app", trail(nav(`${marketing}/`, `${app}/`))),
+      ok("Open the public templates", trail(click("Templates", `${app}/templates`))),
+      gated("Save a template to an account"),
+    ],
+  }));
+  const out = judgeVerdictIntegrity(movedHouse, [], { verdict: "all_good", bottomLine: null }, `${marketing}/`);
+  check("target redirects to the product on another host, pages read there → stays all_good",
+    out.verdict === "all_good", out.verdict);
+}
+
+{
   // Same statuses and reasons as run #281, no trail: we cannot tell where the
   // walk stopped, so the rule does not speak.
   const blind: Journey[] = RUN_281.map((j) => ({ ...j, steps: j.steps.map((s) => ({ ...s, actions: null })) }));
@@ -324,6 +349,7 @@ console.log("\n— the CHE-42 rules this sits beside still hold —\n");
     { verdict: "all_good", bottomLine: "Looks fine." },
   );
   check("zero walked → unverified", none.verdict === "unverified", none.verdict);
+  check("…the note is in product language", !INTERNAL_WORDS.test(none.note ?? ""), none.note ?? "");
   check("…zero-coverage wording", /zero coverage/.test(none.bottomLine ?? ""), none.bottomLine ?? "");
 
   const broken = judgeVerdictIntegrity(
