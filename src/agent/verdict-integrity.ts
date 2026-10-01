@@ -12,25 +12,39 @@
 //      unverified. Rule 1 counted three walked journeys and stood aside,
 //      though all three had walked the same locked door. When every walked
 //      journey stopped at an access gate and nothing was found, the run
-//      verified the gate, not the product, and gets "unverified". A run where
-//      at least one journey finished ok verified something real and is left
-//      alone.
+//      verified the gate, not the product, and gets "unverified".
+//
+//      "Partial with a missing_access skip" is not that evidence on its own:
+//      a SaaS walk that reads the landing page and pricing and then meets the
+//      sign-in is partial with a missing_access skip too, and it verified
+//      real pages. So the rule rests on the machine trail (Step.actions,
+//      written by the tools after the browser acted, never by the model): the
+//      product redirected our navigations to one gate location, and nothing we
+//      did on the product's own host landed anywhere else. Run #281's trail
+//      is exactly that — /, /collections/all, /cart and /products/… all
+//      ended on /password. No trail, two different redirect targets, or one
+//      product page reached, and the rule stands aside.
 //   2. "Broken" needs a body. Run #20 called an app broken off eight risky /
 //      confusing / polish findings; without a broken/exposed finding or an
 //      observed broken/exposed step, it downgrades to "needs attention".
 //
-// All of them rewrite bottomLine too — a corrected pill over uncorrected prose would
-// just move the contradiction one line down.
+// All of them rewrite bottomLine too — a corrected pill over uncorrected prose
+// would just move the contradiction one line down.
 //
-// Pure: no database, no model. The workflow loads the run's journeys and
-// findings and hands them here, so scripts/verify-verdict-integrity.ts tests
+// Pure: no database, no model. The workflow loads the run's journeys, findings
+// and target and hands them here, so scripts/verify-verdict-integrity.ts tests
 // exactly what runs.
 
 import type { Verdict } from "@/lib/enums";
+import type { RecordedAction } from "./tools";
 
 export interface IntegrityStep {
   status: string;
   unverifiedReason: string | null;
+  // JSON RecordedAction[] — what the browser actually executed for this step.
+  // Optional so rule 1 and rule 2 can be exercised without a trail; absent
+  // means rule 1b cannot speak.
+  actions?: string | null;
 }
 
 export interface IntegrityJourney {
@@ -49,10 +63,89 @@ export interface IntegrityResult {
   note: string | null;
 }
 
+// ─── Rule 1b: where the trail says the product sent us ──────────────────────
+
+interface Place {
+  /** www-folded hostname, so an apex target and a www redirect are one site. */
+  site: string;
+  /** origin + pathname, trailing slash folded; the query is not a place. */
+  key: string;
+  /** What a reader would call it: the path on the product's own site, host + path elsewhere. */
+  display: (productSite: string) => string;
+}
+
+function place(raw: unknown): Place | null {
+  if (typeof raw !== "string") return null;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const site = u.hostname.toLowerCase().replace(/^www\./, "");
+  const path = u.pathname.replace(/\/+$/, "") || "/";
+  return {
+    site,
+    key: `${site}${path}`,
+    display: (productSite) => (site === productSite ? path : `${site}${path}`),
+  };
+}
+
+// Tolerant like every reader of this column: a malformed trail is no trail.
+function trailOf(json: string | null | undefined): RecordedAction[] {
+  if (!json) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed)
+      ? parsed.filter((a): a is RecordedAction => typeof a === "object" && a !== null && "kind" in a)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+// The one place the product redirected every walked journey to, shown the way
+// the bottom line names it — or null when the trail does not prove a gate.
+export function accessGate(walked: IntegrityJourney[], targetUrl: string | null | undefined): string | null {
+  const target = place(targetUrl);
+  if (!target) return null;
+
+  const redirectedTo = new Map<string, Place>();
+  const landedOnSite = new Set<string>();
+  for (const j of walked) {
+    let landed = 0;
+    for (const s of j.steps) {
+      for (const a of trailOf(s.actions)) {
+        const after = place(a.outcome?.urlAfter);
+        if (!after) continue;
+        landed++;
+        if (after.site === target.site) landedOnSite.add(after.key);
+        if (a.kind !== "navigate") continue;
+        const asked = place(a.url);
+        if (asked && asked.site === target.site && asked.key !== after.key) {
+          redirectedTo.set(after.key, after);
+        }
+      }
+    }
+    // A journey with no recorded landing tells us nothing about where it
+    // stopped, so it cannot be counted as stopped at the gate.
+    if (landed === 0) return null;
+  }
+
+  if (redirectedTo.size !== 1) return null;
+  const [gate] = redirectedTo.values();
+  // Off-site landings are the sign-in provider or an outbound link — not the
+  // product. On-site, the gate is the only place we may have been.
+  for (const key of landedOnSite) if (key !== gate.key) return null;
+  return gate.display(target.site);
+}
+
 export function judgeVerdictIntegrity(
   journeys: IntegrityJourney[],
   findings: IntegrityFinding[],
   synth: { verdict: Verdict; bottomLine: string | null },
+  targetUrl?: string | null,
 ): IntegrityResult {
   const walked = journeys.filter((j) => j.status !== "skipped");
   if (walked.length === 0) {
@@ -71,26 +164,31 @@ export function judgeVerdictIntegrity(
 
   // Only a passing verdict is corrected: needs_attention or broken already
   // tells the owner not to relax, and a finding is evidence we saw something.
-  // The skip must be missing_access — access is theirs to grant, so the ask
-  // is allowed (CLAUDE.md rule 2); our_capability is our own ticket and not
-  // what this sentence describes.
+  // Every skip must be missing_access — access is theirs to grant, so the ask
+  // is allowed (CLAUDE.md rule 2). A journey that also stopped on
+  // our_capability or not_applicable did not stop only at the gate, and a
+  // password would not have finished it.
   const passing = synth.verdict === "all_good" || synth.verdict === "mostly_ok";
-  const gatedOnly =
+  const stoppedOnlyForAccess =
     findings.length === 0 &&
-    walked.every(
-      (j) =>
+    walked.every((j) => {
+      const skipped = j.steps.filter((s) => s.status === "skipped");
+      return (
         j.status === "partial" &&
-        j.steps.some((s) => s.status === "skipped" && s.unverifiedReason === "missing_access"),
-    );
-  if (passing && gatedOnly) {
+        skipped.length > 0 &&
+        skipped.every((s) => s.unverifiedReason === "missing_access")
+      );
+    });
+  const gate = passing && stoppedOnlyForAccess ? accessGate(walked, targetUrl) : null;
+  if (gate) {
     return {
       verdict: "unverified",
       bottomLine:
-        "We couldn't get past the access gate this run — every journey stopped at a password or " +
-        "sign-in we had no access to, so read this as no coverage of what is behind it, not a clean " +
+        `We couldn't get past the access gate this run — every journey ended at the same password ` +
+        `or sign-in page (${gate}), so read this as no coverage of what is behind it, not a clean ` +
         "bill of health. A password or a test login for it is what would let us check the rest." +
         (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
-      note: `Every journey stopped at an access gate — verdict recorded as Not verified, not ${synth.verdict}`,
+      note: `Every journey stopped at an access gate (${gate}) — verdict recorded as Not verified, not ${synth.verdict}`,
     };
   }
 

@@ -1520,13 +1520,17 @@ async function checkVerdictIntegrity(
 ): Promise<IntegrityResult> {
   const journeys = await env.db.journey.findMany({
     where: { runId },
-    select: { status: true, steps: { select: { status: true, unverifiedReason: true } } },
+    select: {
+      status: true,
+      steps: { select: { status: true, unverifiedReason: true, actions: true } },
+    },
   });
   const findings = await env.db.finding.findMany({
     where: { runId },
     select: { category: true, severity: true },
   });
-  return judgeVerdictIntegrity(journeys, findings, synth);
+  const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
+  return judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
 }
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was
