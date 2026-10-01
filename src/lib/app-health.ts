@@ -108,8 +108,12 @@ export async function appHealth(
       select: { id: true, appSlug: true, targetKind: true },
     }),
     // The one pass over the window's money, on the [teamId, createdAt] index.
+    // A day of slack, with the exact edge drawn below: D1 compares DateTime as
+    // text, and rows written before 2026-09-04 spell it "2026-09-03 21:23:10",
+    // which sorts before the adapter's "2026-09-03T00:00:00.000+00:00" — so on
+    // the window's first day such a run would silently drop out (Run #137).
     db.run.findMany({
-      where: { ...teamOwned(teamId), createdAt: { gte: since } },
+      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS) } },
       select: { appId: true, appSlug: true, watchId: true, priceUsd: true, createdAt: true },
     }),
   ]);
@@ -129,6 +133,7 @@ export async function appHealth(
   );
   let totalCents = 0;
   for (const r of runs) {
+    if (r.createdAt < since) continue;
     const c = toCents(r.priceUsd);
     totalCents += c;
     const app = ownerOf(r);

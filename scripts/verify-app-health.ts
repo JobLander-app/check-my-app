@@ -158,6 +158,39 @@ async function main() {
   check("the run one second before midnight UTC of day 1 is out, the one at midnight is in",
     daily[0].date === "2026-09-02" && daily[0].usd === 0.5);
   {
+    // D1 compares DateTime as TEXT. Prisma's adapter sends a Date as
+    // "2026-09-02T00:00:00.000+00:00"; rows written before 2026-09-04 hold
+    // "2026-09-02 21:23:10", and " " sorts before "T". This client compares
+    // createdAt the way D1 does, so a run in the old spelling on the window's
+    // first day is counted only if the module does not trust the text edge.
+    const legacy = createStubDb({
+      team: [{ id: "tl", plan: "business" }],
+      app: [{ id: "l1", teamId: "tl", appSlug: "legacy.test", targetKind: "website", createdAt: at("2026-06-01") }],
+      run: [run(701, "2026-09-02T21:23:10Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 1.61 })],
+    });
+    const STORED: Record<string, string> = { r701: "2026-09-02 21:23:10" };
+    const asD1 = (d: Date) => d.toISOString().replace("Z", "+00:00");
+    const inner = legacy.db as unknown as Record<string, Record<string, (a: Record<string, unknown>) => Promise<unknown>>>;
+    const d1Db = new Proxy({}, {
+      get: (_t, model: string) => model !== "run" ? inner[model] : {
+        ...inner.run,
+        findMany: async (args: Record<string, unknown>) => {
+          const where = (args.where ?? {}) as Record<string, unknown>;
+          const gte = (where.createdAt as { gte?: unknown } | undefined)?.gte;
+          if (!(gte instanceof Date)) return inner.run.findMany(args);
+          const ids = legacy.table("run")
+            .filter((r) => (STORED[r.id as string] ?? asD1(r.createdAt as Date)) >= asD1(gte))
+            .map((r) => r.id);
+          return inner.run.findMany({ ...args, where: { ...where, createdAt: undefined, id: { in: ids } } });
+        },
+      },
+    }) as typeof db;
+    const l = await appHealth(d1Db, "tl", { now: NOW });
+    check("a run stored in the old \"YYYY-MM-DD HH:MM:SS\" spelling on the window's first day is counted",
+      l.totalSpendUsd === 1.61 && l.apps[0].checks === 1 && l.apps[0].daily[0].usd === 1.61,
+      JSON.stringify([l.totalSpendUsd, l.apps[0].checks]));
+  }
+  {
     const week = await appHealth(db, "t", { now: NOW, days: 7 });
     const s = app("shop.test", week);
     check("days: 7 → from 2026-09-25: shop.test is the quick check and the one in flight",
