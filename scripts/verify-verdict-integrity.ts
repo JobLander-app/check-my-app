@@ -329,6 +329,51 @@ console.log("\n— left alone: something behind or beside the gate was really ve
 }
 
 {
+  // Review of this rule, round 2.
+  const app = "https://app.customer.com";
+  const tenant = "https://tenant.auth0.com";
+  const auth0: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the dashboard", trail(nav(`${app}/dashboard`, `${tenant}/login`))),
+      ok("Continue to the password step", trail(click("Continue", `${tenant}/u/login`))),
+      gated("Sign in"),
+    ],
+  }));
+  const a0 = judgeVerdictIntegrity(auth0, [], { verdict: "all_good", bottomLine: null }, `${app}/`);
+  check("a tenant-named provider's later sign-in page is not the product → unverified", a0.verdict === "unverified", a0.verdict);
+
+  const site = "https://example.com";
+  const docs: Journey[] = [
+    {
+      title: "Dashboard",
+      status: "partial",
+      steps: [ok("Open the dashboard", trail(nav(`${site}/dashboard`, `${site}/login`))), gated("Sign in")],
+    },
+    {
+      title: "Docs",
+      status: "ok",
+      steps: [ok("Read pricing in the docs", trail(click("Pricing", "https://docs.example.com/pricing")))],
+    },
+  ];
+  const d = judgeVerdictIntegrity(docs, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("a page on a sibling subdomain it never redirected to is the product → stays all_good", d.verdict === "all_good", d.verdict);
+
+  const moved: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the app", trail(nav("https://brand.com/app", "https://brandapp.io/login"))),
+      ok("Read pricing", trail(click("Pricing", "https://brandapp.io/pricing"))),
+      gated("Sign in"),
+    ],
+  }));
+  const m = judgeVerdictIntegrity(moved, [], { verdict: "all_good", bottomLine: null }, "https://brand.com/");
+  check("the product moved to another domain and a page was read there → stays all_good", m.verdict === "all_good", m.verdict);
+}
+
+{
   // Fixtures come from production and land in source control.
   for (const name of ["fixtures-run-282.json", "fixtures-run-272.json"]) {
     const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");

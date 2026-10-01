@@ -151,24 +151,19 @@ const ACCESS_SEGMENT =
 const ACCESS_HOST = /^(?:auth|login|signin|sso|accounts?|id|identity)\./i;
 
 // The last two labels of a host. Not a public-suffix lookup: under a suffix
-// like co.uk it treats unrelated hosts as one owner, which only makes the
-// rule below keep more hosts as the product and fire less often — the safe
-// direction for a rule that withdraws a verdict.
+// like co.uk (or myshopify.com) it treats unrelated hosts as one owner, which
+// only makes the rule below count more pages as the product and fire less
+// often — the safe direction for a rule that withdraws a verdict.
 function owner(site: string): string {
   return site.split(".").slice(-2).join(".");
 }
 
-// A sign-in provider's own host — someone else's, so its later pages are not
-// the product. accounts.shopify.com for a *.myshopify.com store is one;
-// id.example.com for example.com is the customer's own sign-in, and a page
-// reached there is theirs (review of this rule, round 1).
-function providerHost(gate: Place, targetSite: string): boolean {
-  return gate.site !== targetSite && ACCESS_HOST.test(gate.site) && owner(gate.site) !== owner(targetSite);
+function accessPath(p: Place): boolean {
+  return p.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg));
 }
 
 function namesAccess(gate: Place, targetSite: string): boolean {
-  if (gate.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg))) return true;
-  return gate.site !== targetSite && ACCESS_HOST.test(gate.site);
+  return accessPath(gate) || (gate.site !== targetSite && ACCESS_HOST.test(gate.site));
 }
 
 // The places the product redirected us to, shown the way the bottom line names
@@ -213,16 +208,29 @@ export function accessGate(journeys: IntegrityJourney[], targetUrl: string | nul
   // page that asks for nothing (/en, /maintenance) means a page reached.
   if (gates.some((g) => !credentialFillsAt.has(g.key) && !namesAccess(g, target.site))) return null;
 
-  // The product lives on the target's site AND on any site it sent us to —
-  // example.com redirecting to app.example.com/login puts the product on
-  // app.example.com (review, round 2) — EXCEPT a third-party sign-in
-  // provider's host (accounts.shopify.com for a myshopify.com store): its
-  // later pages are the provider's, not the product (run #282's admin login).
-  // On a product site, a gate is the only place we may have been.
-  const productSites = new Set([target.site]);
-  for (const g of gates) if (!providerHost(g, target.site)) productSites.add(g.site);
+  // Was this landing a page of the product? Decided per landing, not per
+  // host, because review found a hole in every per-host version:
+  //   - a gate, or any page whose path names sign-in (/login, /u/login,
+  //     /account/login), is the lock, not the product — wherever it is;
+  //   - a host with the target's owner is the product: the target itself,
+  //     its own id.example.com sign-in (review of this rule, round 1) and a
+  //     sibling it never redirected to, docs.example.com (round 2);
+  //   - a host the product REDIRECTED us to, with another owner, is the
+  //     product moved house (brand.com → brandapp.io) unless it is a sign-in
+  //     provider: its name says so (accounts.shopify.com, run #282's admin
+  //     login) — or, for a tenant-named one like tenant.auth0.com (round
+  //     2), its pages name sign-in, which the first case already caught;
+  //   - any other host is an outbound link, not the product.
   const gateKeys = new Set(gates.map((g) => g.key));
-  for (const p of landings) if (productSites.has(p.site) && !gateKeys.has(p.key)) return null;
+  const gateSites = new Set(gates.map((g) => g.site));
+  const targetOwner = owner(target.site);
+  const reachedProduct = (p: Place): boolean => {
+    if (gateKeys.has(p.key) || accessPath(p)) return false;
+    if (owner(p.site) === targetOwner) return true;
+    if (gateSites.has(p.site)) return !ACCESS_HOST.test(p.site);
+    return false;
+  };
+  if (landings.some(reachedProduct)) return null;
 
   return gates
     .sort((a, b) => Number(b.site === target.site) - Number(a.site === target.site))
