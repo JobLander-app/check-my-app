@@ -764,13 +764,20 @@ async function main() {
       }
     };
     const browser = await launch();
-    const shell = (form: string) => `<!doctype html><html><head><title>Securify demo</title></head><body><main>${form}</main></body></html>`;
-    // Shopify's built-in locked-store page, as securify-demo.myshopify.com
-    // served it on 2026-10-01 (the token shortened).
-    const BUILTIN = shell(`<form action="/password" accept-charset="UTF-8" data-remote="true" method="post"><input type="hidden" name="authenticity_token" value="mWjj-twJZ7__IllWBNK7KUC7kmmhIGe-REGWNw==" />
+    const shell = (form: string, head = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Securify demo</title>${head}</head><body><main>${form}</main></body></html>`;
+    const BUILTIN_FORM = `<form action="/password" accept-charset="UTF-8" data-remote="true" method="post"><input type="hidden" name="authenticity_token" value="mWjj-twJZ7__IllWBNK7KUC7kmmhIGe-REGWNw==" />
       <div class="form-section"><div class="form-wrapper"><div class="label-wrapper"><label for="password">Enter store password</label></div>
       <input type="password" class="form-input " id="password" name="password" autocomplete="nope"><div class="error-container"></div></div></div>
-      <button type="submit">Enter</button></form>`);
+      <button type="submit">Enter</button></form>`;
+    // Shopify's built-in locked-store page, as securify-demo.myshopify.com
+    // served it on 2026-10-01 (the token shortened): the form, and in the head
+    // Shopify's own session metas.
+    const BUILTIN = shell(BUILTIN_FORM, `<meta name="shopify-s" content="00000000-0000-0000-5000-000000000000" data-expiration="1790900360000"><meta name="shopify-y" content="00000000-0000-0000-5000-000000000000" data-expiration="1822456160000">`);
+    // The same form on a site that is not Shopify: authenticity_token is the
+    // CSRF field of every Rails app, so a "confirm your password to continue"
+    // page or a staging site behind one shared password looks exactly like
+    // this — and is not a store (review of PR #234).
+    const RAILS_CONFIRM = shell(BUILTIN_FORM.replace("Enter store password", "Confirm your password to continue"));
     // A theme's password page ({% form 'storefront_password' %}), beside the
     // theme's newsletter form.
     const THEME = shell(`<form method="post" action="/contact#contact_form" id="contact_form"><input type="hidden" name="form_type" value="customer"><input type="email" name="contact[email]"><button>Notify me</button></form>
@@ -815,12 +822,17 @@ async function main() {
         check("real markup, built-in page: the form's own token travels with the password (it is the store's form that is submitted)", Boolean(token), String(token));
         await s.close();
       }
-      for (const [name, html] of [["a change-password page at /password", CHANGE], ["a login with an e-mail at /password", LOGIN]] as const) {
+      for (const [name, html] of [
+        ["a change-password page at /password", CHANGE],
+        ["a login with an e-mail at /password", LOGIN],
+        ["a Rails confirm-password page with no Shopify marker", RAILS_CONFIRM],
+      ] as const) {
         const s = await open(html);
         const gate = await onStoreGate(s.unlockPage, STORE);
         const out = await unlockStoreGate(s.unlockPage, STORE, access(RIGHT).access);
-        const typed = await s.page.locator('input[name="password"]').inputValue();
-        check(`real markup, ${name}: not the gate — nothing typed, nothing posted`, !gate && out === "not_gate" && typed === "" && s.posts.length === 0, `${gate} ${out} typed=${typed.length}`);
+        // A page that was submitted has left /password: that is the failure, not a crash.
+        const typed = await s.page.locator('input[name="password"]').inputValue({ timeout: 2_000 }).catch(() => "(the page was submitted)");
+        check(`real markup, ${name}: not the gate — nothing typed, nothing posted`, !gate && out === "not_gate" && typed === "" && s.posts.length === 0, `gate=${gate} ${out} typed=${typed.length} posts=${s.posts.length}`);
         await s.close();
       }
       {

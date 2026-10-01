@@ -80,6 +80,10 @@ export const STORE_UNLOCK_WAIT_MS = 20_000;
 //     authenticity_token. The first live check after this shipped (run #286 on
 //     securify-demo.myshopify.com) stood on exactly that page and the unlock
 //     saw "not the gate": the guard had only ever asked a fake.
+//     authenticity_token is every Rails app's CSRF field, not Shopify's own, so
+//     this shape also needs a mark that the page is Shopify's (its shopify-*
+//     metas, the Shopify global, or an asset from cdn.shopify.com): a Rails
+//     app's "confirm your password" page is not a store (review of PR #234).
 // Either way: exactly one password field and nothing else to type into, so an
 // app's change-password page (two or three password fields) or a login (an
 // e-mail beside the password) is not it.
@@ -96,7 +100,9 @@ export const GATE_FORM_SCRIPT = `(() => {
       const theme = !!t && t.value === 'storefront_password';
       let path = '';
       try { path = new URL(f.getAttribute('action') || location.href, location.href).pathname.replace(/\\/+$/, ''); } catch (e) {}
-      const builtin = path === '/password' && pw[0].getAttribute('name') === 'password' &&
+      const shopify = !!document.querySelector('meta[name^="shopify-"]') || typeof window.Shopify !== 'undefined' ||
+        document.documentElement.innerHTML.indexOf('cdn.shopify.com') !== -1;
+      const builtin = shopify && path === '/password' && pw[0].getAttribute('name') === 'password' &&
         !!f.querySelector('input[type="hidden"][name="authenticity_token"]');
       if (!theme && !builtin) continue;
       pw[0].setAttribute('data-cma-store-gate', '1');
