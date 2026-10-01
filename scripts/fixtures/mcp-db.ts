@@ -52,7 +52,9 @@ const RELATIONS: Record<string, Record<string, Relation>> = {
 // Column defaults the schema would fill in.
 const DEFAULTS: Record<string, () => Row> = {
   app: () => ({ targetKind: "website", writeMode: "read_only", extensionId: null, extensionConfig: null,
-    testEmail: null, testPasswordEnc: null, scopeHints: null, userNotes: null, focusAreas: null }),
+    testEmail: null, testPasswordEnc: null, scopeHints: null, userNotes: null, focusAreas: null,
+    // CHE-372
+    storePasswordEnc: null }),
   watch: () => ({ active: true, frequency: "daily", notifyOnChangeOnly: true, nextRunAt: null, trialEndsAt: null }),
   run: () => ({ status: "queued", verdict: null, bottomLine: null, events: null, errorMessage: null, anatomy: null,
     targetKind: "website", deploySha: null, deployEnv: null, completedAt: null, costUsd: null, ephemeral: false,

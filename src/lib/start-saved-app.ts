@@ -76,6 +76,8 @@ export async function startSavedApp(
       testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc,
       // CHE-322: and every named account, as they are right now.
       testAccounts: await snapshotAppAccounts(db, app),
+      // CHE-372: and the store password, for a password-protected store.
+      storePasswordEnc: app.storePasswordEnc,
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
       startedVia: deps.source ?? "ui",

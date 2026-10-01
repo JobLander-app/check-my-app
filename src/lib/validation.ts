@@ -50,6 +50,9 @@ export const createCheckSchema = z.object({
   testEmail: z.string().email().optional().or(z.literal("")),
   extension: extensionOptionsSchema.optional(),
   testPassword: z.string().optional().or(z.literal("")),
+  // CHE-372: a password-protected store's storefront password (Shopify's
+  // /password page). Encrypted like testPassword, never returned.
+  storePassword: z.string().max(500).optional().or(z.literal("")),
   scopeHints: z.string().max(2000).optional().or(z.literal("")),
   userNotes: z.string().max(2000).optional().or(z.literal("")),
   notifyEmail: z.string().email("Enter a valid email").optional().or(z.literal("")),

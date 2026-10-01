@@ -86,6 +86,7 @@ export async function startCheck(
       appSlug,
       testEmail: input.testEmail || null,
       testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
+      storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
       scopeHints: input.scopeHints || null,
       userNotes: input.userNotes || null,
       notifyEmail: input.notifyEmail || null,
