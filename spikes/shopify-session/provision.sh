@@ -72,16 +72,33 @@ SSHD
 sshd -t && systemctl reload ssh
 
 install -d -m 0700 /etc/cloudflared
-install -m 0644 "$SRC"/systemd/*.service "$SRC"/systemd/*.timer /etc/systemd/system/
+
+# A rerun must deploy a changed unit, and must not restart an unchanged one:
+# restarting session-chrome ends the owner's Shopify session (its session
+# cookies die with the process), and restarting the tunnel drops his noVNC view.
+# So only the units whose file actually changed are restarted.
+changed=()
+for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
+  name="$(basename "$unit")"
+  if ! cmp -s "$unit" "/etc/systemd/system/$name"; then
+    install -m 0644 "$unit" "/etc/systemd/system/$name"
+    changed+=("$name")
+  fi
+done
 systemctl daemon-reload
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer
+if [ ${#changed[@]} -gt 0 ]; then
+  echo "provision: unit files changed: ${changed[*]}"
+  case " ${changed[*]} " in *" session-chrome.service "*|*" session-xvfb.service "*)
+    echo "provision: Chrome restarts — the owner will have to sign in again." ;;
+  esac
+  systemctl try-restart "${changed[@]}"
+fi
 # websockify chdirs into its web root at start; the copy above replaced that
 # directory, so a running websockify would answer every request with ENOENT.
-# Chrome is deliberately NOT restarted: it holds the owner's session.
 systemctl restart session-novnc
 if [ -s /etc/cloudflared/tunnel.env ]; then
   systemctl enable --now session-cloudflared
-  systemctl restart session-cloudflared
 else
   echo "provision: /etc/cloudflared/tunnel.env is missing — the tunnel is not started (README.md, 'Tunnel token')."
 fi
