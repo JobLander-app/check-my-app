@@ -70,12 +70,23 @@ WHERE (${OUR_APP}) IS NOT NULL
 ON CONFLICT DO NOTHING;`;
 }
 
-function readBackSql(key: string): string {
+export function readBackSql(key = shopifyAdminDedupKey()): string {
   return `SELECT id, appId, dedupKey, externalIssueId, status, occurrences FROM IssueLink
 WHERE appId = (${OUR_APP}) AND dedupKey = '${key}';`;
 }
 
-interface LinkRow {
+// What the read-back must show for the seed to count as done: one open link
+// from the class key to CHE-333. Null when it does; the reason otherwise.
+export function seedProblem(row: LinkRow | undefined): string | null {
+  if (!row) return "no row after the insert — our own app (checkmyapp.dev on our Linear team) was not found";
+  if (row.externalIssueId !== CHE_333.identifier) {
+    return `the key already points at ${row.externalIssueId}, not ${CHE_333.identifier} — merge that ticket into ${CHE_333.identifier} and re-point the row by hand`;
+  }
+  if (row.status !== "open") return `the ${CHE_333.identifier} link is "${row.status}", not "open" — the filer would not comment on it`;
+  return null;
+}
+
+export interface LinkRow {
   id: string;
   appId: string;
   dedupKey: string;
@@ -117,13 +128,10 @@ function main() {
   }
   d1(seedSql(key));
   const [row] = d1(readBackSql(key));
-  if (!row) {
-    console.error("no row after the insert — our own app (checkmyapp.dev on our Linear team) was not found");
-    process.exit(1);
-  }
-  console.log(`prod row : ${JSON.stringify(row)}`);
-  if (row.externalIssueId !== CHE_333.identifier) {
-    console.error(`the key already points at ${row.externalIssueId}, not ${CHE_333.identifier} — merge that ticket into ${CHE_333.identifier} and re-point the row by hand`);
+  if (row) console.log(`prod row : ${JSON.stringify(row)}`);
+  const problem = seedProblem(row);
+  if (problem) {
+    console.error(problem);
     process.exit(1);
   }
   console.log(`seeded: shopify_admin gaps now count on ${CHE_333.identifier}`);

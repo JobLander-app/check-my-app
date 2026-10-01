@@ -152,11 +152,18 @@ const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
     match: /magic link|passwordless|(email|sign-?in|login)[ -]link (sign|log)[ -]?in|sign-?in (by|via) email/i,
     cls: "passwordless",
   },
-  { match: /verification code|2fa|mfa|one-?time (code|password)|otp/i, cls: "verification_code" },
+  // CHE-374: bounded, because "otp" is inside "footprint".
+  { match: /verification code|\b2fa\b|\bmfa\b|one-?time (code|password)|\botp\b/i, cls: "verification_code" },
   { match: /camera|microphone|media device|getusermedia|webrtc/i, cls: "media_devices" },
   { match: /captcha|turnstile|recaptcha|bot (check|protection)/i, cls: "captcha" },
   { match: /leaves its test records|records still present|cleanup audit/i, cls: "test_records" },
-  { match: /file (upload|picker)|download/i, cls: "file_transfer" },
+  // CHE-374: an import, a CSV upload or a drop zone is the same missing hand
+  // as a file picker — "Import did nothing" was left to whatever else the
+  // step happened to mention.
+  {
+    match: /file (upload|picker)|download|\bupload(?:s|ed|ing)?\b|\bimport(?:s|ed|ing)?\b|drag[ -]and[ -]drop/i,
+    cls: "file_transfer",
+  },
   {
     match: /\bsliders?\b|range (input|control|slider)|input\[type=["']?range|type="range"|\bdrag(ged|ging)?\b(?![ -]and[ -]drop)/i,
     cls: "range_input",
@@ -238,40 +245,126 @@ export interface GapEvidence {
   targetOrigin?: string;
 }
 
-// CHE-374: the Shopify admin is one capability, whatever door it shows us.
-// Run #283's merchant sign-in link answered 403 from admin.shopify.com and
-// was filed as a third-party block (CHE-309); its sign-in page reads as OAuth,
-// and anything else in it as unclassified — one missing capability counted on
-// three tickets, none of them CHE-333. So the admin outranks every door class
-// (sign-in, codes, CAPTCHA, a foreign host's 403, a host we cannot reach) and
-// the unclassified bucket.
+// ─── The Shopify admin (CHE-374) ─────────────────────────────────────────────
 //
-// It does not outrank a mechanism (PR #217 review), in the words or on the
-// machine trail: an upload, a slider, a camera, a new tab or a control we
-// cannot drive is its own missing capability wherever the admin is
-// mentioned — "the CSV exported from
-// admin.shopify.com" is an upload, and stays one. And it must be the admin
-// itself, not the name in passing: the exact hosts, bounded so
-// admin.shopify.com.evil.example is not one of them; a store's /admin path; or
-// words that put the walk in the admin ("sign in to the Shopify admin",
-// "inside the Shopify admin", "the embedded Shopify app").
+// The Shopify admin is one capability, whatever door it shows us. Run #283's
+// merchant sign-in link answered 403 from admin.shopify.com and was filed as a
+// third-party block (CHE-309); its sign-in page reads as OAuth, and anything
+// else in it as unclassified — one missing capability counted on three
+// tickets, none of them CHE-333.
+//
+// Evidence that the step was AT the admin, never a mention of it:
+// - a URL whose parsed hostname is exactly admin.shopify.com, or a store's
+//   *.myshopify.com host with the /admin segment — parsed, not matched, so
+//   admin.shopify.com.1337.io, https://admin.shopify.com@evil.io and
+//   evil.io/?next=admin.shopify.com are the hosts they really are. Read from
+//   the machine trail (where the walk went) and from the words (where
+//   verify_links was turned away, which leaves no trail);
+// - accounts.shopify.com, Shopify's login for every Shopify property, only
+//   when the target is a Shopify store or the admin: a community forum's
+//   sign-in or another product's "Connect Shopify" hop is OAuth, as is an
+//   admin.shopify.com/oauth/ hop from a product that is not a store;
+// - words that put the walk inside the admin, only on a Shopify target: a
+//   SaaS page that "syncs orders to the Shopify admin" is not in it.
+//
+// What wins, once the step is at the admin:
+// - a gate there (403/503 or a challenge, with the admin host named or a
+//   navigation to it refused) is the blocking cause: it outranks new-tab
+//   wording ("we could not follow the link" is the raw sentence for exactly
+//   that 403) unless the trail shows a new tab too, and any mechanism the
+//   trail alone suggests;
+// - otherwise the doors (sign-in, codes, CAPTCHA) are the admin's doors;
+// - a mechanism in the words (an upload, a slider, a camera, a new tab, a
+//   control we cannot drive, a record left behind) is its own capability
+//   wherever it happened, and so is a trail mechanism the words leave open.
 const SHOPIFY_DOORS: ReadonlySet<GapClass> = new Set(["oauth", "passwordless", "verification_code", "captcha"]);
-const SHOPIFY_ADMIN = [
-  /(?<![\w.-])(?:admin|accounts)\.shopify\.com(?![\w-]|\.[a-z])/i,
-  /(?<![\w-])[a-z0-9-]+\.myshopify\.com\/admin(?![\w-])/i,
-  /\b(?:in|into|inside|within|to)\s+(?:the\s+|a\s+|its\s+|their\s+)?(?:store'?s?\s+)?shopify\s+admin\b/i,
-  /\bembedded\s+shopify\s+app/i,
+const ADMIN_HOST = "admin.shopify.com";
+const ACCOUNTS_HOST = "accounts.shopify.com";
+const STORE_SUFFIX = ".myshopify.com";
+const IN_THE_ADMIN = [
+  /\b(?:inside|within)\s+(?:the\s+|a\s+|its\s+|their\s+)?(?:store'?s?\s+)?shopify\s+admin\b/i,
+  /\b(?:sign(?:ing|ed)?|log(?:ging|ged)?)[\s-]*in(?:to)?\s+(?:to\s+)?(?:the\s+|a\s+|its\s+|their\s+)?(?:store'?s?\s+)?shopify\s+admin\b/i,
+  /\bembedded\s+shopify\s+app\b/i,
 ];
+const GATE_STATUS_CODES = new Set([403, 503]);
+
+// A whitespace-separated token as the URL it names, or null. Bare hosts get a
+// scheme so the WHATWG parser decides the hostname — userinfo, IDN, path and
+// query handled the way a browser would handle them.
+function tokenUrl(token: string): URL | null {
+  const cleaned = token.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}/]+$/u, "");
+  if (!cleaned.includes(".")) return null;
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`);
+    return u.protocol === "https:" || u.protocol === "http:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+function hostOf(u: URL): string {
+  return u.hostname.toLowerCase().replace(/\.$/, "");
+}
+
+function isStoreHost(host: string): boolean {
+  return host.endsWith(STORE_SUFFIX) && host.length > STORE_SUFFIX.length;
+}
+
+function isShopifyTarget(targetOrigin: string | undefined): boolean {
+  const u = targetOrigin ? tokenUrl(targetOrigin) : null;
+  if (!u) return false;
+  const host = hostOf(u);
+  return host === ADMIN_HOST || isStoreHost(host);
+}
+
+function isAdminUrl(u: URL, shopifyTarget: boolean): boolean {
+  const host = hostOf(u);
+  const path = u.pathname.toLowerCase();
+  if (host === ADMIN_HOST) return shopifyTarget || !/^\/oauth(?:\/|$)/.test(path);
+  if (host === ACCOUNTS_HOST) return shopifyTarget;
+  return isStoreHost(host) && (path === "/admin" || path.startsWith("/admin/"));
+}
+
+function trailUrls(actions: RecordedAction[]): { url: string; status: number | null }[] {
+  const out: { url: string; status: number | null }[] = [];
+  for (const a of actions) {
+    if (a.kind === "navigate") {
+      out.push({ url: a.url, status: a.outcome.status }, { url: a.outcome.urlAfter, status: a.outcome.status });
+    } else {
+      out.push({ url: a.outcome.urlAfter, status: null });
+    }
+  }
+  return out;
+}
+
+function shopifyAdmin(evidence: GapEvidence): { at: boolean; gated: boolean } {
+  const shopifyTarget = isShopifyTarget(evidence.targetOrigin);
+  const admin = (raw: string) => {
+    const u = tokenUrl(raw);
+    return u !== null && isAdminUrl(u, shopifyTarget);
+  };
+  const trail = trailUrls(evidence.actions ?? []).filter((t) => admin(t.url));
+  const named = evidence.text.split(/\s+/).some(admin);
+  const said = shopifyTarget && IN_THE_ADMIN.some((rule) => rule.test(evidence.text));
+  const gated =
+    trail.some((t) => t.status !== null && GATE_STATUS_CODES.has(t.status)) ||
+    (named && (CHALLENGE.test(evidence.text) || GATE_STATUS.test(evidence.text)));
+  return { at: trail.length > 0 || named || said, gated };
+}
 
 // Never null: "unclassified" is the last resort, and it still files.
 export function classifyGap(evidence: GapEvidence): GapClass {
   const text = evidence.text;
   const textHit = TEXT_RULES.find((r) => r.match.test(text))?.cls;
-  if (SHOPIFY_ADMIN.some((rule) => rule.test(text))) {
-    if (textHit && SHOPIFY_DOORS.has(textHit)) return "shopify_admin";
-    // Words that only say where the step was leave the trail to name the
-    // mechanism (a slider click, a silent link) before the admin claims it.
-    if (!textHit) return trailClass(evidence.actions ?? []) ?? "shopify_admin";
+  const shopify = shopifyAdmin(evidence);
+  if (shopify.at) {
+    const trail = trailClass(evidence.actions ?? []);
+    if (shopify.gated) {
+      if (textHit === "new_tab") return trail === "new_tab" ? "new_tab" : "shopify_admin";
+      return textHit && !SHOPIFY_DOORS.has(textHit) ? textHit : "shopify_admin";
+    }
+    if (!textHit) return trail ?? "shopify_admin";
+    return SHOPIFY_DOORS.has(textHit) ? "shopify_admin" : textHit;
   }
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
