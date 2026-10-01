@@ -525,6 +525,22 @@ export function smokeOutcomeLine(smoke: SmokeSummary, targetUrl: string): string
       : ", no uncaught errors";
   return (
     `All ${n} page${n === 1 ? "" : "s"} healthy${silent} — carrying Run ` +
-    `#${smoke.baselineRunNumber}'s verdict forward and skipping the full agent check`
+    `#${smoke.baselineRunNumber}'s verdict forward without re-walking the journeys`
+  );
+}
+
+// The bottom line of a quick check: the one verdict sentence that is written
+// here rather than by synthesis, so no language gate sees it on the way to
+// the verdict page, the email, the MCP tools and a CI job summary. CHE-377:
+// it said "full agent check skipped (replay-first)" on 28 verdicts —
+// verify-smoke-gate now holds it to the same words gate as everything else.
+export function quickCheckBottomLine(smoke: { healthy: number; unreached: string[]; fullRunNumber: number }): string {
+  const n = smoke.healthy;
+  const k = smoke.unreached.length;
+  return (
+    `Quick check: ${n} page${n === 1 ? "" : "s"} healthy` +
+    (k > 0 ? `, ${k} did not answer in time` : "") +
+    `, nothing changed since Run #${smoke.fullRunNumber}. Your app is up and its known pages ` +
+    `still serve; the journeys were not re-walked this time.`
   );
 }

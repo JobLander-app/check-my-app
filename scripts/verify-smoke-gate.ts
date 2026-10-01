@@ -55,11 +55,17 @@ import {
   RETRY_TIMEOUT_MS,
   consoleSetAsideLine,
   probeTargets,
+  quickCheckBottomLine,
   smokeOutcomeLine,
   splitSmokeTargets,
   type ProbePage,
 } from "@/agent/smoke";
-import { hasEnvironmentLeak } from "@/lib/verdict-language";
+import { MACHINERY_TERMS, hasEnvironmentLeak, productProse } from "@/lib/verdict-language";
+
+// The whole words gate a synthesized sentence meets: the phrase table and the
+// homework family, the machinery words, and productProse leaving it untouched.
+// hasEnvironmentLeak alone let "skipping the full agent check" through (CHE-377).
+const speaksProduct = (s: string) => !hasEnvironmentLeak(s) && !MACHINERY_TERMS.test(s) && productProse(s) === s;
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -227,9 +233,10 @@ async function main() {
     const stub = stubPage({ "/tutorials/103-safe-practice-mock-interviews": "timeout" });
     const out = await probeTargets(stub.page, u("/"), { core, extra });
     const line = smokeOutcomeLine({ ok: out.failures.length === 0, ...out, baselineRunNumber: 134 }, u("/"));
-    check("e: ok with one silent page", line === "All 5 pages healthy, 1 did not answer in time (/tutorials/103-safe-practice-mock-interviews) — carrying Run #134's verdict forward and skipping the full agent check", line);
+    check("e: ok with one silent page", line === "All 5 pages healthy, 1 did not answer in time (/tutorials/103-safe-practice-mock-interviews) — carrying Run #134's verdict forward without re-walking the journeys", line);
     const clean = smokeOutcomeLine({ ok: true, healthy: 12, unreached: [], failures: [], baselineRunNumber: 134 }, u("/"));
-    check("e: ok with every page answering reads as before", clean === "All 12 pages healthy, no uncaught errors — carrying Run #134's verdict forward and skipping the full agent check", clean);
+    check("e: ok with every page answering reads as before", clean === "All 12 pages healthy, no uncaught errors — carrying Run #134's verdict forward without re-walking the journeys", clean);
+    check("e: the ok lines pass the whole words gate", speaksProduct(line) && speaksProduct(clean), `${line} | ${clean}`);
     const trouble = smokeOutcomeLine({ ok: false, healthy: 4, unreached: [u("/sign-in")], failures: ["/sign-in did not answer in time"], baselineRunNumber: 134 }, u("/"));
     check("e: trouble names the page and the fact", trouble === "Smoke found trouble: /sign-in did not answer in time — running the full check", trouble);
     check("e: no machinery leaks into either line", !hasEnvironmentLeak(line) && !hasEnvironmentLeak(trouble) && !/page\.goto|playwright|headless|browser/i.test(line + trouble));
@@ -425,6 +432,19 @@ async function main() {
     const ok = smokeOutcomeLine({ ok: true, healthy: 31, unreached: [], failures: [], baselineRunNumber: 152 }, u("/"));
     check("h: the ok line has no console sentence (93 errors recorded, none spoken)", !/console/i.test(ok), ok);
     check("h: no machinery leaks", !hasEnvironmentLeak(trouble) && !hasEnvironmentLeak(ok));
+  }
+
+  // l — CHE-377: the quick check's bottom line, the one verdict sentence no
+  // synthesis gate sees. It reaches the verdict page, the email, the MCP tools
+  // and a CI job summary, so it meets the whole gate here instead.
+  {
+    const all = quickCheckBottomLine({ healthy: 31, unreached: [], fullRunNumber: 275 });
+    check("l: every page answering", all === "Quick check: 31 pages healthy, nothing changed since Run #275. Your app is up and its known pages still serve; the journeys were not re-walked this time.", all);
+    const some = quickCheckBottomLine({ healthy: 1, unreached: [u("/docs"), u("/blog")], fullRunNumber: 9 });
+    check("l: a page that did not answer is said, and one page reads as one", some === "Quick check: 1 page healthy, 2 did not answer in time, nothing changed since Run #9. Your app is up and its known pages still serve; the journeys were not re-walked this time.", some);
+    check("l: both pass the whole words gate", speaksProduct(all) && speaksProduct(some), `${all} | ${some}`);
+    const before = "Daily smoke pass: 31 pages healthy, nothing changed since Run #275 — full agent check skipped (replay-first). This confirms your app is up and its known pages still serve; it does not re-verify the journeys.";
+    check("l: the gate rejects the wording 28 verdicts carried", !speaksProduct(before));
   }
 
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
