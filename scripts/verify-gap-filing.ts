@@ -539,6 +539,21 @@ async function main() {
       classifyGap({ text: "The file upload picker did not accept the CSV exported for Shopify Admin." }) === "file_transfer",
       classifyGap({ text: "The file upload picker did not accept the CSV exported for Shopify Admin." }),
     );
+    // Round 2: an exact admin host named as context. The upload is what we
+    // could not do; the admin is where its file came from.
+    check(
+      "a file upload naming admin.shopify.com as the file's origin → file_transfer",
+      classifyGap({ text: "The file upload failed for a CSV exported from admin.shopify.com.", targetOrigin: "https://joblander.app" }) === "file_transfer",
+      classifyGap({ text: "The file upload failed for a CSV exported from admin.shopify.com.", targetOrigin: "https://joblander.app" }),
+    );
+    check(
+      "an hCaptcha on accounts.shopify.com is still the admin's door → shopify_admin",
+      classifyGap({ text: "The login on accounts.shopify.com requires solving an hCaptcha.", targetOrigin: "https://securify-demo.myshopify.com" }) === "shopify_admin",
+    );
+    check(
+      "a verification code for the Shopify admin sign-in → shopify_admin",
+      classifyGap({ text: "Signing in to the Shopify admin asks for a verification code sent by email." }) === "shopify_admin",
+    );
     check(
       "a 403 from admin.shopify.com.evil.example → third_party_block",
       classifyGap({ text: "admin.shopify.com.evil.example answered HTTP 403.", targetOrigin: "https://joblander.app" }) === "third_party_block",

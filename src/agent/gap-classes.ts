@@ -242,14 +242,19 @@ export interface GapEvidence {
 // Run #283's merchant sign-in link answered 403 from admin.shopify.com and
 // was filed as a third-party block (CHE-309); its sign-in page reads as OAuth,
 // and anything else in it as unclassified — one missing capability counted on
-// three tickets, none of them CHE-333. So the host decides first, before every
-// mechanism rule below and before the foreign-host branch.
+// three tickets, none of them CHE-333. So the admin outranks every door class
+// (sign-in, codes, CAPTCHA, a foreign host's 403, a host we cannot reach) and
+// the unclassified bucket.
 //
-// It must be the admin itself, not the name in passing (PR #217 review): the
-// exact hosts, bounded so admin.shopify.com.evil.example is not one of them; a
-// store's /admin path; or words that put the walk in the admin ("sign in to
-// the Shopify admin", "inside the Shopify admin", "the embedded Shopify app").
-// "The CSV exported for Shopify Admin" is an upload, and stays one.
+// It does not outrank a mechanism (PR #217 review): an upload, a slider, a
+// camera, a new tab or a control we cannot drive is its own missing
+// capability wherever the admin is mentioned — "the CSV exported from
+// admin.shopify.com" is an upload, and stays one. And it must be the admin
+// itself, not the name in passing: the exact hosts, bounded so
+// admin.shopify.com.evil.example is not one of them; a store's /admin path; or
+// words that put the walk in the admin ("sign in to the Shopify admin",
+// "inside the Shopify admin", "the embedded Shopify app").
+const SHOPIFY_DOORS: ReadonlySet<GapClass> = new Set(["oauth", "passwordless", "verification_code", "captcha"]);
 const SHOPIFY_ADMIN = [
   /(?<![\w.-])(?:admin|accounts)\.shopify\.com(?![\w-]|\.[a-z])/i,
   /(?<![\w-])[a-z0-9-]+\.myshopify\.com\/admin(?![\w-])/i,
@@ -260,8 +265,10 @@ const SHOPIFY_ADMIN = [
 // Never null: "unclassified" is the last resort, and it still files.
 export function classifyGap(evidence: GapEvidence): GapClass {
   const text = evidence.text;
-  if (SHOPIFY_ADMIN.some((rule) => rule.test(text))) return "shopify_admin";
   const textHit = TEXT_RULES.find((r) => r.match.test(text))?.cls;
+  if ((!textHit || SHOPIFY_DOORS.has(textHit)) && SHOPIFY_ADMIN.some((rule) => rule.test(text))) {
+    return "shopify_admin";
+  }
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
   // rule above would claim it for the target.
