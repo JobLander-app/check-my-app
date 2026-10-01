@@ -37,7 +37,8 @@
 //
 // Usage: npm run verify:lens-flags [-- --live]
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import * as featureFlags from "@/lib/feature-flags";
 import * as viewerFlags from "@/lib/viewer-flags";
@@ -465,14 +466,25 @@ async function reconcileChecks(): Promise<void> {
 // posthog-js evaluates flags without our overrides, from properties the
 // browser stores itself, so a browser read of one of these flags would answer
 // from what the visitor chose. Server-only runtime already withholds them; this
-// keeps anyone from writing the read in the first place. A module is browser
-// code when it says "use client" or imports posthog-js.
+// keeps anyone from writing the read in the first place.
+//
+// Browser code is the client module graph, as Next.js builds it: every module
+// that says "use client" or imports posthog-js, and everything those import,
+// transitively — a helper without the directive is bundled for the browser
+// all the same. The walk stops at a "use server" module: a client component
+// that imports a server action receives a reference to it, not its code
+// (src/app/onboarding/actions.ts reads the extension flag exactly that way).
+// Type-only imports are erased and are not followed. Nothing in that graph
+// may reach feature-flags / viewer-flags or mention a server flag's key or
+// constant.
+
+const SOURCE = /\.(ts|tsx|js|jsx|mjs)$/;
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return sourceFiles(path);
-    return /\.(ts|tsx|js|jsx|mjs)$/.test(name) ? [path] : [];
+    return SOURCE.test(name) ? [path] : [];
   });
 }
 
@@ -482,26 +494,106 @@ function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-function browserChecks(): void {
-  const root = process.cwd();
-  const keys = LENSES.map((l) => l.key);
-  const names = LENSES.map((l) => l.constant);
-  const offenders: string[] = [];
-  let browserModules = 0;
-  for (const path of sourceFiles(join(root, "src"))) {
-    const text = withoutComments(readFileSync(path, "utf8"));
-    const rel = relative(root, path);
-    const isBrowser = /^\s*["']use client["']/m.test(text) || /from ["']posthog-js["']/.test(text);
-    if (isBrowser) {
-      browserModules++;
-      for (const k of [...keys, ...names]) if (text.includes(k)) offenders.push(`${rel} mentions ${k}`);
-      if (/from ["'](@\/lib|\.{1,2})\/(?:[\w-]+\/)*(feature-flags|viewer-flags)["']/.test(text)) offenders.push(`${rel} imports the server flag modules`);
-    } else if (rel !== join("src", "lib", "feature-flags.ts")) {
-      for (const k of keys) if (text.includes(`"${k}"`) || text.includes(`'${k}'`)) offenders.push(`${rel} spells out "${k}" instead of importing its constant`);
+/** Module specifiers a file pulls into its bundle: imports, re-exports, dynamic imports, requires — not `import type`/`export type`. */
+function runtimeImports(code: string): string[] {
+  const out: string[] = [];
+  const patterns = [
+    /\bimport\s+(?!type\b)(?:[\w*{}\s,$]+?\s+from\s+)?["']([^"']+)["']/g,
+    /\bexport\s+(?!type\b)(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+["']([^"']+)["']/g,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/g,
+    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const re of patterns) for (const m of code.matchAll(re)) out.push(m[1]);
+  return out;
+}
+
+function resolveModule(root: string, from: string, spec: string, files: Set<string>): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = join(root, "src", spec.slice(2));
+  else if (spec.startsWith(".")) base = join(from, "..", spec);
+  else return null; // a package: not ours to walk
+  const candidates = [base, ...[".ts", ".tsx", ".js", ".jsx", ".mjs"].map((e) => base + e), ...["ts", "tsx", "js", "jsx"].map((e) => join(base, `index.${e}`))];
+  return candidates.find((c) => files.has(c)) ?? null;
+}
+
+/** Every module in the client graph, each with the import chain that put it there. */
+function clientGraph(root: string, files: string[]): Map<string, string[]> {
+  const fileSet = new Set(files);
+  const code = new Map(files.map((f) => [f, withoutComments(readFileSync(f, "utf8"))]));
+  const isUseServer = (f: string) => /^\s*["']use server["']/.test(code.get(f) ?? "");
+  const graph = new Map<string, string[]>();
+  const queue: string[] = [];
+  for (const f of files) {
+    const text = code.get(f) ?? "";
+    if (/^\s*["']use client["']/.test(text) || /from ["']posthog-js["']/.test(text)) {
+      graph.set(f, [relative(root, f)]);
+      queue.push(f);
     }
   }
-  check(`browser modules found to inspect (${browserModules})`, browserModules > 0);
-  check("no browser module reads a server flag, and no other module spells out its key", offenders.length === 0, offenders.join("; "));
+  while (queue.length > 0) {
+    const f = queue.shift()!;
+    for (const spec of runtimeImports(code.get(f) ?? "")) {
+      const target = resolveModule(root, f, spec, fileSet);
+      if (!target || graph.has(target) || isUseServer(target)) continue;
+      graph.set(target, [...graph.get(f)!, relative(root, target)]);
+      queue.push(target);
+    }
+  }
+  return graph;
+}
+
+function browserChecks(root = process.cwd(), label = ""): number {
+  const files = sourceFiles(join(root, "src"));
+  const graph = clientGraph(root, files);
+  const keys = LENSES.map((l) => l.key);
+  const names = LENSES.map((l) => l.constant);
+  const serverModules = [join("src", "lib", "feature-flags.ts"), join("src", "lib", "viewer-flags.ts")];
+  const offenders: string[] = [];
+  for (const [path, chain] of graph) {
+    const rel = relative(root, path);
+    if (serverModules.includes(rel)) {
+      offenders.push(`browser code reaches ${rel}: ${chain.join(" → ")}`);
+      continue;
+    }
+    const text = withoutComments(readFileSync(path, "utf8"));
+    for (const k of [...keys, ...names]) if (text.includes(k)) offenders.push(`${chain.join(" → ")} mentions ${k}`);
+  }
+  for (const path of files) {
+    const rel = relative(root, path);
+    if (graph.has(path) || rel === serverModules[0]) continue;
+    const text = withoutComments(readFileSync(path, "utf8"));
+    for (const k of keys) if (text.includes(`"${k}"`) || text.includes(`'${k}'`)) offenders.push(`${rel} spells out "${k}" instead of importing its constant`);
+  }
+  if (!label) {
+    check(`client graph found to inspect (${graph.size} modules)`, graph.size > 0);
+    check("no browser code reaches a server flag module or mentions a server flag", offenders.length === 0, offenders.join("; "));
+  }
+  return offenders.length;
+}
+
+// The walk itself, on a small tree written for the purpose: a client
+// component → a plain helper without the directive → viewer-flags must be
+// caught; the same component calling a "use server" action that reads the
+// flag must not; nor may a type-only import.
+function clientGraphFixtureChecks(): void {
+  const root = mkdtempSync(join(tmpdir(), "che-381-graph-"));
+  const write = (rel: string, text: string) => {
+    mkdirSync(join(root, rel, ".."), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  };
+  try {
+    write("src/lib/feature-flags.ts", `export const LENS_PRODUCT_FLAG = "lens-product";\n`);
+    write("src/lib/viewer-flags.ts", `import { LENS_PRODUCT_FLAG } from "./feature-flags";\nexport const productLensFor = async () => Boolean(LENS_PRODUCT_FLAG);\n`);
+    write("src/app/actions.ts", `"use server";\nimport { productLensFor } from "@/lib/viewer-flags";\nexport async function save() { return productLensFor(); }\n`);
+    write("src/lib/types.ts", `export type { FlagPerson } from "./feature-flags";\n`);
+    write("src/components/ok.tsx", `"use client";\nimport { save } from "@/app/actions";\nimport type { FlagPerson } from "@/lib/feature-flags";\nexport const Ok = () => save;\n`);
+    check("client graph: a component calling a \"use server\" action that reads the flag is fine", browserChecks(root, "fixture") === 0);
+    write("src/lib/lens-helper.ts", `export { productLensFor as showProduct } from "../lib/viewer-flags";\n`);
+    write("src/components/sidebar.tsx", `"use client";\nimport { showProduct } from "@/lib/lens-helper";\nexport const Sidebar = () => showProduct;\n`);
+    check("client graph: client component → plain helper → viewer-flags is caught", browserChecks(root, "fixture") > 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // ─── Live (optional) ────────────────────────────────────────────────────────
@@ -608,6 +700,7 @@ process.on("exit", (code) => {
   globalThis.fetch = realFetch;
   declarationChecks();
   await reconcileChecks();
+  clientGraphFixtureChecks();
   browserChecks();
   if (process.argv.includes("--live")) await liveChecks(realFetch);
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
