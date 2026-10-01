@@ -24,6 +24,14 @@
 //      is exactly that — /, /collections/all, /cart and /products/… all
 //      ended on /password. No trail, two different redirect targets, or one
 //      product page reached, and the rule stands aside.
+//
+//      A single redirect is not yet a lock: / → /en is a canonical redirect
+//      to a public page (review, third round). So the place itself must show
+//      it asks for access — we typed into a password or login field there
+//      (run #281 filled "Enter store password" on /password three times), or
+//      its address names sign-in (/password, /login, auth.example.com). The
+//      bottom line calls it a password or sign-in page; this is what earns
+//      that sentence.
 //   2. "Broken" needs a body. Run #20 called an app broken off eight risky /
 //      confusing / polish findings; without a broken/exposed finding or an
 //      observed broken/exposed step, it downgrades to "needs attention".
@@ -73,6 +81,8 @@ interface Place {
   site: string;
   /** origin + pathname, trailing slash folded; the query is not a place. */
   key: string;
+  /** pathname, trailing slash folded. */
+  path: string;
   /** What a reader would call it: the path on the product's own site, host + path elsewhere. */
   display: (productSite: string) => string;
 }
@@ -91,6 +101,7 @@ function place(raw: unknown): Place | null {
   return {
     site,
     key: `${site}${path}`,
+    path,
     display: (productSite) => (site === productSite ? path : `${site}${path}`),
   };
 }
@@ -108,6 +119,23 @@ function trailOf(json: string | null | undefined): RecordedAction[] {
   }
 }
 
+// A field that takes a secret or a login name. "Email" is deliberately absent:
+// a newsletter box on a public page takes one too.
+const CREDENTIAL_FIELD = /\b(?:password|passcode|passphrase|pin|username|user name|log\s?-?in|sign\s?-?in)\b/i;
+
+// A path segment that names sign-in, matched whole so /blog/login-tips is not
+// a gate and /en is not one either.
+const ACCESS_SEGMENT =
+  /^(?:password|login|log-in|log_in|signin|sign-in|sign_in|auth|authenticate|sso|session|sessions|unlock|access)$/i;
+
+// The first label of a host that exists to sign people in.
+const ACCESS_HOST = /^(?:auth|login|signin|sso|accounts?|id|identity)\./i;
+
+function namesAccess(gate: Place, targetSite: string): boolean {
+  if (gate.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg))) return true;
+  return gate.site !== targetSite && ACCESS_HOST.test(gate.site);
+}
+
 // The one place the product redirected every walked journey to, shown the way
 // the bottom line names it — or null when the trail does not prove a gate.
 export function accessGate(walked: IntegrityJourney[], targetUrl: string | null | undefined): string | null {
@@ -116,6 +144,7 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
 
   const redirectedTo = new Map<string, Place>();
   const landings: Place[] = [];
+  const credentialFillsAt = new Set<string>();
   for (const j of walked) {
     let landed = 0;
     for (const s of j.steps) {
@@ -124,6 +153,9 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
         if (!after) continue;
         landed++;
         landings.push(after);
+        if (a.kind === "fill" && typeof a.label === "string" && CREDENTIAL_FIELD.test(a.label)) {
+          credentialFillsAt.add(after.key);
+        }
         if (a.kind !== "navigate") continue;
         const asked = place(a.url);
         if (asked && asked.site === target.site && asked.key !== after.key) {
@@ -138,6 +170,7 @@ export function accessGate(walked: IntegrityJourney[], targetUrl: string | null 
 
   if (redirectedTo.size !== 1) return null;
   const [gate] = redirectedTo.values();
+  if (!credentialFillsAt.has(gate.key) && !namesAccess(gate, target.site)) return null;
   // The product lives on the target's site AND on whatever site it sent us
   // to: example.com redirecting to app.example.com is the product moving
   // house, not a gate, and every page we then reached on app.example.com is

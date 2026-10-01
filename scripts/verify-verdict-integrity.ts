@@ -181,7 +181,67 @@ for (const verdict of ["all_good", "mostly_ok"] as const) {
     out.bottomLine ?? "");
 }
 
+{
+  // The gate earns its name twice in run #281 — the path says /password and
+  // we typed into "Enter store password" there. Either alone is enough.
+  const noFills: Journey[] = RUN_281.map((j) => ({
+    ...j,
+    steps: j.steps.map((s) => ({
+      ...s,
+      actions: s.actions
+        ? JSON.stringify((JSON.parse(s.actions) as Array<{ kind: string }>).filter((a) => a.kind !== "fill"))
+        : null,
+    })),
+  }));
+  const byPath = judgeVerdictIntegrity(noFills, [], { verdict: "all_good", bottomLine: null }, RUN_281_TARGET);
+  check("run #281 without its fills → still a gate by its address", byPath.verdict === "unverified", byPath.verdict);
+
+  const neutral = "https://shop.example.com";
+  const lockedHome: Journey[] = [1, 2].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the shop", trail(nav(`${neutral}/`, `${neutral}/en`), fill("Password", `${neutral}/en`))),
+      gated("Enter the shop"),
+    ],
+  }));
+  const byFill = judgeVerdictIntegrity(lockedHome, [], { verdict: "all_good", bottomLine: null }, `${neutral}/`);
+  check("a neutral address where we typed into a password field → a gate", byFill.verdict === "unverified", byFill.verdict);
+}
+
 console.log("\n— left alone: something behind or beside the gate was really verified —\n");
+
+{
+  // Review, third round: a canonical redirect to a public page is one
+  // redirect target too. Nothing about /en asks for access.
+  const site = "https://brand.example.com";
+  const canonical: Journey[] = [1, 2, 3].map((n) => ({
+    title: `Journey ${n}`,
+    status: "partial",
+    steps: [
+      ok("Open the home page", trail(nav(`${site}/`, `${site}/en`))),
+      ok("Read the offer"),
+      gated("Save it to an account"),
+    ],
+  }));
+  const out = judgeVerdictIntegrity(canonical, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("canonical redirect / → /en, public page read, account step skipped → stays all_good",
+    out.verdict === "all_good", out.verdict);
+
+  const newsletter: Journey[] = canonical.map((j) => ({
+    ...j,
+    steps: [ok("Open the home page", trail(nav(`${site}/`, `${site}/en`), fill("Email", `${site}/en`))), ...j.steps.slice(1)],
+  }));
+  const nl = judgeVerdictIntegrity(newsletter, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("…an email box on that page does not make it a gate", nl.verdict === "all_good", nl.verdict);
+
+  const tips: Journey[] = canonical.map((j) => ({
+    ...j,
+    steps: [ok("Open the home page", trail(nav(`${site}/`, `${site}/blog/login-tips`))), ...j.steps.slice(1)],
+  }));
+  const lt = judgeVerdictIntegrity(tips, [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("…nor does a path that merely contains the word (/blog/login-tips)", lt.verdict === "all_good", lt.verdict);
+}
 
 const SAAS = "https://saas.example.com";
 
