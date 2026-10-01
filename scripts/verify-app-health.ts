@@ -175,17 +175,23 @@ async function main() {
     // D1 compares DateTime as TEXT. Prisma's adapter sends a Date as
     // "2026-09-02T00:00:00.000+00:00"; rows written before 2026-09-04 hold
     // "2026-09-02 21:23:10", and " " sorts before "T". This client compares
-    // createdAt the way D1 does, so a run in the old spelling on the window's
-    // first day is counted only if the module does not trust the text edge.
+    // createdAt the way D1 does — every bound of every run query — so a run in
+    // the old spelling is placed right only if the module's edges hold for
+    // both spellings.
     const legacy = createStubDb({
       team: [{ id: "tl", plan: "business" }],
       app: [{ id: "l1", teamId: "tl", appSlug: "legacy.test", targetKind: "website", createdAt: at("2026-06-01") }],
       run: [
+        // Twenty July checks, so the strip is full and a run that slipped in
+        // would push one out.
+        ...Array.from({ length: 20 }, (_, i) =>
+          run(711 + i, `2026-07-${String(i + 1).padStart(2, "0")}T06:00:00Z`, { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 0.1 })),
         run(701, "2026-09-02T21:23:10Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 1.61 }),
-        run(702, "2026-10-02T05:00:00Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 0.7 }),
+        run(703, "2026-09-03T08:00:00Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 0.2, verdict: "broken" }),
+        run(702, "2026-10-02T05:00:00Z", { teamId: "tl", appId: "l1", appSlug: "legacy.test", priceUsd: 0.7, verdict: "broken" }),
       ],
     });
-    const STORED: Record<string, string> = { r701: "2026-09-02 21:23:10", r702: "2026-10-02 05:00:00" };
+    const STORED: Record<string, string> = { r701: "2026-09-02 21:23:10", r703: "2026-09-03 08:00:00", r702: "2026-10-02 05:00:00" };
     const asD1 = (d: Date) => d.toISOString().replace("Z", "+00:00");
     const inner = legacy.db as unknown as Record<string, Record<string, (a: Record<string, unknown>) => Promise<unknown>>>;
     const d1Db = new Proxy({}, {
@@ -193,20 +199,34 @@ async function main() {
         ...inner.run,
         findMany: async (args: Record<string, unknown>) => {
           const where = (args.where ?? {}) as Record<string, unknown>;
-          const { gte, lt } = (where.createdAt ?? {}) as { gte?: Date; lt?: Date };
-          if (!gte && !lt) return inner.run.findMany(args);
+          const b = (where.createdAt ?? {}) as Partial<Record<"gte" | "gt" | "lte" | "lt", Date>>;
+          if (Object.keys(b).length === 0) return inner.run.findMany(args);
           const text = (r: Record<string, unknown>) => STORED[r.id as string] ?? asD1(r.createdAt as Date);
           const ids = legacy.table("run")
-            .filter((r) => (!gte || text(r) >= asD1(gte)) && (!lt || text(r) < asD1(lt)))
+            .filter((r) => {
+              const t = text(r);
+              return (!b.gte || t >= asD1(b.gte)) && (!b.gt || t > asD1(b.gt)) &&
+                (!b.lte || t <= asD1(b.lte)) && (!b.lt || t < asD1(b.lt));
+            })
             .map((r) => r.id);
           return inner.run.findMany({ ...args, where: { ...where, createdAt: undefined, id: { in: ids } } });
         },
       },
     }) as typeof db;
     const l = await appHealth(d1Db, "tl", { now: NOW });
+    const la = l.apps[0];
     check("a run stored in the old \"YYYY-MM-DD HH:MM:SS\" spelling on the window's first day is counted, one on the day after it is not",
-      l.totalSpendUsd === 1.61 && l.apps[0].checks === 1 && l.apps[0].daily[0].usd === 1.61,
-      JSON.stringify([l.totalSpendUsd, l.apps[0].checks]));
+      l.totalSpendUsd === 1.81 && la.checks === 2 && la.daily[0].usd === 1.61,
+      JSON.stringify([l.totalSpendUsd, la.checks]));
+    const july = (from: number) => Array.from({ length: 731 - from }, (_, i) => from + i);
+    check("…and the one on the day after is neither the latest check nor in the strip, nor takes a place of the 21",
+      la.latest?.runNumber === 703 && same(la.verdicts.map((v) => v.runNumber), [...july(712), 701, 703]),
+      JSON.stringify([la.latest?.runNumber, la.verdicts.map((v) => v.runNumber)]));
+    const asOf = await appHealth(d1Db, "tl", { now: at("2026-09-02T12:00:00Z") });
+    const lp = asOf.apps[0];
+    check("as of 2026-09-02: an old-spelling finished run on 09-03 is absent from the money, the strip and the latest check",
+      asOf.totalSpendUsd === 1.61 && lp.checks === 1 && lp.latest?.runNumber === 701 && same(lp.verdicts.map((v) => v.runNumber), [...july(711), 701]),
+      JSON.stringify([asOf.totalSpendUsd, lp.checks, lp.latest?.runNumber, lp.verdicts.map((v) => v.runNumber)]));
   }
   check("runs after NOW's day — at the next midnight, or stamped days ahead — are in no number, strip or latest",
     report.totalSpendUsd === 3.43 && shop.checks === 8 && !shop.verdicts.some((v) => v.runNumber >= 113) && shop.latest?.runNumber === 107);

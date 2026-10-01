@@ -104,6 +104,13 @@ export async function appHealth(
   // date) or a row stamped ahead of the clock must not land past the series.
   const until = new Date(utcDayStart(now).getTime() + DAY_MS);
   const inWindow = (d: Date) => d >= since && d < until;
+  // The same edge as D1 can test it. D1 compares DateTime as text, and rows
+  // written before 2026-09-04 spell it "2026-09-03 21:23:10", which sorts
+  // before the adapter's "2026-09-03T00:00:00.000+00:00". "< midnight" would
+  // let such a row from the next day in; "<= 23:59:59.999 of the last day"
+  // holds for both spellings: every row of that day sorts at or below it,
+  // every row of the next day above.
+  const lastInstant = new Date(until.getTime() - 1);
 
   const [team, apps, runs] = await Promise.all([
     db.team.findUnique({ where: { id: teamId }, select: { plan: true } }),
@@ -113,14 +120,11 @@ export async function appHealth(
       select: { id: true, appSlug: true, targetKind: true },
     }),
     // The one pass over the window's money, on the [teamId, createdAt] index.
-    // A day of slack at the start, and both edges drawn exactly in code: D1
-    // compares DateTime as text, and rows written before 2026-09-04 spell it
-    // "2026-09-03 21:23:10", which sorts before the adapter's
-    // "2026-09-03T00:00:00.000+00:00" — so on the window's first day such a run
-    // would silently drop out (Run #137), and on the day after its last it
-    // would slip in.
+    // A day of slack at the start, with the exact edge drawn in code: a run in
+    // the old spelling on the window's first day sorts before its midnight and
+    // would silently drop out (Run #137).
     db.run.findMany({
-      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lt: until } },
+      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: lastInstant } },
       select: { appId: true, appSlug: true, watchId: true, priceUsd: true, createdAt: true },
     }),
   ]);
@@ -164,8 +168,9 @@ export async function appHealth(
           OR: [{ appId: app.id }, ...(unique ? [{ appId: null, appSlug: app.appSlug }] : [])],
           status: { in: FINISHED },
           verdict: { not: null },
-          // As of `now`: nothing started after the window's last day.
-          createdAt: { lt: until },
+          // As of `now`: nothing started after the window's last day. In the
+          // query, not after it, so a later run cannot take a place of the 21.
+          createdAt: { lte: lastInstant },
         },
         orderBy: { completedAt: "desc" },
         take: STRIP,
