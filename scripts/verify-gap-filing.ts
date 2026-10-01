@@ -527,6 +527,27 @@ async function main() {
       "a storefront page on myshopify.com is not the admin",
       classifyGap({ text: "The product page on securify-demo.myshopify.com answered HTTP 403 to an automated check.", targetOrigin: "https://joblander.app" }) === "third_party_block",
     );
+    // PR #217 review: the name in passing is not the admin. A file upload that
+    // mentions the Shopify Admin is still the upload capability, and a host
+    // that only starts with admin.shopify.com is someone else's door.
+    check(
+      "shopify_admin: run #282's 'Sign in to the Shopify admin' (walk into the admin, no host)",
+      classifyGap({ text: "Sign in to the Shopify admin (expected 403 / no credentials)" }) === "shopify_admin",
+    );
+    check(
+      "a file upload that mentions Shopify Admin in passing → file_transfer",
+      classifyGap({ text: "The file upload picker did not accept the CSV exported for Shopify Admin." }) === "file_transfer",
+      classifyGap({ text: "The file upload picker did not accept the CSV exported for Shopify Admin." }),
+    );
+    check(
+      "a 403 from admin.shopify.com.evil.example → third_party_block",
+      classifyGap({ text: "admin.shopify.com.evil.example answered HTTP 403.", targetOrigin: "https://joblander.app" }) === "third_party_block",
+      classifyGap({ text: "admin.shopify.com.evil.example answered HTTP 403.", targetOrigin: "https://joblander.app" }),
+    );
+    check(
+      "a 403 from fakeaccounts.shopify.com → third_party_block",
+      classifyGap({ text: "fakeaccounts.shopify.com answered HTTP 403.", targetOrigin: "https://joblander.app" }) === "third_party_block",
+    );
     check("the third-party key is CHE-309's, the ticket #283 landed on", keyFor("third_party_block") === "48076e4280e98ec6be313a3f0680b8e7", keyFor("third_party_block"));
 
     // The key the seed writes is the key the real filer computes.
