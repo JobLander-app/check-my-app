@@ -362,7 +362,7 @@ async function main(): Promise<void> {
   // The accuracy page needs a Next request scope (requireUser,
   // getCloudflareContext), so the same treatment.
   {
-    const page = source("src/app/dashboard/accuracy/page.tsx");
+    const page = source("src/app/(app)/health/accuracy/page.tsx");
     check(
       "accuracy page: the self split reads isSelfHost",
       /isSelfHost\(a\.appSlug, extraHosts\)/.test(page) && /isSelfHost\(s, extraHosts\)/.test(page),

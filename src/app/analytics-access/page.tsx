@@ -92,8 +92,8 @@ export default function AnalyticsAccessPage() {
       </section>
 
       <p className="mt-12 text-sm text-fg-faint">
-        <Link href="/dashboard" className="text-accent hover:underline">
-          ← Back to your dashboard
+        <Link href="/settings/integrations" className="text-accent hover:underline">
+          ← Back to your integrations
         </Link>
       </p>
     </main>

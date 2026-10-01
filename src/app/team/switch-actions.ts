@@ -23,7 +23,7 @@ export async function switchTeamAction(teamId: string, to?: string): Promise<voi
     select: { id: true },
   });
   if (!membership) {
-    redirect("/dashboard?team_error=" + encodeURIComponent("You are not on that team."));
+    redirect("/home?team_error=" + encodeURIComponent("You are not on that team."));
   }
 
   (await cookies()).set(ACTIVE_TEAM_COOKIE, teamId, {
@@ -36,5 +36,5 @@ export async function switchTeamAction(teamId: string, to?: string): Promise<voi
     maxAge: 60 * 60 * 24 * 365,
   });
 
-  redirect(to && to.startsWith("/") ? to : "/dashboard");
+  redirect(to && to.startsWith("/") ? to : "/home");
 }

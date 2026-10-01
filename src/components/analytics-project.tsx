@@ -64,7 +64,7 @@ export function AnalyticsProject({
           <p className="text-sm text-fg-faint">
             No analytics connected. Checks still run — they use our own estimate of what a journey
             is worth.{" "}
-            <Link href="/dashboard" className="text-accent hover:underline">
+            <Link href="/settings/integrations" className="text-accent hover:underline">
               Connect PostHog
             </Link>{" "}
             to use your real numbers instead.

@@ -52,7 +52,7 @@ export default async function InvitePage({
         <section className="card p-6">
           <h1 className="text-xl font-semibold">You are already on {invite?.team.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">Nothing to accept — the team is in your dashboard.</p>
-          <Link href="/dashboard" className="btn-primary mt-6 inline-flex">
+          <Link href="/home" className="btn-primary mt-6 inline-flex">
             Open the dashboard
           </Link>
         </section>
@@ -60,7 +60,7 @@ export default async function InvitePage({
         <section className="card p-6">
           <h1 className="text-xl font-semibold">This invitation can&apos;t be used</h1>
           <p className="mt-2 text-sm text-fg-muted">{error ?? decision.reason}</p>
-          <Link href="/dashboard" className="btn-secondary mt-6 inline-flex">
+          <Link href="/home" className="btn-secondary mt-6 inline-flex">
             Go to your dashboard
           </Link>
         </section>

@@ -8,64 +8,30 @@ import { freshLinearToken } from "@/lib/tracker/token";
 import { TeamSelect } from "@/components/team-select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { setIntegrationEndpoints } from "./actions";
-import { ApiKeys } from "@/components/api-keys";
+import { setIntegrationEndpoints } from "@/app/dashboard/actions";
 import { ConnectAgent } from "@/components/connect-agent";
-import { AnalyticsConnection } from "@/components/analytics-connection";
 import { AppPostHogProject } from "@/components/app-posthog-project";
 import { teamProjects } from "@/lib/posthog/choices";
-import { isStranded } from "@/lib/posthog/token";
-import { missingScopes } from "@/lib/posthog/oauth";
-import { TOPUP_AMOUNTS_USD, spendByApp, teamBalance, usd, watchTrialState } from "@/lib/plans";
+import { teamBalance, watchTrialState } from "@/lib/plans";
 import { appCanRun } from "@/lib/plan-status";
-import { can } from "@/lib/scopes";
-import { TopUpCta } from "@/components/topup-cta";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
-import { teamsOf } from "@/lib/teams";
-import { TeamSwitcher } from "@/components/team-switcher";
 import { extensionCheckFor } from "@/lib/viewer-flags";
+import { integrationNotice } from "@/lib/integration-notice";
+import { BALANCE_PATH } from "@/lib/balance-links";
+import { appPath } from "@/lib/app-shell";
 
-/**
- * The analytics connection as the screen needs it (CHE-236).
- *
- * The connection is the TEAM's, not an app's — every app the team watches reads
- * the same one. Tokens never leave this function: what the page receives is the
- * three facts it states, one of which is whether the connection is still alive.
- */
-async function analyticsConnection(
-  db: Awaited<ReturnType<typeof requireUser>>["db"],
-  teamId: string,
-) {
-  const row = await db.postHogIntegration.findFirst({
-    where: { ...teamOwned(teamId) },
-    select: {
-      organizationName: true,
-      region: true,
-      expiresAt: true,
-      refreshTokenEnc: true,
-      // CHE-286: what was actually granted, so a connection narrower than a
-      // funnel query needs stops wearing an unqualified ✓.
-      scope: true,
-    },
-  });
-  if (!row) return null;
-  return {
-    organizationName: row.organizationName,
-    region: row.region,
-    stranded: isStranded(row, new Date()),
-    missingScopes: missingScopes(row.scope),
-  };
-}
-
-// Owner home (protected). Lists the apps this owner has under daily QA.
-export default async function DashboardPage({
+// Today (CHE-351). Until direction C's Today lands (CHE-361) this is what the
+// old /dashboard was, inside the shell: the agent panel and the team's apps.
+// The balance moved to Billing, the analytics connection to Integrations and
+// the API keys to Agent and API keys — each one item in the sidebar.
+export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string; added?: string; extensionAdded?: string; topped_up?: string }>;
+  searchParams: Promise<{ integration?: string; added?: string; extensionAdded?: string }>;
 }) {
-  const { integration, added, extensionAdded, topped_up: toppedUp } = await searchParams;
-  const { user, db, team, scope } = await requireUser();
+  const { integration, added, extensionAdded } = await searchParams;
+  const { user, db, team } = await requireUser();
   // CHE-261: the TEAM's apps. Filtering by ownerId here would show each member
   // a different dashboard of the same team — the exact thing teams remove.
   const apps = await db.app.findMany({
@@ -81,7 +47,7 @@ export default async function DashboardPage({
   const apiKeys = await db.apiKey.findMany({
     where: { ...teamOwned(team.id) },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, lastUsedAt: true, createdAt: true },
+    select: { lastUsedAt: true },
   });
   const extensionCheck = await extensionCheckFor(user);
 
@@ -101,12 +67,10 @@ export default async function DashboardPage({
     }),
   );
 
-  // CHE-327: the balance headline — what is left, what this period's checks
-  // were priced at and where that went, per app — and, per watched app,
-  // whether its next tick can run (the scheduler's own gate).
+  // CHE-327: per watched app, whether its next tick can run (the scheduler's
+  // own gate) — the balance itself is on Billing.
   const plan = team.plan as UserPlan;
   const balance = await teamBalance(db, { id: team.id, plan });
-  const spend = await spendByApp(db, { id: team.id, plan });
   const canRun = new Map(
     await Promise.all(
       apps
@@ -114,9 +78,7 @@ export default async function DashboardPage({
         .map(async (a) => [a.id, (await appCanRun(db, { id: team.id, plan }, balance, a.appSlug)).ok] as const),
     ),
   );
-  const mayBill = can(scope, "billing.manage");
 
-  const posthog = await analyticsConnection(db, team.id);
   // CHE-237: the projects this team's connection can see, listed ONCE for the
   // whole page. Every app row picks from the same list — one request, however
   // many apps. Null means there is no connection, or we could not list them;
@@ -124,36 +86,22 @@ export default async function DashboardPage({
   // an invitation to wonder what went wrong.
   const posthogProjects = await teamProjects(db, {
     teamId: team.id,
-    clientId: `${((getCloudflareContext().env as Record<string, string | undefined>).APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
+    clientId: `${(cfEnv.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
   });
 
-  // CHE-67: the Connect Linear flow bounces back here with a hint when the
-  // integration isn't set up yet or the OAuth handshake failed — surface it as
-  // a small inline notice instead of the old raw JSON error page. CHE-236 adds
-  // the PostHog outcomes: every branch either route can take ends on one of
-  // these sentences, because a person who pressed Connect and was told nothing
-  // will press it again.
-  const integrationNotice =
-    integration === "linear_unconfigured"
-      ? "Linear isn't connected yet — the integration is being set up."
-      : integration === "linear_failed"
-        ? "Couldn't connect Linear — please try again."
-        : integration === "posthog_connected"
-          ? "PostHog is connected — we can read your funnels, and only read them."
-          : integration === "posthog_declined"
-            ? "PostHog wasn't connected — the request was declined on PostHog's screen."
-            : integration === "posthog_unavailable"
-              ? "PostHog couldn't be reached just now — please try again in a minute."
-              : integration === "posthog_scopes"
-                ? "PostHog changed what it offers — we've stopped rather than ask for the wrong access."
-                : integration === "posthog_unreadable"
-                  ? "PostHog connected but returned no readable account — nothing was saved. Please try again."
-                  : integration === "posthog_failed"
-                    ? "Couldn't connect PostHog — please try again."
-                    : null;
+  const notice = integrationNotice(integration);
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-12">
+    <main className="mx-auto w-full max-w-3xl px-4 py-10">
+      {/* CHE-351: /dashboard#balance is in old e-mails and agents' notes. The
+          redirect brings it here, and the fragment — which never reaches a
+          server — says where it meant: the balance, which lives on Billing. */}
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `if(location.hash==="#balance")location.replace(${JSON.stringify(BALANCE_PATH)})`,
+        }}
+      />
+
       {/* CHE-92: a successful onboarding used to land here with no word about
           what happened — the agent (and any first-time owner) could not tell a
           silent success from a silent failure. */}
@@ -168,89 +116,25 @@ export default async function DashboardPage({
 
       {extensionAdded && <div className="card mb-6 border-status-ok/40 bg-status-ok/5 p-4"><p className="text-sm text-status-ok">✓ Extension added. Start its first check below.</p></div>}
 
-      {integrationNotice && (
+      {notice && (
         <div className="card mb-6 flex items-start justify-between gap-4 p-4">
-          <div>
-            <p className="section-label">integration</p>
-            <p
-            className={
-              integration === "posthog_connected"
-                ? "text-sm text-status-ok"
-                : "text-sm text-status-confusing"
-            }
-          >
-            {integrationNotice}
-          </p>
-          </div>
-          <Link href="/dashboard" className="text-xs text-fg-muted hover:text-fg" aria-label="Dismiss">
+          <p className={notice.ok ? "text-sm text-status-ok" : "text-sm text-status-confusing"}>{notice.text}</p>
+          <Link href="/home" className="text-xs text-fg-muted hover:text-fg" aria-label="Dismiss">
             Dismiss ✕
           </Link>
         </div>
       )}
 
-      {/* CHE-327: the balance is the plan. Headline = what is left and what
-          this period's checks came to, with where it went; each check's own
-          price lives on its verdict, next to the work it paid for. */}
-      <section id="balance" className="card mb-6 space-y-3 p-5">
-        {toppedUp && (
-          <p className="text-sm text-status-ok">
-            ✓ Payment received — your balance goes up by ${toppedUp} as soon as the payment settles.
-          </p>
-        )}
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <div>
-            <p className="section-label">balance</p>
-            <p className="text-2xl font-semibold tracking-tight text-fg">
-              {balance.balanceUsd === null ? "Unlimited" : usd(balance.balanceUsd)}
-            </p>
-            <p className="text-xs text-fg-muted">
-              {usd(balance.spentUsd)} spent {balance.window === "month" ? "this month" : "so far"}
-              {balance.renewsOn && balance.creditUsd !== null
-                ? ` · your plan adds ${usd(balance.creditUsd)} on ${balance.renewsOn}`
-                : ""}
-              {balance.topupUsd > 0 ? ` · ${usd(balance.topupUsd)} of it topped up` : ""}
-            </p>
-          </div>
-          <Link href="/pricing" className="text-xs text-accent hover:underline">
-            Upgrade →
-          </Link>
-        </div>
-        {spend.length > 0 && (
-          <ul className="space-y-0.5 text-xs text-fg-muted">
-            {spend.slice(0, 5).map((s) => (
-              <li key={s.appSlug} className="flex justify-between gap-4 font-mono">
-                <span className="truncate">
-                  {s.appSlug} · {s.checks} check{s.checks === 1 ? "" : "s"}
-                </span>
-                <span>{usd(s.spentUsd)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {balance.balanceUsd !== null &&
-          (mayBill ? (
-            <TopUpCta amounts={TOPUP_AMOUNTS_USD} />
-          ) : (
-            <p className="text-xs text-fg-faint">Top-ups are made by this team&apos;s admins.</p>
-          ))}
-      </section>
-
       {/* CHE-317: the agent is the interface. Onboarding ends on this screen,
           so this is also the last thing onboarding says. */}
       <ConnectAgent keys={apiKeys.map((k) => ({ lastUsedAt: k.lastUsedAt?.toISOString() ?? null }))} />
 
-      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="section-label">your apps</p>
-          <TeamSwitcher teams={await teamsOf(db, user.id)} activeTeamId={team.id} />
-          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Today</h1>
+          <p className="mt-1 text-sm text-fg-muted">Your team&apos;s apps and their latest check.</p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          {/* CHE-99: our own error rate lives one click from the apps it is
-              about, not in a private spreadsheet. */}
-          <Link href="/dashboard/accuracy" className="text-xs text-fg-muted hover:text-fg">
-            Accuracy
-          </Link>
           {/* CHE-320: behind the same flag as the home page's extension option. */}
           {extensionCheck && <Link href="/onboarding?type=extension" className="text-xs text-accent hover:underline">+ Add extension</Link>}
           {/* CHE-324: the agent panel is already at the top of this page, so
@@ -287,13 +171,13 @@ export default async function DashboardPage({
                 <div className="min-w-0 space-y-1">
                   <div className="flex items-center gap-2">
                     <Link
-                      href={`/dashboard/${app.id}`}
+                      href={appPath.page(app.id)}
                       className="break-all font-mono text-sm text-fg hover:underline"
                     >
                       {displayName}
                     </Link>
                     <Link
-                      href={`/dashboard/${app.id}`}
+                      href={appPath.settings(app.id)}
                       className="text-xs text-fg-faint hover:underline"
                     >
                       Settings
@@ -312,9 +196,9 @@ export default async function DashboardPage({
                   {app.watch?.active && trial.kind !== "ended" && canRun.get(app.id) === false && (
                     <p className="text-xs text-status-confusing">
                       paused: the balance is used —{" "}
-                      <a href="#balance" className="text-accent hover:underline">
+                      <Link href="/settings/billing" className="text-accent hover:underline">
                         top up
-                      </a>{" "}
+                      </Link>{" "}
                       or{" "}
                       <Link href="/pricing" className="text-accent hover:underline">
                         upgrade
@@ -439,17 +323,6 @@ export default async function DashboardPage({
           })}
         </ul>
       )}
-
-      <AnalyticsConnection connection={posthog} />
-
-      <ApiKeys
-        keys={apiKeys.map((k) => ({
-          id: k.id,
-          name: k.name,
-          lastUsedAt: k.lastUsedAt?.toISOString() ?? null,
-          createdAt: k.createdAt.toISOString(),
-        }))}
-      />
     </main>
   );
 }

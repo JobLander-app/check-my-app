@@ -71,5 +71,5 @@ export async function createApp(
   if ("error" in result) return { error: result.error };
 
   const { appSlug } = result.app;
-  redirect(`/dashboard?${result.app.isExtension ? "extensionAdded" : "added"}=${encodeURIComponent(appSlug)}`);
+  redirect(`/home?${result.app.isExtension ? "extensionAdded" : "added"}=${encodeURIComponent(appSlug)}`);
 }

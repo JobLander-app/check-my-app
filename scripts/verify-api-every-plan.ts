@@ -60,7 +60,8 @@ const copyFiles = [
   "src/app/pricing/page.tsx",
   "src/app/faq/page.tsx",
   "src/components/api-keys.tsx",
-  "src/app/dashboard/page.tsx",
+  "src/app/(app)/home/page.tsx",
+  "src/app/(app)/settings/api-keys/page.tsx",
   "src/lib/plans.ts",
 ];
 const stale = copyFiles.filter((f) => /Business[ -](plan|tier)|Business\+|API access is available on the Business/i.test(read(f)));

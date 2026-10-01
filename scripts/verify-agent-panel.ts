@@ -130,11 +130,15 @@ check(
 
 // ─── 5. On the dashboard, first ─────────────────────────────────────────────
 
-const dashboard = readFileSync(join(process.cwd(), "src/app/dashboard/page.tsx"), "utf8");
+// CHE-351: the dashboard is Today (/home) inside the app shell; the panel is
+// also on Agent and API keys, beside the keys themselves.
+const dashboard = readFileSync(join(process.cwd(), "src/app/(app)/home/page.tsx"), "utf8");
 const panelAt = dashboard.indexOf("<ConnectAgent");
-check("the dashboard renders the panel", panelAt !== -1);
-check("…above the apps", panelAt !== -1 && panelAt < dashboard.indexOf('section-label">your apps'));
+check("Today renders the panel", panelAt !== -1);
+check("…above the apps", panelAt !== -1 && panelAt < dashboard.indexOf("{apps.length === 0 ?"));
 check("…from the team's keys' lastUsedAt", /<ConnectAgent keys=\{apiKeys\.map\(\(k\) => \(\{ lastUsedAt:/.test(dashboard));
+const keysPage = readFileSync(join(process.cwd(), "src/app/(app)/settings/api-keys/page.tsx"), "utf8");
+check("Agent and API keys renders it too, from the same field", /<ConnectAgent keys=\{apiKeys\.map\(\(k\) => \(\{ lastUsedAt:/.test(keysPage));
 
 console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

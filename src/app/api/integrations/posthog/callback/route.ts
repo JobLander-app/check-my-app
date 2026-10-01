@@ -27,7 +27,7 @@ import { findAccount } from "@/lib/posthog/api";
 import { recordTeamEvent } from "@/lib/team-events";
 
 function fail(req: NextRequest, why: string) {
-  return NextResponse.redirect(new URL(`/dashboard?integration=posthog_${why}`, req.nextUrl.origin));
+  return NextResponse.redirect(new URL(`/settings/integrations?integration=posthog_${why}`, req.nextUrl.origin));
 }
 
 /** Clear the flow's cookies whatever happens — they are single-use by design. */
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   // The person said no on the consent screen. Not a failure — say so quietly.
   if (params.get("error") === "access_denied") {
     await clearFlow();
-    return NextResponse.redirect(new URL("/dashboard?integration=posthog_declined", req.nextUrl.origin));
+    return NextResponse.redirect(new URL("/settings/integrations?integration=posthog_declined", req.nextUrl.origin));
   }
 
   const code = params.get("code");
@@ -148,5 +148,5 @@ export async function GET(req: NextRequest) {
     summary: `connected PostHog (${account.organizationName}, ${account.region.toUpperCase()}), read-only`,
   });
 
-  return NextResponse.redirect(new URL("/dashboard?integration=posthog_connected", req.nextUrl.origin));
+  return NextResponse.redirect(new URL("/settings/integrations?integration=posthog_connected", req.nextUrl.origin));
 }

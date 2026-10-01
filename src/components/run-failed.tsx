@@ -47,7 +47,7 @@ export function RunFailed({
           {balanceRefused && (
             <>
               {" "}
-              <Link href="/dashboard#balance" className="text-accent hover:underline">
+              <Link href="/settings/billing" className="text-accent hover:underline">
                 Top up
               </Link>{" "}
               ·{" "}

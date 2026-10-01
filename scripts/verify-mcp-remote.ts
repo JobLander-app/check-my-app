@@ -52,7 +52,7 @@ import { WAIT_BUDGET_MS, type McpDeps } from "@/lib/mcp/tools";
 import { PLAN_LIMITS, WATCH_TRIAL_DAYS, typicalPriceRange, usd } from "@/lib/plans";
 
 const FREE_CREDIT = PLAN_LIMITS.free.creditUsd ?? 0;
-const BUY = "https://checkmyapp.dev/dashboard#balance";
+const BUY = "https://checkmyapp.dev/settings/billing";
 import type { UserPlan } from "@/lib/enums";
 import ConnectAgentGuide from "@/app/guides/connect-your-agent/page";
 import { createStubDb } from "./fixtures/mcp-db";
@@ -526,7 +526,7 @@ async function main() {
       // Free's credit never renews, so the hint must not promise a next credit.
       zero.out.ok === true && /waits until a top-up\./.test(hint) && !/next credit/.test(hint) &&
         !/scheduled automatically/.test(hint) &&
-        zero.out.buy_url === `${ORIGIN}/dashboard#balance` && zero.out.upgrade_url === `${ORIGIN}/pricing`,
+        zero.out.buy_url === `${ORIGIN}/settings/billing` && zero.out.upgrade_url === `${ORIGIN}/pricing`,
       JSON.stringify(zero.out));
     const paid = await call(a, "create_app", { url: "https://paid-team.test" });
     check("create_app on a balance that covers a check: the scheduled-automatically hint, no top-up links",

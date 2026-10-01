@@ -150,7 +150,7 @@ export default async function AccuracyPage() {
       {/* A page with no way back and no reason given reads as a dead end, however
           good its numbers are. Say where you are, then why this exists for YOU. */}
       <Link
-        href="/dashboard"
+        href="/home"
         className="mb-6 inline-block font-mono text-xs text-fg-faint transition-colors hover:text-fg"
       >
         ← Your apps
@@ -175,7 +175,7 @@ export default async function AccuracyPage() {
             Nothing to score yet. This page fills in once we have checked an app of yours and
             reported something — and it stays honest whether that flatters us or not.
           </p>
-          <Link href="/dashboard" className="mt-3 inline-block text-accent hover:underline">
+          <Link href="/onboarding?path=app" className="mt-3 inline-block text-accent hover:underline">
             Add an app to watch →
           </Link>
         </div>
@@ -270,7 +270,7 @@ export default async function AccuracyPage() {
                           should be one click from that app, not a dead string. */}
                       <td className="py-2">
                         <Link
-                          href={`/dashboard/${a.id}`}
+                          href={`/health/apps/${a.id}`}
                           className="transition-colors hover:text-accent"
                         >
                           {a.slug}
@@ -337,8 +337,8 @@ export default async function AccuracyPage() {
         </div>
       )}
 
-      <Link href="/dashboard" className="mt-8 inline-block text-sm text-fg-muted hover:text-fg">
-        ← Dashboard
+      <Link href="/home" className="mt-8 inline-block text-sm text-fg-muted hover:text-fg">
+        ← Today
       </Link>
     </main>
   );

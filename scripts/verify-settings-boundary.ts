@@ -39,8 +39,11 @@ function check(name: string, ok: boolean, detail = "") {
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 
-const TEAM_PAGE = "src/app/settings/team/page.tsx";
-const ACCOUNT_PAGE = "src/app/settings/account/page.tsx";
+// CHE-351: the team page is the people page that was /team; the plan and the
+// Stripe portal moved to Billing, each its own item in the sidebar.
+const TEAM_PAGE = "src/app/(app)/settings/team/page.tsx";
+const ACCOUNT_PAGE = "src/app/(app)/settings/account/page.tsx";
+const BILLING_PAGE = "src/app/(app)/settings/billing/page.tsx";
 
 // ─── The boundary itself ─────────────────────────────────────────────────────
 
@@ -134,9 +137,16 @@ check(
 
 // ─── Billing is an admin's, on the page and on the server ────────────────────
 
+const billingSource = read(BILLING_PAGE);
 check(
-  "the team page offers billing only to someone who may manage it",
-  /can\(scope, "billing\.manage"\)/.test(teamSource),
+  "Billing offers the portal and top-ups only to someone who may manage them",
+  /const mayBill = can\(scope, "billing\.manage"\)/.test(billingSource) &&
+    /mayBill \? \(\s*<TopUpCta/.test(billingSource) &&
+    /mayBill \? \(\s*<>\s*<ManageBillingButton/.test(billingSource),
+);
+check(
+  "Billing carries no per-app setting either",
+  PER_APP_MARKERS.every((m) => !billingSource.includes(m)),
 );
 const portal = ROUTE_RULES["POST /api/billing/portal"];
 check(

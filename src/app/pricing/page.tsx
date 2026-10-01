@@ -111,13 +111,13 @@ export default function PricingPage() {
         </p>
 
         {/* CHE-327: the way out of an empty balance, next to the plans. The
-            buttons themselves live on the dashboard's balance card, where a
+            buttons themselves live on the balance card in Billing, where a
             signed-in admin can press them (src/lib/balance-links.ts). */}
         <p id="checks" className="mx-auto max-w-2xl text-center text-sm text-fg-muted">
           <span className="text-fg">{TOPUP_LINE}.</span> Spent after the plan&apos;s own balance
           — from{" "}
-          <Link href="/dashboard#balance" className="text-accent hover:underline">
-            your dashboard
+          <Link href="/settings/billing" className="text-accent hover:underline">
+            Billing
           </Link>
           .
         </p>

@@ -88,7 +88,7 @@ export async function inviteMemberAction(formData: FormData): Promise<void> {
     subject: parsed.email,
     summary: `invited ${parsed.email} as ${parsed.scope}`,
   });
-  revalidatePath("/team");
+  revalidatePath("/settings/team");
 }
 
 export async function revokeInviteAction(inviteId: string): Promise<void> {
@@ -111,7 +111,7 @@ export async function revokeInviteAction(inviteId: string): Promise<void> {
       summary: `cancelled the invitation to ${invite.email}`,
     });
   }
-  revalidatePath("/team");
+  revalidatePath("/settings/team");
 }
 
 export async function changeScopeAction(userId: string, formData: FormData): Promise<void> {
@@ -135,7 +135,7 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
     subject: userId,
     summary: `changed someone's access to ${scope}`,
   });
-  revalidatePath("/team");
+  revalidatePath("/settings/team");
 }
 
 export async function removeMemberAction(userId: string): Promise<void> {
@@ -154,7 +154,7 @@ export async function removeMemberAction(userId: string): Promise<void> {
     subject: userId,
     summary: "removed someone from the team — their apps, checks and tickets stayed",
   });
-  revalidatePath("/team");
+  revalidatePath("/settings/team");
 }
 
 export async function leaveTeamAction(): Promise<void> {
@@ -173,5 +173,5 @@ export async function leaveTeamAction(): Promise<void> {
     subject: user.email,
     summary: `${user.email} left the team`,
   });
-  revalidatePath("/team");
+  revalidatePath("/settings/team");
 }

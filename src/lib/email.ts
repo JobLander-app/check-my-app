@@ -54,7 +54,9 @@ function whyThisMail(args: { appSlug: string; recurring: boolean; base: string }
   text: string;
 } {
   if (args.recurring) {
-    const manage = `${args.base}/dashboard`;
+    // CHE-351: "Which apps email you" on the reader's own settings — the
+    // switch that stops this mail without stopping anyone else's.
+    const manage = `${args.base}/settings/account`;
     // Cadence-neutral on purpose: a watch may run daily, every 6 hours, or only
     // when someone presses re-check, and all of them reach this branch.
     const sentence = `You get this because checks of ${args.appSlug} report to this address.`;

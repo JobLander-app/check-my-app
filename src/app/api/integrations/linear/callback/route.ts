@@ -10,13 +10,13 @@ import { encryptSecret } from "@/lib/crypto";
 import { alreadyScoped } from "@/lib/tenant-db";
 
 function back(req: NextRequest, status: string) {
-  return NextResponse.redirect(new URL(`/dashboard?linear=${status}`, req.nextUrl.origin));
+  return NextResponse.redirect(new URL(`/home?linear=${status}`, req.nextUrl.origin));
 }
 
-// Any error along the OAuth callback lands the user on a friendly dashboard
-// notice (CHE-67) rather than a raw JSON error or an opaque status code.
+// Any error along the OAuth callback lands the user on a friendly notice on
+// Today (CHE-67) rather than a raw JSON error or an opaque status code.
 function fail(req: NextRequest) {
-  return NextResponse.redirect(new URL("/dashboard?integration=linear_failed", req.nextUrl.origin));
+  return NextResponse.redirect(new URL("/home?integration=linear_failed", req.nextUrl.origin));
 }
 
 export async function GET(req: NextRequest) {

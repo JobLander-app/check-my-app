@@ -29,10 +29,10 @@ export function OnboardingChooser({
         <TrackedLink
           event="onboarding_path_chosen"
           props={{ path: "agent" }}
-          href="/dashboard"
+          href="/home"
           className="mt-5 inline-flex items-center justify-center rounded-lg border border-ink-600 bg-ink-850 px-4 py-2.5 text-sm text-fg transition-colors hover:border-ink-700 hover:bg-ink-800"
         >
-          Done — go to dashboard
+          Done — go to your apps
         </TrackedLink>
       </ConnectAgent>
 

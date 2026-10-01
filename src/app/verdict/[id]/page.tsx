@@ -328,7 +328,7 @@ export default async function VerdictPage({
               {balanceRefused && (
                 <>
                   {" "}
-                  <Link href="/dashboard#balance" className="text-accent hover:underline">
+                  <Link href="/settings/billing" className="text-accent hover:underline">
                     Top up
                   </Link>{" "}
                   ·{" "}
@@ -369,7 +369,7 @@ export default async function VerdictPage({
                 </p>
               )}
               {run.targetKind === "extension" && run.verdict === "unverified" && viewerApp && (
-                <Link href={`/dashboard/${viewerApp.id}`} className="mt-3 inline-flex text-sm text-accent hover:underline">
+                <Link href={`/health/apps/${viewerApp.id}/settings`} className="mt-3 inline-flex text-sm text-accent hover:underline">
                   Extension settings →
                 </Link>
               )}

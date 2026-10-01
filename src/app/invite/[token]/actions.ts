@@ -46,7 +46,7 @@ export async function acceptInviteAction(token: string): Promise<void> {
     redirect(`/invite/${token}?error=${encodeURIComponent(decision.reason)}`);
   }
   if (decision.kind === "already_member") {
-    redirect(`/dashboard?team=${decision.teamId}`);
+    redirect(`/home?team=${decision.teamId}`);
   }
 
   // The membership and the invitation's own record of what happened to it. D1
@@ -83,5 +83,5 @@ export async function acceptInviteAction(token: string): Promise<void> {
   // a second one rather than replacing anything (T8 adds the switch between
   // them). The redirect goes to the team they just joined.
   void personalTeamId(user.id);
-  redirect(`/dashboard?team=${decision.teamId}`);
+  redirect(`/home?team=${decision.teamId}`);
 }

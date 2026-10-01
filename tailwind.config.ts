@@ -17,6 +17,7 @@ const config: Config = {
           900: "#0d0f14", // raised surface
           850: "#12151c", // card
           800: "#181c25", // hover / inset
+          750: "#1b2130", // the sidebar's active item (CHE-351)
           700: "#232936", // borders strong
           600: "#2e3545", // borders
         },
@@ -24,6 +25,9 @@ const config: Config = {
           DEFAULT: "#e8eaf0",
           muted: "#9aa3b5",
           faint: "#5d6678",
+          // Sidebar group labels: sentence case at 12px, never a tracked caps
+          // eyebrow (owner, CHE-336).
+          label: "#7d8699",
         },
         accent: {
           DEFAULT: "#4f8cff", // primary action blue

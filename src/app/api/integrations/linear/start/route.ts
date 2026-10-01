@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   if (!clientId) {
     // OAuth env not set yet (owner step). Send the user who clicked "Connect
     // Linear" back to a friendly dashboard notice instead of a raw JSON 503.
-    return NextResponse.redirect(new URL("/dashboard?integration=linear_unconfigured", req.url));
+    return NextResponse.redirect(new URL("/home?integration=linear_unconfigured", req.url));
   }
 
   // CSRF: random nonce in an httpOnly cookie; appId travels in the signed-ish state.

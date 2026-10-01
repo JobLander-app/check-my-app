@@ -74,8 +74,9 @@ check("agent path: links the guide", html.includes(`href="${CONNECT_GUIDE_PATH}"
 check("agent path: an example first prompt", t.includes(firstPrompt(null)), t);
 check("agent path: the prompt adds an app, runs a check, fixes what it finds",
   /^Add my app .+ to CheckMyApp with the test account .+ Scenarios: .+ Then run a check and fix what it finds\.$/.test(firstPrompt(null)));
-check("agent path: 'Done — go to dashboard' goes to /dashboard",
-  /<a[^>]*href="\/dashboard"[^>]*>Done — go to dashboard<\/a>/.test(html), html.match(/<a[^>]*>Done[^<]*<\/a>/)?.[0]);
+// CHE-351: the dashboard is Today (/home) inside the app shell.
+check("agent path: 'Done — go to your apps' goes to /home",
+  /<a[^>]*href="\/home"[^>]*>Done — go to your apps<\/a>/.test(html), html.match(/<a[^>]*>Done[^<]*<\/a>/)?.[0]);
 check("manual path: leads to the form (?path=app)", /<a[^>]*href="\/onboarding\?path=app"[^>]*>Open the form →<\/a>/.test(html));
 check("the agent path is the visually primary one (the accent-bordered card)",
   html.indexOf("border-accent/40") !== -1 && html.indexOf("border-accent/40") < html.indexOf("Add an app here"));
@@ -83,7 +84,7 @@ check("the agent path is the visually primary one (the accent-bordered card)",
 // A team whose key has been used: the panel is folded, the way out is still there.
 const connected = text(render(createElement(OnboardingChooser, { keys: [{ lastUsedAt: "2026-09-27T10:00:00.000Z" }], url: null })));
 check("connected team: 'Connected to your agent', no big headline", connected.includes("Connected to your agent") && !connected.includes(HEADLINE));
-check("connected team: still the first prompt and Done", connected.includes(firstPrompt(null)) && connected.includes("Done — go to dashboard"));
+check("connected team: still the first prompt and Done", connected.includes(firstPrompt(null)) && connected.includes("Done — go to your apps"));
 
 // ─── 2. The person's own address ────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ check("the onboarding page renders the chooser first", /if \(path !== "app" && k
 check("…from the team's keys", /db\.apiKey\.findMany\(\{ where: \{ \.\.\.teamOwned\(team\.id\) \}/.test(page));
 check("?path=app is still today's wizard", /<OnboardingWizard prefillUrl=\{url \?\? ""\}/.test(page));
 check("CHE-320: the extension flag is still read", /await extensionCheckFor\(user\)/.test(page) && /extensionCheck && type === "extension"/.test(page));
-const dashboard = source("src/app/dashboard/page.tsx");
+const dashboard = source("src/app/(app)/home/page.tsx");
 check("the dashboard's '+ Add app' goes to the form", /href="\/onboarding\?path=app"[\s\S]{0,200}\+ Add app/.test(dashboard));
 check("the dashboard still links the extension form behind the flag", /\{extensionCheck && <Link href="\/onboarding\?type=extension"/.test(dashboard));
 
@@ -130,7 +131,7 @@ check("the guide is a route", CONNECT_GUIDE_PATH === "/guides/connect-your-agent
 
 check("onboarding_path_chosen is a catalogue event", (ANALYTICS_EVENTS as readonly string[]).includes("onboarding_path_chosen"));
 const chooser = source("src/components/onboarding-chooser.tsx");
-check("…captured on the agent path's Done", /event="onboarding_path_chosen"\s+props=\{\{ path: "agent" \}\}\s+href="\/dashboard"/.test(chooser));
+check("…captured on the agent path's Done", /event="onboarding_path_chosen"\s+props=\{\{ path: "agent" \}\}\s+href="\/home"/.test(chooser));
 check("…and on 'Add an app here'", /event="onboarding_path_chosen"\s+props=\{\{ path: "app" \}\}\s+href=\{manual\}/.test(chooser));
 
 // ─── 7. §1 and the owner's rule ─────────────────────────────────────────────
@@ -140,7 +141,7 @@ const homeLine = "Prefer your coding agent? Connect it →";
 // verdict in ("Done — here is what I found"); on a button it is the button's
 // name, so it is checked as prose without it. Homework and leaks are checked
 // on everything.
-const prose = t.replace("Done — go to dashboard", "");
+const prose = t.replace("Done — go to your apps", "");
 for (const [name, words] of [["onboarding first screen", t], ["home page line", homeLine]] as const) {
   const narration = narrationIn(words === t ? prose : words);
   check(`${name}: no homework`, !hasHomework(words));

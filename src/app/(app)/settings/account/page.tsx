@@ -86,7 +86,7 @@ export default async function AccountSettingsPage() {
         <p className="mt-2 text-sm text-fg-muted">
           Your name, email address and how you sign in are managed from the account menu in the
           header. Leaving a team is on{" "}
-          <Link href="/team" className="text-accent hover:underline">
+          <Link href="/settings/team" className="text-accent hover:underline">
             the team page
           </Link>
           {" "}— it removes your access and nothing you did: the apps, checks and tickets stay with

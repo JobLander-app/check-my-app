@@ -18,6 +18,7 @@ import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { appPath } from "@/lib/app-shell";
 
 // Re-point an app's tracker to a different team (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
@@ -71,7 +72,8 @@ export async function setIntegrationEndpoints(appId: string, formData: FormData)
   else if (webhookSecret) data.webhookSecretEnc = encryptSecret(webhookSecret);
 
   await db.app.update({ ...alreadyScoped("already read in this request"), where: { id: appId }, data });
-  revalidatePath("/dashboard");
+  revalidatePath("/home");
+  revalidatePath(appPath.settings(appId));
 }
 
 // Disconnect analytics (CHE-236). Two things happen, in this order, and the
@@ -116,7 +118,8 @@ export async function disconnectPostHog(): Promise<void> {
     subject: row.organizationName ?? "PostHog",
     summary: `disconnected PostHog${row.organizationName ? ` (${row.organizationName})` : ""}`,
   });
-  revalidatePath("/dashboard");
+  revalidatePath("/settings/integrations");
+  revalidatePath("/home");
 }
 
 // Owner API keys (CHE-52). The raw key exists only in this return value — the
@@ -209,8 +212,8 @@ export async function updateAppSettings(appId: string, formData: FormData) {
   });
   if ("error" in result) throw new Error(result.error);
 
-  revalidatePath("/dashboard");
-  revalidatePath(`/dashboard/${result.app.id}`);
+  revalidatePath("/home");
+  revalidatePath(appPath.settings(result.app.id));
 }
 
 // Remove an app the owner no longer wants watched (CHE-95). Our own check
@@ -261,12 +264,13 @@ export async function deleteApp(
     summary: `deleted ${app.appSlug} — its verdicts were kept`,
   });
 
-  revalidatePath("/dashboard");
-  redirect(`/dashboard?removed=${encodeURIComponent(app.appSlug)}`);
+  // The app is in the sidebar of every signed-in page, so the whole shell.
+  revalidatePath("/", "layout");
+  redirect(`/home?removed=${encodeURIComponent(app.appSlug)}`);
 }
 
 export async function runSavedApp(appId: string, _previous: { error: string } | null) {
-  if (isSelfCheckRequest(await headers())) redirect(selfCheckRedirectPath(`/dashboard/${appId}`));
+  if (isSelfCheckRequest(await headers())) redirect(selfCheckRedirectPath(appPath.settings(appId)));
   const { user, db, team } = await requireActionScope("run.start");
   const result = await startSavedApp(db, { id: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId);
   if ("error" in result) return result;
@@ -332,7 +336,8 @@ export async function setAppPosthogProject(appId: string, formData: FormData): P
       ? `pointed ${app.appSlug} at the PostHog project "${projectName || projectId}"`
       : `stopped reading a PostHog project for ${app.appSlug}`,
   });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
+  revalidatePath("/home");
 }
 
 export async function setAppNotifiers(appId: string, formData: FormData): Promise<void> {
@@ -359,7 +364,7 @@ export async function setAppNotifiers(appId: string, formData: FormData): Promis
       ? `set who hears about this app: ${valid.length} ${valid.length === 1 ? "person" : "people"}`
       : "cleared who hears about this app — verdicts go to the team's admins again",
   });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
 }
 
 // The self-service half: any scope, your own subscription only.
@@ -371,5 +376,6 @@ export async function toggleOwnNotifications(appId: string): Promise<void> {
   const existing = await db.appNotifier.findFirst({ where: { appId, userId: user.id }, select: { id: true } });
   if (existing) await db.appNotifier.deleteMany({ where: { appId, userId: user.id } });
   else await db.appNotifier.create({ data: { appId, userId: user.id } });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
+  revalidatePath("/settings/account");
 }

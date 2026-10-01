@@ -49,7 +49,7 @@ export async function GET(req: NextRequest) {
     // rather than starting a flow against a guessed URL that would fail in
     // front of the customer.
     console.warn(`[posthog-oauth] discovery failed: ${err instanceof Error ? err.message : String(err)}`);
-    return NextResponse.redirect(new URL("/dashboard?integration=posthog_unavailable", req.url));
+    return NextResponse.redirect(new URL("/settings/integrations?integration=posthog_unavailable", req.url));
   }
 
   const missing = unsupportedScopes(endpoints);
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     // Asking for a scope the server does not offer fails at consent, and the
     // person reads PostHog's error rather than ours.
     console.warn(`[posthog-oauth] provider no longer offers: ${missing.join(", ")}`);
-    return NextResponse.redirect(new URL("/dashboard?integration=posthog_scopes", req.url));
+    return NextResponse.redirect(new URL("/settings/integrations?integration=posthog_scopes", req.url));
   }
 
   const verifier = createVerifier();

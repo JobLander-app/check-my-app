@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { can } from "@/lib/scopes";
 import { REMOVAL_KEEPS_EVERYTHING, decideLeave } from "@/lib/membership";
@@ -11,7 +12,7 @@ import {
   leaveTeamAction,
   removeMemberAction,
   revokeInviteAction,
-} from "./actions";
+} from "@/app/team/actions";
 
 // CHE-258 (Teams T5): who is on the team, what they may do, and who invited
 // them — readable by everyone on the team, editable by its admins.
@@ -67,6 +68,14 @@ export default async function TeamPage() {
           {memberships.length === 1
             ? "Just you, for now. Invite someone and they see the same checks you do."
             : `${memberships.length} people. Everyone here reads the same checks; what they can change depends on their access.`}
+        </p>
+        {/* CHE-277: each settings page names the other. */}
+        <p className="mt-2 text-sm text-fg-muted">
+          What only affects you — which apps mail you, which team you are acting as — is on{" "}
+          <Link href="/settings/account" className="text-accent hover:underline">
+            your own settings
+          </Link>
+          .
         </p>
       </header>
 
