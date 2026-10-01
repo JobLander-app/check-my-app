@@ -25,6 +25,7 @@ import type { RecordedAction, ReportedStep } from "@/agent/tools";
 import { productizeStep } from "@/agent/tools";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import type { CreatedIssue, IssueOutcome, TicketDraft, Tracker } from "@/lib/tracker/types";
+import { CHE_333, seedSql, shopifyAdminDedupKey } from "./seed-gap-link-che-333";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -482,6 +483,75 @@ async function main() {
     const w = stubWorld([], { unfunnelledJourneys: [] });
     await fileCapabilityGaps(w.env, "run-1", { board: w.board });
     check("every walked journey has a funnel → no ticket", w.filed.length === 0, w.filed.map((f) => f.title).join(" | "));
+  }
+
+  // 8 — CHE-374: the Shopify admin is one capability, filed on CHE-333. Run
+  // #283's step (prod D1, step cmuptq3f7001ez90n9413w9zo, byte for byte) was
+  // stored as third_party_block and counted on CHE-309; a sign-in page on
+  // accounts.shopify.com read as OAuth (CHE-94); an embedded app with no host
+  // named was unclassified (CHE-86). All three are CHE-333.
+  {
+    const SHOPIFY_283: StoredStep = {
+      label: 'Follow the "Log in here" link on the gate',
+      attempted:
+        'Checked the gate\'s only link, "Log in here" (/admin), which leads to the Shopify admin sign-in for the store owner.',
+      observed:
+        "The link resolves to the Shopify admin host (admin.shopify.com), which answers HTTP 403 to an automated check, so the destination could not be confirmed this run. It is the merchant sign-in, not a shopper-facing page; without owner credentials nothing behind it was inspected.",
+      gapClass: null,
+      actions: null,
+      journey: { title: "Explore storefront (blocked by password gate)" },
+    };
+    const store = "https://securify-demo.myshopify.com";
+    const shopifyTexts: [string, string, string | undefined][] = [
+      ["run #283: a 403 from admin.shopify.com (was third_party_block)", gapEvidenceText(SHOPIFY_283.observed, SHOPIFY_283.attempted, SHOPIFY_283.label), store],
+      ["a Google sign-in on accounts.shopify.com (was oauth)", "The store owner login on accounts.shopify.com offers Continue with Google; we could not sign in.", store],
+      ["a Cloudflare challenge on accounts.shopify.com (was third_party_block)", "accounts.shopify.com showed a Cloudflare security verification page.", store],
+      ["an embedded app named without a host (was unclassified)", "The embedded Shopify app could not be opened from here.", undefined],
+      ["a myshopify admin path", "Opening https://securify-demo.myshopify.com/admin/apps/securify needs the store owner's session.", store],
+    ];
+    for (const [name, text, targetOrigin] of shopifyTexts) {
+      const cls = classifyGap({ text, targetOrigin });
+      check(`shopify_admin: ${name}`, cls === "shopify_admin", cls);
+    }
+
+    // The neighbours stay where they were: a Google sign-in on the product
+    // itself is still OAuth, a Cloudflare challenge on an unrelated host is
+    // still a third-party block, and a storefront that merely runs on Shopify
+    // is not the admin.
+    check("unchanged: Google sign-in on the product → oauth", classifyGap({ text: "Sign in with Google via OAuth popup", targetOrigin: "https://joblander.app" }) === "oauth");
+    check(
+      "unchanged: Cloudflare challenge on hugedomains.com → third_party_block",
+      classifyGap({ text: "Cloudflare security verification blocking automated access (HTTP 403) on hugedomains.com", targetOrigin: "https://your-app.com" }) === "third_party_block",
+    );
+    check(
+      "a storefront page on myshopify.com is not the admin",
+      classifyGap({ text: "The product page on securify-demo.myshopify.com answered HTTP 403 to an automated check.", targetOrigin: "https://joblander.app" }) === "third_party_block",
+    );
+    check("the third-party key is CHE-309's, the ticket #283 landed on", keyFor("third_party_block") === "48076e4280e98ec6be313a3f0680b8e7", keyFor("third_party_block"));
+
+    // The key the seed writes is the key the real filer computes.
+    const seedKey = shopifyAdminDedupKey();
+    const fresh = stubWorld([SHOPIFY_283]);
+    await fileCapabilityGaps(fresh.env, "run-1", { board: fresh.board });
+    check(
+      "the filer keys the class on the seeded key",
+      fresh.filed[0]?.kind === "created" && fresh.filed[0].dedupKey === seedKey,
+      `${fresh.filed[0]?.dedupKey} vs ${seedKey}`,
+    );
+    check("the class key is its own", !Object.values(PROD_KEYS).some((p) => p.key === seedKey) && seedKey !== keyFor("third_party_block"));
+
+    // With the seeded row in place, a Shopify-admin run counts on CHE-333 and
+    // opens nothing.
+    const seeded = stubWorld([SHOPIFY_283, { ...SHOPIFY_283, label: "Sign in to the Shopify admin", observed: "accounts.shopify.com: Continue with Google" }], {
+      existing: { [seedKey]: CHE_333.identifier },
+    });
+    await fileCapabilityGaps(seeded.env, "run-1", { board: seeded.board });
+    check(
+      "with the seed, every Shopify-admin gap comments on CHE-333 and creates nothing",
+      seeded.filed.length === 1 && seeded.filed[0].kind === "commented" && seeded.filed[0].identifier === CHE_333.identifier,
+      JSON.stringify(seeded.filed),
+    );
+    check("the seed statement carries that key and CHE-333", seedSql().includes(`'${seedKey}', 'CHE-333'`));
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

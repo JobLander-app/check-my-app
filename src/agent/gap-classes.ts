@@ -42,6 +42,7 @@ export type GapClass =
   | "unpriced_journey"
   | "unfunnelled_journey"
   | "journey_rotation"
+  | "shopify_admin"
   | "unclassified";
 
 export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
@@ -116,6 +117,13 @@ export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
   undriven_control: {
     label: "Checker cannot drive a control that a person can operate by hand",
     why: "Run #159: typing into the notes field on the /check page timed out, and the run published \"the field didn't accept input\" about a field that takes a programmatic value and typed characters in an ordinary browser. Every control our hands cannot reach is either a coverage hole or, worse, a defect we invent for someone else — the walk needs a way to drive what a person can (CHE-214).",
+  },
+  // CHE-374: CHE-333 was opened by hand before this class existed, so the
+  // ticket's link row is seeded (scripts/seed-gap-link-che-333.ts) under this
+  // label's dedup key. The label is that key: changing it detaches CHE-333.
+  shopify_admin: {
+    label: "Checker cannot check an app that lives inside the Shopify admin",
+    why: "An embedded Shopify app lives in an iframe inside admin.shopify.com, behind the store owner's Shopify sign-in. Until the walk can sign in to a test store's admin and use the app there, every Shopify app's product is a page we cannot open — a whole platform of customers we cannot serve.",
   },
   unclassified: {
     label: "Checker could not verify a step for an unclassified reason",
@@ -230,9 +238,19 @@ export interface GapEvidence {
   targetOrigin?: string;
 }
 
+// CHE-374: the Shopify admin is one capability, whatever door it shows us.
+// Run #283's merchant sign-in link answered 403 from admin.shopify.com and
+// was filed as a third-party block (CHE-309); its sign-in page reads as OAuth,
+// and anything else in it as unclassified — one missing capability counted on
+// three tickets, none of them CHE-333. So the host decides first, before every
+// mechanism rule below and before the foreign-host branch.
+const SHOPIFY_ADMIN =
+  /admin\.shopify\.com|accounts\.shopify\.com|shopify admin|embedded shopify app|myshopify\.com\/admin/i;
+
 // Never null: "unclassified" is the last resort, and it still files.
 export function classifyGap(evidence: GapEvidence): GapClass {
   const text = evidence.text;
+  if (SHOPIFY_ADMIN.test(text)) return "shopify_admin";
   const textHit = TEXT_RULES.find((r) => r.match.test(text))?.cls;
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
