@@ -9,6 +9,7 @@
 // told about it again (teamRunsTheAction).
 
 import type { PrismaClient } from "@/generated/prisma/client";
+import { teamOwned } from "@/lib/tenant-db";
 
 export const ACTION_MARKETPLACE_URL = "https://github.com/marketplace/actions/checkmyapp-check-this-release";
 export const ACTION_USES = "sorokinvj/checkmyapp-action@v1";
@@ -25,7 +26,10 @@ export const ACTION_STEP_YAML = `- uses: ${ACTION_USES}
 
 /** Whether this team's checks already come from the Action — then nothing recommends it. */
 export async function teamRunsTheAction(db: PrismaClient, teamId: string): Promise<boolean> {
-  const run = await db.run.findFirst({ where: { teamId, startedVia: ACTION_STARTED_VIA }, select: { id: true } });
+  const run = await db.run.findFirst({
+    where: { ...teamOwned(teamId), startedVia: ACTION_STARTED_VIA },
+    select: { id: true },
+  });
   return run !== null;
 }
 
