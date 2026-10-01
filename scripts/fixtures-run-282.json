@@ -34,7 +34,7 @@
           "label": "Click \"Log in here\" on the password page",
           "status": "ok",
           "unverifiedReason": null,
-          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Log in here\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=1fb3bee0-d3aa-4c5c-a4e3-8c2a3664bec7&verify=1790873897-xzHUULenN25GGftB4%2Fqf%2BfISPm7I6IHpXVBWIRmimfs%3D\",\"navigated\":true,\"requests\":33,\"mutations\":2555}}]"
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"click\",\"role\":\"link\",\"name\":\"Log in here\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED\",\"navigated\":true,\"requests\":33,\"mutations\":2555}}]"
         },
         {
           "label": "Shopify admin login screen is presented",
@@ -65,7 +65,7 @@
           "label": "Open the storefront home page",
           "status": "skipped",
           "unverifiedReason": "missing_access",
-          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/collections/all\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/products.json\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"fill\",\"label\":\"Enter store password\",\"value\":\"not-the-real-store-password\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\"}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/admin\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=26a9ff72-999a-40af-bc3f-3c281c046648&verify=1790873984-yU7AzG1KBNzaJRQSPt%2BavXyEOn4IEmVI9sjtEOQqXUU%3D\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/cart\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}}]"
+          "actions": "[{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/collections/all\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/products.json\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}},{\"kind\":\"fill\",\"label\":\"Enter store password\",\"value\":\"not-the-real-store-password\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\"}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/admin\",\"outcome\":{\"urlAfter\":\"https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED\",\"status\":200}},{\"kind\":\"navigate\",\"url\":\"https://securify-demo.myshopify.com/cart\",\"outcome\":{\"urlAfter\":\"https://securify-demo.myshopify.com/password\",\"status\":200}}]"
         },
         {
           "label": "Enter the store password to get past the gate",

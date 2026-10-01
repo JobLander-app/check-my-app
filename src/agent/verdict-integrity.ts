@@ -150,6 +150,22 @@ const ACCESS_SEGMENT =
 // The first label of a host that exists to sign people in.
 const ACCESS_HOST = /^(?:auth|login|signin|sso|accounts?|id|identity)\./i;
 
+// The last two labels of a host. Not a public-suffix lookup: under a suffix
+// like co.uk it treats unrelated hosts as one owner, which only makes the
+// rule below keep more hosts as the product and fire less often — the safe
+// direction for a rule that withdraws a verdict.
+function owner(site: string): string {
+  return site.split(".").slice(-2).join(".");
+}
+
+// A sign-in provider's own host — someone else's, so its later pages are not
+// the product. accounts.shopify.com for a *.myshopify.com store is one;
+// id.example.com for example.com is the customer's own sign-in, and a page
+// reached there is theirs (review of this rule, round 1).
+function providerHost(gate: Place, targetSite: string): boolean {
+  return gate.site !== targetSite && ACCESS_HOST.test(gate.site) && owner(gate.site) !== owner(targetSite);
+}
+
 function namesAccess(gate: Place, targetSite: string): boolean {
   if (gate.path.split("/").some((seg) => ACCESS_SEGMENT.test(seg))) return true;
   return gate.site !== targetSite && ACCESS_HOST.test(gate.site);
@@ -199,14 +215,12 @@ export function accessGate(journeys: IntegrityJourney[], targetUrl: string | nul
 
   // The product lives on the target's site AND on any site it sent us to —
   // example.com redirecting to app.example.com/login puts the product on
-  // app.example.com (review, round 2) — EXCEPT a sign-in provider's own host
-  // (accounts.shopify.com, auth.example.com): its later pages are the
-  // provider's, not the product (run #282's admin login). On a product site,
-  // a gate is the only place we may have been.
+  // app.example.com (review, round 2) — EXCEPT a third-party sign-in
+  // provider's host (accounts.shopify.com for a myshopify.com store): its
+  // later pages are the provider's, not the product (run #282's admin login).
+  // On a product site, a gate is the only place we may have been.
   const productSites = new Set([target.site]);
-  for (const g of gates) {
-    if (!(g.site !== target.site && ACCESS_HOST.test(g.site))) productSites.add(g.site);
-  }
+  for (const g of gates) if (!providerHost(g, target.site)) productSites.add(g.site);
   const gateKeys = new Set(gates.map((g) => g.key));
   for (const p of landings) if (productSites.has(p.site) && !gateKeys.has(p.key)) return null;
 

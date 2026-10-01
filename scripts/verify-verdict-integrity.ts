@@ -28,7 +28,9 @@
 // Run #272 (joblander.app) is the negative it must not touch:
 // needs_attention with zero findings of its own, a re-check that carries
 // journeys forward, with a real login redirect AND public pages reached.
-// `fixtures-run-272.json` is that run from D1.
+// `fixtures-run-272.json` is that run from D1. Signed sign-in tokens in a
+// URL's query are replaced with REDACTED: the rule reads no query, and a live
+// login signature has no place in source control.
 //
 // Pure: no database, no model. Every case is the exact shape the workflow
 // hands judgeVerdictIntegrity. To see what the rules would do to recent
@@ -112,7 +114,9 @@ const RUN_281: Journey[] = [
         trail(
           click(
             "Log in here",
-            "https://accounts.shopify.com/lookup?rid=0c358f68-68e8-4816-9c10-27f531c84aad&verify=1790871311-bnLkLuIdRSxeQ6eir93XzYPzrp9vo%2BaLJ9ECl6ilQGs%3D",
+            // Query redacted: it was a live signed Shopify login token, and
+            // the rule never reads a query.
+            "https://accounts.shopify.com/lookup?rid=REDACTED&verify=REDACTED",
           ),
         ),
       ),
@@ -299,6 +303,37 @@ console.log("\n— left alone: something behind or beside the gate was really ve
   const fresh = RUN_272.journeys.filter((j) => j.carriedFromRunId === null);
   const f = judgeVerdictIntegrity(fresh, [], { verdict: "needs_attention", bottomLine: null }, RUN_272.targetUrl);
   check("…its fresh journeys alone still reached public pages → stays needs_attention", f.verdict === "needs_attention", f.verdict);
+}
+
+{
+  // Review of this rule, round 1: id.example.com is the customer's own
+  // sign-in, not a third party's. A page reached there is the product.
+  const site = "https://example.com";
+  const own = "https://id.example.com";
+  const ownSignIn = (extra: Step[]): Journey[] =>
+    [1, 2].map((n) => ({
+      title: `Journey ${n}`,
+      status: "partial",
+      steps: [ok("Open the app", trail(nav(`${site}/app`, `${own}/sign-in`))), ...extra, gated("Sign in")],
+    }));
+  const pricing = judgeVerdictIntegrity(
+    ownSignIn([ok("Read pricing", trail(click("Pricing", `${own}/pricing`)))]),
+    [],
+    { verdict: "all_good", bottomLine: null },
+    `${site}/`,
+  );
+  check("a page reached on the customer's own id.* subdomain → stays all_good", pricing.verdict === "all_good", pricing.verdict);
+
+  const onlyGate = judgeVerdictIntegrity(ownSignIn([]), [], { verdict: "all_good", bottomLine: null }, `${site}/`);
+  check("…while only its sign-in page reached → unverified", onlyGate.verdict === "unverified", onlyGate.verdict);
+}
+
+{
+  // Fixtures come from production and land in source control.
+  for (const name of ["fixtures-run-282.json", "fixtures-run-272.json"]) {
+    const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
+    check(`${name} carries no live sign-in token`, !/verify=(?!REDACTED)/.test(text));
+  }
 }
 
 {

@@ -101,7 +101,11 @@ if (dump) {
   const byJourney = new Map<string, { title: string; status: string; carriedFromRunId: string | null; steps: unknown[] }>();
   for (const s of steps) {
     const j = byJourney.get(s.jid) ?? { title: s.title, status: s.js, carriedFromRunId: s.carried, steps: [] };
-    if (s.ss !== null) j.steps.push({ label: s.label, status: s.ss, unverifiedReason: s.ur, actions: s.actions });
+    // A fixture lands in source control: a URL's query can carry a signed
+    // sign-in token (accounts.shopify.com's `verify`), and no rule reads a
+    // query, so every query is redacted on the way out.
+    const actions = s.actions?.replace(/(https?:\/\/[^"\\?\s]+)\?[^"\\\s]*/g, "$1?REDACTED") ?? null;
+    if (s.ss !== null) j.steps.push({ label: s.label, status: s.ss, unverifiedReason: s.ur, actions });
     byJourney.set(s.jid, j);
   }
   console.log(
