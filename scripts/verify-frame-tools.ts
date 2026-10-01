@@ -23,8 +23,10 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-frame-tools.ts
 
-import { chromium, type Browser, type Page } from "playwright";
-import { errorResponseIn, executeTool, isTargetHost, prepareAgentPage, type ToolEnv } from "@/agent/tools";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { replayJourney } from "@/agent/journey-replay";
+import type { AgentEnv } from "@/agent/env";
+import { errorResponseIn, executeTool, isAllowedOrigin, isTargetHost, prepareAgentPage, type ToolEnv } from "@/agent/tools";
 import { shouldAnnounceSelfCheck } from "@/agent/self-hosts";
 import { allowedOriginsBlock, walkingSystem } from "@/agent/instructions";
 import {
@@ -63,7 +65,8 @@ const PAGES: Record<string, string> = {
     <label for="email">Store email</label><input id="email" type="email">`,
   [`${LOGIN}/`]: `<!doctype html><title>Vendor login</title>
     <h2>Vendor sign-in</h2>
-    <label for="pw">Password</label><input id="pw" type="password">`,
+    <label for="pw">Password</label><input id="pw" type="password">
+    <button onclick="document.body.dataset.touched='yes'">Vendor help</button>`,
   [`${PIXEL}/`]: `<!doctype html><button>Track me</button>`,
   [`${CHALLENGE}/`]: `<!doctype html><h2>Verify you are human</h2><label for="cb">I am human</label><input id="cb" type="checkbox" onclick="document.body.dataset.touched='yes'">`,
 };
@@ -86,7 +89,7 @@ async function launch(): Promise<Browser> {
 const SECRET_EMAIL = "owner-test@example.test";
 const SECRET_PASSWORD = "s3cret-frame-pass";
 
-async function freshEnv(browser: Browser, allowedOrigins?: string[]): Promise<ToolEnv & { page: Page }> {
+async function routedContext(browser: Browser): Promise<BrowserContext> {
   const context = await browser.newContext();
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -94,6 +97,11 @@ async function freshEnv(browser: Browser, allowedOrigins?: string[]): Promise<To
     if (body === undefined) return route.fulfill({ status: 404, body: "not found" });
     return route.fulfill({ status: 200, contentType: "text/html", body });
   });
+  return context;
+}
+
+async function freshEnv(browser: Browser, allowedOrigins?: string[]): Promise<ToolEnv & { page: Page }> {
+  const context = await routedContext(browser);
   const page = await context.newPage();
   const env = {
     page,
@@ -138,6 +146,23 @@ async function main() {
     JSON.stringify(parseAllowedOrigins(JSON.stringify([APP, "http://evil.test", 7, "https://checkmyapp.dev"]))) === JSON.stringify([APP]),
   );
   check("an unparsable column reads as no origins", parseAllowedOrigins("{not json").length === 0);
+
+  // Our staging/preview hosts come from the SELF_CHECK_HOSTS binding, which the
+  // web app cannot see when the list is saved — the run refuses them itself.
+  const staging = "https://preview.cma-staging.test";
+  check("a SELF_CHECK_HOSTS host passes the save-time check (it cannot see the binding)", normalizeAllowedOrigin(staging) === staging);
+  check(
+    "isAllowedOrigin: an allowed origin that is one of our SELF_CHECK_HOSTS is refused at run time",
+    !isAllowedOrigin({ targetOrigin: TOP, allowedOrigins: [staging, APP], selfCheckHosts: "cma-staging.test" }, staging),
+  );
+  check(
+    "isAllowedOrigin: …while the other allowed origins stay allowed",
+    isAllowedOrigin({ targetOrigin: TOP, allowedOrigins: [staging, APP], selfCheckHosts: "cma-staging.test" }, APP),
+  );
+  check(
+    "isAllowedOrigin: our own target is still our target (the self-check)",
+    isAllowedOrigin({ targetOrigin: "https://checkmyapp.dev", allowedOrigins: [] }, "https://checkmyapp.dev"),
+  );
 
   check("isTargetHost: the target", isTargetHost("admin.shop.test", TOP));
   check("isTargetHost: an allowed origin's host", isTargetHost("app.embedded.test", TOP, [APP]));
@@ -193,6 +218,8 @@ async function main() {
       check("read_page: …and its text", digest.includes("Report not opened"));
       check("read_page: the page itself reads as before", digest.startsWith(`URL: ${TOP}/`) && digest.includes('"Admin menu"'));
       check("read_page: a third party's frame is labelled with its own origin", digest.includes(`FRAME 2 (origin ${LOGIN}, name vendor-login)`));
+      check("read_page: …and as read only", digest.includes(`FRAME 2 (origin ${LOGIN}, name vendor-login) — outside the target app: read only`));
+      check("read_page: the allowed frame says it can be acted in", digest.includes(`name app-iframe) — click/fill inside it with frame "1"`));
       check("read_page: a 1×1 tracking frame is left out", !digest.includes("Track me"));
       check("read_page: a bot-protection frame is never read", !digest.includes("Verify you are human") && !digest.includes("I am human"));
 
@@ -209,6 +236,18 @@ async function main() {
       check("click: found inside the frame and pressed", clicked.startsWith(`Clicked inside FRAME 1 (${APP})`), clicked.slice(0, 120));
       check("click: the frame's reaction is measured (not 'did not react')", !clicked.includes("did not react AT ALL"), clicked);
       check("click: the app really changed", (await appFrame(env.page).textContent("#status")) === "Report ready");
+      const trail = (env.actionTrail ?? []) as Array<{ kind: string; frame?: string }>;
+      check("click: the recorded action names its frame, for a replay", trail.at(-1)?.kind === "click" && trail.at(-1)?.frame === "app-iframe", JSON.stringify(trail.at(-1)));
+
+      // A third party's frame is read, never acted in — searched or named.
+      const vendorClick = await executeTool(env, "click", { role: "button", name: "Vendor help" });
+      check("click: a control only in a third party's frame is refused", vendorClick.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorClick);
+      const vendorNamed = await executeTool(env, "click", { role: "button", name: "Vendor help", frame: "vendor-login" });
+      check("click: …named explicitly, refused too", vendorNamed.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorNamed);
+      check("click: …and nothing was pressed there", (await loginFrame(env.page).evaluate(() => document.body.dataset.touched ?? "no")) === "no");
+      const vendorFill = await executeTool(env, "fill", { label: "Password", value: "not a secret" });
+      check("fill: plain text is refused in a third party's frame too", vendorFill.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorFill);
+      check("fill: …nothing typed", (await loginFrame(env.page).inputValue("#pw")) === "");
 
       const onTop = await executeTool(env, "click", { role: "button", name: "Admin menu" });
       check("click: a control on the page resolves on the page, as before", onTop.startsWith("Clicked (strategy"), onTop.slice(0, 80));
@@ -230,10 +269,11 @@ async function main() {
       check("fill: …substituted server-side", (await appFrame(env.page).inputValue("#email")) === SECRET_EMAIL);
 
       const stolen = await executeTool(env, "fill", { label: "Password", value: "{{TEST_PASSWORD}}" });
-      check("fill: a credential is refused in a frame from a non-allowed origin", stolen.startsWith(`Refused: will not enter test credentials on ${LOGIN}/`), stolen);
+      check("fill: a credential is refused in a frame from a non-allowed origin", stolen.startsWith("Refused:") && stolen.includes(LOGIN), stolen);
       check("fill: …and nothing was typed there", (await loginFrame(env.page).inputValue("#pw")) === "");
       const stolenNamed = await executeTool(env, "fill", { label: "Password", value: "{{TEST_PASSWORD}}", frame: "2" });
-      check("fill: …named explicitly, still refused", stolenNamed.startsWith("Refused: will not enter test credentials"), stolenNamed);
+      check("fill: …named explicitly, still refused", stolenNamed.startsWith("Refused:") && stolenNamed.includes(LOGIN), stolenNamed);
+      check("fill: …still nothing typed", (await loginFrame(env.page).inputValue("#pw")) === "");
 
       // navigate
       const toApp = await executeTool(env, "navigate", { url: `${APP}/` });
@@ -243,14 +283,63 @@ async function main() {
       await env.page.context().close();
     }
 
+    // A replay acts in the frame the walk acted in (journey-replay.ts). The
+    // second step names a frame that is not there: replayed in it, the click
+    // has nowhere to land; replayed without it, "Admin menu" on the page would
+    // be pressed and the step would count as reproduced.
+    {
+      const agentEnv = {
+        db: { run: { findUnique: async () => ({ credentialsRejected: false }), update: async () => ({}) } },
+      } as unknown as AgentEnv;
+      const result = await replayJourney(
+        agentEnv,
+        browser as unknown as Parameters<typeof replayJourney>[1],
+        { id: "run_frames", targetUrl: `${TOP}/`, allowedOrigins: JSON.stringify([APP]) },
+        {
+          id: "journey_frames",
+          title: "Open the app's report",
+          steps: [
+            {
+              order: 0,
+              label: "Open the report inside the app",
+              actions: JSON.stringify([
+                { kind: "navigate", url: `${TOP}/`, outcome: { urlAfter: `${TOP}/`, status: 200 } },
+                { kind: "click", role: "button", name: "Open report", frame: "app-iframe", outcome: { urlAfter: `${TOP}/`, navigated: false, requests: 0, mutations: 1 } },
+              ]),
+            },
+            {
+              order: 1,
+              label: "A control in a frame that is gone",
+              actions: JSON.stringify([
+                { kind: "click", role: "button", name: "Admin menu", frame: "gone-frame", outcome: { urlAfter: `${TOP}/`, navigated: false, requests: 0, mutations: 1 } },
+              ]),
+            },
+          ],
+        },
+        async (b) =>
+          (await routedContext(b as unknown as Browser)) as unknown as Awaited<ReturnType<Parameters<typeof replayJourney>[4]>>,
+      );
+      const [first, second] = result.steps;
+      check("replay: the click recorded in a frame is replayed in it", first?.status === "ok", JSON.stringify(first));
+      check(
+        "replay: a recorded frame is honoured, not searched around — and its absence is not a reproduction",
+        second?.status === "diverged" && (second?.detail ?? "").includes('No frame matches "gone-frame"'),
+        JSON.stringify(second),
+      );
+      check("replay: …so the journey is not reproduced", result.status === "diverged", result.status);
+    }
+
     // No allowed origins: exactly the single-origin rules of before.
     {
       const env = await freshEnv(browser);
       const nav = await executeTool(env, "navigate", { url: `${APP}/` });
       check("default: navigate to the frame's origin is refused, as before", nav.startsWith(`Refused: ${APP} is outside the target app`), nav);
       const cred = await executeTool(env, "fill", { label: "Store email", value: "{{TEST_EMAIL}}" });
-      check("default: no credential into a frame of another origin", cred.startsWith(`Refused: will not enter test credentials on ${APP}/`), cred);
+      check("default: no credential into a frame of another origin", cred.startsWith("Refused:") && cred.includes(APP), cred);
       check("default: …nothing typed", (await appFrame(env.page).inputValue("#email")) === "");
+      const plain = await executeTool(env, "click", { role: "button", name: "Open report" });
+      check("default: a frame of another origin is read only", plain.startsWith(`Refused: FRAME 1 (${APP}) is outside the target app`), plain);
+      check("default: …the app untouched", (await appFrame(env.page).textContent("#status")) === "Report not opened");
       await env.page.context().close();
     }
   } finally {
