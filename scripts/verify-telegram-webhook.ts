@@ -266,19 +266,69 @@ check("the message text never reaches the log", !logged.some((l) => l.includes(P
 // and a send that fails takes it back. Run against the real migration in
 // SQLite, so the statements themselves are under test too.
 {
-  const { DatabaseSync } = await import("node:sqlite");
   const { sendRecorded } = await import("@/lib/telegram-send");
   const migrationFile = readdirSync("prisma/migrations").find((f) => /CREATE TABLE "TelegramMessage"/.test(readFileSync(`prisma/migrations/${f}`, "utf8")));
+  // node:sqlite exists from Node 22.5; package.json allows Node 20 (Codex
+  // review of #221). There the statements are read by a small interpreter of
+  // the three shapes the flow uses, so the flow is still under test.
+  let sqliteModule: typeof import("node:sqlite") | null = null;
+  try {
+    sqliteModule = await import("node:sqlite");
+  } catch {
+    console.log("NOTE  node:sqlite is not available on this Node; tg-send statements are read by the fallback interpreter");
+  }
+
+  type Table = { run(sql: string, params: unknown[]): void; all(): Row[] };
+  function realTable(): Table {
+    const sqlite = new sqliteModule!.DatabaseSync(":memory:");
+    sqlite.exec(readFileSync(`prisma/migrations/${migrationFile}`, "utf8"));
+    return {
+      run: (sql, params) => void sqlite.prepare(sql).run(...(params as (string | number | null)[])),
+      all: () => sqlite.prepare(`SELECT * FROM "TelegramMessage"`).all() as Row[],
+    };
+  }
+  function interpretedTable(): Table {
+    const rows: Row[] = [];
+    const cols = (list: string) => list.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    return {
+      run(sql, params) {
+        const queue = [...params];
+        const value = (token: string) => {
+          const t = token.trim();
+          if (t === "?") return queue.shift() ?? null;
+          if (t === "NULL") return null;
+          if (/^'.*'$/.test(t)) return t.slice(1, -1);
+          return Number(t);
+        };
+        let m: RegExpExecArray | null;
+        if ((m = /^INSERT INTO "TelegramMessage" \(([^)]*)\) VALUES \(([^)]*)\)$/.exec(sql.trim()))) {
+          const names = cols(m[1]);
+          const values = m[2].split(",").map(value);
+          if (names.length !== values.length) throw new Error("column/value count mismatch");
+          rows.push(Object.fromEntries(names.map((n, i) => [n, values[i]])));
+        } else if ((m = /^UPDATE "TelegramMessage" SET (.*) WHERE "id" = \?$/.exec(sql.trim()))) {
+          const sets = m[1].split(",").map((s) => [s.split("=")[0].trim().replace(/^"|"$/g, ""), value(s.split("=")[1])] as const);
+          const id = queue.shift();
+          for (const r of rows.filter((x) => x.id === id)) for (const [k, v] of sets) r[k] = v;
+        } else if (/^DELETE FROM "TelegramMessage" WHERE "id" = \?$/.test(sql.trim())) {
+          const id = queue.shift();
+          rows.splice(0, rows.length, ...rows.filter((x) => x.id !== id));
+        } else {
+          throw new Error(`fallback interpreter does not know this statement: ${sql.slice(0, 60)}`);
+        }
+      },
+      all: () => rows,
+    };
+  }
 
   function harness(opts: { telegramOk?: boolean; telegramThrows?: boolean; d1DownAfterSend?: boolean; d1Down?: boolean } = {}) {
-    const sqlite = new DatabaseSync(":memory:");
-    sqlite.exec(readFileSync(`prisma/migrations/${migrationFile}`, "utf8"));
+    const table = sqliteModule ? realTable() : interpretedTable();
     const state = { sentCalls: 0 };
     let n = 0;
     const deps = {
       d1: async (sql: string, params: unknown[]) => {
         if (opts.d1Down || (opts.d1DownAfterSend && state.sentCalls > 0)) throw new Error("D1 unavailable");
-        sqlite.prepare(sql).run(...(params as (string | number | null)[]));
+        table.run(sql, params);
       },
       sendMessage: async (chatId: string, text: string) => {
         state.sentCalls++;
@@ -289,8 +339,7 @@ check("the message text never reaches the log", !logged.some((l) => l.includes(P
       newId: () => `out-${++n}`,
       now: () => new Date(DATE * 1000 + 5000),
     };
-    const rows = () => sqlite.prepare(`SELECT * FROM "TelegramMessage"`).all() as Row[];
-    return { deps, state, rows };
+    return { deps, state, rows: () => table.all() };
   }
   const tricky = `it's; DROP TABLE "TelegramMessage"; -- ${PRIVATE}`;
 
