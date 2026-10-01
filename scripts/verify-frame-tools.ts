@@ -23,6 +23,7 @@
 // (GitHub's ubuntu runners carry one). Neither is a FAIL, never a skip.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-frame-tools.ts
+//        FRAME_TOOLS_CHANNEL=chrome … to run it on the system Chrome, as CI does
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -119,6 +120,11 @@ const PAGES: Record<string, string> = {
 };
 
 async function launch(): Promise<Browser> {
+  // CI has no Playwright build and runs the system Chrome, which is newer and
+  // does not treat every frame the same way (see the sandboxed frame below).
+  // FRAME_TOOLS_CHANNEL=chrome runs this on that browser from a desk.
+  const channel = process.env.FRAME_TOOLS_CHANNEL;
+  if (channel) return chromium.launch({ channel });
   try {
     return await chromium.launch();
   } catch (bundled) {
@@ -597,9 +603,21 @@ async function main() {
         editorKey,
       );
       check("srcdoc frame: …and nothing was written", (await editor?.inputValue("#e")) === "");
-      const sandboxed = await executeTool(env, "fill", { label: "Sandbox key", value: "{{TEST_PASSWORD}}", frame: "sandboxed" });
-      const box = env.page.frames().find((f) => f.name() === "sandboxed");
-      check("sandboxed frame: a credential is refused (opaque origin)", sandboxed.startsWith("Refused:"), sandboxed);
+      // Found by its field, not by its name: Chrome 154 (the system Chrome CI
+      // runs this on) puts a sandboxed frame in a process of its own, and
+      // Playwright then holds neither a name nor an address for it — picked as
+      // frame "sandboxed" it was "No frame matches" there and found here.
+      const sandboxed = await executeTool(env, "fill", { label: "Sandbox key", value: "{{TEST_PASSWORD}}" });
+      let box: Frame | undefined;
+      for (const frame of env.page.frames()) {
+        if ((await frame.locator("#k").count().catch(() => 0)) > 0) box = frame;
+      }
+      check("fixture: the sandboxed frame is on the page", box !== undefined);
+      check(
+        "sandboxed frame: a credential is refused (opaque origin)",
+        sandboxed.startsWith("Refused: will not enter test credentials on an embedded document with no address of its own"),
+        sandboxed,
+      );
       check("sandboxed frame: …and nothing was written", (await box?.inputValue("#k")) === "");
       await env.page.context().close();
     }
