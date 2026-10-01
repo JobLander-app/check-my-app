@@ -39,8 +39,9 @@ export const LIVE_RUN_STATUSES = RUN_STATUSES.filter(status => RUN_STATUS_KIND[s
 export const TERMINAL_RUN_STATUSES = RUN_STATUSES.filter(status => RUN_STATUS_KIND[status] === "terminal");
 
 // "unverified" is off the good→bad axis: the run finished but walked nothing,
-// so we have no opinion to give. Only the workflow's coverage guard sets it —
-// synthesis never picks it (CHE-42).
+// or walked only the access gate in front of the product (CHE-365), so we have
+// no opinion to give. Only the workflow's coverage guard sets it — synthesis
+// never picks it (CHE-42).
 export type Verdict = "all_good" | "mostly_ok" | "needs_attention" | "broken" | "unverified";
 
 export type StepStatus =

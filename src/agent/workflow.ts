@@ -55,6 +55,7 @@ import {
 import { orderByFocus } from "./limits";
 import { parseActions, replayJourney, type ReplayResult } from "./journey-replay";
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
+import { judgeVerdictIntegrity, type IntegrityResult } from "./verdict-integrity";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
 import {
@@ -1506,68 +1507,26 @@ async function notifyAndRecord(
   return notifyOutcomeCode(outcome);
 }
 
-// ─── Verdict integrity (CHE-42) ──────────────────────────────────────────────
-// Two rules the synthesis prompt asks for and this code then enforces, because
-// a prompt is a request and a verdict is a promise:
-//
-//   1. Zero coverage is never a pass. Run #19 walked nothing and still shipped
-//      "all good" — a run that verified nothing gets "unverified", full stop.
-//   2. "Broken" needs a body. Run #20 called an app broken off eight risky /
-//      confusing / polish findings; without a broken/exposed finding or an
-//      observed broken/exposed step, it downgrades to "needs attention".
-//
-// Both rewrite bottomLine too — a corrected pill over uncorrected prose would
-// just move the contradiction one line down.
+// ─── Verdict integrity (CHE-42, CHE-365) ─────────────────────────────────────
+// The rules — zero coverage is never a pass, walking only the access gate is
+// zero coverage too, "broken" needs a body — live in ./verdict-integrity.ts,
+// pure so scripts/verify-verdict-integrity.ts tests what runs. This loads what
+// they read.
 
 async function checkVerdictIntegrity(
   env: AgentEnv,
   runId: string,
   synth: { verdict: Verdict; bottomLine: string | null },
-): Promise<{ verdict: Verdict; bottomLine: string | null; note: string | null }> {
+): Promise<IntegrityResult> {
   const journeys = await env.db.journey.findMany({
     where: { runId },
-    select: { status: true, steps: { select: { status: true } } },
+    select: { status: true, steps: { select: { status: true, unverifiedReason: true } } },
   });
   const findings = await env.db.finding.findMany({
     where: { runId },
     select: { category: true, severity: true },
   });
-
-  const walked = journeys.filter((j) => j.status !== "skipped");
-  if (walked.length === 0) {
-    // The model wrote its bottom line believing its verdict would stand, so it
-    // is demoted to an outside observation rather than dropped or left to
-    // contradict the coverage sentence.
-    return {
-      verdict: "unverified",
-      bottomLine:
-        "We couldn't verify anything this run — no user journey was walked, so read this as " +
-        "zero coverage, not a clean bill of health." +
-        (synth.bottomLine ? ` What we saw from the outside: ${synth.bottomLine}` : ""),
-      note: `Zero journeys walked — verdict recorded as Not verified, not ${synth.verdict}`,
-    };
-  }
-
-  // Findings are the adjudicated evidence (synthesis re-reads every step with
-  // full context); step labels alone don't qualify — run #28's background
-  // analytics 401 was step-labeled broken while every user journey worked.
-  // Security exposures need HIGH severity to carry a broken verdict (run #29's
-  // by-design medium exposure painted a working product broken).
-  if (synth.verdict === "broken") {
-    const evidence = findings.some(
-      (f) => f.category === "broken" || (f.category === "exposed" && f.severity === "high"),
-    );
-    if (!evidence) {
-      return {
-        verdict: "needs_attention",
-        bottomLine:
-          sentence(synth.bottomLine ?? "Nothing we walked failed outright") +
-          " Downgraded from Broken: no direct breakage evidence was captured.",
-        note: "Verdict downgraded from Broken — nothing we observed actually broke",
-      };
-    }
-  }
-  return { verdict: synth.verdict, bottomLine: synth.bottomLine, note: null };
+  return judgeVerdictIntegrity(journeys, findings, synth);
 }
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was
@@ -1577,12 +1536,6 @@ async function checkVerdictIntegrity(
 function surveyedUrls(survey: SurveyOutcome | null | undefined): string[] {
   const pages = survey?.snapshot?.pages ?? [];
   return pages.flatMap((p) => [p.url, p.path]);
-}
-
-// Close a model-written line so a clause can be appended after it.
-function sentence(text: string): string {
-  const trimmed = text.trim();
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 // ─── Outbound integrations (CHE-53) ──────────────────────────────────────────
