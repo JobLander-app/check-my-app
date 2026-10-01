@@ -24,6 +24,7 @@ import { resolveApiKeyGrant } from "@/lib/apiKeys";
 import type { UserPlan } from "@/lib/enums";
 import { latestResults } from "@/lib/latest-results";
 import { loadPlanStatus } from "@/lib/plan-status";
+import { teamRunsTheAction } from "@/lib/release-action";
 import { can, type TeamScope } from "@/lib/scopes";
 import { activeTeamContext } from "@/lib/teams";
 import { buildInstructions } from "./instructions";
@@ -104,6 +105,7 @@ export async function handleMcpRequest(req: Request, deps: McpDeps): Promise<Res
         caller.team.name,
         await latestResults(deps.db, caller.team.id),
         await loadPlanStatus(deps.db, { id: caller.team.id, plan: caller.team.plan as UserPlan }, deps.origin, new Date(deps.now())),
+        await teamRunsTheAction(deps.db, caller.team.id),
       )
     : undefined;
 

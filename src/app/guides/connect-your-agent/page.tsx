@@ -171,6 +171,10 @@ export default function ConnectAgentGuide() {
               <A href="/guides/login-and-test-accounts">Checking pages behind a login</A> and{" "}
               <A href="/guides/scenarios">Your own scenarios</A>.
             </>,
+            <>
+              To have every deploy checked without anyone asking, see{" "}
+              <A href="/guides/check-every-release">Check every release</A>.
+            </>,
           ]}
         />
       </Note>
