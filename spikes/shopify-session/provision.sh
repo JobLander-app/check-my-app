@@ -75,6 +75,10 @@ install -d -m 0700 /etc/cloudflared
 install -m 0644 "$SRC"/systemd/*.service "$SRC"/systemd/*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer
+# websockify chdirs into its web root at start; the copy above replaced that
+# directory, so a running websockify would answer every request with ENOENT.
+# Chrome is deliberately NOT restarted: it holds the owner's session.
+systemctl restart session-novnc
 if [ -s /etc/cloudflared/tunnel.env ]; then
   systemctl enable --now session-cloudflared
   systemctl restart session-cloudflared
