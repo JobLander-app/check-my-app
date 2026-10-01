@@ -2,21 +2,36 @@
 //
 // The owner's question: "how many problems keep recurring because nobody fixes
 // them?" Findings are grouped across an app's finished checks by their
-// signature (src/lib/finding-signature.ts), which survives rewording.
+// signature (src/lib/finding-signature.ts), which survives rewording. A "page"
+// or "req" signature is only a bucket — one page holds many problems, one
+// failing request is cited by many findings — so inside it a finding joins the
+// group whose latest finding its title says the same thing as (sameProblem),
+// and otherwise starts its own.
 //
 // "Absent from the latest check" does not mean fixed: a partial check walks
-// some journeys and carries the rest (#280 walked 4 of 12). So a problem is
-// gone only once the checks after its latest sighting have walked again every
-// journey it could have come from, and none of them saw it:
-//   - anchored (Finding.anchor.stepRef): the journey of its latest sighting;
-//   - not anchored (rows from before CHE-215): every journey its latest
-//     sighting's check walked, since it came from one of them — re-walked
-//     across any number of later checks, not necessarily in one.
-// A check "walked" a journey when the journey was not carried forward and not
-// skipped — the same test reconcile uses before it verifies a fix. A journey
-// the app retired (AppJourney.retiredAt) will never be walked again and stops
-// being waited for from the first check after its retirement. A quick check
-// lists no journeys and says nothing either way.
+// some journeys and carries the rest (#280 walked 4 of 12), and a walked
+// journey can still skip the very step a problem was on. So a problem is gone
+// only once the checks after its latest sighting have looked again where it
+// was seen, and none of them saw it:
+//   - anchored (Finding.anchor.stepRef): its journey, walked again through the
+//     steps its own walk executed up to the anchored one — none of them
+//     carried, none skipped. Positions, because step labels are reworded from
+//     walk to walk (lookedAgainAt);
+//   - not anchored (rows from before CHE-215): every journey its check walked,
+//     each looked at again — any step executed — across any number of later
+//     checks. We never knew which step it came from, and journeys that old
+//     have changed shape since;
+//   - a sighting whose check walked nothing gives no journey to wait for; the
+//     first later check that walked anything is its second look, and a check
+//     that carried or skipped everything is none.
+// A journey the app retired (AppJourney.retiredAt) will never be walked again
+// and stops being waited for from the first check after its retirement. So
+// does a journey that is not in the app's catalog at all any more (checks from
+// before CHE-231 named journeys by title, a new set every run), from the first
+// later check that does not list it. A journey that IS in the catalog and is
+// merely missing from a check's list is NOT released: until CHE-331 a full or
+// on-demand check listed only the journeys it walked (src/agent/partial.ts
+// knownJourneysToList).
 //
 // A problem that was gone and then seen again starts a new streak; first seen
 // and times seen describe the latest streak only.
@@ -31,22 +46,24 @@
 // Its marks and tickets still count: the owner may have triaged the copy.
 //
 // States, first match wins:
-//   not_a_bug — marked false_positive, or its ticket was Canceled (IssueLink
-//               "suppressed", tied to the issue by IssueLink.findingId, or for
-//               a pre-CHE-103 customer ticket by pointLegacyLinks — a link no
-//               finding produces is our own ticket and is never listed);
-//   gone      — walked again and absent;
-//   known     — marked known ("that's fine"), or marked fixed on its latest
-//               sighting while no check has looked again yet;
-//   recurring — seen in two or more checks and still there at the latest look;
+//   not_a_bug — marked false_positive, or a ticket of it Canceled (IssueLink
+//               "suppressed"), anywhere in its history: a ruling about the
+//               problem, not about one streak. A ticket is tied to it through
+//               IssueLink.findingId, or for a pre-CHE-103 customer ticket by
+//               pointLegacyLinks; a link no finding produces is our own ticket
+//               and is never listed;
+//   gone      — looked at again (above) and absent;
+//   known     — in the current streak: marked known ("that's fine"), or marked
+//               fixed on its latest sighting while nothing has looked again;
+//   recurring — seen in two or more checks of the current streak, still there;
 //   new       — seen once and still there.
 //
 // recurrence() is pure so scripts/verify-finding-signature.ts can feed it the
-// real meetbashar fixture; recurringByApp() loads a team's apps into it.
+// real meetbashar fixture through toRecurrenceRun; recurringByApp() loads a
+// team's apps into it.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import { dedupKey } from "@/lib/dedup";
-import { findingSignature, signatureKind, targetOf } from "@/lib/finding-signature";
+import { findingSignature, sameProblem, signatureKind, titleSimilarity, SAME_PROBLEM } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -76,13 +93,19 @@ export interface RecurrenceFinding {
   signature: string | null;
 }
 
+export interface RecurrenceJourney {
+  identity: string;
+  // Copied forward from an earlier check: this check did not look at it.
+  carried: boolean;
+  // Step statuses in step order ("ok", "broken", "skipped", …).
+  steps: string[];
+}
+
 export interface RecurrenceRun {
   runNumber: number;
   // In journey order — Finding.anchor.stepRef.journeyIndex indexes this, as it
   // indexed the journeys persistFindings loaded.
-  // carried: copied forward from an earlier check. walked: not carried and not
-  // skipped — this check looked at it.
-  journeys: Array<{ identity: string; carried: boolean; walked: boolean }>;
+  journeys: RecurrenceJourney[];
   findings: RecurrenceFinding[];
 }
 
@@ -98,19 +121,52 @@ export interface RecurrenceLink {
 
 export interface Recurrence {
   issue: RecurringIssue;
-  // The first check after the latest sighting that walked where it was seen.
-  // Null while nothing has looked again.
+  // The first check by which everything the latest sighting could have come
+  // from had been looked at again. Null while it has not.
   goneSinceRunNumber: number | null;
+  // The findings of the current streak, oldest first — what "seen N times"
+  // counts, so a page can link each one and a reader can check the grouping.
+  sightings: Array<{ runNumber: number; findingId: string; title: string }>;
 }
 
 type SignatureOf = (f: RecurrenceFinding, appSlug: string) => string;
 
 const storedOrComputed: SignatureOf = (f, appSlug) => f.signature ?? findingSignature({ appSlug, ...f });
 
+// The step positions a walk executed (not skipped), up to `upTo` when given.
+function executed(j: RecurrenceJourney, upTo?: number): number[] {
+  const out: number[] = [];
+  j.steps.forEach((s, i) => {
+    if (s !== "skipped" && (upTo === undefined || i <= upTo)) out.push(i);
+  });
+  return out;
+}
+
+// Did this journey row look again at what an earlier walk looked at — execute
+// every one of these step positions itself, none carried, none skipped? "What
+// the earlier walk looked at", not "every step": some journeys have a step no
+// walk ever takes (checkmyapp.dev's "Check an app by URL" skips its fourth step
+// in every check), and demanding it would keep a finding open for good.
+// A walk shorter than a position answers with its own last step (meetbashar
+// #275 checked the Holotope guide's links in step 0 of 3; #267 had found them
+// dead in step 3).
+//
+// "any" is for a finding with no anchor (rows from before CHE-215): we never
+// knew which step it came from, and journeys of that age have since changed
+// shape, so step positions would be pretence. Any step of the journey executed
+// again counts as a second look.
+export function lookedAgainAt(j: RecurrenceJourney, positions: number[] | "any"): boolean {
+  if (j.carried || j.steps.length === 0) return false;
+  if (positions === "any") return j.steps.some((s) => s !== "skipped");
+  return positions.length > 0 && positions.every((p) => j.steps[Math.min(p, j.steps.length - 1)] !== "skipped");
+}
+
 interface Sighting {
   run: RecurrenceRun;
   finding: RecurrenceFinding;
-  journey: string | null;
+  // The journey row the finding is anchored to, in its own check.
+  journey: RecurrenceJourney | null;
+  stepIndex: number | null;
 }
 
 export function recurrence(
@@ -123,98 +179,121 @@ export function recurrence(
     // journey was retired (AppJourney.retiredAt). From that check on it is no
     // longer waited for.
     retiredSince?: Map<string, number>;
+    // The journeys the app has today (AppJourney ids, not retired). A journey
+    // identity outside it can never be walked again: checks from before the
+    // catalog (CHE-231) named their journeys by title, a new set every run.
+    // Without this, a finding of run #29 waits for those titles forever and
+    // reads as "recurring" a hundred checks later (checkmyapp.dev listed
+    // "Clerk loaded with development keys" that way on 2026-10-02).
+    liveJourneys?: Set<string>;
   } = {},
 ): Recurrence[] {
   const signatureOf = opts.signatureOf ?? storedOrComputed;
   const retiredSince = opts.retiredSince ?? new Map<string, number>();
+  const live = opts.liveJourneys;
   const ordered = [...runs].sort((a, b) => a.runNumber - b.runNumber);
-  const walkedIn = new Map(ordered.map((r) => [r, new Set(r.journeys.filter((j) => j.walked).map((j) => j.identity))]));
 
+  // Groups of sightings that are one problem, each under its own key.
   const groups = new Map<string, Sighting[]>();
   // Restatements: not sightings, but the owner may have triaged them (a mark,
-  // a ticket), and that triage is about the problem — Codex round 3.
+  // a ticket), and that triage is about the problem.
   const restated = new Map<string, Sighting[]>();
+  const keyFor = (signature: string, s: Sighting, allowNew: boolean): string | null => {
+    if (!isBucket(signature)) return signature;
+    // Inside a bucket: join the group whose LATEST finding says the same
+    // thing, the way a streak continues from one check to the next.
+    let best: { key: string; sim: number } | null = null;
+    for (const [key, list] of groups) {
+      if (!key.startsWith(`${signature}~`)) continue;
+      const sim = titleSimilarity(list[list.length - 1].finding.title, s.finding.title);
+      if (sim >= SAME_PROBLEM && (!best || sim > best.sim)) best = { key, sim };
+    }
+    if (best) return best.key;
+    return allowNew ? `${signature}~${s.finding.id}` : null;
+  };
   for (const run of ordered) {
     for (const finding of run.findings) {
-      const ref = parseJson<{ stepRef?: { journeyIndex?: number } | null }>(finding.anchor)?.stepRef;
+      const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor)?.stepRef;
       const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] ?? null : null;
       const signature = signatureOf(finding, app.appSlug);
       if (signatureKind(signature) === "ours") continue;
-      const into = journey?.carried ? restated : groups;
-      into.set(signature, [...(into.get(signature) ?? []), { run, finding, journey: journey?.identity ?? null }]);
+      const s: Sighting = {
+        run,
+        finding,
+        journey,
+        stepIndex: journey && typeof ref?.stepIndex === "number" ? ref.stepIndex : null,
+      };
+      if (journey?.carried) {
+        const key = keyFor(signature, s, false);
+        if (key) restated.set(key, [...(restated.get(key) ?? []), s]);
+        continue;
+      }
+      const key = keyFor(signature, s, true)!;
+      groups.set(key, [...(groups.get(key) ?? []), s]);
     }
   }
   const resolvedLinks = pointLegacyLinks(app, ordered, links);
 
-  // One check does not normally report one problem twice, so a signature that
-  // one check saw twice is proven too coarse for this app: on joblander.app
-  // #11, "Continue with Google stuck", "Send reset link does nothing" and
-  // "Sign in fires no request" were all /login + broken. Such a group is split
-  // by what on the page each finding names (targetOf). Only then: that text
-  // drifts, and splitting every group by it would cut meetbashar's one dead
-  // link into three. The split can still leave one problem in two pieces
-  // (#242 filed one problem twice under two wordings) — it under-counts, it
-  // never claims a streak that is a mix.
-  for (const [signature, sightings] of [...groups]) {
-    const perRun = new Map<RecurrenceRun, number>();
-    for (const s of sightings) perRun.set(s.run, (perRun.get(s.run) ?? 0) + 1);
-    if ([...perRun.values()].every((n) => n < 2)) continue;
-    groups.delete(signature);
-    const splitOf = (s: Sighting) =>
-      `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(s.finding.detail), failureSignature: "target" }).slice(0, 12)}`;
-    for (const s of sightings) groups.set(splitOf(s), [...(groups.get(splitOf(s)) ?? []), s]);
-    for (const s of restated.get(signature) ?? []) restated.set(splitOf(s), [...(restated.get(splitOf(s)) ?? []), s]);
-    restated.delete(signature);
-  }
-
-  // The first check after `seen` (and before `until`) by which every journey
-  // the sighting could have come from had been walked again. A journey stops
-  // being waited for when a check walks it, or once the app retired it — from
-  // the first check after its retirement, never judged by today's catalog (a
-  // journey carried in #2 and retired before #3 was not looked at in #2).
-  // A journey merely missing from a check's list is NOT released: until CHE-331
-  // a full or on-demand check listed only the journeys it walked
-  // (src/agent/partial.ts knownJourneysToList), so absence says nothing.
-  const lookedAgain = (seen: Sighting, until = Infinity): RecurrenceRun | undefined => {
-    const waitingFor = new Set(seen.journey ? [seen.journey] : walkedIn.get(seen.run)!);
+  // The first check after `seen` (and before `until`) by which everything the
+  // sighting could have come from had been looked at again — see the header.
+  // `catalog: false` asks only about real second looks — used to decide
+  // whether two sightings are one streak: a problem seen again was there all
+  // along, whatever became of the journeys in between.
+  const lookedAgain = (seen: Sighting, until = Infinity, catalog = true): RecurrenceRun | undefined => {
+    // Journey identity → what a later walk of it must have executed: for an
+    // anchored finding, the positions its own walk executed up to the anchored
+    // step (that step itself always); for one with no anchor, any step of each
+    // journey its check walked.
+    const waitingFor = new Map<string, number[] | "any">();
+    if (seen.journey) {
+      const upTo = seen.stepIndex ?? undefined;
+      const positions = [...new Set([...executed(seen.journey, upTo), ...(upTo === undefined ? [] : [upTo])])];
+      if (positions.length > 0) waitingFor.set(seen.journey.identity, positions);
+    } else {
+      for (const j of seen.run.journeys) if (!j.carried && executed(j).length > 0) waitingFor.set(j.identity, "any");
+    }
     for (const r of ordered) {
       if (r.runNumber <= seen.run.runNumber) continue;
       if (r.runNumber >= until) return undefined;
-      // A check with no journeys (a smoke pass, replay-complete) walked nothing,
-      // but a retirement still takes effect at it — Codex round 3.
-      let released = false;
-      for (const j of [...waitingFor]) {
-        if (walkedIn.get(r)!.has(j) || (retiredSince.get(j) ?? Infinity) <= r.runNumber) released = waitingFor.delete(j);
+      // Its own check walked nothing, so there is no journey to wait for
+      // (joblander.app #72: "No journeys were walked this run"). The first
+      // later check that walked anything at all is the only second look
+      // there can be; one that carried or skipped everything is none.
+      if (waitingFor.size === 0) {
+        if (r.journeys.some((j) => lookedAgainAt(j, "any"))) return r;
+        continue;
       }
-      if (waitingFor.size === 0 && (released || r.journeys.length > 0)) return r;
+      for (const [id, positions] of [...waitingFor]) {
+        const retired = (retiredSince.get(id) ?? Infinity) <= r.runNumber;
+        // No longer one of the app's journeys, and this check does not list
+        // it either: it has left the catalog, as a retired journey has.
+        const left = catalog && live !== undefined && !live.has(id) && !r.journeys.some((j) => j.identity === id);
+        if (retired || left || r.journeys.some((j) => j.identity === id && lookedAgainAt(j, positions))) waitingFor.delete(id);
+      }
+      if (waitingFor.size === 0) return r;
     }
     return undefined;
   };
 
   const out: Recurrence[] = [];
-  for (const [signature, sightings] of groups) {
+  for (const [key, sightings] of groups) {
     // A problem that went away and came back is a new streak, and only the
     // latest one is reported: "seen 6 times" must mean six checks in a row
-    // that found it, not six over a history with fixes in between. This also
-    // bounds what the page key can merge — on joblander.app/settings a "Save
-    // Changes stays disabled" streak ended in August, and a different problem
-    // on that page in #278 is not its seventh sighting.
+    // that found it, not six over a history with fixes in between.
     let start = 0;
     for (let i = 1; i < sightings.length; i++) {
-      if (lookedAgain(sightings[i - 1], sightings[i].run.runNumber)) start = i;
+      if (lookedAgain(sightings[i - 1], sightings[i].run.runNumber, false)) start = i;
     }
     const streak = sightings.slice(start);
     const checks = [...new Set(streak.map((s) => s.run))];
     const last = streak[streak.length - 1];
     const again = lookedAgain(last);
 
-    // Marks from the whole history: "not a bug" and "known" are about the
-    // problem, and persistFindings carries them onto later findings anyway.
-    // Restatements of it count here (not in timesSeen).
-    const triaged = [...sightings, ...(restated.get(signature) ?? [])].sort((a, b) => a.run.runNumber - b.run.runNumber);
+    const triaged = [...sightings, ...(restated.get(key) ?? [])].sort((a, b) => a.run.runNumber - b.run.runNumber);
+    const inStreak = triaged.filter((s) => s.run.runNumber >= streak[0].run.runNumber);
     let mark: { mark: string; runNumber: number } | null = null;
-    for (const s of triaged) {
-      if (["known", "fixed", "false_positive"].includes(s.finding.mark)) mark = { mark: s.finding.mark, runNumber: s.run.runNumber };
+    for (const s of inStreak) {
+      if (["known", "fixed"].includes(s.finding.mark)) mark = { mark: s.finding.mark, runNumber: s.run.runNumber };
     }
     // A ticket belongs to an issue only through IssueLink.findingId. Links
     // without one are our own [Checker gap] / [Checker defect] tickets (rules
@@ -225,33 +304,33 @@ export function recurrence(
     // finding is recovered by pointLegacyLinks (and persisted by
     // scripts/backfill-finding-signature.ts: CHE-79, CHE-87 … on prod).
     //
-    // A signature can fold several reworded findings that each got a ticket:
-    // any Canceled one settles it as not a bug, and the link shown is the one
-    // on the latest sighting that has a link — never whichever the database
+    // A group can fold several reworded findings that each got a ticket: any
+    // Canceled one settles it as not a bug, and the link shown is the one on
+    // the latest finding that has a link — never whichever the database
     // happened to return first.
     const linked = triaged
       .map((s) => resolvedLinks.find((l) => l.findingId !== null && l.findingId === s.finding.id))
       .filter((l): l is RecurrenceLink => Boolean(l));
     const link = linked[linked.length - 1] ?? null;
+    const ruledNotABug = triaged.some((s) => s.finding.mark === "false_positive") || linked.some((l) => l.status === "suppressed");
 
     // A "fixed" mark is someone's word, and reconcile sets it the moment a
     // ticket moves to Done, before any re-walk. It takes the issue out of
     // "recurring" (the ticket's rule) but does not make it gone: until a check
     // has looked again it is acknowledged — "known".
-    const state: RecurringIssue["state"] =
-      mark?.mark === "false_positive" || linked.some((l) => l.status === "suppressed")
-        ? "not_a_bug"
-        : again
-          ? "gone"
-          : mark?.mark === "known" || (mark?.mark === "fixed" && mark.runNumber >= last.run.runNumber)
-            ? "known"
-            : checks.length >= 2
-              ? "recurring"
-              : "new";
+    const state: RecurringIssue["state"] = ruledNotABug
+      ? "not_a_bug"
+      : again
+        ? "gone"
+        : mark?.mark === "known" || (mark?.mark === "fixed" && mark.runNumber >= last.run.runNumber)
+          ? "known"
+          : checks.length >= 2
+            ? "recurring"
+            : "new";
 
     out.push({
       issue: {
-        signature,
+        signature: key,
         appId: app.id,
         title: last.finding.title,
         category: last.finding.category,
@@ -263,9 +342,27 @@ export function recurrence(
         issueLinkId: link?.id ?? null,
       },
       goneSinceRunNumber: again?.runNumber ?? null,
+      sightings: streak.map((s) => ({ runNumber: s.run.runNumber, findingId: s.finding.id, title: s.finding.title })),
     });
   }
   return out.sort((a, b) => b.issue.lastSeenRunNumber - a.issue.lastSeenRunNumber);
+}
+
+// A "page" or "req" signature is a bucket, not an identity. A page holds many
+// problems; and a failing request is cited as evidence by findings that are
+// about different things — on joblander.app one `verify-session 401` signature
+// held "Sign in fires no network request", "verify-session 401 on every page
+// load" and "the owner's analytics flag is misattributed" (prod, #12–#63).
+// Inside a bucket the titles decide. An extension's error signature and the
+// wording fallback are already as narrow as one problem.
+const isBucket = (signature: string) => ["page", "req"].includes(signatureKind(signature));
+
+// Two findings are the same problem: one signature, and inside a bucket a
+// title that says the same thing. The rule recurrence groups by, for a caller
+// that compares the findings of two checks directly.
+export function sameIssue(a: { signature: string; title: string }, b: { signature: string; title: string }): boolean {
+  if (a.signature !== b.signature) return false;
+  return !isBucket(a.signature) || sameProblem(a, b);
 }
 
 // A run that finished with a verdict. `failed` is CheckMyApp not finishing, not
@@ -279,7 +376,7 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
   });
   const entries = await Promise.all(
     apps.map(async (app): Promise<[string, RecurringIssue[]]> => {
-      const [runs, links, retired] = await Promise.all([
+      const [runs, links, catalog] = await Promise.all([
         db.run.findMany({
           ...alreadyScoped("the caller resolved this app"),
           where: { appId: app.id, status: { in: FINISHED } },
@@ -293,7 +390,14 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
             targetKind: true,
             journeys: {
               orderBy: { order: "asc" },
-              select: { appJourneyId: true, journeyKey: true, title: true, carriedFromRunId: true, status: true },
+              select: {
+                appJourneyId: true,
+                journeyKey: true,
+                title: true,
+                carriedFromRunId: true,
+                status: true,
+                steps: { orderBy: { order: "asc" }, select: { status: true } },
+              },
             },
             findings: {
               orderBy: { number: "asc" },
@@ -315,12 +419,13 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
           select: { id: true, status: true, findingId: true, dedupKey: true, firstSeenRunId: true },
         }),
         db.appJourney.findMany({
-          where: { appId: app.id, retiredAt: { not: null } },
+          where: { appId: app.id },
           select: { id: true, retiredAt: true },
         }),
       ]);
       const published = runs.filter((r) => extensionReportPublished(r));
-      const retiredSince = retiredSinceRun(retired, published);
+      const retiredSince = retiredSinceRun(catalog.filter((j) => j.retiredAt !== null), published);
+      const liveJourneys = new Set(catalog.filter((j) => j.retiredAt === null).map((j) => j.id));
       const runNumberOf = new Map(runs.map((r) => [r.id, r.runNumber]));
       const recurrenceLinks = links.map((l) => ({
         id: l.id,
@@ -329,7 +434,10 @@ export async function recurringByApp(db: PrismaClient, teamId: string): Promise<
         dedupKey: l.dedupKey,
         firstSeenRunNumber: l.firstSeenRunId ? runNumberOf.get(l.firstSeenRunId) ?? null : null,
       }));
-      return [app.id, recurrence(app, published.map(toRecurrenceRun), recurrenceLinks, { retiredSince }).map((r) => r.issue)];
+      return [
+        app.id,
+        recurrence(app, published.map(toRecurrenceRun), recurrenceLinks, { retiredSince, liveJourneys }).map((r) => r.issue),
+      ];
     }),
   );
   return new Map(entries);
@@ -380,17 +488,25 @@ export function retiredSinceRun(
   return out;
 }
 
-export function toRecurrenceRun(run: {
+export interface RecurrenceRunRow {
   runNumber: number;
-  journeys: Array<{ appJourneyId: string | null; journeyKey: string | null; title: string; carriedFromRunId: string | null; status: string }>;
+  journeys: Array<{
+    appJourneyId: string | null;
+    journeyKey: string | null;
+    title: string;
+    carriedFromRunId: string | null;
+    steps: Array<{ status: string }>;
+  }>;
   findings: RecurrenceFinding[];
-}): RecurrenceRun {
+}
+
+export function toRecurrenceRun(run: RecurrenceRunRow): RecurrenceRun {
   return {
     runNumber: run.runNumber,
     journeys: run.journeys.map((j) => ({
       identity: j.appJourneyId ?? j.journeyKey ?? j.title,
       carried: j.carriedFromRunId !== null,
-      walked: j.carriedFromRunId === null && j.status !== "skipped",
+      steps: j.steps.map((s) => s.status),
     })),
     findings: run.findings,
   };

@@ -1,6 +1,17 @@
 {
  "source": "prod D1, 2026-10-01: every Finding and Journey of meetbashar.com runs #241, #246, #249, #252, #255, #259, #267 and #275, copied as stored (journey ids, keys, carried or not, status; finding id, title, category, severity, mark, detail, anchor). Read by scripts/verify-finding-signature.ts (CHE-354).",
  "app": { "id": "cmtadwfpk0004xn1rhkg4a8lc", "appSlug": "meetbashar.com" },
+ "stepsNote": "Step statuses of every journey, in journey order then step order, as stored in prod D1 (Step.status) for the same runs.",
+ "steps": {
+  "241": ["ok ok ok ok ok ok","skipped ok","ok ok","ok ok ok","ok broken ok","ok ok skipped ok","ok ok ok ok ok","ok ok ok ok ok","ok ok skipped skipped","ok ok ok"],
+  "246": ["ok ok ok ok broken","ok","ok","ok ok skipped ok","ok ok ok ok","ok ok ok ok ok","ok ok skipped skipped","ok ok ok","ok ok ok ok ok ok","skipped ok","ok ok","ok ok ok"],
+  "249": ["ok ok skipped skipped broken","ok ok ok ok","ok","ok ok","ok ok ok ok ok ok broken","skipped ok","ok ok","ok ok ok","ok","ok","ok ok skipped ok","ok ok ok ok"],
+  "252": ["ok ok ok broken","ok ok ok ok ok broken ok","skipped","ok risky","ok ok ok","ok","ok","ok ok skipped ok","ok ok ok ok","ok ok ok ok","ok","ok ok"],
+  "255": ["ok skipped skipped broken","ok ok ok ok","ok ok broken","skipped","ok","ok","ok ok skipped ok","ok ok ok ok","ok ok ok ok","ok","ok ok","ok ok ok"],
+  "259": ["ok ok ok broken","ok ok","ok skipped","ok","ok ok skipped ok ok","ok ok ok ok","ok ok ok ok","ok","ok ok","ok ok ok","ok ok ok ok","ok"],
+  "267": ["ok ok ok broken","ok ok ok","ok ok ok ok","ok","ok ok ok","ok ok ok","ok ok ok ok","ok","ok ok","ok skipped","ok","ok ok skipped ok ok"],
+  "275": ["ok ok ok","ok ok ok ok","ok ok ok ok","skipped skipped","ok","ok skipped","ok","ok ok skipped ok ok","ok ok ok","ok ok ok ok","ok","ok ok ok"]
+ },
  "runs": [
   {
    "runNumber": 241,

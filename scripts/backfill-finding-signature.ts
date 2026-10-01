@@ -56,6 +56,7 @@ interface RunRow {
   startedAt: string;
 }
 interface JourneyRow {
+  id: string;
   runId: string;
   order: number;
   appJourneyId: string | null;
@@ -80,11 +81,15 @@ try {
 }
 const runs = query<RunRow>(`SELECT id, runNumber, appId, appSlug, status, verdict, targetKind, startedAt FROM Run`);
 const journeys = query<JourneyRow>(
-  `SELECT runId, "order", appJourneyId, journeyKey, title, carriedFromRunId, status FROM Journey ORDER BY runId, "order"`,
+  `SELECT id, runId, "order", appJourneyId, journeyKey, title, carriedFromRunId, status FROM Journey ORDER BY runId, "order"`,
 );
-const retiredJourneys = query<{ id: string; appId: string; retiredAt: string }>(
-  `SELECT id, appId, retiredAt FROM AppJourney WHERE retiredAt IS NOT NULL`,
-);
+// Whether a journey was walked is decided step by step (src/lib/recurring.ts).
+const stepsByJourney = new Map<string, Array<{ status: string }>>();
+for (const s of query<{ journeyId: string; status: string }>(`SELECT journeyId, status FROM Step ORDER BY journeyId, "order"`)) {
+  stepsByJourney.set(s.journeyId, [...(stepsByJourney.get(s.journeyId) ?? []), { status: s.status }]);
+}
+const catalog = query<{ id: string; appId: string; retiredAt: string | null }>(`SELECT id, appId, retiredAt FROM AppJourney`);
+const retiredJourneys = catalog.filter((j) => j.retiredAt !== null);
 const allLinks = query<RecurrenceLink & { appId: string; dedupKey: string; externalIssueId: string; firstSeenRunId: string | null }>(
   `SELECT id, appId, status, findingId, dedupKey, externalIssueId, firstSeenRunId FROM IssueLink`,
 );
@@ -172,11 +177,12 @@ for (const [appId, appSlug] of [...apps.entries()].sort((a, b) => a[1].localeCom
     .map((r) =>
       toRecurrenceRun({
         runNumber: r.runNumber,
-        journeys: journeysByRun.get(r.id) ?? [],
+        journeys: (journeysByRun.get(r.id) ?? []).map((j) => ({ ...j, steps: stepsByJourney.get(j.id) ?? [] })),
         findings: (findingsByRun.get(r.id) ?? []).sort((a, b) => a.number - b.number).map((f) => ({ ...f, signature: computed.get(f.id)! })),
       }),
     );
-  const result = recurrence({ id: appId, appSlug }, appRuns, links.filter((l) => l.appId === appId), { retiredSince });
+  const liveJourneys = new Set(catalog.filter((j) => j.appId === appId && j.retiredAt === null).map((j) => j.id));
+  const result = recurrence({ id: appId, appSlug }, appRuns, links.filter((l) => l.appId === appId), { retiredSince, liveJourneys });
   const n = (s: string) => result.filter((r) => r.issue.state === s).length;
   console.log(`  ${appSlug.padEnd(36)} ${String(appRuns.length).padStart(6)}  ${String(result.length).padStart(6)}` +
     `  ${String(n("recurring")).padStart(9)}  ${String(n("new")).padStart(3)}  ${String(n("gone")).padStart(4)}` +
@@ -187,8 +193,8 @@ for (const [appId, appSlug] of [...apps.entries()].sort((a, b) => a[1].localeCom
         `${r.goneSinceRunNumber ? `, gone since #${r.goneSinceRunNumber}` : ""}  ${signatureKind(r.issue.signature)}  ${r.issue.title}`);
     }
   }
-  for (const r of result.filter((x) => x.issue.state === "recurring")) {
-    console.log(`      recurring: seen ${r.issue.timesSeen}× #${r.issue.firstSeenRunNumber}→#${r.issue.lastSeenRunNumber}  ${r.issue.title}`);
+  for (const r of result.filter((x) => ["recurring", "new"].includes(x.issue.state))) {
+    console.log(`      ${r.issue.state}: seen ${r.issue.timesSeen}× #${r.issue.firstSeenRunNumber}→#${r.issue.lastSeenRunNumber}  ${r.issue.title}`);
   }
 }
 console.log(`\nmeetbashar.com, every issue:\n${meetbashar.join("\n")}`);
