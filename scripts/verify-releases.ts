@@ -84,7 +84,7 @@ const RELEASES: ReleaseRunInput[] = [
   run({ runNumber: 10, findings: [] }), // first production release we checked
   run({ runNumber: 12, findings: [X(12), Y(12)] }), // broke X (existing users) and Y (new visitors)
   run({ runNumber: 13, env: "preview", sha: "pr-7", findings: [X(13)] }), // preview: its own line
-  run({ runNumber: 14, findings: [Y(14, "Create account does nothing")] }), // fixed X; Y unchanged, reworded
+  run({ runNumber: 14, findings: [Y(14, "The sign-up button does nothing when clicked")] }), // fixed X; Y unchanged, reworded
   run({ runNumber: 16, findings: [Y(16)] }), // unchanged Y; nothing broke or fixed
   // Staging: #20 sees X and Y; #22 is a partial check that CARRIED the account
   // journey, so whether X is gone is unknown — not "fixed".
@@ -116,7 +116,7 @@ const r14 = release(14);
 check("#14 against #12 (not the #13 preview): previous is #12", r14.previous?.runNumber === 12, String(r14.previous?.runNumber));
 check("#14: fixed X (its journey was walked again and X was absent)", titles(r14.delta?.fixed) === "Order total ignores the discount",
   titles(r14.delta?.fixed));
-check("#14: Y unchanged although reworded (same signature)", titles(r14.delta?.unchanged) === "Create account does nothing" &&
+check("#14: Y unchanged although reworded (same signature, a title that says the same thing)", titles(r14.delta?.unchanged) === "The sign-up button does nothing when clicked" &&
   (r14.delta?.broke.length ?? -1) === 0, `broke ${r14.delta?.broke.length}, unchanged ${titles(r14.delta?.unchanged)}`);
 const r16 = release(16);
 check("#16: nothing broke, nothing fixed, Y unchanged",
@@ -152,6 +152,46 @@ const twoThenOne = computeReleases([
 check("two problems on one page signature, then only one: one fixed, one unchanged",
   titles(twoThenOne?.delta?.fixed) === OAUTH[0] && titles(twoThenOne?.delta?.unchanged) === RESET[0],
   `fixed ${titles(twoThenOne?.delta?.fixed)} · unchanged ${titles(twoThenOne?.delta?.unchanged)}`);
+
+// CHE-354's rework, carried into the delta. Inside a page bucket the titles
+// decide, and a title can be reworded beyond recognition ("Create account does
+// nothing" for "Sign-up button does nothing"). Then we cannot tell "reworded"
+// from "one fixed, another broke" — so the release is not said to have broken
+// or fixed anything there.
+const reworded = computeReleases([
+  run({ runNumber: 50, findings: [Y(50)] }),
+  run({ runNumber: 51, findings: [Y(51, "Create account does nothing")] }),
+]).find((r) => r.runNumber === 51);
+check("same page, a title that no longer matches: neither broke nor fixed — not compared, once",
+  reworded?.delta?.broke.length === 0 && reworded.delta.fixed.length === 0 && reworded.delta.unchanged.length === 0 &&
+    titles(reworded.delta.notCompared) === "Create account does nothing",
+  JSON.stringify({ broke: titles(reworded?.delta?.broke), fixed: titles(reworded?.delta?.fixed), notCompared: titles(reworded?.delta?.notCompared) }));
+
+// One check stating a problem twice is one item, not "unchanged" plus "broke".
+const twice = computeReleases([
+  run({ runNumber: 60, findings: [Y(60)] }),
+  run({ runNumber: 61, findings: [Y(61), { ...Y(61, "Sign-up button does nothing at all"), id: "y-61b" }] }),
+]).find((r) => r.runNumber === 61);
+check("a problem stated twice by one check is one unchanged item", twice?.delta?.unchanged.length === 1 && twice.delta.broke.length === 0,
+  `unchanged ${twice?.delta?.unchanged.length}, broke ${twice?.delta?.broke.length}`);
+
+// "Looked again" is recurrence's rule, step by step: a release that walked the
+// account journey but skipped the order step did not look at X.
+const skippedOrders: J = { identity: "aj_account", carried: false, steps: [{ status: "ok", actions: SIGN_IN }, { status: "skipped", actions: null }] };
+const stepSkipped = computeReleases([
+  run({ runNumber: 70, findings: [X(70)] }),
+  run({ runNumber: 71, journeys: [skippedOrders, signup()], findings: [] }),
+]).find((r) => r.runNumber === 71);
+check("the journey was walked but the step X was on was skipped: X is not fixed, it is not compared",
+  stepSkipped?.delta?.fixed.length === 0 && titles(stepSkipped?.delta?.notCompared) === "Order total ignores the discount",
+  `fixed ${titles(stepSkipped?.delta?.fixed)} · notCompared ${titles(stepSkipped?.delta?.notCompared)}`);
+const brokeAfterSkip = computeReleases([
+  run({ runNumber: 80, journeys: [skippedOrders, signup()], findings: [] }),
+  run({ runNumber: 81, findings: [X(81)] }),
+]).find((r) => r.runNumber === 81);
+check("…and X seen after a release that skipped that step is not 'broke' by this release",
+  brokeAfterSkip?.delta?.broke.length === 0 && titles(brokeAfterSkip?.delta?.notCompared) === "Order total ignores the discount",
+  `broke ${titles(brokeAfterSkip?.delta?.broke)}`);
 
 // ── 3. Preview vs production ──────────────────────────────────────────────────
 const r13 = release(13);

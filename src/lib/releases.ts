@@ -19,8 +19,9 @@
 //               looked there again;
 //   unchanged — seen in both;
 //   notCompared — the other release did not look there (a partial check
-//               carried the journey, or the walk skipped that step), so
-//               neither "broke" nor "fixed" is known.
+//               carried the journey, or the walk skipped that step), or the
+//               same page shows a problem whose wording no longer matches the
+//               earlier one — so neither "broke" nor "fixed" is known.
 // A finding anchored to a journey its own check carried is a restatement, not
 // something that release saw (src/lib/recurring.ts), and is left out.
 //
@@ -202,6 +203,7 @@ function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable
   // Each earlier problem answers for one current problem at most, and the
   // closest wording takes it (two problems of one bucket, both still there).
   const taken = new Set<Seen>();
+  const leftNow: Array<[string, Seen]> = [];
   for (const entry of now) {
     const [sig, seen] = entry;
     const twin = before
@@ -210,6 +212,18 @@ function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable
     if (twin) {
       taken.add(twin[1]);
       d.unchanged.push(item(sig, seen));
+    } else leftNow.push(entry);
+  }
+  // What is left on both sides under one signature is, by construction, in a
+  // bucket with titles that no longer match: the same problem reworded beyond
+  // recognition, or one problem fixed and another broken on the same page. We
+  // cannot tell which, so it is neither "broke" nor "fixed" (CLAUDE.md §8) —
+  // the current one is listed as not compared and the earlier one is its pair.
+  for (const [sig, seen] of leftNow) {
+    const pair = before.find((b) => b[0] === sig && !taken.has(b[1]));
+    if (pair) {
+      taken.add(pair[1]);
+      d.notCompared.push(item(sig, seen));
     } else (looked(previous, seen, current) ? d.broke : d.notCompared).push(item(sig, seen));
   }
   for (const [sig, seen] of before) {
