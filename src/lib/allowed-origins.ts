@@ -19,6 +19,39 @@ import { isSelfUrl } from "@/agent/self-hosts";
 
 export const MAX_ALLOWED_ORIGINS = 5;
 
+// A public suffix is a namespace many unrelated owners register under, never
+// one owner's site: an allowed "https://com.au" or "https://github.io" would
+// make evil-shop.com.au or anyone.github.io "the product", and their errors
+// evidence against the customer (rule 8). There is no PSL package in this repo
+// and the agent bundle should not grow one for five origins, so: the shared
+// hosting namespaces we meet (Mozilla PSL "private" section, the common ones),
+// plus the rule that covers the ICANN half — a generic second-level label
+// under a two-letter country code (com.au, co.uk, org.br, ac.jp, gov.in) is a
+// registry, not a site. A suffix missing from this list is still never
+// widened to its subdomains: isTargetHost matches an allowed origin's host
+// exactly (tools.ts).
+const SHARED_HOSTING_SUFFIXES = new Set([
+  "github.io", "gitlab.io", "bitbucket.io", "pages.dev", "workers.dev", "vercel.app", "now.sh",
+  "netlify.app", "netlify.com", "herokuapp.com", "herokussl.com", "myshopify.com", "shopifypreview.com",
+  "web.app", "firebaseapp.com", "appspot.com", "cloudfunctions.net", "run.app", "azurewebsites.net",
+  "azurestaticapps.net", "cloudfront.net", "amazonaws.com", "elasticbeanstalk.com", "onrender.com",
+  "fly.dev", "railway.app", "up.railway.app", "glitch.me", "repl.co", "replit.app", "replit.dev",
+  "surge.sh", "ngrok.io", "ngrok-free.app", "ngrok.app", "blogspot.com", "wordpress.com", "wixsite.com",
+  "squarespace.com", "webflow.io", "framer.app", "framer.website", "bubbleapps.io", "carrd.co",
+  "notion.site", "streamlit.app", "hf.space", "deno.dev", "supabase.co", "lovable.app", "bolt.new",
+  "netlify.live", "pythonanywhere.com", "readthedocs.io", "gitbook.io",
+]);
+const GENERIC_SECOND_LEVEL = new Set(["com", "co", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob", "mil", "nic", "ltd", "plc", "sch", "nom"]);
+
+/** True for a host that names a registry or a shared hosting namespace rather than one site. */
+export function isPublicSuffix(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  const labels = host.split(".");
+  if (labels.length < 2) return true;
+  if (SHARED_HOSTING_SUFFIXES.has(host)) return true;
+  return labels.length === 2 && labels[1].length === 2 && GENERIC_SECOND_LEVEL.has(labels[0]);
+}
+
 /**
  * One origin, as stored: `https://host[:port]`, lower-cased, nothing after it.
  * Null for anything else — http, a path, a query, credentials, a wildcard.
@@ -46,6 +79,7 @@ export function normalizeAllowedOrigin(raw: string): string | null {
   // "https://a.com/" is the same origin as "https://a.com"; anything else after
   // the host was refused above.
   if (text.replace(/\/$/, "").toLowerCase() !== url.origin.toLowerCase()) return null;
+  if (isPublicSuffix(url.hostname)) return null;
   if (isSelfUrl(url.origin)) return null;
   return url.origin.toLowerCase();
 }
@@ -62,7 +96,8 @@ export function parseAllowedOriginsInput(input: readonly string[]): AllowedOrigi
         ok: false,
         error:
           `"${raw}" is not an allowed origin. Give https origins with nothing after the host ` +
-          `(e.g. https://admin.shopify.com); CheckMyApp's own hosts cannot be added.`,
+          `(e.g. https://admin.shopify.com); CheckMyApp's own hosts and shared namespaces ` +
+          `(https://github.io, https://com.au) cannot be added.`,
       };
     }
     if (!origins.includes(origin)) origins.push(origin);

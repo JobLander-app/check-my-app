@@ -38,10 +38,14 @@ export interface ToolEnv {
   // navigation are hard-refused off this origin (defence vs prompt injection).
   targetOrigin: string;
   // CHE-373: further origins the owner named for this app (App.allowedOrigins,
-  // copied onto the run) — an embedded app's host page and its frame. Navigation
-  // and credential entry accept them exactly as they accept targetOrigin, and
-  // nothing else does. Normalized origins (src/lib/allowed-origins.ts). Absent
-  // or empty = the single-origin run it always was.
+  // copied onto the run) — an embedded app's host page and its frame. Navigation,
+  // credential entry, reading a frame into the digest and acting in one accept
+  // them as they accept targetOrigin; the evidence rules count their hosts
+  // (exactly, no subdomains) as the product. Normalized origins
+  // (src/lib/allowed-origins.ts). Absent or empty = a single-origin run: nothing
+  // off the target's origin is opened, read into the prompt, typed into or
+  // pressed. (What did change for every run: a frame on the target's own origin
+  // is pressed and filled, where page locators used to stop at its boundary.)
   allowedOrigins?: string[];
   testEmail?: string;
   testPassword?: string;
@@ -445,13 +449,13 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "read_page",
     description:
-      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. Content rendered inside an embedded frame from another origin follows as its own section, labelled FRAME <n> with its origin. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
+      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. An embedded frame of the target app on another origin follows as its own section, labelled FRAME <n> with its origin; other embedded frames are listed by address only. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "click",
     description:
-      "Click an element. Identify it by role and accessible name (preferred) or CSS selector. The page is searched first, then each embedded frame of the target app in order; pass frame to act inside one FRAME section of read_page. Frames outside the target app are read only.",
+      "Click an element. Identify it by role and accessible name (preferred) or CSS selector. The page is searched first, then each embedded frame of the target app in order; pass frame to act inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
@@ -465,7 +469,7 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "fill",
     description:
-      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are read only.",
+      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
@@ -1081,7 +1085,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     );
   }
   // CHE-373: the page first, then each embedded frame.
-  const located = await locateAcrossFrames(env, input, (scope) => resolveClickTarget(scope, input));
+  const located = await locateAcrossFrames(env, "click", input, (scope) => resolveClickTarget(scope, input));
   if (typeof located === "string") return located;
   const target = located.locator.first();
   const inFrame = located.frame;
@@ -1346,7 +1350,7 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
 
   const label = input.label ? String(input.label) : undefined;
   // CHE-373: the page first, then each embedded frame.
-  const located = await locateAcrossFrames(env, input, async (scope) =>
+  const located = await locateAcrossFrames(env, "fill", input, async (scope) =>
     input.selector
       ? scope.locator(String(input.selector))
       : label
@@ -1357,14 +1361,6 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
         : scope.locator("input:visible"),
   );
   if (typeof located === "string") return located;
-  // CHE-373: the frame decides where typed characters go. A login form our
-  // own allowed page embeds from a third party's origin is that third party's
-  // form, and the test password is not theirs to receive.
-  // locateAcrossFrames already acts only in such frames; this one stays because
-  // a credential is the thing that must never leak if that ever changes.
-  if (usedSecret && located.frame && !mayActIn(env, located.frame)) {
-    return `Refused: will not enter test credentials on ${located.frame.url() || "an embedded frame"} (outside the target app).`;
-  }
   if (usedSecret) env.activeAccount = accounts[accounts.length - 1];
   // Fingerprint only (sha256 prefix + length), never the value: lets a cred
   // mismatch be localized to save vs store vs fill without exposing anything.
@@ -1392,6 +1388,8 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     const where = located.label ? ` inside ${located.label}` : "";
     return usedSecret ? `Filled${where} (credential substituted server-side).` : `Filled${where}.`;
   };
+
+  if (usedSecret) return fillSecret(env, field, value, named, landed);
 
   try {
     await field.fill(value, { timeout: 8_000 });
@@ -1436,6 +1434,91 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     }
   }
   return landed();
+}
+
+// CHE-373: a substituted credential is written by one function running inside
+// the field's own document, which first checks that this document is on an
+// origin the run may act on. That is the ONLY place the question can be asked
+// truthfully. Asked in Node and then typed, question and write are apart in
+// time, and a locator follows its frame through a navigation: an embedded app
+// that bounces to its identity provider while we wait for hydration had the
+// provider's "Password" field receive the real test password while the tool
+// said it filled the app (4 of 14 timed runs in the cross-review of #222). The
+// address Node holds for a frame lags the document as well — it was still the
+// app's with the provider's page already in place — so there is no check in
+// Node beside this one to disagree with it. One synchronous task in the page
+// cannot be split by a navigation.
+//
+// insertText is what a keyboard does (beforeinput/input, so frameworks see
+// it); the value setter plus input/change is the fallback for a field that
+// refuses it. Returns "ok", "not-stuck", or "elsewhere <origin>" with nothing
+// written.
+//
+// location.origin, not self.origin: Location is unforgeable, while
+// window.origin is replaceable by the page's own script — a stranger's page
+// could set it to an origin we allow. The price is that a field inside a
+// srcdoc/about:blank frame of the app reads "null" and is refused too; a login
+// form living in such a frame has not been met, and refusing is the safe side.
+const WRITE_SECRET = (el: Element, arg: { value: string; origins: string[] }): string => {
+  if (!el.isConnected || !arg.origins.includes(location.origin)) return `elsewhere ${location.origin}`;
+  const text = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  (el as HTMLElement).focus();
+  if (text) text.select();
+  let inserted = false;
+  try {
+    inserted = document.execCommand("insertText", false, arg.value);
+  } catch {
+    inserted = false;
+  }
+  if (!text) return inserted && (el.textContent ?? "").includes(arg.value) ? "ok" : "not-stuck";
+  if (!inserted || text.value !== arg.value) {
+    const proto = text instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(text, arg.value);
+    else text.value = arg.value;
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    text.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  return text.value === arg.value ? "ok" : "not-stuck";
+};
+
+async function fillSecret(
+  env: ToolEnv,
+  field: Locator,
+  value: string,
+  named: string,
+  landed: () => string,
+): Promise<string> {
+  // Every origin this run may act on, as the document itself will spell its own.
+  const origins = [env.targetOrigin, ...(env.allowedOrigins ?? [])]
+    .map((o) => o.toLowerCase())
+    .filter((o) => isAllowedOrigin(env, o));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Like the plain fill's retry: a controlled input can drop a value written
+    // before it hydrated.
+    if (attempt) await env.page.waitForTimeout(600);
+    let outcome: string;
+    try {
+      outcome = await field.evaluate(WRITE_SECRET, { value, origins }, { timeout: 8_000 });
+    } catch (err) {
+      if (!isUndrivable(err)) throw err;
+      return recordUndriven(env, "fill", named, err);
+    }
+    if (outcome.startsWith("elsewhere")) {
+      // The field was found on the app and its document is another one now (a
+      // sign-in that bounced to its identity provider), or it never had an
+      // address of its own (srcdoc, about:blank, data:, sandboxed — "null",
+      // which cannot be told from a stranger's). The credential stays with us.
+      const at = outcome.slice("elsewhere ".length);
+      const where = at && at !== "null" ? at : "an embedded document with no address of its own";
+      return (
+        `Refused: will not enter test credentials on ${where} (outside the target app). Nothing was typed. ` +
+        `If the page moved, read it again before deciding what the step is.`
+      );
+    }
+    if (outcome === "ok" && (await field.inputValue().catch(() => value)) === value) return landed();
+  }
+  return recordUndriven(env, "fill", named, new Error(`the value did not stick in ${named}`));
 }
 
 // Exact accessible name first (CHE-79): getByRole's `name` matches SUBSTRINGS,
@@ -1520,8 +1603,11 @@ async function hasMatch(locator: Locator): Promise<boolean> {
   }
 }
 
-// The origin a frame's document runs as: its own, or — for about:blank and
-// srcdoc, which take their creator's — the nearest ancestor's that has one.
+// The origin a frame acts for: its own, or — for about:blank and srcdoc, which
+// take their creator's, and data:, whose content its creator wrote — the
+// nearest ancestor's that has one. That is enough to press a button in it. A
+// credential is held to more: the secret write asks the document itself for
+// its location.origin (WRITE_SECRET), which is "null" in every one of these.
 function frameOrigin(frame: Frame): string | null {
   for (let f: Frame | null = frame; f; f = f.parentFrame()) {
     const origin = urlOrigin(f.url());
@@ -1540,11 +1626,31 @@ function mayActIn(env: ToolEnv, frame: Frame): boolean {
   return origin !== null && isAllowedOrigin(env, origin);
 }
 
-function outsideFrameRefusal(label: string, frame: Frame): string {
+// Rule 2: a control we will not act in is OUR limit, never the customer's
+// homework. The answer names no setting for them to change — allowed origins
+// are theirs to set deliberately, not something a step solicits (the first
+// version of this text told the model to say the origin "would have to be
+// allowed for this app", which is an ask in every step that meets a widget).
+// And the machine half, as for any control our hands did not drive (CHE-214):
+// the refusal is recorded, so a step that blames the product after it becomes
+// skipped / our_capability at report time, whatever the model wrote.
+function outsideFrameRefusal(
+  env: ToolEnv,
+  hand: "fill" | "click",
+  input: Record<string, unknown>,
+  label: string,
+  frame: Frame,
+): string {
+  const origin = frameOrigin(frame) ?? frame.url();
+  const target = String(input.name ?? input.label ?? input.selector ?? "control");
+  env.undrivenControls?.push({ hand, target, reason: `inside an embedded frame outside the target app (${origin})` });
+  console.warn(`[${hand}] refused ${JSON.stringify(target)}: ${label} is outside the target app`);
   return (
-    `Refused: ${label} is outside the target app — what is in it can be read, not acted on. If it is ` +
-    `part of the product, report the step "skipped" with unverifiedReason "missing_access" and say ` +
-    `that ${frameOrigin(frame) ?? frame.url()} would have to be allowed for this app; otherwise leave it alone.`
+    `Refused: ${label} is outside the target app (${origin}) — the checker does not act inside another ` +
+    `party's embedded frame, and that says NOTHING about the control. Do not report it broken, risky or ` +
+    `confusing. If the step needs this control, report it "skipped" with unverifiedReason ` +
+    `"our_capability". If it is a third party's widget the journey does not depend on (chat, ads, a ` +
+    `social embed), report it "skipped" with unverifiedReason "not_applicable" or leave it out.`
   );
 }
 
@@ -1581,6 +1687,7 @@ interface Located {
 // answer).
 async function locateAcrossFrames(
   env: ToolEnv,
+  hand: "fill" | "click",
   input: Record<string, unknown>,
   build: (scope: LocatorScope) => Promise<Locator>,
 ): Promise<Located | string> {
@@ -1593,7 +1700,9 @@ async function locateAcrossFrames(
         `FRAME <n> with their origin; pass that number, or leave frame out to search the page and every frame.`
       );
     }
-    if (picked.frame && !mayActIn(env, picked.frame)) return outsideFrameRefusal(picked.label ?? "that frame", picked.frame);
+    if (picked.frame && !mayActIn(env, picked.frame)) {
+      return outsideFrameRefusal(env, hand, input, picked.label ?? "that frame", picked.frame);
+    }
     return { locator: await build(picked.frame ?? env.page), ...picked };
   }
   const top = await build(env.page);
@@ -1606,7 +1715,7 @@ async function locateAcrossFrames(
     if (mayActIn(env, frames[i])) return { locator: inFrame, frame: frames[i], label: frameLabel(frames[i], i) };
     outside ??= { frame: frames[i], label: frameLabel(frames[i], i) };
   }
-  if (outside) return outsideFrameRefusal(outside.label, outside.frame);
+  if (outside) return outsideFrameRefusal(env, hand, input, outside.label, outside.frame);
   return { locator: top, frame: null, label: null };
 }
 
@@ -1783,19 +1892,26 @@ function bareHost(hostname: string): string {
 // The target and anything under it (api.target.test is theirs); www. is not a
 // different site.
 // CHE-373: an origin the owner allowed for this app is the product too — the
-// embedding page an app lives in is where its users meet it.
+// embedding page an app lives in is where its users meet it. Its host EXACTLY:
+// an allowed admin.shopify.com does not make every *.shopify.com the product,
+// and a suffix that slipped past validation (allowed-origins.ts) cannot make a
+// whole namespace of strangers' sites evidence against the customer (rule 8).
 export function isTargetHost(hostname: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
   const host = bareHost(hostname);
-  for (const origin of [targetOrigin, ...allowedOrigins]) {
-    let own: string;
-    try {
-      own = bareHost(new URL(origin).hostname);
-    } catch {
-      continue;
-    }
+  try {
+    const own = bareHost(new URL(targetOrigin).hostname);
     if (host === own || host.endsWith(`.${own}`)) return true;
+  } catch {
+    // A target that is not a URL owns no host; the allowed list still applies.
   }
-  return false;
+  const exact = hostname.toLowerCase();
+  return allowedOrigins.some((origin) => {
+    try {
+      return new URL(origin).hostname.toLowerCase() === exact;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function evidenceAgainstProduct(text: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
@@ -2361,16 +2477,18 @@ async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
   for (let i = 0; i < frames.length && sections.length < MAX_FRAMES_READ; i++) {
     const frame = frames[i];
     if (readWithPage(frame, pageOrigin)) continue;
+    // Only the product's own documents enter the prompt: the target's origin or
+    // one the owner allowed. A chat widget, a payment field, a vendor's login
+    // stay the "FRAMES: <src>" line they always were — their words in front of
+    // the model invite findings about a third party's widget (rule 8).
+    if (!mayActIn(env, frame)) continue;
     if (!(await visibleFrame(frame))) continue;
     const digest = await withinMs(frame.evaluate(PAGE_DIGEST), FRAME_EVALUATE_MS, null);
     if (!digest || !meaningfulDigest(digest)) continue;
     // What an embedded app links to is published by it, like the page's own.
     rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
     const name = frame.name() ? `, name ${frame.name()}` : "";
-    const use = mayActIn(env, frame)
-      ? `click/fill inside it with frame "${i + 1}"`
-      : "outside the target app: read only, click/fill will not act in it";
-    const header = `FRAME ${i + 1} (origin ${frameOrigin(frame) ?? frame.url()}${name}) — ${use}:`;
+    const header = `FRAME ${i + 1} (origin ${frameOrigin(frame) ?? frame.url()}${name}) — click/fill inside it with frame "${i + 1}":`;
     const body = [...digestSections(digest), ...(digest.text ? [`TEXT:\n${digest.text}`] : [])].join("\n\n");
     // The frame's TEXT is the whole visible document, which is where an app
     // shows "signed in as …" — the test account's email never reaches the model.

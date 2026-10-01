@@ -29,7 +29,7 @@ import { walkingVision } from "./harness";
 import { deriveFunnel } from "@/lib/funnel";
 import { parseJson } from "@/lib/json";
 import { adjudicateStep } from "./judge";
-import { classifyGap, gapEvidenceText } from "./gap-classes";
+import { classifyGap, gapEvidenceText, walkGapEvidence } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk } from "./summary";
@@ -281,12 +281,13 @@ export async function walkOneJourney(args: {
         if (step.unverifiedReason === "our_capability") {
           step.gapClass =
             machineClass ??
-            classifyGap({
-              text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
-              actions: actionTrail,
-              targetOrigin: toolEnv.targetOrigin,
-              allowedOrigins: toolEnv.allowedOrigins,
-            });
+            classifyGap(
+              walkGapEvidence(
+                toolEnv,
+                gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
+                actionTrail,
+              ),
+            );
         } else {
           step.gapClass = undefined;
         }

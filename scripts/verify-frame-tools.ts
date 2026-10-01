@@ -16,6 +16,7 @@
 //   https://app.embedded.test — the embedded app, framed by the host page
 //   https://login.other.test  — a third party's login form, framed too
 //   https://pixel.other.test  — a 1×1 tracking frame
+//   https://idp.other.test    — an identity provider an app bounces to mid-fill
 //   challenges.cloudflare.com — a bot-protection widget, never to be touched
 //
 // Chromium: Playwright's own build when installed, else the system Chrome
@@ -23,9 +24,16 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-frame-tools.ts
 
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { replayJourney } from "@/agent/journey-replay";
 import type { AgentEnv } from "@/agent/env";
+import { classifyGap, walkGapEvidence } from "@/agent/gap-classes";
+import { createWatchRun, type DueWatch } from "@/agent/scheduler";
+import { startSavedApp } from "@/lib/start-saved-app";
+import { createRecheckRun } from "@/lib/recheck";
 import { errorResponseIn, executeTool, isAllowedOrigin, isTargetHost, prepareAgentPage, type ToolEnv } from "@/agent/tools";
 import { shouldAnnounceSelfCheck } from "@/agent/self-hosts";
 import { allowedOriginsBlock, walkingSystem } from "@/agent/instructions";
@@ -46,6 +54,8 @@ const TOP = "https://admin.shop.test";
 const APP = "https://app.embedded.test";
 const LOGIN = "https://login.other.test";
 const PIXEL = "https://pixel.other.test";
+// The identity provider an embedded app bounces to mid-fill (the credential race).
+const IDP = "https://idp.other.test";
 // A bot-protection widget's frame: reaching into frames must not become a way
 // past one (browser.ts — defeating bot protection is prohibited).
 const CHALLENGE = "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile";
@@ -67,7 +77,39 @@ const PAGES: Record<string, string> = {
     <p id="status">Report not opened</p>
     <button onclick="document.getElementById('status').textContent='Report ready'">Open report</button>
     <button onclick="parent.postMessage('open-modal', '*')">Open host modal</button>
-    <label for="email">Store email</label><input id="email" type="email">`,
+    <label for="email">Store email</label><input id="email" type="email"
+      oninput="document.getElementById('who').textContent = 'Signed in as ' + this.value">
+    <p id="who"></p>
+    <label for="vault">Vault key</label><input id="vault" type="password">`,
+  // Frames with no address of their own: they act for the app that made them
+  // (srcdoc, data:) or run opaque (sandbox).
+  [`${TOP}/inherit`]: `<!doctype html><title>Shop admin</title><h1>Shop admin</h1>
+    <iframe name="app-iframe" src="${APP}/inherit" width="800" height="400"></iframe>`,
+  [`${APP}/inherit`]: `<!doctype html><title>Securify</title><h2>Securify editor</h2>
+    <iframe name="editor" width="300" height="80"
+      srcdoc="<button onclick=&quot;document.body.dataset.pressed='yes'&quot;>Bold</button><label for=e>Editor key</label><input id=e type=password>"></iframe>
+    <iframe name="sandboxed" sandbox="allow-scripts" width="300" height="80"
+      srcdoc="<label for=k>Sandbox key</label><input id=k type=password>"></iframe>
+    <iframe name="datadoc" width="300" height="80"
+      src="data:text/html,${encodeURIComponent(`<button onclick="document.body.dataset.pressed='yes'">Italic</button>`)}"></iframe>`,
+  // A same-origin frame: read with the page, and since CHE-373 also acted in.
+  [`${TOP}/same`]: `<!doctype html><title>Shop admin</title><h1>Shop admin</h1>
+    <iframe name="inner" src="${TOP}/inner" width="600" height="200"></iframe>`,
+  [`${TOP}/inner`]: `<!doctype html><title>Inner</title><h2>Inner settings</h2>
+    <button onclick="document.body.dataset.pressed='yes'">Same-origin action</button>`,
+  // The credential race: the app's sign-in bounces to its identity provider,
+  // whose page has a field with the same name, focused on load.
+  [`${TOP}/race`]: `<!doctype html><title>Shop admin</title><h1>Shop admin</h1>
+    <iframe name="app-iframe" src="${APP}/race" width="600" height="200"></iframe>`,
+  [`${APP}/race`]: `<!doctype html><title>Securify</title><label for="p">Account password</label><input id="p" type="password">`,
+  [`${TOP}/race-top`]: `<!doctype html><title>Shop admin</title><label for="p">Account password</label><input id="p" type="password">`,
+  // The same bounce, later: the app shows no field of its own ("Signing you
+  // in…"), so the fill is still waiting for one when the provider's arrives.
+  [`${TOP}/late`]: `<!doctype html><title>Shop admin</title><h1>Shop admin</h1>
+    <iframe name="app-iframe" src="${APP}/late" width="600" height="200"></iframe>`,
+  [`${APP}/late`]: `<!doctype html><title>Securify</title><p>Signing you in…</p>`,
+  [`${TOP}/late-top`]: `<!doctype html><title>Shop admin</title><p>Signing you in…</p>`,
+  [`${IDP}/`]: `<!doctype html><title>Sign in</title><label for="p">Account password</label><input id="p" type="password" autofocus>`,
   [`${LOGIN}/`]: `<!doctype html><title>Vendor login</title>
     <h2>Vendor sign-in</h2>
     <label for="pw">Password</label><input id="pw" type="password">
@@ -100,12 +142,20 @@ async function routedContext(browser: Browser): Promise<BrowserContext> {
     const url = new URL(route.request().url());
     const body = PAGES[`${url.origin}${url.pathname}`];
     if (body === undefined) return route.fulfill({ status: 404, body: "not found" });
+    // The identity provider answers slowly, as a real one does: its navigation
+    // is in flight while fill waits for hydration, and commits inside that wait
+    // — the frame then reports the provider's address when the origin is read.
+    if (url.origin === IDP) await new Promise((r) => setTimeout(r, 300));
     return route.fulfill({ status: 200, contentType: "text/html", body });
   });
   return context;
 }
 
 async function freshEnv(browser: Browser, allowedOrigins?: string[]): Promise<ToolEnv & { page: Page }> {
+  return envAt(browser, `${TOP}/`, allowedOrigins, 4);
+}
+
+async function envAt(browser: Browser, url: string, allowedOrigins: string[] | undefined, iframes: number): Promise<ToolEnv & { page: Page }> {
   const context = await routedContext(browser);
   const page = await context.newPage();
   const env = {
@@ -121,12 +171,73 @@ async function freshEnv(browser: Browser, allowedOrigins?: string[]): Promise<To
     undrivenControls: [],
   } as unknown as ToolEnv & { page: Page };
   await prepareAgentPage(env);
-  const nav = await executeTool(env, "navigate", { url: `${TOP}/` });
+  const nav = await executeTool(env, "navigate", { url });
   if (!nav.startsWith("Navigated")) throw new Error(`fixture did not load: ${nav}`);
   // Every frame loaded before anything is asserted about it.
-  await page.waitForFunction(() => document.querySelectorAll("iframe").length === 4);
+  await page.waitForFunction((n) => document.querySelectorAll("iframe").length === n, iframes);
   for (const frame of page.frames()) await frame.waitForLoadState("load");
   return env;
+}
+
+// The credential race (cross-review of #222): the document holding the field
+// navigates to the identity provider while fill is at work. Three shapes; the
+// first two do not depend on timing.
+//   hydration — the bounce starts on the document's next animation frame, which
+//     is the one fill's own hydration wait asks for: the field was found on the
+//     app, and the write that follows the wait meets the provider's document.
+//     (A check of the frame's address in Node, made after that wait, still read
+//     the app's origin here — which is why there is none.)
+//   late — the app has no field yet ("Signing you in…"), so fill is waiting for
+//     one when the provider's page arrives with a field of the same name.
+//   timed — the bounce starts `delayMs` after fill is called, wherever that
+//     lands in fill's work (the sweep the cross-review leaked 4 of 14 on).
+// In each, only the check made inside the document, in the same task as the
+// write, stands between the password and the provider's field. Whatever the
+// tool answers, that field must never hold the password.
+const LATE_BOUNCE_MS = 2_500;
+
+async function raceOnce(
+  browser: Browser,
+  where: "frame" | "page",
+  shape: "timed" | "late" | "hydration",
+  delayMs: number,
+): Promise<{ result: string; leaked: boolean; detail: string }> {
+  const inFrame = where === "frame";
+  const path = shape === "late" ? (inFrame ? "/late" : "/late-top") : inFrame ? "/race" : "/race-top";
+  const env = await envAt(browser, `${TOP}${path}`, [APP], inFrame ? 1 : 0);
+  const doc = inFrame ? appFrame(env.page) : env.page.mainFrame();
+  if (shape === "hydration") {
+    await doc.evaluate((to) => {
+      window.requestAnimationFrame = () => {
+        location.href = to;
+        return 0;
+      };
+    }, `${IDP}/`);
+  } else {
+    await doc.evaluate(([to, ms]) => {
+      setTimeout(() => {
+        location.href = to as string;
+      }, ms as number);
+    }, [`${IDP}/`, delayMs] as const);
+  }
+  const result = await executeTool(env, "fill", { label: "Account password", value: "{{TEST_PASSWORD}}", ...(inFrame ? { frame: "app-iframe" } : {}) });
+  // Let the navigation finish wherever it was (the provider answers 300ms after
+  // it is asked, see routedContext), then look at the provider's field.
+  let idp: Frame | undefined;
+  for (let i = 0; i < 50 && !idp; i++) {
+    idp = env.page.frames().find((f) => f.url().startsWith(IDP));
+    if (!idp) await env.page.waitForTimeout(100);
+  }
+  const tag = `${where}, ${shape} +${delayMs}ms`;
+  // A race that never reached the provider proves nothing: say so, do not pass.
+  if (!idp) {
+    await env.page.context().close();
+    return { result, leaked: true, detail: `${tag} → the provider never loaded; the fixture did not race` };
+  }
+  await idp.waitForLoadState("load").catch(() => {});
+  const idpValue = await idp.inputValue("#p").catch(() => "");
+  await env.page.context().close();
+  return { result, leaked: idpValue === SECRET_PASSWORD, detail: `${tag} → ${result.slice(0, 120)} | idp field ${idpValue ? "FILLED" : "empty"}` };
 }
 
 const appFrame = (page: Page) => page.frames().find((f) => f.url().startsWith(APP))!;
@@ -176,6 +287,84 @@ async function main() {
   check("isTargetHost: the target", isTargetHost("admin.shop.test", TOP));
   check("isTargetHost: an allowed origin's host", isTargetHost("app.embedded.test", TOP, [APP]));
   check("isTargetHost: without the list it is foreign, as before", !isTargetHost("app.embedded.test", TOP));
+
+  // Public suffixes: a namespace of strangers' sites is never "the product".
+  for (const suffix of ["https://com.au", "https://co.uk", "https://github.io", "https://myshopify.com", "https://vercel.app", "https://com"]) {
+    check(`public suffix refused: ${suffix}`, normalizeAllowedOrigin(suffix) === null);
+  }
+  check("one site under a shared namespace is allowed", normalizeAllowedOrigin("https://my-store.myshopify.com") === "https://my-store.myshopify.com");
+  check("…and a stored public suffix is dropped on read", parseAllowedOrigins(JSON.stringify(["https://github.io", APP])).join() === APP);
+  check("isTargetHost: an allowed origin's host is matched exactly, not as a suffix", !isTargetHost("api.app.embedded.test", TOP, [APP]));
+  check("isTargetHost: a suffix that got stored anyway makes no stranger the product", !isTargetHost("evil-shop.com.au", TOP, ["https://com.au"]));
+  check("isTargetHost: …nor anyone.github.io", !isTargetHost("anyone.github.io", TOP, ["https://me.github.io"]));
+  check("isTargetHost: the target keeps its subdomains", isTargetHost("api.admin.shop.test", TOP, [APP]));
+
+  // The walk classifies a step on the origins its tools act on (execution.ts).
+  const gapText = "app.embedded.test answered 403 to the sign-in";
+  check(
+    "gap class: a 403 from an allowed origin is not a third party's block",
+    classifyGap(walkGapEvidence({ targetOrigin: TOP, allowedOrigins: [APP] }, gapText, [])) !== "third_party_block",
+  );
+  check(
+    "gap class: …while without the list it is (the fixture discriminates)",
+    classifyGap(walkGapEvidence({ targetOrigin: TOP }, gapText, [])) === "third_party_block",
+  );
+  // The walk itself cannot be driven here (it is the model's loop), so the call
+  // site is held by its shape: every classifyGap in execution.ts is fed by
+  // walkGapEvidence from the walk's own tool env. A call that spells the
+  // evidence by hand is the one that dropped allowedOrigins with every check
+  // above still green.
+  {
+    const walk = readFileSync(join(import.meta.dirname, "..", "src/agent/execution.ts"), "utf8");
+    const calls = walk.match(/\bclassifyGap\(/g) ?? [];
+    const fed = walk.match(/\bclassifyGap\(\s*walkGapEvidence\(\s*toolEnv\s*,/g) ?? [];
+    check("gap class: the walk classifies on its tool env's origins (execution.ts)", calls.length > 0 && calls.length === fed.length, `${fed.length} of ${calls.length} calls`);
+  }
+
+  // Every way a run is created carries the app's allowed origins; without them
+  // no production run would get any, with every check above still green.
+  {
+    const stored = JSON.stringify([APP]);
+    const created: Record<string, unknown>[] = [];
+    let serial = 0;
+    const noSpend = { aggregate: async () => ({ _sum: { priceUsd: 0, priceFromTopupUsd: 0 } }), findMany: async () => [] };
+    const app = {
+      id: "app", ownerId: "owner", teamId: "team_owner", appSlug: "admin.shop.test", targetUrl: `${TOP}/`, targetKind: "website",
+      extensionId: null, extensionConfig: null, testEmail: null, testPasswordEnc: null, scopeHints: null, userNotes: null, focusAreas: null,
+      allowedOrigins: stored,
+    };
+    const db = {
+      counter: { upsert: async () => ({ value: ++serial }) },
+      team: { findUnique: async () => ({ topupUsd: 0 }) },
+      testAccount: { findMany: async () => [] },
+      app: { findFirst: async () => app },
+      run: {
+        ...noSpend,
+        findFirst: async () => null,
+        findUnique: async () => ({
+          ...app, id: "old-run", appId: "app", status: "completed", ephemeral: false, watchId: null, notifyEmail: null,
+          testAccounts: null, paidCheckoutSessionId: null, team: { plan: "business" },
+        }),
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          created.push(data);
+          return { id: `r${serial}`, publicId: `p${serial}` };
+        },
+      },
+    } as unknown as PrismaClient;
+    await startSavedApp(db, { id: "owner", teamId: "team_owner", plan: "business" }, "app", { trigger: async () => {}, siteCap: () => 20 });
+    check("run creation: a dashboard/MCP start carries the app's allowed origins", created.at(-1)?.allowedOrigins === stored, String(created.at(-1)?.allowedOrigins));
+    await createRecheckRun(db, "p-old", {}, {
+      canMutate: async () => true, trigger: async () => {}, siteCap: () => 20, now: () => new Date("2026-10-01T00:00:00Z"), ephemeralTtlDays: () => 7,
+    });
+    check("run creation: a re-check carries the run's allowed origins", created.length === 2 && created.at(-1)?.allowedOrigins === stored, String(created.at(-1)?.allowedOrigins));
+    const watch: DueWatch = {
+      id: "watch", appSlug: app.appSlug, targetUrl: app.targetUrl, notifyEmail: null, testEmail: null, testPasswordEnc: null,
+      appId: "app", ownerId: "owner", teamId: "team_owner",
+      app: { scopeHints: null, userNotes: null, focusAreas: null, allowedOrigins: stored, targetKind: "website", extensionId: null, extensionConfig: null },
+    };
+    await createWatchRun({ db } as unknown as AgentEnv, watch, null);
+    check("run creation: a watch's run carries the app's allowed origins", created.length === 3 && created.at(-1)?.allowedOrigins === stored, String(created.at(-1)?.allowedOrigins));
+  }
   check("errorResponseIn: a 500 from an allowed origin is the product's", errorResponseIn([`GET ${APP}/api → 500`], TOP, [APP]) !== null);
   check("errorResponseIn: …and not without the list", errorResponseIn([`GET ${APP}/api → 500`], TOP) === null);
 
@@ -226,8 +415,10 @@ async function main() {
       check("read_page: …carrying the app's button", frameAt > 0 && digest.indexOf('"Open report"', frameAt) > frameAt);
       check("read_page: …and its text", digest.includes("Report not opened"));
       check("read_page: the page itself reads as before", digest.startsWith(`URL: ${TOP}/`) && digest.includes('"Admin menu"'));
-      check("read_page: a third party's frame is labelled with its own origin", digest.includes(`FRAME 2 (origin ${LOGIN}, name vendor-login)`));
-      check("read_page: …and as read only", digest.includes(`FRAME 2 (origin ${LOGIN}, name vendor-login) — outside the target app: read only`));
+      // Decision 1a: a third party's frame enters the prompt as its address only.
+      check("read_page: a third party's frame is listed by address", digest.includes(`FRAMES:\n`) && digest.includes(`${LOGIN}/`));
+      check("read_page: …and none of its words reach the prompt", !digest.includes("Vendor sign-in") && !digest.includes("Vendor help"), digest.slice(digest.indexOf("FRAME 1")));
+      check("read_page: …nor a section for it", !digest.includes(`(origin ${LOGIN}`));
       check("read_page: the allowed frame says it can be acted in", digest.includes(`name app-iframe) — click/fill inside it with frame "1"`));
       check("read_page: a 1×1 tracking frame is left out", !digest.includes("Track me"));
       check("read_page: a bot-protection frame is never read", !digest.includes("Verify you are human") && !digest.includes("I am human"));
@@ -255,12 +446,34 @@ async function main() {
       check("click: the host page's reaction is the frame click's reaction too", viaHost.startsWith("Clicked inside FRAME 1") && !viaHost.includes("did not react AT ALL"), viaHost.slice(0, 300));
       check("click: …the host modal really opened", (await env.page.textContent("#host-modal")) === "Host modal open");
 
-      // A third party's frame is read, never acted in — searched or named.
+      // A third party's frame is never acted in — searched or named.
       const vendorClick = await executeTool(env, "click", { role: "button", name: "Vendor help" });
       check("click: a control only in a third party's frame is refused", vendorClick.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorClick);
       const vendorNamed = await executeTool(env, "click", { role: "button", name: "Vendor help", frame: "vendor-login" });
       check("click: …named explicitly, refused too", vendorNamed.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorNamed);
+      // Rule 2: our limit is our ticket, never homework for the customer.
+      check("click: the refusal files our own gap (our_capability)", vendorClick.includes('"our_capability"'), vendorClick);
+      check(
+        "click: …and never asks the customer for access or to allow an origin",
+        !vendorClick.includes("missing_access") && !/would have to be allowed|allow (?:it|this|the origin)/i.test(vendorClick),
+        vendorClick,
+      );
       check("click: …and nothing was pressed there", (await loginFrame(env.page).evaluate(() => document.body.dataset.touched ?? "no")) === "no");
+      // The machine half: whatever the model then writes about that control,
+      // the step cannot blame the product for a press we refused to make.
+      const blamed = { label: "Open vendor help", status: "broken", attempted: "Pressed Vendor help.", observed: "The Vendor help button did nothing when pressed." };
+      await executeTool(env, "report_step", blamed);
+      check(
+        "report_step: a step blaming the product after that refusal becomes skipped / our_capability",
+        blamed.status === "skipped" && (blamed as { unverifiedReason?: string }).unverifiedReason === "our_capability",
+        JSON.stringify(blamed),
+      );
+      check("report_step: …and no longer says the button did nothing", !/did nothing/i.test(blamed.observed), blamed.observed);
+      // A widget the journey does not depend on, reported as such, stays as such.
+      await executeTool(env, "click", { role: "button", name: "Vendor help" });
+      const aside = { label: "Vendor help widget", status: "skipped", unverifiedReason: "not_applicable", attempted: "Looked at the vendor's help widget.", observed: "A vendor help widget is embedded on the page." };
+      await executeTool(env, "report_step", aside);
+      check("report_step: a third party's widget reported not_applicable stays not_applicable", aside.status === "skipped" && aside.unverifiedReason === "not_applicable", JSON.stringify(aside));
       const vendorFill = await executeTool(env, "fill", { label: "Password", value: "not a secret" });
       check("fill: plain text is refused in a third party's frame too", vendorFill.startsWith(`Refused: FRAME 2 (${LOGIN}) is outside the target app`), vendorFill);
       check("fill: …nothing typed", (await loginFrame(env.page).inputValue("#pw")) === "");
@@ -283,6 +496,20 @@ async function main() {
       const cred = await executeTool(env, "fill", { label: "Store email", value: "{{TEST_EMAIL}}" });
       check("fill: a credential goes into an ALLOWED frame", cred === `Filled inside FRAME 1 (${APP}) (credential substituted server-side).`, cred);
       check("fill: …substituted server-side", (await appFrame(env.page).inputValue("#email")) === SECRET_EMAIL);
+      // The app now echoes the account ("Signed in as …") as frame text.
+      check("fixture: the app echoes the account it was given", (await appFrame(env.page).textContent("#who")) === `Signed in as ${SECRET_EMAIL}`);
+      const echoed = await executeTool(env, "read_page", {});
+      check("read_page: the frame's echo is read…", echoed.includes("Signed in as"), echoed.slice(echoed.indexOf("FRAME 1"), echoed.indexOf("FRAME 1") + 400));
+      check("read_page: …with the test account's email scrubbed out", !echoed.includes(SECRET_EMAIL));
+
+      // A password typed into a frame is blurred in the frame before a screenshot.
+      const vault = await executeTool(env, "fill", { label: "Vault key", value: "{{TEST_PASSWORD}}" });
+      check("fill: a password lands in the allowed frame", vault.startsWith("Filled inside FRAME 1") && (await appFrame(env.page).inputValue("#vault")) === SECRET_PASSWORD, vault);
+      await executeTool(env, "screenshot", {});
+      check(
+        "screenshot: the frame's password field is blurred first",
+        (await appFrame(env.page).evaluate(() => (document.getElementById("vault") as HTMLInputElement).style.filter)) === "blur(6px)",
+      );
 
       const stolen = await executeTool(env, "fill", { label: "Password", value: "{{TEST_PASSWORD}}" });
       check("fill: a credential is refused in a frame from a non-allowed origin", stolen.startsWith("Refused:") && stolen.includes(LOGIN), stolen);
@@ -345,16 +572,82 @@ async function main() {
       check("replay: …so the journey is not reproduced", result.status === "diverged", result.status);
     }
 
-    // No allowed origins: exactly the single-origin rules of before.
+    // Frames that inherit the app's origin are the app's; a sandboxed one runs
+    // opaque and never receives a credential, whatever its parent is.
+    {
+      const env = await envAt(browser, `${TOP}/inherit`, [APP], 1);
+      // envAt waited for the page's frames; the app's own nested ones load after.
+      await env.page.waitForFunction(() => window.frames.length === 1 && window.frames[0].frames.length === 3).catch(() => {});
+      for (const frame of env.page.frames()) await frame.waitForLoadState("load");
+      check("fixture: the app's three nested frames are there", env.page.frames().length === 5, String(env.page.frames().length));
+      const bold = await executeTool(env, "click", { role: "button", name: "Bold", frame: "editor" });
+      check("srcdoc frame: takes the allowed app's origin and is acted in", bold.startsWith("Clicked inside FRAME"), bold.slice(0, 160));
+      const editor = env.page.frames().find((f) => f.name() === "editor");
+      check("srcdoc frame: …the press landed", (await editor?.evaluate(() => document.body.dataset.pressed ?? "no")) === "yes");
+      const italic = await executeTool(env, "click", { role: "button", name: "Italic", frame: "datadoc" });
+      check("data: frame: acts for the allowed app that wrote it", italic.startsWith("Clicked inside FRAME"), italic.slice(0, 160));
+      const datadoc = env.page.frames().find((f) => f.name() === "datadoc");
+      check("data: frame: …the press landed", (await datadoc?.evaluate(() => document.body.dataset.pressed ?? "no")) === "yes");
+      // A credential is another matter: a document with no address of its own
+      // cannot be told from a stranger's at the write, so it gets none.
+      const editorKey = await executeTool(env, "fill", { label: "Editor key", value: "{{TEST_PASSWORD}}", frame: "editor" });
+      check(
+        "srcdoc frame: a credential is refused (no address of its own)",
+        editorKey.startsWith("Refused: will not enter test credentials on an embedded document with no address of its own"),
+        editorKey,
+      );
+      check("srcdoc frame: …and nothing was written", (await editor?.inputValue("#e")) === "");
+      const sandboxed = await executeTool(env, "fill", { label: "Sandbox key", value: "{{TEST_PASSWORD}}", frame: "sandboxed" });
+      const box = env.page.frames().find((f) => f.name() === "sandboxed");
+      check("sandboxed frame: a credential is refused (opaque origin)", sandboxed.startsWith("Refused:"), sandboxed);
+      check("sandboxed frame: …and nothing was written", (await box?.inputValue("#k")) === "");
+      await env.page.context().close();
+    }
+
+    // A same-origin frame: read with the page (as before) and, new with
+    // CHE-373, clicked — page locators stop at every frame boundary.
+    {
+      const env = await envAt(browser, `${TOP}/same`, undefined, 1);
+      const digest = await executeTool(env, "read_page", {});
+      check("same-origin frame: read with the page", digest.includes("Inner settings"));
+      const pressed = await executeTool(env, "click", { role: "button", name: "Same-origin action" });
+      check("same-origin frame: a control in it is pressed", pressed.startsWith(`Clicked inside FRAME 1 (${TOP})`), pressed.slice(0, 120));
+      await env.page.context().close();
+    }
+
+    // The credential race, in a frame and on the page (see raceOnce).
+    for (const where of ["frame", "page"] as const) {
+      for (const delay of [0, 40, 120, 300, 800]) {
+        const race = await raceOnce(browser, where, "timed", delay);
+        check(`credential race (${where}, +${delay}ms): the provider's field never gets the password`, !race.leaked, race.detail);
+      }
+      // Each deterministic shape must end in the refusal that names the
+      // provider — the write met the provider's document and stopped there — or
+      // the fixture raced nothing and "never gets the password" proves nothing.
+      const metProvider = `Refused: will not enter test credentials on ${IDP} (outside the target app)`;
+      const hydration = await raceOnce(browser, where, "hydration", 0);
+      check(`credential race (${where}, the bounce lands in the hydration wait): the password is not written`, !hydration.leaked, hydration.detail);
+      check(`credential race (${where}, the bounce lands in the hydration wait): …refused in the provider's document`, hydration.result.startsWith(metProvider), hydration.result);
+      const late = await raceOnce(browser, where, "late", LATE_BOUNCE_MS);
+      check(`credential race (${where}, the field arrives with the provider): the password is not written`, !late.leaked, late.detail);
+      check(`credential race (${where}, the field arrives with the provider): …refused in the provider's document`, late.result.startsWith(metProvider), late.result);
+    }
+
+    // No allowed origins: another origin's frame is an address in the digest and
+    // nothing more — not read, not opened, not typed into, not pressed. The one
+    // thing that did change for such an app is above: a frame on the target's
+    // OWN origin is now pressed and filled, where it used to be read only.
     {
       const env = await freshEnv(browser);
+      const plainDigest = await executeTool(env, "read_page", {});
+      check("default: a cross-origin frame is listed by address only", plainDigest.includes(`${APP}/`) && !plainDigest.includes("Securify settings") && !plainDigest.includes("Report not opened"));
       const nav = await executeTool(env, "navigate", { url: `${APP}/` });
       check("default: navigate to the frame's origin is refused, as before", nav.startsWith(`Refused: ${APP} is outside the target app`), nav);
       const cred = await executeTool(env, "fill", { label: "Store email", value: "{{TEST_EMAIL}}" });
       check("default: no credential into a frame of another origin", cred.startsWith("Refused:") && cred.includes(APP), cred);
       check("default: …nothing typed", (await appFrame(env.page).inputValue("#email")) === "");
       const plain = await executeTool(env, "click", { role: "button", name: "Open report" });
-      check("default: a frame of another origin is read only", plain.startsWith(`Refused: FRAME 1 (${APP}) is outside the target app`), plain);
+      check("default: a frame of another origin is not acted in", plain.startsWith(`Refused: FRAME 1 (${APP}) is outside the target app`), plain);
       check("default: …the app untouched", (await appFrame(env.page).textContent("#status")) === "Report not opened");
       await env.page.context().close();
     }

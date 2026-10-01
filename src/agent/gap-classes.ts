@@ -248,6 +248,19 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   return trailClass(evidence.actions ?? []) ?? "unclassified";
 }
 
+// CHE-373: the evidence a walked step is classified on, built from the walk's
+// own tool env so the origins the tools act on are the origins the classifier
+// counts as the product. Built in one place: the call in execution.ts that
+// spelled the fields by hand could drop allowedOrigins with every guard green,
+// and an allowed origin's challenge then filed as a third party's block.
+export function walkGapEvidence(
+  env: { targetOrigin: string; allowedOrigins?: readonly string[] },
+  text: string,
+  actions: RecordedAction[],
+): GapEvidence {
+  return { text, actions, targetOrigin: env.targetOrigin, allowedOrigins: env.allowedOrigins ?? [] };
+}
+
 // The words a step carries, in one string, for the rules above. Every field
 // the step has; the caller decides whether they are the model's or the
 // customer's copy.

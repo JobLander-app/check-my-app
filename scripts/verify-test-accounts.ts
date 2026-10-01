@@ -288,7 +288,9 @@ async function main() {
   ];
   function fillingEnv(credentials: ToolEnv["credentials"] = { rejected: false }) {
     let filled: string | null = null;
-    const locator = { first: () => locator, or: () => locator, fill: async (v: string) => { filled = v; }, inputValue: async () => filled };
+    // A credential is written in the page by tools.ts WRITE_SECRET (CHE-373); here it lands.
+    const locator = { first: () => locator, or: () => locator, fill: async (v: string) => { filled = v; },
+      evaluate: async (_write: unknown, arg: { value: string }) => { filled = arg.value; return "ok"; }, inputValue: async () => filled };
     const page = {
       url: () => "https://shop.test/login", waitForLoadState: async () => {}, waitForTimeout: async () => {},
       evaluate: async () => 0, getByLabel: () => locator, getByPlaceholder: () => locator, getByRole: () => locator, locator: () => locator,

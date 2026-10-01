@@ -185,7 +185,7 @@ export async function runDueWatches(
   return { started, skipped };
 }
 
-type DueWatch = {
+export type DueWatch = {
   id: string;
   appSlug: string;
   targetUrl: string;
@@ -206,7 +206,8 @@ type DueWatch = {
   } | null;
 };
 
-async function createWatchRun(
+// Exported for scripts/verify-frame-tools.ts: what a watch's run carries from its app.
+export async function createWatchRun(
   env: AgentEnv,
   watch: DueWatch,
   baselineRunId: string | null,
