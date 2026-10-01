@@ -22,6 +22,7 @@ import { appSlugFromUrl } from "@/lib/utils";
 import { createCheckSchema } from "@/lib/validation";
 import { extensionColumns, parseExtensionLink, type ExtensionOptions } from "@/lib/extension-target";
 import { recordTeamEvent } from "@/lib/team-events";
+import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import {
   planAccountEdits,
@@ -53,6 +54,8 @@ export interface CreateAppInput {
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
   userNotes?: string | null;
+  // CHE-373: https origins a check may act on besides the app's own.
+  allowedOrigins?: string[];
   notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
@@ -94,6 +97,8 @@ export async function createAppForTeam(
   const accounts = input.testAccounts?.length ? planAccountEdits([], { set: input.testAccounts }) : null;
   if (accounts && isExtension) return { error: EXTENSION_ONE_ACCOUNT, code: "invalid_input" };
   if (accounts && !accounts.ok) return { error: accounts.error, code: "invalid_input" };
+  const origins = parseAllowedOriginsInput(input.allowedOrigins ?? []);
+  if (!origins.ok) return { error: origins.error, code: "invalid_input" };
 
   // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
   const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
@@ -125,6 +130,7 @@ export async function createAppForTeam(
         scopeHints: input.scopeHints?.trim() || null,
         userNotes: input.userNotes?.trim() || null,
         focusAreas: input.focusAreas?.trim() || null,
+        allowedOrigins: serializeAllowedOrigins(origins.origins),
         // CHE-91: creation is opt-in AND only meaningful with a test account —
         // the run-time gate enforces the second half, this records consent.
         writeMode: input.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
@@ -183,6 +189,8 @@ export interface AppSettingsPatch {
   writeMode?: "read_only" | "create_cleanup";
   scopeHints?: string | null;
   userNotes?: string | null;
+  // CHE-373: replaces the list; [] clears it.
+  allowedOrigins?: string[];
   notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
@@ -234,6 +242,8 @@ export async function updateAppForTeam(
     return { error: EXTENSION_ONE_ACCOUNT, code: "invalid_input" };
   }
   if (accountPlan && !accountPlan.ok) return { error: accountPlan.error, code: "invalid_input" };
+  const origins = patch.allowedOrigins === undefined ? null : parseAllowedOriginsInput(patch.allowedOrigins);
+  if (origins && !origins.ok) return { error: origins.error, code: "invalid_input" };
 
   const passwordUpdate =
     patch.testPassword === undefined
@@ -252,6 +262,7 @@ export async function updateAppForTeam(
       scopeHints: orNull(patch.scopeHints),
       userNotes: orNull(patch.userNotes),
       focusAreas: orNull(patch.focusAreas),
+      allowedOrigins: origins?.ok ? serializeAllowedOrigins(origins.origins) : undefined,
       writeMode: patch.writeMode === undefined ? undefined : patch.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
       ...passwordUpdate,
       ...extensionUpdate,

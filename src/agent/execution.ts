@@ -35,6 +35,7 @@ import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/l
 import { summarizeWalk } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionAccountingStep, extensionProductFailureStep } from "./extension-evidence";
 
@@ -205,6 +206,8 @@ export async function walkOneJourney(args: {
       page,
       extension,
       targetOrigin: originOf(extension?.identity.targetUrl ?? run.targetUrl),
+      // CHE-373: the origins the owner allowed besides the target's.
+      allowedOrigins: parseAllowedOrigins(run.allowedOrigins),
       // CHE-193: lets the click gate know which extra hosts are ours.
       selfCheckHosts: env.bindings.SELF_CHECK_HOSTS,
       // CHE-168 decides whether the nav model sees at all (llm.navVision);
@@ -282,6 +285,7 @@ export async function walkOneJourney(args: {
               text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
               actions: actionTrail,
               targetOrigin: toolEnv.targetOrigin,
+              allowedOrigins: toolEnv.allowedOrigins,
             });
         } else {
           step.gapClass = undefined;

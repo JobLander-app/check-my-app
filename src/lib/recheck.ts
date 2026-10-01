@@ -86,6 +86,7 @@ export async function createRecheckRun(
       scopeHints: true,
       userNotes: true,
       focusAreas: true,
+      allowedOrigins: true,
       notifyEmail: true,
       watchId: true,
       appId: true,
@@ -210,6 +211,8 @@ export async function createRecheckRun(
         scopeHints: prev.scopeHints,
         userNotes: saved ? saved.userNotes : prev.userNotes,
         focusAreas: prev.focusAreas,
+        // CHE-373: scope, and so the origins it may act on, stay the run's own.
+        allowedOrigins: prev.allowedOrigins,
         notifyEmail: prev.notifyEmail,
         watchId: prev.watchId,
         appId: prev.appId,

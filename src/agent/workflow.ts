@@ -160,6 +160,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
+          // CHE-373: the origins the owner allowed besides the target's.
+          allowedOrigins: true,
           notifyEmail: true,
           watchId: true,
           baselineRunId: true,
@@ -475,6 +477,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
+        allowedOrigins: run.allowedOrigins,
         writeAllowed,
         testMarker: `CheckMyApp test r${run.runNumber}`,
       };

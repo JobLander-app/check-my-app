@@ -108,7 +108,7 @@ export async function runDueWatches(
       // Owner-configured scope/notes live on the App; watch runs must carry
       // them (run #19 self-check submitted a real paid check because the
       // "don't press the button" scope hint never reached the agent).
-      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, targetKind: true, extensionId: true, extensionConfig: true } },
+      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, allowedOrigins: true, targetKind: true, extensionId: true, extensionConfig: true } },
     },
   });
 
@@ -199,6 +199,7 @@ type DueWatch = {
     scopeHints: string | null;
     userNotes: string | null;
     focusAreas: string | null;
+    allowedOrigins: string | null;
     targetKind: string;
     extensionId: string | null;
     extensionConfig: string | null;
@@ -232,6 +233,8 @@ async function createWatchRun(
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
       focusAreas: watch.app?.focusAreas ?? null,
+      // CHE-373: like scopeHints, read from the app as it is now.
+      allowedOrigins: watch.app?.allowedOrigins ?? null,
       watchId: watch.id,
       baselineRunId,
       appId: watch.appId,

@@ -4,6 +4,7 @@ import type { ProposedJourney } from "./discovery";
 import type { AppKnowledge } from "./knowledge";
 import { JOURNEY_METRICS_GUIDE, metricLine, type JourneyMetric } from "./journey-metrics";
 import { usableRunAccounts } from "@/lib/test-accounts";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 // System-prompt assembly. The worker's contract is textual: the standing
 // mission + the client's own instructions (scope hints, notes) compose into the
@@ -24,6 +25,8 @@ type Run = {
   testAccounts?: string | null;
   // CHE-81: the owner's priority concerns, verbatim.
   focusAreas?: string | null;
+  // CHE-373: Run.allowedOrigins (JSON array of https origins).
+  allowedOrigins?: string | null;
   // CHE-90: CRUD lifecycle permission + the marker every created record carries.
   writeAllowed?: boolean;
   testMarker?: string;
@@ -269,6 +272,23 @@ ${lines.join("\n")}
 // the model cannot fill is one it must not be offered.
 export function accountLabels(run: Pick<Run, "testAccounts">): string[] {
   return usableRunAccounts(run.testAccounts).map((a) => a.label);
+}
+
+// CHE-373: the origins the owner allowed besides the target's — the tools
+// already accept them (navigate, credential entry); this tells the model they
+// are the product, not a third-party site the MISSION keeps it away from.
+// Empty for every app that has none, so their prompt is unchanged.
+export function allowedOriginsBlock(run: Pick<Run, "allowedOrigins">): string {
+  const origins = parseAllowedOrigins(run.allowedOrigins);
+  if (origins.length === 0) return "";
+  return `
+
+ALLOWED ORIGINS: besides the target's own origin, the owner allowed this run to
+open and act on ${origins.join(", ")}. They are part of the product, not
+third-party sites: navigate there, sign in there with the test credentials, and
+judge what you find there as the product. The app may render inside an embedded
+frame from one of them — read_page shows it as FRAME <n>, and click/fill reach
+into it (pass frame to pick one).`;
 }
 
 export function clientInstructionBlock(run: Pick<Run, "scopeHints" | "userNotes">): string {
@@ -524,7 +544,7 @@ When done, respond with ONLY a JSON object, no prose:
       ? "\n\nEvery priority concern that names a test account needs a journey signed in as" +
         ' that account, and its title must say which (e.g. "As admin: …").'
       : ""
-  }${clientInstructionBlock(run)}${knowledgeTail(knowledge, "discovery")}`;
+  }${allowedOriginsBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "discovery")}`;
 }
 
 export function walkingSystem(
@@ -556,5 +576,5 @@ with label="...", getByPlaceholder for placeholder="..." fields.
 
 Finish with a 1-2 sentence summary of what you found (plain text). If anything
 was not ok, the FIRST sentence names the problem — the summary's job is "what's
-wrong", never a recap of what works.${focusBlock(run)}${credentialsBlock(run)}${crudBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "walking")}`;
+wrong", never a recap of what works.${focusBlock(run)}${credentialsBlock(run)}${crudBlock(run)}${allowedOriginsBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "walking")}`;
 }

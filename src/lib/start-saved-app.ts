@@ -77,6 +77,8 @@ export async function startSavedApp(
       // CHE-322: and every named account, as they are right now.
       testAccounts: await snapshotAppAccounts(db, app),
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
+      // CHE-373: the origins the owner allowed besides the app's own.
+      allowedOrigins: app.allowedOrigins,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
       startedVia: deps.source ?? "ui",
       forceFull: app.targetKind === "extension", status: "queued",

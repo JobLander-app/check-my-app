@@ -25,6 +25,7 @@ import type { Browser, BrowserContext } from "@cloudflare/playwright";
 import type { AgentEnv } from "./env";
 import { credentialToolEnv } from "./credentials";
 import { executeTool, prepareAgentPage, UNDRIVEN_INSTRUCTION, type RecordedAction, type ToolEnv } from "./tools";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 // The stable head of UNDRIVEN_INSTRUCTION — the tool text for a control our own
 // hands could not drive (CHE-214).
@@ -56,6 +57,9 @@ export interface ReplayRun {
   // CHE-322: Run.testAccounts, so a step recorded as a named account replays as it.
   testAccounts?: string | null;
   appId?: string | null;
+  // CHE-373: Run.allowedOrigins, so a recorded step on an allowed origin
+  // replays where it was walked instead of being refused as off-target.
+  allowedOrigins?: string | null;
 }
 
 export interface ReplayJourney {
@@ -213,6 +217,7 @@ export async function replayJourney(
     const toolEnv: ToolEnv = {
       page,
       targetOrigin: originOf(run.targetUrl),
+      allowedOrigins: parseAllowedOrigins(run.allowedOrigins),
       // CHE-193: lets the click gate know which extra hosts are ours. Optional
       // chaining because verify-replay-actions.ts drives this loop with a bare
       // env (db only); production always has bindings.
