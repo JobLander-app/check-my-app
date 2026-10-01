@@ -21,10 +21,11 @@ export function d1Time(d: Date): string {
 
 // A sent message cannot be unsent, so the record must not hang on a database
 // call made after the send (Codex review of #221). The row is written first;
-// a send that fails takes it back; a send that succeeds fills in Telegram's
-// message id. If that last write fails, the message is still on record (with
-// no message id), and this returns rather than throws: an error would invite
-// a re-run, and a re-run sends the owner the same message twice.
+// a send Telegram refuses takes it back; a send that succeeds fills in
+// Telegram's message id. Whenever the message may have been delivered — the
+// last write failed, or the send's outcome is unknown — it stays on record and
+// this returns a warning rather than throws: an error would invite a re-run,
+// and a re-run sends the owner the same message twice.
 export async function sendRecorded(
   deps: SendDeps,
   chatId: string,
@@ -44,8 +45,13 @@ export async function sendRecorded(
   } catch (err) {
     // A network failure leaves it unknown whether Telegram delivered: keep the
     // row (no message id marks it unconfirmed) rather than erase a message
-    // the owner may be reading.
-    throw new Error(`send outcome unknown (${err instanceof Error ? err.message : String(err)}); row ${id} kept without a message id`);
+    // the owner may be reading — and warn rather than throw, for the same
+    // reason as below: a retry could deliver it twice (Codex review of #221).
+    return {
+      id,
+      messageId: null,
+      warning: `send outcome unknown (${err instanceof Error ? err.message : String(err)}); kept without a message id — look at the chat before sending again`,
+    };
   }
   if (!sent.ok || !sent.result) {
     await deps.d1('DELETE FROM "TelegramMessage" WHERE "id" = ?', [id]);

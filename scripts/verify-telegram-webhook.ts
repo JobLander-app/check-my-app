@@ -369,13 +369,18 @@ check("the message text never reaches the log", !logged.some((l) => l.includes(P
   check("tg-send: Telegram refused → error, and no 'out' row claims it was sent",
     refusedError.length > 0 && refused.rows().length === 0, `${refused.rows().length} rows, ${refusedError || "no error"}`);
 
+  // Telegram may have delivered it, so this is the same case as the late D1
+  // failure: kept, said, and not an error a caller would retry (Codex review
+  // of #221, round 3).
   const lost = harness({ telegramThrows: true });
   let lostError = "";
-  await sendRecorded(lost.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { lostError = e.message; });
+  const lostResult = await sendRecorded(lost.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { lostError = e.message; return null; });
   const lostRows = lost.rows();
-  check("tg-send: the send's outcome is unknown → error, and the row is kept, marked by no message id",
-    lostError.length > 0 && lostRows.length === 1 && lostRows[0].messageId === null,
-    `${lostRows.length} rows, ${lostError || "no error"}`);
+  check("tg-send: the send's outcome is unknown → the row is kept, marked by no message id",
+    lostRows.length === 1 && lostRows[0].messageId === null, `${lostRows.length} rows`);
+  check("tg-send: …and it warns instead of throwing, so a retry cannot send it twice",
+    lostError === "" && typeof lostResult?.warning === "string" && lostResult.warning.length > 0,
+    lostError ? `threw: ${lostError}` : String(lostResult?.warning));
 
   const down = harness({ d1Down: true });
   let downError = "";
