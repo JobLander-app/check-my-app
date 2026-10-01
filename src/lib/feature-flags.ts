@@ -49,16 +49,34 @@ export type FlagFetch = (input: string, init: RequestInit) => Promise<{ ok: bool
 /** The whole wait a page will accept for a flag before it renders without it. */
 export const FLAG_TIMEOUT_MS = 1500;
 
+/**
+ * Every person property a flag condition may read, each sent as an override
+ * with every request (CHE-380). For a property the request leaves out,
+ * PostHog falls back to what it has stored about the person — and anyone can
+ * store anything about their own distinct id with the public token above.
+ * A stale `is_test_account = "true"` condition on `home-extension-check`
+ * therefore switched the extension check on for a stranger who had `$set`
+ * that property from devtools. With both properties always overridden, no
+ * stored value can decide a flag; posthog:setup and `verify:lens-flags --live`
+ * refuse any condition on a property outside this list.
+ */
+export const FLAG_PERSON_PROPERTIES = ["email", "is_test_account"] as const;
+
 /** The exact body sent to PostHog. Pure, so the verification script can check it. */
 export function buildFlagsPayload(key: string, person: FlagPerson) {
+  const personProperties: Record<(typeof FLAG_PERSON_PROPERTIES)[number], string | boolean> = {
+    // Sent with the request, not left for PostHog to remember: the browser
+    // sets `email` on identify, but only after a visit.
+    email: person.email,
+    // Always false here — a test account never reaches this request
+    // (evaluateFlag, CHE-334) — and sent anyway so a stored "true" cannot
+    // match (CHE-380).
+    is_test_account: person.isTestAccount,
+  };
   return {
     api_key: POSTHOG_FLAGS_TOKEN,
     distinct_id: person.distinctId,
-    // Sent with the request, not left for PostHog to remember: the browser
-    // sets `email` on identify, but only after a visit. PostHog evaluates
-    // against this override. No `is_test_account` since CHE-334: a test
-    // account never reaches this request (evaluateFlag).
-    person_properties: { email: person.email },
+    person_properties: personProperties,
     flag_keys_to_evaluate: [key],
   };
 }

@@ -151,8 +151,8 @@ function wiringChecks(): void {
   const dashboard = source("src/app/dashboard/page.tsx");
   check("the dashboard's '+ Add extension' link is behind the flag", /\{extensionCheck && <Link href="\/onboarding\?type=extension"/.test(dashboard));
 
-  const setup = source("scripts/posthog-setup.ts");
-  check("posthog:setup creates the flag under the key the app reads", /ensureOwnerFlag\(\s*HOME_EXTENSION_CHECK_FLAG\b/.test(setup));
+  const declared = source("scripts/posthog-flags.ts");
+  check("posthog:setup declares the flag under the key the app reads", /key: HOME_EXTENSION_CHECK_FLAG,\s*audience: "owner"/.test(declared));
 }
 
 // ─── Live (optional) ────────────────────────────────────────────────────────
