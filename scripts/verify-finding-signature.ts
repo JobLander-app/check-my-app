@@ -146,6 +146,12 @@ const retired = {
 const afterRetire = recurrence(app, runsOf({ ...fixture, runs: [...without275, retired] }), []).find((r) => r.issue.signature === sig);
 check("its journey gone from the app's list → gone since the check that no longer listed it",
   afterRetire?.issue.state === "gone" && afterRetire.goneSinceRunNumber === 276, `${afterRetire?.issue.state} ${afterRetire?.goneSinceRunNumber}`);
+// Codex round 1 on #223: carried in one check, dropped in a later one. The
+// carrying check did not look; the drop is dated to the check that dropped it.
+const carriedThenDropped = recurrence(app, runsOf({ ...fixture, runs: [...without275, partial276, { ...retired, runNumber: 277 }] }), [])
+  .find((r) => r.issue.signature === sig);
+check("carried in #276, dropped in #277 → gone since #277, not #276",
+  carriedThenDropped?.goneSinceRunNumber === 277, String(carriedThenDropped?.goneSinceRunNumber));
 const quick = { runNumber: 276, journeys: [], findings: [] };
 const afterQuick = recurrence(app, runsOf({ ...fixture, runs: [...without275, quick] }), []).find((r) => r.issue.signature === sig);
 check("a quick check that lists no journeys says nothing → still recurring", afterQuick?.issue.state === "recurring", afterQuick?.issue.state);

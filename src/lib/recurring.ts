@@ -14,9 +14,9 @@
 //     across any number of later checks, not necessarily in one.
 // A check "walked" a journey when the journey was not carried forward and not
 // skipped — the same test reconcile uses before it verifies a fix. A journey
-// the app no longer has (absent from the latest check that listed journeys)
-// will never be walked again and is not waited for; when none is left, the
-// next check that listed journeys is the one that looked.
+// the app dropped (a later check lists journeys and not this one) will never
+// be walked again and stops being waited for at that check. A quick check
+// lists no journeys and says nothing either way.
 //
 // A problem that was gone and then seen again starts a new streak; first seen
 // and times seen describe the latest streak only.
@@ -113,10 +113,6 @@ export function recurrence(
 ): Recurrence[] {
   const ordered = [...runs].sort((a, b) => a.runNumber - b.runNumber);
   const walkedIn = new Map(ordered.map((r) => [r, new Set(r.journeys.filter((j) => j.walked).map((j) => j.identity))]));
-  // The app's journeys as the latest check that listed any knew them. A quick
-  // check lists none and says nothing about which journeys exist.
-  const listing = [...ordered].reverse().find((r) => r.journeys.length > 0);
-  const current = new Set(listing?.journeys.map((j) => j.identity) ?? []);
 
   const groups = new Map<string, Sighting[]>();
   for (const run of ordered) {
@@ -154,14 +150,17 @@ export function recurrence(
 
   // The first check after `seen` (and before `until`) by which every journey
   // the sighting could have come from had been walked again.
+  // A journey stops being waited for when a check walks it, or when a check
+  // that lists journeys no longer lists it — at THAT check, not judged by
+  // today's list: a journey carried in #2 and dropped in #3 was not looked at
+  // in #2.
   const lookedAgain = (seen: Sighting, until = Infinity): RecurrenceRun | undefined => {
-    const waitingFor = new Set(
-      (seen.journey ? [seen.journey] : [...walkedIn.get(seen.run)!]).filter((j) => current.has(j)),
-    );
+    const waitingFor = new Set(seen.journey ? [seen.journey] : walkedIn.get(seen.run)!);
     for (const r of ordered) {
       if (r.runNumber <= seen.run.runNumber || r.journeys.length === 0) continue;
       if (r.runNumber >= until) return undefined;
-      for (const j of walkedIn.get(r)!) waitingFor.delete(j);
+      const listed = new Set(r.journeys.map((j) => j.identity));
+      for (const j of [...waitingFor]) if (walkedIn.get(r)!.has(j) || !listed.has(j)) waitingFor.delete(j);
       if (waitingFor.size === 0) return r;
     }
     return undefined;
