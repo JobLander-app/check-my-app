@@ -7,9 +7,9 @@
 //
 //   module — the real appHealth, fed the team's rows (Team, App, Run and, for
 //            the price explanations, Journey / Step / LlmUsage) through the
-//            in-memory client from scripts/fixtures/mcp-db.ts, because the
-//            generated Prisma client is the workerd build and plain Node cannot
-//            load it;
+//            in-memory client from scripts/fixtures/mcp-db.ts, with every
+//            DateTime as the text D1 holds, compared and ordered as text
+//            (scripts/verify-app-health.ts holds that client to a real local D1);
 //   sql    — one aggregate query written straight from the rules in the
 //            module's header (same window, same attribution), run by D1.
 //
@@ -56,13 +56,11 @@ function d1<T = Record<string, unknown>>(sql: string): T[] {
 }
 
 const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
-// D1 holds DateTime as TEXT in two spellings: Prisma's ISO with an offset, and
-// an older "YYYY-MM-DD HH:MM:SS" that is UTC without saying so.
-const toDate = (v: unknown) =>
-  typeof v !== "string" ? null : new Date(/[zZ]|[+-]\d\d:\d\d$/.test(v) ? v : `${v.replace(" ", "T")}Z`);
-const DATES = ["createdAt", "completedAt", "startedAt"];
-const rows = (sql: string) =>
-  d1(sql).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, DATES.includes(k) ? toDate(v) : v])));
+// Rows go in exactly as D1 returned them: a DateTime is TEXT, in either of its
+// two spellings, and the in-memory client compares and orders it as that text,
+// as D1 does (CHE-382). Parsing it here would test a friendlier database than
+// the one in production.
+const rows = (sql: string) => d1(sql);
 
 const teamId =
   flag("--team") ??
