@@ -18,7 +18,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { describeEvent } from "@/lib/team-events";
+import { describeEvent, memberEmailForLog } from "@/lib/team-events";
+import type { PrismaClient } from "@/generated/prisma/client";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -145,6 +146,58 @@ check(
     "boss@team.test — invited a@b.test as reader",
 );
 
+// ─── Naming the member never fails the change (CHE-350) ─────────────────────
+// A scope change or a removal names the person by email. The lookup is ours,
+// and a database blip there must not turn a change that happened into an error
+// page that skips revalidation: the name is taken before the mutation, by a
+// function that cannot throw, and after the mutation the action awaits only
+// the seat sync (the change itself) and recordTeamEvent (which cannot throw)
+// before it revalidates.
+
+const userLookup = (findUnique: () => Promise<{ email: string } | null>) =>
+  ({ user: { findUnique } }) as unknown as PrismaClient;
+
+async function checkMemberNaming() {
+  const warn = console.warn;
+  console.warn = () => {};
+  const named = await memberEmailForLog(userLookup(async () => ({ email: "sam@acme.test" })), "u1");
+  const gone = await memberEmailForLog(userLookup(async () => null), "u1");
+  let threw = false;
+  let fallback = "";
+  try {
+    fallback = await memberEmailForLog(
+      userLookup(async () => {
+        throw new Error("D1_ERROR: network connection lost");
+      }),
+      "u1",
+    );
+  } catch {
+    threw = true;
+  }
+  console.warn = warn;
+  check("a member is named by email", named === "sam@acme.test", named);
+  check("a member whose row is gone is still named, not by id", gone === "a former member", gone);
+  check("a lookup that throws does not throw", !threw && fallback === "a team member", threw ? "threw" : fallback);
+}
+
+const teamActions = read("src/app/team/actions.ts");
+for (const [fn, mutation] of [
+  ["changeScopeAction", "db.membership.updateMany("],
+  ["removeMemberAction", "db.membership.deleteMany("],
+] as const) {
+  const body = bodyOf(teamActions, fn);
+  const at = body.indexOf(mutation);
+  const lookupAt = body.indexOf("memberEmailForLog(");
+  check(`${fn} names the member before changing anything`, at > 0 && lookupAt > 0 && lookupAt < at, `lookup @${lookupAt}, mutation @${at}`);
+  const after = body.slice(at + mutation.length);
+  const awaited = [...after.matchAll(/await\s+([\w.]+)\(/g)].map((m) => m[1]);
+  check(
+    `${fn} awaits only the seat sync and the audit line between the change and revalidation`,
+    awaited.every((f) => f === "syncTeamSeats" || f === "recordTeamEvent") && /revalidatePath\("\/team"\)/.test(after),
+    awaited.join(", "),
+  );
+}
+
 // Rule 1: this is an account log. Nothing here may leak into what a customer
 // reads about their own product, so the summaries must not describe our
 // machinery.
@@ -156,5 +209,7 @@ for (const [file] of MUST_LOG) {
   }
 }
 
-console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+checkMemberNaming().then(() => {
+  console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+});

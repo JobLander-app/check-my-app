@@ -24,7 +24,7 @@ import {
   inviteState,
 } from "@/lib/invites";
 import { sendInviteMail } from "@/lib/invite-mail";
-import { recordTeamEvent } from "@/lib/team-events";
+import { memberEmailForLog, recordTeamEvent } from "@/lib/team-events";
 import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
@@ -41,13 +41,6 @@ async function membersOf(db: PrismaClient, teamId: string): Promise<MemberRow[]>
     select: { userId: true, scope: true },
   });
   return rows.map((r) => ({ userId: r.userId, scope: r.scope as TeamScope }));
-}
-
-// The team log names people by their email, never by an id (TeamEvent.subject):
-// "changed someone's access" answers nothing the log exists to answer.
-async function emailOf(db: PrismaClient, userId: string): Promise<string> {
-  const row = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
-  return row?.email || "a former member";
 }
 
 export async function inviteMemberAction(formData: FormData): Promise<void> {
@@ -127,6 +120,9 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
   const members = await membersOf(db, team.id);
   const decision = decideScopeChange(members, userId, scope as TeamScope);
   if (!decision.ok) throw new Error(decision.reason);
+  // Named before the change, and never throws: the log line is not allowed to
+  // fail a change that has already happened.
+  const email = await memberEmailForLog(db, userId);
   await db.membership.updateMany({
     where: { teamId: team.id, userId },
     data: { scope },
@@ -135,7 +131,6 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
   // from the memberships rather than incremented, so a missed sync is put right
   // by the next change instead of compounding.
   await syncTeamSeats(db, getStripeEnv(getCloudflareContext().env as Record<string, unknown>), team.id);
-  const email = await emailOf(db, userId);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
@@ -151,11 +146,11 @@ export async function removeMemberAction(userId: string): Promise<void> {
   const members = await membersOf(db, team.id);
   const decision = decideRemoval(members, userId, user.id);
   if (!decision.ok) throw new Error(decision.reason);
+  const email = await memberEmailForLog(db, userId);
   // Only the membership goes. Their apps, checks and tickets belong to the
   // team, and ownerId on those rows is attribution — the record of who did it.
   await db.membership.deleteMany({ where: { teamId: team.id, userId } });
   await syncTeamSeats(db, getStripeEnv(getCloudflareContext().env as Record<string, unknown>), team.id);
-  const email = await emailOf(db, userId);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
