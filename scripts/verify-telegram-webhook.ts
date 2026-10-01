@@ -260,7 +260,82 @@ check("the message text never reaches the log", !logged.some((l) => l.includes(P
   check("a migration creates TelegramMessage with a unique updateId", Boolean(migration), migration ?? "none");
 }
 
-// 9 — the registry.
+// 9 — our side of the conversation (scripts/tg-send.ts). A message Telegram
+// has delivered cannot be unsent, so the record must not depend on a database
+// call made after it (Codex review of #221): the row exists before the send,
+// and a send that fails takes it back. Run against the real migration in
+// SQLite, so the statements themselves are under test too.
+{
+  const { DatabaseSync } = await import("node:sqlite");
+  const { sendRecorded } = await import("@/lib/telegram-send");
+  const migrationFile = readdirSync("prisma/migrations").find((f) => /CREATE TABLE "TelegramMessage"/.test(readFileSync(`prisma/migrations/${f}`, "utf8")));
+
+  function harness(opts: { telegramOk?: boolean; telegramThrows?: boolean; d1DownAfterSend?: boolean; d1Down?: boolean } = {}) {
+    const sqlite = new DatabaseSync(":memory:");
+    sqlite.exec(readFileSync(`prisma/migrations/${migrationFile}`, "utf8"));
+    const state = { sentCalls: 0 };
+    let n = 0;
+    const deps = {
+      d1: async (sql: string, params: unknown[]) => {
+        if (opts.d1Down || (opts.d1DownAfterSend && state.sentCalls > 0)) throw new Error("D1 unavailable");
+        sqlite.prepare(sql).run(...(params as (string | number | null)[]));
+      },
+      sendMessage: async (chatId: string, text: string) => {
+        state.sentCalls++;
+        if (opts.telegramThrows) throw new Error("socket hang up");
+        if (opts.telegramOk === false) return { ok: false, description: "Bad Request: chat not found" };
+        return { ok: true, result: { message_id: 777, date: DATE, chat: { id: Number(chatId) }, from: { first_name: "CheckMyApp" }, text } };
+      },
+      newId: () => `out-${++n}`,
+      now: () => new Date(DATE * 1000 + 5000),
+    };
+    const rows = () => sqlite.prepare(`SELECT * FROM "TelegramMessage"`).all() as Row[];
+    return { deps, state, rows };
+  }
+  const tricky = `it's; DROP TABLE "TelegramMessage"; -- ${PRIVATE}`;
+
+  const ok = harness();
+  await sendRecorded(ok.deps, String(OWNER_CHAT), tricky);
+  const okRows = ok.rows();
+  check("tg-send: a sent message is one row, direction 'out', text verbatim",
+    okRows.length === 1 && okRows[0].direction === "out" && okRows[0].text === tricky && okRows[0].chatId === String(OWNER_CHAT),
+    JSON.stringify(okRows.map((r) => ({ d: r.direction, t: String(r.text).length }))));
+  check("tg-send: the row carries Telegram's message id and send time",
+    okRows[0]?.messageId === "777" && okRows[0]?.sentAt === "2026-09-21T14:13:20.000+00:00" && okRows[0]?.updateId === null,
+    `${String(okRows[0]?.messageId)} ${String(okRows[0]?.sentAt)}`);
+
+  const lateD1 = harness({ d1DownAfterSend: true });
+  let lateError = "";
+  await sendRecorded(lateD1.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { lateError = e.message; });
+  const lateRows = lateD1.rows();
+  check("tg-send: Telegram accepted, then D1 failed → the message is still recorded",
+    lateD1.state.sentCalls === 1 && lateRows.length === 1 && lateRows[0].text === tricky && lateRows[0].direction === "out",
+    `${lateRows.length} rows${lateError ? `, threw: ${lateError}` : ""}`);
+  check("tg-send: …and it does not throw, so nobody re-runs it and sends the owner the same message twice",
+    lateError === "", lateError || "resolved");
+
+  const refused = harness({ telegramOk: false });
+  let refusedError = "";
+  await sendRecorded(refused.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { refusedError = e.message; });
+  check("tg-send: Telegram refused → error, and no 'out' row claims it was sent",
+    refusedError.length > 0 && refused.rows().length === 0, `${refused.rows().length} rows, ${refusedError || "no error"}`);
+
+  const lost = harness({ telegramThrows: true });
+  let lostError = "";
+  await sendRecorded(lost.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { lostError = e.message; });
+  const lostRows = lost.rows();
+  check("tg-send: the send's outcome is unknown → error, and the row is kept, marked by no message id",
+    lostError.length > 0 && lostRows.length === 1 && lostRows[0].messageId === null,
+    `${lostRows.length} rows, ${lostError || "no error"}`);
+
+  const down = harness({ d1Down: true });
+  let downError = "";
+  await sendRecorded(down.deps, String(OWNER_CHAT), tricky).catch((e: Error) => { downError = e.message; });
+  check("tg-send: D1 unreachable → nothing is sent", downError.length > 0 && down.state.sentCalls === 0,
+    `${down.state.sentCalls} sends, ${downError || "no error"}`);
+}
+
+// 10 — the registry.
 {
   const rule = ROUTE_RULES[ROUTE_KEY];
   check(`${ROUTE_KEY} is registered public`, rule?.kind === "public", JSON.stringify(rule));
