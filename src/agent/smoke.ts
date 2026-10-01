@@ -486,7 +486,10 @@ export interface SmokeSummary {
   healthy: number;
   unreached: string[];
   failures: string[];
-  baselineRunNumber: number;
+  // The run that last walked the journeys — not the baseline, which after a
+  // quick check is that quick check, with no journey results of its own
+  // (Codex on #219).
+  fullRunNumber: number;
 }
 
 /**
@@ -525,7 +528,7 @@ export function smokeOutcomeLine(smoke: SmokeSummary, targetUrl: string): string
       : ", no uncaught errors";
   return (
     `All ${n} page${n === 1 ? "" : "s"} healthy${silent} — the journey results are ` +
-    `Run #${smoke.baselineRunNumber}'s`
+    `Run #${smoke.fullRunNumber}'s`
   );
 }
 

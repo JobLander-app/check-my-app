@@ -237,12 +237,21 @@ async function main() {
   {
     const stub = stubPage({ "/tutorials/103-safe-practice-mock-interviews": "timeout" });
     const out = await probeTargets(stub.page, u("/"), { core, extra });
-    const line = smokeOutcomeLine({ ok: out.failures.length === 0, ...out, baselineRunNumber: 134 }, u("/"));
+    const line = smokeOutcomeLine({ ok: out.failures.length === 0, ...out, fullRunNumber: 134 }, u("/"));
     check("e: ok with one silent page", line === "All 5 pages healthy, 1 did not answer in time (/tutorials/103-safe-practice-mock-interviews) — the journey results are Run #134's", line);
-    const clean = smokeOutcomeLine({ ok: true, healthy: 12, unreached: [], failures: [], baselineRunNumber: 134 }, u("/"));
+    const clean = smokeOutcomeLine({ ok: true, healthy: 12, unreached: [], failures: [], fullRunNumber: 134 }, u("/"));
     check("e: ok with every page answering reads as before", clean === "All 12 pages healthy, no uncaught errors — the journey results are Run #134's", clean);
     check("e: the ok lines pass the whole words gate", speaksProduct(line) && speaksProduct(clean), `${line} | ${clean}`);
-    const trouble = smokeOutcomeLine({ ok: false, healthy: 4, unreached: [u("/sign-in")], failures: ["/sign-in did not answer in time"], baselineRunNumber: 134 }, u("/"));
+    // Two green quick checks in a row: the second one's baseline is the first
+    // (#141, no journeys walked); the results are still the walk's (#134).
+    const second = { ok: true, healthy: 12, unreached: [], failures: [], baselineRunNumber: 141, fullRunNumber: 134 };
+    const again = smokeOutcomeLine(second, u("/"));
+    check("e: the second quick check in a row names the run that walked the journeys, not the quick check before it",
+      again.endsWith("the journey results are Run #134's") && !again.includes("#141"), again);
+    const bottom = quickCheckBottomLine(second);
+    check("e: …and the feed line and the bottom line name the same run",
+      bottom.includes("journey results are from Run #134") && !bottom.includes("#141"), bottom);
+    const trouble = smokeOutcomeLine({ ok: false, healthy: 4, unreached: [u("/sign-in")], failures: ["/sign-in did not answer in time"], fullRunNumber: 134 }, u("/"));
     check("e: trouble names the page and the fact", trouble === "Smoke found trouble: /sign-in did not answer in time — running the full check", trouble);
     check("e: no machinery leaks into either line", !hasEnvironmentLeak(line) && !hasEnvironmentLeak(trouble) && !/page\.goto|playwright|headless|browser/i.test(line + trouble));
   }
@@ -432,9 +441,9 @@ async function main() {
 
   // h — the feed line: the count appears only when it decided something.
   {
-    const trouble = smokeOutcomeLine({ ok: false, healthy: 31, unreached: [], failures: ["/tutorials/103-safe-practice-mock-interviews logged 6 console errors"], baselineRunNumber: 152 }, u("/"));
+    const trouble = smokeOutcomeLine({ ok: false, healthy: 31, unreached: [], failures: ["/tutorials/103-safe-practice-mock-interviews logged 6 console errors"], fullRunNumber: 152 }, u("/"));
     check("h: trouble names the page and its count", trouble === "Smoke found trouble: /tutorials/103-safe-practice-mock-interviews logged 6 console errors — running the full check", trouble);
-    const ok = smokeOutcomeLine({ ok: true, healthy: 31, unreached: [], failures: [], baselineRunNumber: 152 }, u("/"));
+    const ok = smokeOutcomeLine({ ok: true, healthy: 31, unreached: [], failures: [], fullRunNumber: 152 }, u("/"));
     check("h: the ok line has no console sentence (93 errors recorded, none spoken)", !/console/i.test(ok), ok);
     check("h: no machinery leaks", !hasEnvironmentLeak(trouble) && !hasEnvironmentLeak(ok));
   }
