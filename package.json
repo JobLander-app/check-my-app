@@ -47,6 +47,7 @@
     "verify:unpublished-404": "tsx --tsconfig tsconfig.json scripts/verify-unpublished-404.ts",
     "verify:site-quota": "tsx --tsconfig tsconfig.json scripts/verify-site-quota.ts",
     "verify:smoke-gate": "tsx --tsconfig tsconfig.json scripts/verify-smoke-gate.ts",
+    "verify:started-via": "tsx --tsconfig tsconfig.json scripts/verify-started-via.ts",
     "verify:one-check": "tsx --tsconfig tsconfig.json scripts/verify-one-check.ts",
     "verify:analytics": "tsx --tsconfig tsconfig.json scripts/verify-analytics.ts",
     "verify:step-language": "tsx --tsconfig tsconfig.json scripts/verify-step-language.ts",

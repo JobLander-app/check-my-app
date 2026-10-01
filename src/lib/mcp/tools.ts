@@ -41,6 +41,7 @@ import { appPriceRange, teamBalance } from "@/lib/plans";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
+import type { McpDoor } from "@/lib/started-via";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
 // (as before) or as the entry labelled "default" in `test_accounts` — the same
@@ -61,11 +62,13 @@ function splitDefault<T extends { label: string; email?: string; password?: stri
 }
 
 // Who is calling: the person who minted the key (attribution), the team the
-// key acts for (tenancy, plan, quota) and the key's own scope (CHE-263).
+// key acts for (tenancy, plan, quota) and the key's own scope (CHE-263); and
+// the door, which a run it starts records as Run.startedVia (CHE-383).
 export interface McpCaller {
   user: { id: string; email: string; name: string | null };
   team: { id: string; name: string; plan: string };
   scope: TeamScope;
+  door: McpDoor;
 }
 
 // Everything that touches the platform comes in here, so the whole server can
@@ -560,7 +563,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           db,
           { id: caller.user.id, teamId: team.id, plan },
           args.app_id,
-          { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: "mcp" },
+          { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: caller.door },
           { notes: args.notes, deploy: args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env } : undefined },
         );
         if ("error" in started) {
@@ -601,7 +604,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       });
       if (!gate.ok) {
         if (isBalanceExhausted(gate.code)) {
-          await captureBalanceExhausted(deps.capture, { distinctId: caller.user.id, teamId: team.id, plan, source: "mcp" });
+          await captureBalanceExhausted(deps.capture, { distinctId: caller.user.id, teamId: team.id, plan, source: caller.door });
         }
         return fail(gate.code, gate.reason, HINTS[gate.code]);
       }
@@ -612,7 +615,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           input,
           ownerId: caller.user.id,
           teamId: team.id,
-          startedVia: "mcp",
+          startedVia: caller.door,
           anonKeyHash: null,
           ephemeral: expiresAt ? { expiresAt } : undefined,
           distinctId: null,

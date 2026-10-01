@@ -44,8 +44,9 @@
 //      PostHog's: `balance_exhausted` → `checkout_completed` on the same teamId.
 //      "Ran out" is read from D1 as the first moment a team's priced checks in
 //      the window reached its credit plus what it had topped up by then.
-//   4. What the balance is spent on: scheduled (watch) vs agent (mcp) vs api vs
-//      ui, by Run.startedVia (null on runs older than CHE-327).
+//   4. What the balance is spent on: scheduled (watch) vs agent (mcp) vs our
+//      GitHub Action (action, CHE-383) vs api vs ui, by Run.startedVia (null on
+//      runs older than CHE-327).
 //   5. Does the explanation explain? Per app, the correlation between a check's
 //      price and the journeys / steps it walked. A high r means "walked 7
 //      journeys, 48 steps" is the reason for the price; a low one means the

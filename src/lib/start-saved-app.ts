@@ -32,7 +32,7 @@ export async function startSavedApp(
   db: PrismaClient,
   owner: { id: string; teamId: string; plan: UserPlan },
   appId: string,
-  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "api" } = {
+  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "action" | "api" } = {
     trigger: triggerRun,
     siteCap: effectiveSiteCap,
     capture: captureServer,
