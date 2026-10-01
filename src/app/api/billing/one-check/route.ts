@@ -44,6 +44,7 @@ export async function POST(req: Request) {
       extensionConfig: input.extension ? JSON.stringify(input.extension) : null,
       testEmail: input.testEmail || null,
       testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
+      storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
       userNotes: input.userNotes || null,
       notifyEmail: input.notifyEmail || null,
       anonKeyHash: await hashClientKey(req.headers.get("cf-connecting-ip")),

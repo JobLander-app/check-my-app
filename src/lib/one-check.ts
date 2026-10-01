@@ -75,6 +75,7 @@ export async function startPaidCheck(
           extension: readExtensionOptions(pending.extensionConfig),
           testEmail: pending.testEmail ?? "",
           testPassword: pending.testPasswordEnc ? decryptSecret(pending.testPasswordEnc) : "",
+          storePassword: pending.storePasswordEnc ? decryptSecret(pending.storePasswordEnc) : "",
           userNotes: pending.userNotes ?? "",
           notifyEmail: pending.notifyEmail ?? "",
         },
@@ -109,11 +110,11 @@ export async function startPaidCheck(
   return run;
 }
 
-// The parked password has done its job once the run holds its own copy.
+// The parked passwords have done their job once the run holds its own copies.
 async function recordStarted(db: PrismaClient, pendingCheckId: string, runId: string) {
   await db.pendingCheck.update({
     where: { id: pendingCheckId },
-    data: { runId, testPasswordEnc: null },
+    data: { runId, testPasswordEnc: null, storePasswordEnc: null },
   });
 }
 

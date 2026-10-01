@@ -34,6 +34,7 @@ import type { RunEvent, RunPhase } from "@/lib/types";
 import { discoveryMemoryEnabled, makeAgentEnv, putText, type AgentBindings, type AgentEnv } from "./env";
 import { makeLlm, refusalsOf, type UsageTotals } from "./llm";
 import { launchAgentBrowser, closeAgentBrowser, newAgentContext, surfaceScan } from "./browser";
+import { storeAccessFor } from "./credentials";
 import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
@@ -157,6 +158,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           testEmail: true,
           testPasswordEnc: true,
           testAccounts: true,
+          // CHE-372: the store password, for every phase that opens the store.
+          storePasswordEnc: true,
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
@@ -472,6 +475,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         testEmail: run.testEmail,
         testPasswordEnc: run.testPasswordEnc,
         testAccounts: run.testAccounts,
+        storePasswordEnc: run.storePasswordEnc,
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
@@ -494,7 +498,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
             return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, extensionIdentity: extension.identity };
           }
-          const r = await surfaceScan(env, browser, run.targetUrl);
+          const r = await surfaceScan(env, browser, run.targetUrl, await storeAccessFor(env, run));
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
@@ -1529,8 +1533,16 @@ async function checkVerdictIntegrity(
     where: { runId },
     select: { category: true, severity: true },
   });
-  const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
-  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
+  // CHE-372: read before the cleanup step clears a one-off run's store
+  // password, which runs after the verdict is written.
+  const run = await env.db.run.findUnique({
+    where: { id: runId },
+    select: { targetUrl: true, storePasswordEnc: true, storePasswordRejected: true },
+  });
+  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl, {
+    storePassword: Boolean(run?.storePasswordEnc),
+    storePasswordRejected: run?.storePasswordRejected ?? false,
+  });
   if (checked.verdict !== synth.verdict) {
     console.log(`[verdict] run ${runId}: synthesis said ${synth.verdict}, recorded ${checked.verdict}`);
   }

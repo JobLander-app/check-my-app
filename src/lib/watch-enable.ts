@@ -50,6 +50,7 @@ export async function enableWatchForRun(
       extensionConfig: true,
       testEmail: true,
       testPasswordEnc: true,
+      storePasswordEnc: true,
       scopeHints: true,
       userNotes: true,
       notifyEmail: true,
@@ -83,6 +84,7 @@ export async function enableWatchForRun(
       appSlug: run.appSlug,
       testEmail: run.testEmail,
       testPasswordEnc: run.testPasswordEnc,
+      storePasswordEnc: run.storePasswordEnc,
       scopeHints: run.scopeHints,
       userNotes: run.userNotes,
     },
@@ -91,7 +93,12 @@ export async function enableWatchForRun(
   const enabled = await upsertWatch(db, user, app, {
     frequency: opts.frequency,
     notifyOnChangeOnly: opts.notifyOnChangeOnly,
-    seed: { notifyEmail: run.notifyEmail, testEmail: run.testEmail, testPasswordEnc: run.testPasswordEnc },
+    seed: {
+      notifyEmail: run.notifyEmail,
+      testEmail: run.testEmail,
+      testPasswordEnc: run.testPasswordEnc,
+      storePasswordEnc: run.storePasswordEnc,
+    },
   });
   if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
   const watch = enabled.watch;
@@ -131,13 +138,25 @@ async function watchGate(
 async function upsertWatch(
   db: PrismaClient,
   user: { id: string; teamId: string; plan: string },
-  app: { id: string; appSlug: string; targetUrl: string; testEmail: string | null; testPasswordEnc: string | null },
+  app: {
+    id: string;
+    appSlug: string;
+    targetUrl: string;
+    testEmail: string | null;
+    testPasswordEnc: string | null;
+    storePasswordEnc: string | null;
+  },
   opts: {
     frequency: WatchFrequency;
     notifyOnChangeOnly?: boolean;
     // What a NEW watch starts with. Enabling from a verdict carries that run's
     // inputs; enabling an app carries the app's own credentials.
-    seed?: { notifyEmail: string | null; testEmail: string | null; testPasswordEnc: string | null };
+    seed?: {
+      notifyEmail: string | null;
+      testEmail: string | null;
+      testPasswordEnc: string | null;
+      storePasswordEnc: string | null;
+    };
     // The clock the trial is read against; the MCP server passes its own.
     now?: Date;
   },
@@ -157,7 +176,12 @@ async function upsertWatch(
   const gate = await watchGate(db, user, opts.frequency, existing);
   if (!gate.ok) return { ok: false as const, reason: gate.reason };
 
-  const seed = opts.seed ?? { notifyEmail: null, testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc };
+  const seed = opts.seed ?? {
+    notifyEmail: null,
+    testEmail: app.testEmail,
+    testPasswordEnc: app.testPasswordEnc,
+    storePasswordEnc: app.storePasswordEnc,
+  };
   const watch = await db.watch.upsert({ ...alreadyScoped("the App was just scoped to this team"),
     where: { appId: app.id },
     create: {
@@ -171,6 +195,7 @@ async function upsertWatch(
       notifyEmail: seed.notifyEmail,
       testEmail: seed.testEmail,
       testPasswordEnc: seed.testPasswordEnc,
+      storePasswordEnc: seed.storePasswordEnc,
       nextRunAt: nextRunFrom(opts.frequency),
       // CHE-54: Free enables a 7-day trial watch; paid plans get null (no expiry).
       trialEndsAt: watchTrialEnd(user.plan as UserPlan),
@@ -198,7 +223,7 @@ export async function enableWatchForApp(
 ): Promise<EnableWatchResult> {
   const app = await db.app.findFirst({
     where: { ...teamOwned(user.teamId), id: appId, ownerId: user.id },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true },
+    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true },
   });
   if (!app) return { kind: "not_found" };
   if (app.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };

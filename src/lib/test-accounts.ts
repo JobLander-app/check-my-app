@@ -106,9 +106,13 @@ export function usableRunAccounts(json: string | null | undefined): RunAccount[]
 export function clearedCredentials(run: { testAccounts?: string | null }): {
   testPasswordEnc: null;
   testAccounts: string | null;
+  storePasswordEnc: null;
 } {
   const kept = parseRunAccounts(run.testAccounts).map((a) => ({ ...a, passwordEnc: null }));
-  return { testPasswordEnc: null, testAccounts: serializeRunAccounts(kept) };
+  // CHE-372: the store password is an access input like the others and goes
+  // with them. Run.storePasswordRejected stays, so the verdict can still say
+  // which input was turned away.
+  return { testPasswordEnc: null, testAccounts: serializeRunAccounts(kept), storePasswordEnc: null };
 }
 
 /** Run.rejectedAccounts: the labels an auth endpoint turned away, in order. */

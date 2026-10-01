@@ -27,6 +27,7 @@ import { parseJson } from "@/lib/json";
 import type { RunEvent, RunPhase } from "@/lib/types";
 import type { AgentEnv } from "./env";
 import type { ToolEnv } from "./tools";
+import type { StoreAccess } from "./store-password";
 
 export async function credentialState(
   env: AgentEnv,
@@ -89,6 +90,72 @@ export async function recordCredentialRejection(
   }
 }
 
+// ─── CHE-372: the store password ─────────────────────────────────────────────
+// Same one-attempt rule, its own flag: a store that turns our store password
+// away says nothing about any test login, and the run names which input to fix.
+
+const FEED_PHASES: ReadonlySet<string> = new Set<RunPhase>([
+  "replay",
+  "connecting",
+  "surface_scan",
+  "discovery",
+  "walking",
+  "anatomy",
+  "writing",
+]);
+
+// Never throws, for the same reason recordCredentialRejection does not: the
+// in-memory flag already stops this phase, and losing the write costs at most
+// one more attempt in the next phase.
+export async function recordStorePasswordRejection(env: AgentEnv, runId: string | undefined): Promise<void> {
+  console.warn(`[store-password] not accepted for run ${runId ?? "(none)"}`);
+  if (!runId) return;
+  try {
+    const row = await env.db.run.findUnique({
+      where: { id: runId },
+      select: { storePasswordRejected: true, status: true, events: true },
+    });
+    if (!row || row.storePasswordRejected) return;
+    const parsed = parseJson<RunEvent[]>(row.events);
+    const events = Array.isArray(parsed) ? parsed : [];
+    // In the live feed the moment it happens: the owner reads which input to
+    // fix while the run is still going. A fact about access, never the product.
+    events.push({
+      at: new Date().toISOString(),
+      phase: FEED_PHASES.has(row.status) ? (row.status as RunPhase) : "walking",
+      icon: "warn",
+      text: "The store password was not accepted, so the store behind its password page can't be checked this run.",
+    });
+    await env.db.run.update({
+      where: { id: runId },
+      data: { storePasswordRejected: true, events: JSON.stringify(events) },
+    });
+  } catch (err) {
+    console.warn(`[store-password] could not record rejection: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/**
+ * The store password as one phase uses it: decrypted in memory, the run's
+ * rejection state, and the hook that records a new rejection. Shared by the
+ * ToolEnv below and by the two phases that open pages without the tools (the
+ * surface scan and the smoke pass).
+ */
+export async function storeAccessFor(
+  env: AgentEnv,
+  run: { id?: string; storePasswordEnc?: string | null },
+): Promise<StoreAccess> {
+  if (!run.storePasswordEnc) return { state: { rejected: false } };
+  const row = run.id
+    ? await env.db.run.findUnique({ where: { id: run.id }, select: { storePasswordRejected: true } })
+    : null;
+  return {
+    password: decryptSecret(run.storePasswordEnc),
+    state: { rejected: row?.storePasswordRejected ?? false },
+    onRejected: () => recordStorePasswordRejection(env, run.id),
+  };
+}
+
 /**
  * The credential half of every ToolEnv a run builds — discovery, each journey,
  * the replay audit. One function so the three cannot disagree about which
@@ -97,8 +164,27 @@ export async function recordCredentialRejection(
  */
 export async function credentialToolEnv(
   env: AgentEnv,
-  run: { id?: string; testEmail?: string | null; testPasswordEnc?: string | null; testAccounts?: string | null },
-): Promise<Pick<ToolEnv, "testEmail" | "testPassword" | "testAccounts" | "credentials" | "onCredentialRejected">> {
+  run: {
+    id?: string;
+    testEmail?: string | null;
+    testPasswordEnc?: string | null;
+    testAccounts?: string | null;
+    storePasswordEnc?: string | null;
+  },
+): Promise<
+  Pick<
+    ToolEnv,
+    | "testEmail"
+    | "testPassword"
+    | "testAccounts"
+    | "credentials"
+    | "onCredentialRejected"
+    | "storePassword"
+    | "storeAccess"
+    | "onStorePasswordRejected"
+  >
+> {
+  const store = await storeAccessFor(env, run);
   return {
     testEmail: run.testEmail ?? undefined,
     testPassword: run.testPasswordEnc ? decryptSecret(run.testPasswordEnc) : undefined,
@@ -109,5 +195,9 @@ export async function credentialToolEnv(
     })),
     credentials: await credentialState(env, run.id),
     onCredentialRejected: (signature, account) => recordCredentialRejection(env, run.id, signature, account),
+    // CHE-372: entered by the navigate tool on the store's password page.
+    storePassword: store.password,
+    storeAccess: store.state,
+    onStorePasswordRejected: store.onRejected,
   };
 }

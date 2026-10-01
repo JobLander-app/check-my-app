@@ -30,6 +30,8 @@ import type { ExtensionBrowser } from "./extension-browser";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
+import { isStoreGateUrl } from "@/lib/store-gate";
+import { storeRefused, unlockStoreGate } from "./store-password";
 
 export interface ToolEnv {
   page: Page;
@@ -114,6 +116,20 @@ export interface ToolEnv {
   // not_applicable and stops counting toward its journey. Optional so a bare
   // ToolEnv still builds.
   selfCheckRefusals?: string[];
+  // CHE-372: a password-protected store's storefront password, decrypted in
+  // memory like testPassword. Never a placeholder the model can type: the
+  // navigate tool enters it on the store's /password page itself
+  // (store-password.ts), and scrubSecrets redacts it from every tool result.
+  storePassword?: string;
+  // CHE-372: seeded from Run.storePasswordRejected, shared by every page of
+  // the phase. Once true the store password is known-bad and is not entered
+  // again this run.
+  storeAccess?: { rejected: boolean };
+  onStorePasswordRejected?: () => Promise<void>;
+  // CHE-372: the walk stood on the store's password page, locked out by a
+  // store password that was turned away, since the last report_step. Written
+  // by the tools, drained by report_step (coerceStoreLocked).
+  storeLocked?: boolean;
 }
 
 // CHE-193: is this run checking CheckMyApp itself?
@@ -273,7 +289,8 @@ export function scrubSecrets(env: ToolEnv, text: string): string {
   // echoing the admin's email is the same leak as the default one echoing its.
   const accounts = (env.testAccounts ?? []).flatMap((a) => [a.password, a.email]);
   // Longest first, so a password that contains an email is redacted whole.
-  const secrets = [env.testPassword, env.testEmail, ...accounts]
+  // CHE-372: and the store password, which the page itself may echo back.
+  const secrets = [env.testPassword, env.testEmail, ...accounts, env.storePassword]
     .filter((s): s is string => Boolean(s))
     .sort((a, b) => b.length - a.length);
   for (const secret of secrets) {
@@ -669,6 +686,10 @@ export async function executeTool(
         // already-reasoned skipped step alone.
         coerceUndrivenControl(step, env);
         if (env.undrivenControls) env.undrivenControls.length = 0;
+        // CHE-372: a step on a store that refused our store password is about
+        // our access. Before classifyUnverified, which leaves a reasoned
+        // skipped step alone.
+        coerceStoreLocked(step, env);
         classifyUnverified(step);
         // CHE-190 after both: a risky step is never judged (CHE-169) and never
         // classified above, so a link we could not reach had no gate at all.
@@ -710,6 +731,12 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   // Give client JS a real chance to hydrate: clicking a not-yet-interactive
   // button is the #1 source of false "broken" findings on React/Next targets.
   await waitForHydration(env.page, 3_000);
+  // CHE-372: a password-protected store answered with its /password page. The
+  // store password is entered here, by code, before anything is recorded — so
+  // the trail says where the navigation really ended (the product page behind
+  // the gate, or the gate itself when the store refused us), and the model
+  // never meets the gate unless the password we hold was turned away.
+  const store = await passStoreGate(env);
   const status = res?.status() ?? null;
   // Resolved, not as the model typed it: a relative URL only means something
   // next to the page it was typed on, and a replay starts from a blank one.
@@ -718,6 +745,10 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     url: target.toString(),
     outcome: { urlAfter: env.page.url(), status },
   });
+  if (storeRefused(store)) {
+    console.warn(`[navigate] store password page, password not accepted: ${env.page.url()}`);
+    return `Navigated to ${env.page.url()} (status ${status ?? "?"}). ${STORE_PASSWORD_REFUSED}`;
+  }
   // CHE-171: a 404/410 on an address nothing has published is not a fact
   // about the product — no user arrives there. Decided against the set, not
   // the model's story about the URL ("the documented landing URL" was the
@@ -750,6 +781,49 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     status,
   });
   return `Navigated to ${env.page.url()} (status ${status ?? "?"})${looked}`;
+}
+
+// ─── CHE-372: the store's password page ──────────────────────────────────────
+
+// What the model is told when the store keeps us on its password page because
+// the store password we hold was turned away. Tool output, not customer text.
+export const STORE_PASSWORD_REFUSED =
+  "This is the store's password page, and the store password we hold was not accepted, so nothing " +
+  "behind it can be checked this run. That is the store refusing a wrong password — correct " +
+  "behaviour, not a defect. Do NOT type anything into this password form. Report this step " +
+  '"skipped" with unverifiedReason "missing_access" and say that the store password was not accepted.';
+
+// The observed sentence a step on the locked store is written with
+// (coerceStoreLocked). Customer-facing: an ask for access, nothing about us.
+export const STORE_LOCKED_OBSERVED =
+  "The store password was not accepted, so the store behind its password page could not be checked this run.";
+
+async function passStoreGate(env: ToolEnv) {
+  const outcome = await unlockStoreGate(env.page, env.targetOrigin, {
+    password: env.storePassword,
+    state: env.storeAccess,
+    onRejected: env.onStorePasswordRejected,
+  });
+  if (outcome === "unlocked") await waitForHydration(env.page, 3_000);
+  if (storeRefused(outcome)) env.storeLocked = true;
+  return outcome;
+}
+
+/**
+ * A step reported while the store kept us on its password page, because the
+ * store password we hold was turned away, is about our access and nothing
+ * else: whatever the model called it — "ok" included, since the one page that
+ * rendered was the lock, not the product — it is written skipped /
+ * missing_access with the sentence that names the input to fix. A step that
+ * already says missing_access keeps its own words. Drains the flag either way.
+ */
+export function coerceStoreLocked(step: ReportedStep, env: Pick<ToolEnv, "storeLocked">): void {
+  if (!env.storeLocked) return;
+  env.storeLocked = false;
+  if (step.status === "skipped" && step.unverifiedReason === "missing_access") return;
+  step.status = "skipped";
+  step.unverifiedReason = "missing_access";
+  step.observed = STORE_LOCKED_OBSERVED;
 }
 
 // ─── CHE-169: vision on demand ───────────────────────────────────────────────
@@ -1215,6 +1289,16 @@ export function normalizeFillValue(raw: string): string {
 }
 
 async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
+  // CHE-372: the store's password form is filled by code, with the store
+  // password, and by nothing else — not a guess, not the test login's
+  // password. Typing there again after the store refused us is the repeat
+  // attempt the one-attempt rule exists to stop.
+  if (env.storePassword && isStoreGateUrl(env.page.url(), env.targetOrigin)) {
+    return env.storeAccess?.rejected
+      ? `Refused: ${STORE_PASSWORD_REFUSED}`
+      : "Refused: this is the store's password page. The store password is entered automatically " +
+          "when a page of the store leads here — navigate to the page you want instead of filling this form.";
+  }
   // CHE-172: before any gate, any record, any substitution.
   let value = normalizeFillValue(String(input.value));
   // CHE-129: what gets recorded is the value as the model wrote it, placeholders

@@ -173,6 +173,62 @@ async function main() {
     );
   }
 
+  // 6 — CHE-372: the store password follows the same one-attempt rule. A
+  // store that turns it away is not asked again — not by the next page of this
+  // phase, not by a phase that starts already knowing (storeAccess seeded from
+  // Run.storePasswordRejected), and not through the fill tool.
+  {
+    const submitted: string[] = [];
+    let url = "about:blank";
+    const field = {
+      first: () => field,
+      count: async () => (url.endsWith("/password") ? 1 : 0),
+      fill: async (v: string) => void submitted.push(v),
+      press: async () => {},
+    };
+    const page = {
+      url: () => url,
+      // Every page of a locked store is its password page; a wrong password
+      // keeps it so.
+      goto: async () => {
+        url = "https://target.test/password";
+        return { status: () => 200 };
+      },
+      waitForURL: async () => {
+        throw new Error("Timeout");
+      },
+      waitForLoadState: async () => {},
+      evaluate: async () => 0,
+      locator: () => field,
+    };
+    let persisted = 0;
+    const env = {
+      page,
+      targetOrigin: "https://target.test",
+      networkLog: [],
+      consoleLog: [],
+      actionTrail: [],
+      storePassword: "stale-store-pw",
+      storeAccess: { rejected: false },
+      onStorePasswordRejected: async () => void persisted++,
+    } as unknown as ToolEnv;
+    const first = await executeTool(env, "navigate", { url: "https://target.test/" });
+    check("store password: the first locked page gets exactly one attempt",
+      submitted.length === 1 && persisted === 1 && first.includes("missing_access"), `${submitted.length} ${first.slice(0, 80)}`);
+    await executeTool(env, "navigate", { url: "https://target.test/cart" });
+    await executeTool(env, "navigate", { url: "https://target.test/collections/all" });
+    check("store password: after the rejection, no later page submits it again",
+      submitted.length === 1 && persisted === 1, `${submitted.length} submissions`);
+    const typed = await executeTool(env, "fill", { label: "Password", value: "{{TEST_PASSWORD}}" });
+    check("store password: nor can the model type into the store's password form",
+      typed.startsWith("Refused:") && submitted.length === 1, typed.slice(0, 80));
+
+    const nextPhase = { ...env, storeAccess: { rejected: true }, actionTrail: [] } as unknown as ToolEnv;
+    await executeTool(nextPhase, "navigate", { url: "https://target.test/" });
+    check("store password: a phase that starts knowing it was rejected never submits it",
+      submitted.length === 1 && persisted === 1, `${submitted.length} submissions`);
+  }
+
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }

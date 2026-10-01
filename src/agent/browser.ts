@@ -13,6 +13,7 @@ import { ExtensionBrowser, extensionBrowserFor } from "./extension-browser";
 import { extensionInput, type ExtensionIdentity, type ExtensionTarget, type ExtensionRunnerInput } from "./extension-contract";
 import { persistExtensionPhase } from "./extension-evidence";
 import { ExtensionRuntimeError } from "./extension-error";
+import { unlockStoreGate, type StoreAccess } from "./store-password";
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
@@ -106,12 +107,16 @@ export async function surfaceScan(
   env: AgentEnv,
   browser: Browser,
   targetUrl: string,
+  // CHE-372: a password-protected store's password, so the scan reads the
+  // store and not its /password page. Absent = no store password on the run.
+  store?: StoreAccess,
 ): Promise<SurfaceScanResult> {
   const context = await newAgentContext(browser, targetUrl, env.bindings);
   const page = await context.newPage();
   await applyNameShim(page);
   try {
     const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (store) await unlockStoreGate(page, targetUrl, store);
     // The signal tables live in lib/tech-signals (CHE-132) so the free page
     // survey reads the same stack off a plain fetch that this scan reads off
     // the browser response.

@@ -22,6 +22,8 @@ type Run = {
   testPasswordEnc?: string | null;
   // CHE-322: Run.testAccounts — read here for the LABELS only.
   testAccounts?: string | null;
+  // CHE-372: presence only — the model is told the store unlocks itself.
+  storePasswordEnc?: string | null;
   // CHE-81: the owner's priority concerns, verbatim.
   focusAreas?: string | null;
   // CHE-90: CRUD lifecycle permission + the marker every created record carries.
@@ -222,7 +224,26 @@ click through them one by one.`;
 // which scrubSecrets treats as a secret too — and signs in as one with
 // {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}. A scenario in the owner's
 // concerns that names an account ("as admin: …") is how the owner says which.
-export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts">): string {
+export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts" | "storePasswordEnc">): string {
+  return `${testAccountsBlock(run)}${storePasswordBlock(run)}`;
+}
+
+// CHE-372: the store password is entered by the navigate tool itself, on the
+// store's /password page (store-password.ts). The model is told only that this
+// happens, so it does not report the gate as the product or try to get past it
+// with something it typed — never the value, not even as a placeholder.
+function storePasswordBlock(run: Pick<Run, "storePasswordEnc">): string {
+  if (!run.storePasswordEnc) return "";
+  return `
+
+STORE PASSWORD IS PROVIDED for this run: this store is password-protected, and the
+client supplied its store password. Whenever a page of the store leads to its password
+page, the password is entered for you before the page reaches you — you never see it,
+and there is no placeholder for it. Never type anything into the store's password form
+yourself. If a navigation says the store password was not accepted, do what it says.`;
+}
+
+function testAccountsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts">): string {
   const hasDefault = Boolean(run.testEmail && run.testPasswordEnc);
   const named = accountLabels(run);
   if (!hasDefault && named.length === 0) return "";

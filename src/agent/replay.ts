@@ -54,6 +54,8 @@ import { normalizeAnatomy } from "@/lib/anatomy";
 import { parseJson } from "@/lib/json";
 import { applyNameShim, launchAgentBrowser, newAgentContext } from "./browser";
 import { putScreenshot, type AgentEnv } from "./env";
+import { storeAccessFor } from "./credentials";
+import { storeRefused, unlockStoreGate, type StoreAccess, type UnlockPage } from "./store-password";
 import {
   MAX_SMOKE_PAGES,
   probeTargets,
@@ -107,6 +109,9 @@ export interface SmokeRun {
   targetUrl: string;
   watchId: string | null;
   baselineRunId: string | null;
+  // CHE-372: a password-protected store's password, so the pass probes the
+  // store's pages and not its /password page thirty times.
+  storePasswordEnc?: string | null;
 }
 
 /** The smoke check wasn't attempted; the caller runs the full agent check. */
@@ -154,7 +159,7 @@ export type ProbeRunner = (
   env: AgentEnv,
   targetUrl: string,
   targets: SmokeTargetSets,
-  opts: { consoleBurstIsTrouble: boolean },
+  opts: { consoleBurstIsTrouble: boolean; store?: StoreAccess },
 ) => Promise<ProbeOutcome>;
 
 // ─── Decision + execution ────────────────────────────────────────────────────
@@ -237,6 +242,7 @@ export async function smokeReplay(
 
   const outcome = await probe(env, run.targetUrl, targets, {
     consoleBurstIsTrouble: !unchanged,
+    ...(run.storePasswordEnc ? { store: await storeAccessFor(env, run) } : {}),
   });
   return {
     taken: true,
@@ -373,7 +379,7 @@ async function probePages(
   env: AgentEnv,
   targetUrl: string,
   targets: SmokeTargetSets,
-  opts: { consoleBurstIsTrouble: boolean },
+  opts: { consoleBurstIsTrouble: boolean; store?: StoreAccess },
 ): Promise<ProbeOutcome> {
   const browser: Browser = await launchAgentBrowser(env);
   // CHE-193: on our own hosts the context announces itself on the requests the
@@ -382,6 +388,8 @@ async function probePages(
   try {
     const page: Page = await context.newPage();
     await applyNameShim(page);
+    const locked = await smokeStoreGate(page, targetUrl, opts.store);
+    if (locked) return locked;
     return await probeTargets(page, targetUrl, targets, {
       consoleBurstIsTrouble: opts.consoleBurstIsTrouble,
       saveScreenshot: async () =>
@@ -391,4 +399,40 @@ async function probePages(
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
   }
+}
+
+// The feed reads "Smoke found trouble: <this> — running the full check": an
+// access fact about their store, never about our pass.
+export const STORE_LOCKED_SMOKE_FAILURE = "the store password was not accepted, so the store's pages could not be reached";
+
+/**
+ * CHE-372: a locked store unlocks once per context; its cookie carries the
+ * rest of the pass. A store that turns the password away cannot be probed at
+ * all — every page would be its password page answering 200, which is exactly
+ * the "all healthy" a carried-forward verdict must not rest on — so the pass
+ * fails with the reason and the run goes on to the full check, whose verdict
+ * asks for the right password. Null = probe as usual.
+ */
+export async function smokeStoreGate(
+  page: UnlockPage & Pick<Page, "goto">,
+  targetUrl: string,
+  store: StoreAccess | undefined,
+): Promise<ProbeOutcome | null> {
+  if (!store?.password) return null;
+  await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
+  return storeRefused(await unlockStoreGate(page, targetUrl, store)) ? storeLockedOutcome() : null;
+}
+
+function storeLockedOutcome(): ProbeOutcome {
+  return {
+    probes: [],
+    healthy: 0,
+    unreached: [],
+    skipped: 0,
+    failures: [STORE_LOCKED_SMOKE_FAILURE],
+    consoleErrors: 0,
+    consoleBurstsSetAside: [],
+    pageErrors: 0,
+    screenshotUrl: null,
+  };
 }

@@ -67,6 +67,7 @@ const MAIN_PW = "main-login-pw-1";
 const ADMIN_PW = "admin-pw-very-secret";
 const FREE_PW = "free-user-pw-secret";
 const ADMIN_NEW_PW = "admin-rotated-pw";
+const STORE_PW = "store-front-pw-secret";
 
 function parse(result: unknown): Record<string, unknown> {
   const r = result as { content?: Array<{ type: string; text?: string }> };
@@ -250,6 +251,18 @@ async function main() {
     check("labels: \"default\" is reserved for the main login", !reserved.ok);
   }
 
+  // CHE-372: the store password is an access input like these — stored
+  // encrypted, said to exist and never returned, carried by the run.
+  const storeSet = await call(a, "update_app", { app_id: appId, store_password: STORE_PW });
+  check("update_app: store_password stored encrypted, the reply never carries it",
+    storeSet.out.ok === true && decryptSecret(app?.storePasswordEnc as string) === STORE_PW && app?.storePasswordEnc !== STORE_PW &&
+      !storeSet.raw.includes(STORE_PW));
+  const listedStore = await call(a, "list_apps");
+  check("list_apps: has_store_password only — not the password, not its blob",
+    (listedStore.out.apps as Array<Record<string, unknown>>).find((x) => x.app_id === appId)?.has_store_password === true &&
+      !listedStore.raw.includes(STORE_PW) && !listedStore.raw.includes(app?.storePasswordEnc as string),
+    listedStore.raw.slice(0, 160));
+
   // ── 4 — a run carries them ────────────────────────────────────────────────
   const started = await call(a, "start_check", { app_id: appId });
   const run = stub.table("run").find((r) => r.publicId === started.out.run_id)!;
@@ -258,6 +271,9 @@ async function main() {
     started.out.ok === true && JSON.stringify(carried.map((x) => x.label)) === JSON.stringify(["admin", "free user"]) &&
       !String(run.testAccounts).includes(ADMIN_NEW_PW) && decryptSecret(carried[0].passwordEnc!) === ADMIN_NEW_PW,
     JSON.stringify(started.out));
+  check("start_check {app_id}: the run carries the store password, still encrypted",
+    typeof run?.storePasswordEnc === "string" && run.storePasswordEnc !== STORE_PW && decryptSecret(run.storePasswordEnc as string) === STORE_PW,
+    String(run?.storePasswordEnc).slice(0, 20));
 
   // ── 5 — the prompt ────────────────────────────────────────────────────────
   const promptRun = {
@@ -268,6 +284,7 @@ async function main() {
     testEmail: run.testEmail as string,
     testPasswordEnc: run.testPasswordEnc as string,
     testAccounts: run.testAccounts as string,
+    storePasswordEnc: run.storePasswordEnc as string,
   };
   for (const [phase, prompt] of [
     ["discovery", discoverySystem(promptRun)],
@@ -277,8 +294,10 @@ async function main() {
       prompt.includes('"admin"') && prompt.includes("{{TEST_PASSWORD:admin}}") && prompt.includes("{{TEST_EMAIL:free user}}") &&
         prompt.includes("{{TEST_PASSWORD}}"));
     const leaked = [MAIN_PW, ADMIN_PW, ADMIN_NEW_PW, FREE_PW, "chief@shop.test", "free@shop.test", "qa@shop.test",
-      run.testPasswordEnc as string, ...carried.map((x) => x.passwordEnc!)].filter((s) => prompt.includes(s));
+      run.testPasswordEnc as string, ...carried.map((x) => x.passwordEnc!),
+      STORE_PW, run.storePasswordEnc as string].filter((s) => prompt.includes(s));
     check(`prompt (${phase}): no password, no email, no encrypted blob`, leaked.length === 0, leaked.join(", "));
+    check(`prompt (${phase}): says a store password is held, as a fact only`, prompt.includes("STORE PASSWORD IS PROVIDED"));
   }
 
   // ── 6 — the fill tool picks the right account ────────────────────────────
@@ -385,6 +404,7 @@ async function main() {
       cleared.testPasswordEnc === null && kept.length === 2 && kept.every((x) => x.passwordEnc === null) &&
         usableRunAccounts(cleared.testAccounts).length === 0 && !cleared.testAccounts!.includes(carried[0].passwordEnc!),
       String(cleared.testAccounts));
+    check("cleanup: the store password goes with them (CHE-372)", cleared.storePasswordEnc === null, JSON.stringify(cleared));
     check("cleanup: labels and emails stay, so a rejection can still be named afterwards",
       JSON.stringify(kept.map((x) => [x.label, x.email])) === JSON.stringify([["admin", "chief@shop.test"], ["free user", "free@shop.test"]]));
     const workflow = readFileSync(fileURLToPath(new URL("../src/agent/workflow.ts", import.meta.url)), "utf8");

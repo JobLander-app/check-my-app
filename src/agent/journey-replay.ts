@@ -55,6 +55,8 @@ export interface ReplayRun {
   testPasswordEnc?: string | null;
   // CHE-322: Run.testAccounts, so a step recorded as a named account replays as it.
   testAccounts?: string | null;
+  // CHE-372: a replay of a locked store passes its password page as the walk did.
+  storePasswordEnc?: string | null;
   appId?: string | null;
 }
 

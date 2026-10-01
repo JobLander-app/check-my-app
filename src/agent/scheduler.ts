@@ -95,6 +95,8 @@ export async function runDueWatches(
       notifyEmail: true,
       testEmail: true,
       testPasswordEnc: true,
+      // CHE-372: mirrored onto the watch like the test login.
+      storePasswordEnc: true,
       appId: true,
       ownerId: true,
       teamId: true,
@@ -192,6 +194,7 @@ type DueWatch = {
   notifyEmail: string | null;
   testEmail: string | null;
   testPasswordEnc: string | null;
+  storePasswordEnc: string | null;
   appId: string | null;
   ownerId: string | null;
   teamId: string | null;
@@ -221,6 +224,7 @@ async function createWatchRun(
       appSlug: watch.appSlug,
       testEmail: watch.testEmail,
       testPasswordEnc: watch.testPasswordEnc,
+      storePasswordEnc: watch.storePasswordEnc,
       // CHE-322: the app's named accounts, read from the app itself — the
       // Watch keeps a copy of the default login only (legacy), never these.
       testAccounts: await snapshotAppAccounts(env.db, {
