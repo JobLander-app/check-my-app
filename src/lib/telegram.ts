@@ -99,6 +99,27 @@ function nameOf(user: TgUser | undefined): string | null {
   return full || (user.username ? `@${user.username}` : null);
 }
 
+// Telegram's unix-seconds date, accepted only when it is a plausible one.
+// `new Date(1e17 * 1000)` is an Invalid Date, and Prisma refuses it with an
+// error whose message prints the whole row — the text included — into the
+// log (cross-review of #221). Anything implausible is stamped with now.
+const EARLIEST_SECONDS = Date.UTC(2013, 0, 1) / 1000; // before Telegram's Bot API
+const LATEST_SECONDS = Date.UTC(2100, 0, 1) / 1000;
+export function telegramTime(seconds: unknown): Date {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds >= EARLIEST_SECONDS && seconds < LATEST_SECONDS
+    ? new Date(seconds * 1000)
+    : new Date();
+}
+
+// What may be logged about a failure: its class and code. Never its message —
+// a database error's message can carry the row it refused.
+export function errorLabel(err: unknown): string {
+  if (typeof err !== "object" || err === null) return typeof err;
+  const name = "name" in err && typeof err.name === "string" ? err.name : "Error";
+  const code = "code" in err && (typeof err.code === "string" || typeof err.code === "number") ? ` ${err.code}` : "";
+  return `${name}${code}`;
+}
+
 // A message without text is a photo, a voice note, a sticker…: the record says
 // that something was sent, and keeps the caption when there is one.
 export function messageText(m: { text?: string; caption?: string }): string {
@@ -116,7 +137,7 @@ export function incomingRow(update: unknown): StoredTelegramMessage | null {
   const m = u.message ?? u.edited_message;
   if (!m || m.chat?.id === undefined || m.chat.id === null) return null;
   const reply = m.reply_to_message;
-  const seconds = (edited ? m.edit_date : undefined) ?? m.date;
+  const seconds = edited && m.edit_date !== undefined ? m.edit_date : m.date;
   return {
     updateId: String(u.update_id),
     messageId: m.message_id !== undefined ? String(m.message_id) : null,
@@ -126,7 +147,7 @@ export function incomingRow(update: unknown): StoredTelegramMessage | null {
     text: messageText(m),
     replyToText: reply ? messageText(reply).slice(0, REPLY_TO_MAX_CHARS) : null,
     edited,
-    sentAt: typeof seconds === "number" ? new Date(seconds * 1000) : new Date(),
+    sentAt: telegramTime(seconds),
   };
 }
 
@@ -141,7 +162,7 @@ export function outgoingRow(result: TgMessage, chatId: string): StoredTelegramMe
     text: messageText(result),
     replyToText: result.reply_to_message ? messageText(result.reply_to_message).slice(0, REPLY_TO_MAX_CHARS) : null,
     edited: false,
-    sentAt: typeof result.date === "number" ? new Date(result.date * 1000) : new Date(),
+    sentAt: telegramTime(result.date),
   };
 }
 

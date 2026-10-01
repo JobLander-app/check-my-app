@@ -1218,6 +1218,13 @@ model TelegramMessage {
   replyToText String?
   // An edit arrives as its own update and is stored as its own row.
   edited      Boolean  @default(false)
+  // Outgoing only (src/lib/telegram-send.ts). sendId names one intended send
+  // (by default a hash of chat + text), so a re-run cannot deliver it twice.
+  // status: "pending" written, not yet attempted · "unknown" attempted, outcome
+  // not confirmed · "sent" Telegram confirmed it · "failed" Telegram refused it.
+  // NULL on incoming rows.
+  sendId      String?  @unique
+  status      String?
   // When Telegram says it was sent (or edited); createdAt is when we stored it.
   sentAt      DateTime
   createdAt   DateTime @default(now())

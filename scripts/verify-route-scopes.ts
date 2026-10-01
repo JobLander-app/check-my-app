@@ -165,6 +165,26 @@ check(
   looseWrites.map(([k]) => k).join(", ") || "clean",
 );
 
+// A webhook reason opens a route to writes from anyone on the strength of a
+// verification, so the verification must be in the handler: a route that
+// claims it and does not call the verifier is an open write with a label
+// (cross-review of #221, CHE-375).
+const VERIFIED_BY: Record<string, string[]> = {
+  "secret-token-verified webhook": ["secretMatches("],
+  "signature-verified webhook": ["constructEventAsync(", "verifyWebhook("],
+};
+const unverified = Object.entries(ROUTE_RULES).filter(([key, rule]) => {
+  if (rule.kind !== "public" || !(rule.why in VERIFIED_BY)) return false;
+  const text = readFileSync(join(ROOT, fileFor(key)), "utf8");
+  return !VERIFIED_BY[rule.why].some((call) => text.includes(call));
+});
+check(
+  "every route that claims a verified webhook calls its verifier",
+  unverified.length === 0,
+  unverified.map(([k, r]) => `${k} (${r.kind === "public" ? r.why : ""})`).join(", ") ||
+    `${Object.values(ROUTE_RULES).filter((r) => r.kind === "public" && r.why in VERIFIED_BY).length} webhooks`,
+);
+
 // Billing and membership are the two a wrong rule would cost money or access.
 for (const [key, expected] of [
   ["POST /api/billing/checkout", "billing.manage"],
