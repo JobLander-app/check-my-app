@@ -35,7 +35,7 @@ import { clearedCredentials } from "@/lib/test-accounts";
 import { hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
 import { enableWatchForApp, enableWatchForRun } from "@/lib/watch-enable";
 import { createRecheckRun } from "@/lib/recheck";
-import { unlockStoreGate, type StoreAccess, type StoreState, type UnlockPage } from "@/agent/store-password";
+import { onStoreGate, unlockStoreGate, type StoreAccess, type StoreState, type UnlockPage } from "@/agent/store-password";
 import {
   executeTool,
   productizeStep,
@@ -744,6 +744,100 @@ async function main() {
     for (const text of customerText) {
       check(`rule 1: no homework, narration or machinery — "${text.slice(0, 60)}…"`,
         !hasHomework(text) && !hasNarration(text) && !hasEnvironmentLeak(text), text);
+    }
+  }
+
+  // ── 9 — the gate's form, in a real browser, on the markup stores serve ───
+  // Everything above asks a fake page whether it holds the gate's form, so the
+  // script that decides it in the page never ran against real markup — and the
+  // first live check (run #286) stood on Shopify's built-in locked-store page,
+  // which carries no form_type, and the unlock called it "not the gate".
+  {
+    const { chromium } = await import("playwright");
+    const launch = async () => {
+      const channel = process.env.STORE_GATE_CHANNEL;
+      if (channel) return chromium.launch({ channel });
+      try {
+        return await chromium.launch();
+      } catch {
+        return chromium.launch({ channel: "chrome" });
+      }
+    };
+    const browser = await launch();
+    const shell = (form: string) => `<!doctype html><html><head><title>Securify demo</title></head><body><main>${form}</main></body></html>`;
+    // Shopify's built-in locked-store page, as securify-demo.myshopify.com
+    // served it on 2026-10-01 (the token shortened).
+    const BUILTIN = shell(`<form action="/password" accept-charset="UTF-8" data-remote="true" method="post"><input type="hidden" name="authenticity_token" value="mWjj-twJZ7__IllWBNK7KUC7kmmhIGe-REGWNw==" />
+      <div class="form-section"><div class="form-wrapper"><div class="label-wrapper"><label for="password">Enter store password</label></div>
+      <input type="password" class="form-input " id="password" name="password" autocomplete="nope"><div class="error-container"></div></div></div>
+      <button type="submit">Enter</button></form>`);
+    // A theme's password page ({% form 'storefront_password' %}), beside the
+    // theme's newsletter form.
+    const THEME = shell(`<form method="post" action="/contact#contact_form" id="contact_form"><input type="hidden" name="form_type" value="customer"><input type="email" name="contact[email]"><button>Notify me</button></form>
+      <form method="post" action="/password" id="login_form" accept-charset="UTF-8" class="password-form"><input type="hidden" name="form_type" value="storefront_password"><input type="hidden" name="utf8" value="✓">
+      <label for="Password">Password</label><input type="password" name="password" id="Password" autocomplete="current-password"><button name="commit">Enter</button></form>`);
+    const CHANGE = shell(`<form action="/password" method="post"><input type="hidden" name="authenticity_token" value="abc" />
+      <input type="password" name="current_password"><input type="password" name="password"><input type="password" name="password_confirmation"><button type="submit">Change password</button></form>`);
+    const LOGIN = shell(`<form action="/password" method="post"><input type="hidden" name="authenticity_token" value="abc" />
+      <input type="email" name="email"><input type="password" name="password"><button type="submit">Sign in</button></form>`);
+    const BUILTIN_GET = BUILTIN.replace('method="post"', 'method="get"');
+    const open = async (html: string) => {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const posts: string[] = [];
+      await page.route(`${STORE}/**`, async (route) => {
+        const req = route.request();
+        const path = new URL(req.url()).pathname;
+        if (req.method() === "POST" && path === "/password") {
+          posts.push(req.postData() ?? "");
+          // The store lets the visitor in and sends them to its home page.
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<html><body><script>location.replace('/')</script></body></html>" });
+        }
+        if (path === "/password") return route.fulfill({ status: 200, contentType: "text/html", body: html });
+        return route.fulfill({ status: 200, contentType: "text/html", body: "<html><body><h1>Storefront</h1></body></html>" });
+      });
+      await page.goto(`${STORE}/password`);
+      return { page, posts, unlockPage: page as unknown as UnlockPage, close: () => context.close() };
+    };
+    try {
+      for (const [name, html] of [["Shopify's built-in locked-store page", BUILTIN], ["a theme's password page", THEME]] as const) {
+        const s = await open(html);
+        check(`real markup, ${name}: recognised as the gate`, await onStoreGate(s.unlockPage, STORE));
+        const out = await unlockStoreGate(s.unlockPage, STORE, access(RIGHT).access);
+        check(`real markup, ${name}: the store password is posted to the store once and the store opens`,
+          out === "unlocked" && s.posts.length === 1 && new URLSearchParams(s.posts[0]).get("password") === RIGHT && s.page.url() === `${STORE}/`,
+          `${out} posts=${s.posts.length} at ${s.page.url()}`);
+        await s.close();
+      }
+      {
+        const s = await open(BUILTIN);
+        const token = new URLSearchParams((await unlockStoreGate(s.unlockPage, STORE, access(RIGHT).access), s.posts[0] ?? "")).get("authenticity_token");
+        check("real markup, built-in page: the form's own token travels with the password (it is the store's form that is submitted)", Boolean(token), String(token));
+        await s.close();
+      }
+      for (const [name, html] of [["a change-password page at /password", CHANGE], ["a login with an e-mail at /password", LOGIN]] as const) {
+        const s = await open(html);
+        const gate = await onStoreGate(s.unlockPage, STORE);
+        const out = await unlockStoreGate(s.unlockPage, STORE, access(RIGHT).access);
+        const typed = await s.page.locator('input[name="password"]').inputValue();
+        check(`real markup, ${name}: not the gate — nothing typed, nothing posted`, !gate && out === "not_gate" && typed === "" && s.posts.length === 0, `${gate} ${out} typed=${typed.length}`);
+        await s.close();
+      }
+      {
+        const s = await open(BUILTIN_GET);
+        const out = await unlockStoreGate(s.unlockPage, STORE, access(RIGHT).access);
+        const typed = await s.page.locator('input[name="password"]').inputValue();
+        check("real markup, the built-in page submitting by GET: refused, nothing typed", out === "unsafe_form" && typed === "" && !s.page.url().includes(RIGHT), `${out} ${s.page.url()}`);
+        await s.close();
+      }
+      {
+        const s = await open(BUILTIN);
+        const out = await unlockStoreGate(s.unlockPage, STORE, access(undefined).access);
+        check("real markup, no store password held: the gate is seen and nothing is typed", out === "no_password" && s.posts.length === 0, out);
+        await s.close();
+      }
+    } finally {
+      await browser.close();
     }
   }
 

@@ -14,9 +14,9 @@
 // each of them passes through here.
 //
 // What is typed where, and how often:
-//   - only into Shopify's own storefront-password form (a form carrying
-//     form_type=storefront_password), submitted by POST to the target's own
-//     origin over https. An app's ordinary change-password page at /password
+//   - only into Shopify's own storefront-password form (GATE_FORM_SCRIPT: a
+//     theme's, or Shopify's built-in locked-store page), submitted by POST to
+//     the target's own origin over https. An app's ordinary change-password page at /password
 //     is not the gate; a gate that would put the password in a URL (GET) is
 //     refused rather than leaked into the trail, the logs and the run.
 //   - a password the store accepted is entered once per browser context — the
@@ -71,21 +71,42 @@ export interface StoreAccess {
 /** How long the store gets to move us off /password after the submit. */
 export const STORE_UNLOCK_WAIT_MS = 20_000;
 
-// Shopify's storefront password form, and only it. A plain string so esbuild
-// cannot inject helpers into what Playwright serializes.
-const GATE_FORM_SCRIPT = `(() => {
+// Shopify's storefront password form, and only it — in both shapes Shopify
+// serves it:
+//   - a theme's password page: the form carries form_type=storefront_password;
+//   - Shopify's own locked-store page, which a store without a theme password
+//     page shows (every development store we met): no form_type at all — a
+//     form posting to /password with one field named "password" and Shopify's
+//     authenticity_token. The first live check after this shipped (run #286 on
+//     securify-demo.myshopify.com) stood on exactly that page and the unlock
+//     saw "not the gate": the guard had only ever asked a fake.
+// Either way: exactly one password field and nothing else to type into, so an
+// app's change-password page (two or three password fields) or a login (an
+// e-mail beside the password) is not it.
+// The field is marked so the fill addresses that element and no other.
+// A plain string so esbuild cannot inject helpers into what Playwright serializes.
+export const GATE_FORM_SCRIPT = `(() => {
   try {
     for (const f of Array.from(document.querySelectorAll('form'))) {
+      const pw = f.querySelectorAll('input[type="password"]');
+      if (pw.length !== 1) continue;
+      const typed = f.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]), textarea, select');
+      if (typed.length !== 1) continue;
       const t = f.querySelector('input[name="form_type"]');
-      if (!t || t.value !== 'storefront_password') continue;
-      if (!f.querySelector('input[type="password"]')) continue;
+      const theme = !!t && t.value === 'storefront_password';
+      let path = '';
+      try { path = new URL(f.getAttribute('action') || location.href, location.href).pathname.replace(/\\/+$/, ''); } catch (e) {}
+      const builtin = path === '/password' && pw[0].getAttribute('name') === 'password' &&
+        !!f.querySelector('input[type="hidden"][name="authenticity_token"]');
+      if (!theme && !builtin) continue;
+      pw[0].setAttribute('data-cma-store-gate', '1');
       return { storefront: true, method: (f.getAttribute('method') || 'get').toLowerCase(), action: f.action || location.href };
     }
   } catch (e) {}
   return { storefront: false, method: '', action: '' };
 })()`;
 
-const GATE_FIELD = 'form:has(input[name="form_type"][value="storefront_password"]) input[type="password"]';
+export const GATE_FIELD = 'input[type="password"][data-cma-store-gate="1"]';
 
 interface GateForm {
   storefront: boolean;
