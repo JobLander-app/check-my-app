@@ -642,6 +642,22 @@ async function main() {
       `${fresh.filed[0]?.dedupKey} vs ${seedKey}`,
     );
 
+    // A legacy row on a run whose target is the store's admin: the filer
+    // classifies it from the run's target URL alone.
+    const onAdmin = stubWorld([{ ...SHOPIFY_283, gapClass: null, actions: null, label: "Open orders", observed: "The orders page did not load." }], { targetUrl: SA });
+    await fileCapabilityGaps(onAdmin.env, "run-1", { board: onAdmin.board });
+    check("a legacy row on an admin target files on the seeded key", onAdmin.filed[0]?.dedupKey === seedKey, onAdmin.filed[0]?.dedupKey);
+
+    // Report time is where the class is decided (execution.ts), and it must
+    // hand the classifier the trail and the full target URL — the origin
+    // alone drops a store's /admin. A source pin: that call is inside the
+    // walk and runs only against a live browser.
+    const execution = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "execution.ts"), "utf8");
+    check(
+      "report time passes actions: actionTrail and targetUrl: run.targetUrl to classifyGap",
+      /classifyGap\(\{[^}]*actions:\s*actionTrail,[^}]*targetUrl:\s*run\.targetUrl,/.test(execution),
+    );
+
     // With the seeded row in place, a Shopify-admin run counts on CHE-333 and
     // opens nothing — a reported row, and a legacy row without a class that
     // the filer classifies from its stored trail.
