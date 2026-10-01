@@ -10,14 +10,18 @@
 //      pass --launch to set start_date now;
 //   3. three saved insights: the landing→checkout funnel, check_submitted by
 //      landing_variant, and the quota/one-check trend;
-//   4. the boolean flag `home-extension-check` (CHE-320): off for everyone,
-//      on for the owner's e-mail. Read on the server by
-//      src/lib/viewer-flags.ts, which sends `email` as a person property, so
-//      the match does not wait for PostHog to learn it. Test accounts are
-//      answered "off" before PostHog is asked (CHE-334).
+//   4. the boolean flags the server reads, as declared in
+//      scripts/posthog-flags.ts: `home-extension-check` (CHE-320) and the
+//      redesign's lenses `lens-product` (CHE-352) and `lens-release`
+//      (CHE-367) on for the owner's e-mail only, `lens-marketing` (CHE-352)
+//      off for everyone. src/lib/viewer-flags.ts sends every property a
+//      condition reads as an override, so the match does not wait for PostHog
+//      to learn it and no stored value can decide it (CHE-380). Test accounts
+//      are answered "off" before PostHog is asked (CHE-334).
 //
 // Idempotent: looks each object up by key (flag) or exact name (experiment,
-// insights) before creating it, and prints ids and URLs either way. Reads
+// insights) before creating it, and prints ids and URLs either way. The flags
+// in 4 are also brought back to their declaration when they drifted. Reads
 // POSTHOG_PERSONAL_API_KEY from the environment (.env via dotenv) — never
 // commit it, never ship it to a browser. Not part of CI: it mutates a shared
 // PostHog project and is run by a person, on purpose.
@@ -31,7 +35,7 @@
 // Usage: npm run posthog:setup [-- --launch]
 
 import "dotenv/config";
-import { HOME_EXTENSION_CHECK_FLAG } from "@/lib/feature-flags";
+import { conditionsSignature, DECLARED_FLAGS, flagPlan, unsafeCondition, type DeclaredFlag } from "./posthog-flags";
 
 const PROJECT_ID = 595090;
 const APP_HOST = "https://us.posthog.com";
@@ -87,38 +91,41 @@ async function ensureFlag(): Promise<Flag> {
   return created;
 }
 
-// ─── 1b. Extension-check flag (CHE-320) ─────────────────────────────────────
+// ─── 1b. Server-read boolean flags (CHE-320, CHE-352, CHE-367, CHE-380) ─────
 //
-// Owner, 2026-09-27: the Chrome-extension option on the home page is not for
-// the public yet. One release condition, nothing else — no rollout
-// percentage, so no stranger lands in it by chance. The second condition,
-// is_test_account, went with CHE-334: the self-check signs in as the test
-// account and must see what a stranger sees. The key is imported from
-// the file that reads it, so a rename cannot leave this script creating a
-// flag nobody evaluates.
+// Declared in scripts/posthog-flags.ts. Unlike the objects above, these are
+// reconciled, not only created: a flag that exists with other conditions, or
+// inactive, is rewritten to the declaration. Create-only is how the
+// is_test_account condition CHE-334 removed in code stayed live on
+// `home-extension-check` until CHE-380 — a condition on a property anyone can
+// set for themselves with the public token.
 
-const EXTENSION_FLAG_OWNER_EMAILS = ["sorokinvj@gmail.com"];
+type BooleanFlag = { id: number; key: string; active: boolean; filters: { groups?: unknown } };
 
-async function ensureExtensionFlag(): Promise<Flag> {
-  const found = (await api<Listed<Flag>>("GET", `/feature_flags/?search=${HOME_EXTENSION_CHECK_FLAG}&limit=50`)).results.find(
-    (f) => f.key === HOME_EXTENSION_CHECK_FLAG,
+async function reconcileFlag(declared: DeclaredFlag): Promise<BooleanFlag> {
+  const unsafe = unsafeCondition(declared.groups);
+  if (unsafe) throw new Error(`refusing to write ${declared.key}: ${unsafe}`);
+  const filters = { groups: declared.groups };
+  const found = (await api<Listed<BooleanFlag>>("GET", `/feature_flags/?search=${declared.key}&limit=50`)).results.find(
+    (f) => f.key === declared.key,
   );
-  if (found) {
-    console.log(`flag        exists  id=${found.id} key=${found.key} active=${found.active}`);
+  const plan = flagPlan(declared, found);
+  if (plan === "create") {
+    const created = await api<BooleanFlag>("POST", "/feature_flags/", { key: declared.key, name: declared.name, active: true, filters });
+    console.log(`flag        created id=${created.id} key=${created.key} active=${created.active} conditions=${conditionsSignature(created.filters.groups)}`);
+    return created;
+  }
+  if (!found) throw new Error(`flagPlan said ${plan} for ${declared.key}, which does not exist`);
+  const was = conditionsSignature(found.filters.groups);
+  if (plan === "keep") {
+    console.log(`flag        exists  id=${found.id} key=${found.key} active=${found.active} conditions=${was}`);
     return found;
   }
-  const created = await api<Flag>("POST", "/feature_flags/", {
-    key: HOME_EXTENSION_CHECK_FLAG,
-    name: "Chrome-extension check on / and in onboarding (CHE-320). Off for the public and for test accounts (CHE-334); on for the owner. Evaluated server-side in src/lib/viewer-flags.ts.",
-    active: true,
-    filters: {
-      groups: [
-        { properties: [{ key: "email", type: "person", operator: "exact", value: EXTENSION_FLAG_OWNER_EMAILS }], rollout_percentage: 100 },
-      ],
-    },
-  });
-  console.log(`flag        created id=${created.id} key=${created.key} active=${created.active}`);
-  return created;
+  const updated = await api<BooleanFlag>("PATCH", `/feature_flags/${found.id}/`, { name: declared.name, active: true, filters });
+  console.log(`flag        updated id=${updated.id} key=${updated.key} active=${found.active}→${updated.active}`);
+  console.log(`              was ${was}`);
+  console.log(`              now ${conditionsSignature(updated.filters.groups)}`);
+  return updated;
 }
 
 // ─── 2. Experiment ──────────────────────────────────────────────────────────
@@ -273,14 +280,15 @@ async function ensureInsight(spec: (typeof INSIGHTS)[number]): Promise<Insight> 
 
 async function main() {
   const flag = await ensureFlag();
-  const extensionFlag = await ensureExtensionFlag();
+  const serverFlags: BooleanFlag[] = [];
+  for (const declared of DECLARED_FLAGS) serverFlags.push(await reconcileFlag(declared));
   const experiment = await ensureExperiment();
   const insights: Insight[] = [];
   for (const spec of INSIGHTS) insights.push(await ensureInsight(spec));
 
   console.log("\nsummary");
   console.log(`  flag        ${flag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${flag.id}`);
-  console.log(`  flag        ${extensionFlag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${extensionFlag.id}  (${HOME_EXTENSION_CHECK_FLAG})`);
+  for (const f of serverFlags) console.log(`  flag        ${f.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${f.id}  (${f.key})`);
   console.log(
     `  experiment  ${experiment.id}  ${APP_HOST}/project/${PROJECT_ID}/experiments/${experiment.id}  (${experiment.start_date ? "running" : "draft — run with --launch when variant B ships"})`,
   );
