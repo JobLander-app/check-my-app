@@ -34,7 +34,6 @@ import type { RunEvent, RunPhase } from "@/lib/types";
 import { discoveryMemoryEnabled, makeAgentEnv, putText, type AgentBindings, type AgentEnv } from "./env";
 import { makeLlm, refusalsOf, type UsageTotals } from "./llm";
 import { launchAgentBrowser, closeAgentBrowser, newAgentContext, surfaceScan } from "./browser";
-import { storeAccessFor } from "./credentials";
 import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
@@ -56,7 +55,7 @@ import {
 import { orderByFocus } from "./limits";
 import { parseActions, replayJourney, type ReplayResult } from "./journey-replay";
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
-import { judgeVerdictIntegrity, type IntegrityResult } from "./verdict-integrity";
+import { checkVerdictIntegrity } from "./verdict-load";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
 import {
@@ -498,7 +497,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
             return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, extensionIdentity: extension.identity };
           }
-          const r = await surfaceScan(env, browser, run.targetUrl, await storeAccessFor(env, run));
+          const r = await surfaceScan(env, browser, run);
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
@@ -898,6 +897,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await env.db.journey.findMany({
             where: { runId },
             select: {
+              status: true,
               steps: {
                 orderBy: { order: "asc" },
                 select: {
@@ -912,6 +912,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             },
             orderBy: { order: "asc" },
           }),
+          // CHE-372: a run that only ever reached a store's password page has
+          // no finding to make about the store.
+          { targetUrl: run.targetUrl },
         );
         for (const d of gated.dropped) {
           console.log(`[findings] dropped: ${d.finding.title} — ${d.reason}`);
@@ -1512,42 +1515,9 @@ async function notifyAndRecord(
 }
 
 // ─── Verdict integrity (CHE-42, CHE-365) ─────────────────────────────────────
-// The rules — zero coverage is never a pass, walking only the access gate is
-// zero coverage too, "broken" needs a body — live in ./verdict-integrity.ts,
-// pure so scripts/verify-verdict-integrity.ts tests what runs. This loads what
-// they read.
-
-async function checkVerdictIntegrity(
-  env: AgentEnv,
-  runId: string,
-  synth: { verdict: Verdict; bottomLine: string | null },
-): Promise<IntegrityResult> {
-  const journeys = await env.db.journey.findMany({
-    where: { runId },
-    select: {
-      status: true,
-      steps: { select: { status: true, unverifiedReason: true, actions: true } },
-    },
-  });
-  const findings = await env.db.finding.findMany({
-    where: { runId },
-    select: { category: true, severity: true },
-  });
-  // CHE-372: read before the cleanup step clears a one-off run's store
-  // password, which runs after the verdict is written.
-  const run = await env.db.run.findUnique({
-    where: { id: runId },
-    select: { targetUrl: true, storePasswordEnc: true, storePasswordRejected: true },
-  });
-  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl, {
-    storePassword: Boolean(run?.storePasswordEnc),
-    storePasswordRejected: run?.storePasswordRejected ?? false,
-  });
-  if (checked.verdict !== synth.verdict) {
-    console.log(`[verdict] run ${runId}: synthesis said ${synth.verdict}, recorded ${checked.verdict}`);
-  }
-  return checked;
-}
+// The rules live in ./verdict-integrity.ts; what they read is loaded by
+// checkVerdictIntegrity in ./verdict-load.ts, which a verify script can drive
+// over a stub database (this module cannot be loaded on plain Node).
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was
 // sent to (a sitemap entry, a homepage link: published by the product) and the

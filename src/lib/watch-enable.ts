@@ -90,14 +90,22 @@ export async function enableWatchForRun(
     },
   });
 
+  // A one-off run loses its passwords when it ends (clearedCredentials), so by
+  // the time anyone presses "Watch this app" the run's copy is usually gone
+  // while the App — saved before or after it — still holds one. The watch is
+  // seeded from whichever still has it, the login as a pair (an email with
+  // the other source's password would be a login nobody has), the store
+  // password on its own. Before CHE-372 the test login was lost this way too:
+  // the App kept it and every daily run walked signed out.
+  const login = run.testPasswordEnc ? run : app.testPasswordEnc ? app : run;
   const enabled = await upsertWatch(db, user, app, {
     frequency: opts.frequency,
     notifyOnChangeOnly: opts.notifyOnChangeOnly,
     seed: {
       notifyEmail: run.notifyEmail,
-      testEmail: run.testEmail,
-      testPasswordEnc: run.testPasswordEnc,
-      storePasswordEnc: run.storePasswordEnc,
+      testEmail: login.testEmail,
+      testPasswordEnc: login.testPasswordEnc,
+      storePasswordEnc: run.storePasswordEnc ?? app.storePasswordEnc,
     },
   });
   if (!enabled.ok) return { kind: "gated", reason: enabled.reason };

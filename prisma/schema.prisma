@@ -143,11 +143,13 @@ model Run {
   // gives. Null on a row with credentialsRejected set means the one account
   // that existed before named accounts did — the default.
   rejectedAccounts    String?
-  // CHE-372: the store password we hold (storePasswordEnc below) was turned
-  // away by the store's own password page. Same one-attempt rule as
-  // credentialsRejected: set once, never cleared within the run, and no phase
-  // after it submits the store password again.
-  storePasswordRejected Boolean @default(false)
+  // CHE-372: what the store's own password page made of the store password we
+  // hold (storePasswordEnc). Null = never submitted; "pending" = written BEFORE
+  // a submission and left there when its outcome is unknown (a submit that
+  // threw, a write that failed) — no phase submits again; "accepted" = the
+  // store let us in, and each new browser context may enter it once more;
+  // "rejected" = turned away, never submitted again this run (CHE-100's rule).
+  storePasswordState String?
   // CHE-132: the free page survey this run took before deciding its mode.
   // A plain id, no relation: snapshots are the app's history and must outlive
   // any one run.

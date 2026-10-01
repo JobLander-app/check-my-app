@@ -187,7 +187,7 @@ export async function runDueWatches(
   return { started, skipped };
 }
 
-type DueWatch = {
+export type DueWatch = {
   id: string;
   appSlug: string;
   targetUrl: string;
@@ -208,7 +208,9 @@ type DueWatch = {
   } | null;
 };
 
-async function createWatchRun(
+// Exported for scripts/verify-store-password.ts: what a scheduled run carries
+// is decided here, and only a test of this function sees a credential dropped.
+export async function createWatchRun(
   env: AgentEnv,
   watch: DueWatch,
   baselineRunId: string | null,

@@ -14,7 +14,8 @@
 
 import type Stripe from "stripe";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { decryptSecret } from "@/lib/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import type { CreateCheckInput } from "@/lib/validation";
 import { appSlugFromUrl } from "@/lib/utils";
 import { readExtensionOptions } from "@/lib/extension-target";
 import { captureServer, serverDistinctId } from "@/lib/analytics-server";
@@ -22,6 +23,21 @@ import { startCheck, type StartCheckDeps, type StartedCheck } from "@/lib/start-
 import { publicRow } from "@/lib/tenant-db";
 
 export const PENDING_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The credentials a parked check holds while the visitor pays: encrypted
+ * exactly as a run holds them, never as typed. One function, so the route that
+ * parks a check and the guard that checks it (scripts/verify-one-check.ts)
+ * read the same code.
+ */
+export function parkedCredentials(input: Pick<CreateCheckInput, "testEmail" | "testPassword" | "storePassword">) {
+  return {
+    testEmail: input.testEmail || null,
+    testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
+    // CHE-372
+    storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
+  };
+}
 
 export type PaidCheckState =
   | { state: "pending" }

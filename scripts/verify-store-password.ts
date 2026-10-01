@@ -2,59 +2,66 @@
 //
 // A password-protected Shopify store sends every storefront address to
 // /password. Runs #281–#283 on securify-demo.myshopify.com stopped there, and
-// since CHE-365 such a run is Not verified. The fix is that the owner can give
-// us the store password and every phase enters it, in code — so this checks the
-// code, through the real entry points, with a fake store and no browser:
+// since CHE-365 such a run is Not verified. The owner can now give us the store
+// password and every phase enters it, in code — so this checks the code,
+// through the real entry points, with a fake store and no browser:
 //
-//   1. which page is the gate (src/lib/store-gate.ts) — /password on the
-//      store's own site, nothing else;
-//   2. the unlock itself (src/agent/store-password.ts) against a fake store:
-//      the right password opens it, a wrong one is recorded as rejected, and a
-//      rejected one is never submitted again (one attempt per run, CHE-100);
-//   3. the navigate tool: the walk lands behind the gate, the trail records the
-//      real page, the password never appears in anything the tools return; a
-//      refused password ends the attempt and every later navigate, and the
-//      step on the locked store is written skipped / missing_access;
+//   1. where the gate is (src/lib/store-gate.ts): the target's exact https
+//      origin, path /password;
+//   2. the unlock (src/agent/store-password.ts): only Shopify's own
+//      storefront-password form, only by POST to the store; the attempt is on
+//      the run before it is made; a refused, unknown or unrecordable attempt is
+//      never repeated; an accepted one is entered once per browser context;
+//   3. the tools: the walk lands behind the gate on the page it asked for, with
+//      that page's status; the model never types into the gate, password held
+//      or not; no secret reaches a tool result, the trail or a log line; a step
+//      on a locked store is written skipped with the right reason;
 //   4. the smoke pass does not call a locked store "all healthy";
-//   5. the run's state: decrypted for the tools, the rejection persisted once
-//      and named in the live feed, cleared with the test password after a
-//      one-off run;
-//   6. the prompt says the store unlocks itself — never the value or its blob;
-//   7. the verdict asks for "the store password" by name when that is what
-//      would open the gate, and every sentence a customer reads passes the
-//      same leak and homework detectors the verdict does.
+//   5. the run's state, the prompt, and the one-off clear;
+//   6. a run that reached only the gate has no findings and a bottom line that
+//      asks for the store password;
+//   7. every place a run is made or fed carries the store password — the
+//      scheduler, enabling a watch (from an app and from a verdict), the smoke
+//      pass, the surface scan, the verdict's loader, partial mode, re-check;
+//   8. every sentence a customer reads passes the leak and homework detectors.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-store-password.ts
 
 process.env.CREDENTIALS_SECRET ??= "verify-store-password-secret";
 
-import { encryptSecret } from "@/lib/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { isStoreGateUrl } from "@/lib/store-gate";
 import { clearedCredentials } from "@/lib/test-accounts";
 import { hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
-import { unlockStoreGate, type StoreAccess, type UnlockPage } from "@/agent/store-password";
+import { enableWatchForApp, enableWatchForRun } from "@/lib/watch-enable";
+import { createRecheckRun } from "@/lib/recheck";
+import { unlockStoreGate, type StoreAccess, type StoreState, type UnlockPage } from "@/agent/store-password";
 import {
   executeTool,
   productizeStep,
-  scrubSecrets,
   STORE_LOCKED_OBSERVED,
+  STORE_MISSING_OBSERVED,
   STORE_UNDRIVEN_OBSERVED,
   type RecordedAction,
   type ReportedStep,
   type ToolEnv,
 } from "@/agent/tools";
-import { credentialToolEnv, recordStorePasswordRejection, storeAccessFor } from "@/agent/credentials";
+import { credentialToolEnv, persistStoreState, storeAccessFor } from "@/agent/credentials";
 import { discoverySystem, walkingSystem } from "@/agent/instructions";
 import { judgeVerdictIntegrity, type IntegrityJourney } from "@/agent/verdict-integrity";
+import { checkVerdictIntegrity } from "@/agent/verdict-load";
+import { gateFindings, STORE_GATE_ONLY } from "@/agent/findings-gate";
+import type { SynthesizedFinding } from "@/agent/synthesis";
 import type { AgentEnv } from "@/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
 import Module from "node:module";
+import type { PrismaClient } from "@/generated/prisma/client";
 
-// §4 drives the smoke pass's real gate step, which lives in src/agent/replay.ts;
-// that module reaches @cloudflare/playwright, which requires the
+// §4 and §7 drive real code in src/agent/replay.ts, browser.ts, scheduler.ts
+// and partial.ts, which reach @cloudflare/playwright, which requires the
 // `cloudflare:workers` builtin at load time. No browser is opened here, so the
-// builtin is answered with an empty object and replay.ts is imported after the
-// hook — the shim scripts/verify-survey.ts uses.
+// builtin is answered with an empty object and those modules are imported
+// after the hook — the shim scripts/verify-survey.ts uses.
 const moduleLoader = Module as unknown as { _load: (request: string, ...rest: unknown[]) => unknown };
 const realLoad = moduleLoader._load;
 moduleLoader._load = function (request: string, ...rest: unknown[]) {
@@ -71,15 +78,38 @@ function check(name: string, ok: boolean, detail = "") {
 const STORE = "https://securify-demo.myshopify.com";
 const RIGHT = "open-sesame-9431";
 const WRONG = "stale-store-pw-77";
+const TEST_PW = "test-login-pw-5512";
+
+// Everything the code under test logs, so no line can carry a secret unseen.
+const logged: string[] = [];
+for (const level of ["log", "warn", "error"] as const) {
+  const real = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+    if (!String(args[0] ?? "").startsWith("PASS") && !String(args[0] ?? "").startsWith("FAIL")) return;
+    real(...args);
+  };
+}
+const report = (line: string) => process.stdout.write(`${line}\n`);
+
+interface FakeOpts {
+  /** The store starts locked (default) or open. */
+  locked?: boolean;
+  /** The page at /password carries Shopify's storefront form (default) or is an ordinary page. */
+  shopify?: boolean;
+  /** How the storefront form submits. */
+  method?: "post" | "get";
+}
 
 // A fake password-protected store. Every address redirects to /password until
 // the right password is submitted there; after that the "cookie" lets every
-// page through. A wrong password re-renders /password, as Shopify does.
-function fakeStore(correct: string, locked = true) {
+// page through — in this fake, as in the browser, per context (`fresh()`).
+function fakeStore(correct: string, opts: FakeOpts = {}) {
   let url = "about:blank";
-  let unlocked = !locked;
+  let unlocked = opts.locked === false;
   let pending = "";
   const submitted: string[] = [];
+  const fills: string[] = [];
   const onGate = () => {
     try {
       return new URL(url).pathname === "/password";
@@ -92,6 +122,7 @@ function fakeStore(correct: string, locked = true) {
     count: async () => (onGate() ? 1 : 0),
     fill: async (v: string) => {
       pending = v;
+      fills.push(v);
     },
     press: async () => {
       submitted.push(pending);
@@ -102,16 +133,26 @@ function fakeStore(correct: string, locked = true) {
     },
     inputValue: async () => pending,
     or: () => field,
+    focus: async () => {},
+    pressSequentially: async (v: string) => void fills.push(v),
+    // A click on a store link: the cart, which a locked store sends to /password.
+    click: async () => {
+      url = unlocked ? `${STORE}/cart` : `${STORE}/password`;
+    },
+    elementHandle: async () => null,
   };
   const page = {
     url: () => url,
     goto: async (to: string) => {
       const asked = new URL(to);
-      url = unlocked || asked.pathname === "/password" ? asked.toString() : `${STORE}/password`;
+      if (!unlocked && asked.pathname !== "/password") url = `${STORE}/password`;
+      // A page behind the gate that echoes a secret back in its own address.
+      else if (asked.pathname === "/echo") url = `${STORE}/echo?token=${encodeURIComponent(correct)}`;
+      else url = asked.toString();
       // Behind the gate, an address the store does not have answers 404 —
       // the gate itself answers 200 for everything.
       const status = unlocked && asked.pathname === "/no-such-page" ? 404 : 200;
-      return { status: () => status };
+      return { status: () => status, headers: () => ({}) };
     },
     // Playwright resolves when the predicate holds and times out otherwise;
     // the fake times out at once rather than making the script wait.
@@ -120,17 +161,57 @@ function fakeStore(correct: string, locked = true) {
     },
     waitForLoadState: async () => {},
     waitForTimeout: async () => {},
-    evaluate: async () => 0,
+    // A string is a script: the gate-form probe answers what the page holds.
+    // A function is read_page's digest — of a page that shows the password.
+    evaluate: async (arg: unknown) => {
+      if (typeof arg === "string" && arg.includes("storefront_password")) {
+        return onGate() && opts.shopify !== false
+          ? { storefront: true, method: opts.method ?? "post", action: `${STORE}/password` }
+          : { storefront: false, method: "", action: "" };
+      }
+      if (typeof arg === "function") {
+        return { url, title: `Welcome back — your code is ${correct}`, headings: [], links: [], hrefs: [], buttons: [], fields: [] };
+      }
+      return undefined;
+    },
     locator: () => field,
     getByLabel: () => field,
     getByPlaceholder: () => field,
     getByRole: () => field,
     on: () => {},
+    content: async () => "<html></html>",
+    addInitScript: async () => {},
+    screenshot: async () => {
+      throw new Error("no screenshots here");
+    },
   };
-  return { page, submitted, isUnlocked: () => unlocked };
+  return {
+    page,
+    submitted,
+    fills,
+    isUnlocked: () => unlocked,
+    // A new browser context: same store, no cookie.
+    fresh: () => {
+      unlocked = opts.locked === false;
+      url = "about:blank";
+    },
+  };
 }
 
-function toolEnv(page: unknown, store: Partial<ToolEnv>, reported: ReportedStep[] = []): ToolEnv {
+function access(password: string | undefined, status: StoreState = "untried") {
+  const persisted: StoreState[] = [];
+  const a: StoreAccess = {
+    password,
+    state: { status },
+    persist: async (s) => {
+      persisted.push(s);
+      return true;
+    },
+  };
+  return { access: a, persisted };
+}
+
+function toolEnv(page: unknown, store: StoreAccess | undefined, reported: ReportedStep[] = [], extra: Partial<ToolEnv> = {}): ToolEnv {
   return {
     page,
     targetOrigin: STORE,
@@ -138,142 +219,152 @@ function toolEnv(page: unknown, store: Partial<ToolEnv>, reported: ReportedStep[
     consoleLog: [],
     actionTrail: [],
     credentials: { rejected: false },
+    testEmail: "qa@store.test",
+    testPassword: TEST_PW,
+    store,
     onReportStep: async (s: ReportedStep) => {
       reported.push(s);
     },
-    ...store,
+    ...extra,
   } as unknown as ToolEnv;
 }
 
-// The trail of run #281: every product page we asked for ended on /password,
-// and the walk typed into "Enter store password" there.
+// The trail of run #281: every product page we asked for ended on /password.
 function lockedJourneys(): IntegrityJourney[] {
   const nav = (path: string) =>
     JSON.stringify([{ kind: "navigate", url: `${STORE}${path}`, outcome: { urlAfter: `${STORE}/password`, status: 200 } }]);
-  const fill = JSON.stringify([
-    { kind: "fill", label: "Enter store password", value: "x", outcome: { urlAfter: `${STORE}/password` } },
-  ]);
   return ["/", "/collections/all", "/cart"].map((p) => ({
     status: "partial",
     steps: [
       { status: "ok", unverifiedReason: null, actions: nav(p) },
-      { status: "skipped", unverifiedReason: "missing_access", actions: fill },
+      { status: "skipped", unverifiedReason: "missing_access", actions: nav(p) },
     ],
   }));
 }
 
+const asPage = (p: unknown) => p as UnlockPage;
+
 async function main() {
-  // ── 1 — which page is the gate ──────────────────────────────────────────
+  // ── 1 — where the gate is ────────────────────────────────────────────────
   for (const [url, expected, why] of [
     [`${STORE}/password`, true, "the store's own /password"],
     [`${STORE}/password/`, true, "trailing slash folded"],
     [`${STORE}/password?return_to=/cart`, true, "the query is not the place"],
-    ["https://www.securify-demo.myshopify.com/password", true, "www folded"],
+    ["http://securify-demo.myshopify.com/password", false, "plain http is never the gate — no password over it"],
+    [`${STORE}:8443/password`, false, "another port is another origin"],
+    ["https://www.securify-demo.myshopify.com/password", false, "another host is another origin"],
     [`${STORE}/account/password`, false, "a password page deeper in the site is not the store gate"],
     [`${STORE}/password-reset`, false, "a lookalike path is not the gate"],
-    ["https://other-store.myshopify.com/password", false, "another store's gate is not this store's"],
     [`${STORE}/`, false, "the storefront itself"],
   ] as const) {
-    check(`gate: ${why}`, isStoreGateUrl(url, STORE) === expected, url);
+    check(`gate address: ${why}`, isStoreGateUrl(url, STORE) === expected, url);
   }
 
-  // ── 2 — the unlock against a fake store ──────────────────────────────────
+  // ── 2 — the unlock ───────────────────────────────────────────────────────
   {
     const s = fakeStore(RIGHT);
     await s.page.goto(`${STORE}/`);
-    const state = { rejected: false };
-    let recorded = 0;
-    const access: StoreAccess = { password: RIGHT, state, onRejected: async () => void recorded++ };
-    const out = await unlockStoreGate(s.page as unknown as UnlockPage, STORE, access);
-    check("unlock: the right password opens the store and lands on its page",
-      out === "unlocked" && s.page.url() === `${STORE}/` && s.submitted.join() === RIGHT, `${out} ${s.page.url()}`);
-    check("unlock: an accepted password is not recorded as rejected", !state.rejected && recorded === 0);
-    const again = await unlockStoreGate(s.page as unknown as UnlockPage, STORE, access);
-    check("unlock: off the gate there is nothing to do", again === "not_gate" && s.submitted.length === 1, again);
+    const { access: a, persisted } = access(RIGHT);
+    const out = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: the right password opens the store",
+      out === "unlocked" && s.submitted.join() === RIGHT && a.state?.status === "accepted", `${out} ${s.page.url()}`);
+    check("unlock: the attempt is on the run before the submit, the result after it",
+      JSON.stringify(persisted) === JSON.stringify(["pending", "accepted"]), JSON.stringify(persisted));
+    s.fresh();
+    await s.page.goto(`${STORE}/cart`);
+    await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: an accepted password is entered once per browser context — a new context enters it again",
+      s.submitted.length === 2 && s.isUnlocked(), `${s.submitted.length} submissions`);
+    await s.page.goto(`${STORE}/cart`);
+    const again = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: within a context, off the gate there is nothing to do", again === "not_gate" && s.submitted.length === 2, again);
   }
   {
     const s = fakeStore(RIGHT);
     await s.page.goto(`${STORE}/`);
-    const state = { rejected: false };
-    let recorded = 0;
-    const access: StoreAccess = { password: WRONG, state, onRejected: async () => void recorded++ };
-    const out = await unlockStoreGate(s.page as unknown as UnlockPage, STORE, access);
-    check("unlock: a wrong password is rejected, recorded once, the store stays locked",
-      out === "rejected" && state.rejected && recorded === 1 && !s.isUnlocked(), `${out} recorded=${recorded}`);
+    const { access: a, persisted } = access(WRONG);
+    const out = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: a wrong password is rejected and recorded, the store stays locked",
+      out === "rejected" && a.state?.status === "rejected" && persisted.at(-1) === "rejected" && !s.isUnlocked(), out);
+    s.fresh();
     await s.page.goto(`${STORE}/collections/all`);
-    const second = await unlockStoreGate(s.page as unknown as UnlockPage, STORE, access);
-    check("unlock: once rejected it is never submitted again — one attempt per run",
-      second === "already_rejected" && s.submitted.length === 1 && recorded === 1, `${second} submitted=${s.submitted.length}`);
+    const second = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: once rejected it is never submitted again — not in a new context either",
+      second === "already_rejected" && s.submitted.length === 1, `${second} submitted=${s.submitted.length}`);
+  }
+  {
+    const s = fakeStore(RIGHT, { shopify: false });
+    await s.page.goto(`${STORE}/`);
+    const { access: a } = access(RIGHT);
+    const out = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: a /password page without Shopify's storefront form is not the gate — nothing typed",
+      out === "not_gate" && s.fills.length === 0 && s.submitted.length === 0, out);
+  }
+  {
+    const s = fakeStore(RIGHT, { method: "get" });
+    await s.page.goto(`${STORE}/`);
+    const { access: a, persisted } = access(RIGHT);
+    const out = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: a gate whose form submits by GET (the password into the URL) is refused — nothing typed",
+      out === "unsafe_form" && s.fills.length === 0 && persisted.length === 0, out);
   }
   {
     const s = fakeStore(RIGHT);
     await s.page.goto(`${STORE}/`);
-    const out = await unlockStoreGate(s.page as unknown as UnlockPage, STORE, { state: { rejected: false } });
-    check("unlock: no store password on the run → nothing typed", out === "no_password" && s.submitted.length === 0, out);
+    const a: StoreAccess = { password: RIGHT, state: { status: "untried" }, persist: async () => false };
+    const out = await unlockStoreGate(asPage(s.page), STORE, a);
+    check("unlock: when the attempt cannot be recorded first, it is not made", out === "undriven" && s.submitted.length === 0, out);
   }
-
-  // ── 3 — the navigate tool ────────────────────────────────────────────────
   {
     const s = fakeStore(RIGHT);
-    let recorded = 0;
-    const env = toolEnv(s.page, {
-      storePassword: RIGHT,
-      storeAccess: { rejected: false },
-      onStorePasswordRejected: async () => void recorded++,
-    });
+    await s.page.goto(`${STORE}/`);
+    const out = await unlockStoreGate(asPage(s.page), STORE, access(undefined).access);
+    check("unlock: no store password on the run → nothing typed", out === "no_password" && s.fills.length === 0, out);
+  }
+
+  // ── 3 — the tools ────────────────────────────────────────────────────────
+  {
+    const s = fakeStore(RIGHT);
+    const { access: a } = access(RIGHT);
+    const env = toolEnv(s.page, a);
     const result = await executeTool(env, "navigate", { url: `${STORE}/collections/all` });
     const action = (env.actionTrail as RecordedAction[])[0];
-    check("navigate: a locked store is opened with the store password, and the walk is past the gate",
-      s.isUnlocked() && s.submitted.join() === RIGHT && !isStoreGateUrl(s.page.url(), STORE), `${result} / ${s.page.url()}`);
-    check("navigate: the trail records where the navigation really ended — not the gate",
-      action?.kind === "navigate" && !isStoreGateUrl(action.outcome.urlAfter, STORE), JSON.stringify(action));
-    check("navigate: the walk lands on the page it asked for, not on the home page the unlock redirects to",
-      s.page.url() === `${STORE}/collections/all` && action?.kind === "navigate" && action.outcome.urlAfter === `${STORE}/collections/all`,
-      s.page.url());
-    check("navigate: the store password is in nothing the tool returns or records",
-      !result.includes(RIGHT) && !JSON.stringify(env.actionTrail).includes(RIGHT), result);
-    check("navigate: an accepted password leaves no lock behind", !env.storeLocked && recorded === 0);
-  }
-  {
-    // Codex review of #220: the status after the unlock is the destination's,
-    // not the gate's 200 — so an address nobody published still meets the
-    // CHE-171 guard instead of being remembered as a real page.
-    const s = fakeStore(RIGHT);
-    const env = toolEnv(s.page, {
-      storePassword: RIGHT,
-      storeAccess: { rejected: false },
-      knownUrls: new Set<string>([`${STORE}/`]),
-    });
-    const result = await executeTool(env, "navigate", { url: `${STORE}/no-such-page` });
-    const action = (env.actionTrail as RecordedAction[])[0];
-    check("navigate: after the unlock, the destination's own status is what is read and recorded",
-      action?.kind === "navigate" && action.outcome.status === 404 && /status 404/.test(result) && /not linked from any/.test(result),
-      `${JSON.stringify(action?.kind === "navigate" ? action.outcome : action)} ${result.slice(0, 80)}`);
-    check("navigate: an unpublished address behind the gate is not remembered as published",
-      !env.knownUrls?.has(`${STORE}/no-such-page`), JSON.stringify([...(env.knownUrls ?? [])]));
+    check("navigate: the store is opened and the walk lands on the page it asked for",
+      s.isUnlocked() && s.page.url() === `${STORE}/collections/all` && action?.kind === "navigate" &&
+        action.outcome.urlAfter === `${STORE}/collections/all`,
+      `${result} / ${JSON.stringify(action)}`);
+    check("navigate: an accepted password leaves no lock behind", !env.storeLocked);
+
+    // Codex review of #220: the destination's own status, not the gate's 200.
+    const s404 = fakeStore(RIGHT);
+    const env404 = toolEnv(s404.page, access(RIGHT).access, [], { knownUrls: new Set<string>([`${STORE}/`]) });
+    const r404 = await executeTool(env404, "navigate", { url: `${STORE}/no-such-page` });
+    const a404 = (env404.actionTrail as RecordedAction[])[0];
+    check("navigate: after the unlock, the destination's own status is read and recorded",
+      a404?.kind === "navigate" && a404.outcome.status === 404 && /not linked from any/.test(r404), r404.slice(0, 100));
+
+    // Cross-review point 1: nothing a page echoes reaches a result, the trail or a log.
+    const echoed = await executeTool(env, "navigate", { url: `${STORE}/echo` });
+    const read = await executeTool(env, "read_page", {});
+    const trail = JSON.stringify(env.actionTrail);
+    check("leak: an address that echoes the store password is scrubbed in the navigate result",
+      !echoed.includes(RIGHT) && !echoed.includes(encodeURIComponent(RIGHT)) && echoed.includes("[redacted]"), echoed);
+    check("leak: …and in the recorded trail (Step.actions)", !trail.includes(RIGHT) && trail.includes("[redacted]"), trail.slice(-160));
+    check("leak: a page that shows the store password is scrubbed in read_page", !read.includes(RIGHT) && read.includes("[redacted]"), read.slice(0, 120));
   }
   {
     const s = fakeStore(RIGHT);
-    let recorded = 0;
     const reported: ReportedStep[] = [];
-    const env = toolEnv(
-      s.page,
-      { storePassword: WRONG, storeAccess: { rejected: false }, onStorePasswordRejected: async () => void recorded++ },
-      reported,
-    );
+    const { access: a } = access(WRONG);
+    const env = toolEnv(s.page, a, reported);
     const first = await executeTool(env, "navigate", { url: `${STORE}/` });
     check("navigate, wrong password: the model is told it was not accepted and what to report",
-      /store password we hold was not accepted/.test(first) && first.includes("missing_access") && !first.includes(WRONG), first.slice(0, 160));
-    check("navigate, wrong password: the rejection is recorded once", recorded === 1 && env.storeAccess?.rejected === true);
+      /store password we hold was not accepted/.test(first) && first.includes("missing_access"), first.slice(0, 160));
     const action = (env.actionTrail as RecordedAction[])[0];
     check("navigate, wrong password: the trail shows the gate (what rule 1b reads)",
       action?.kind === "navigate" && isStoreGateUrl(action.outcome.urlAfter, STORE), JSON.stringify(action));
     await executeTool(env, "navigate", { url: `${STORE}/cart` });
-    check("navigate, wrong password: a later navigate does not submit it again",
-      s.submitted.length === 1 && recorded === 1, `submitted ${s.submitted.length}`);
-    const typed = await executeTool(env, "fill", { label: "Enter store password", value: "{{TEST_PASSWORD}}" });
-    check("fill on the gate: refused — the model cannot retry with something it types",
-      typed.startsWith("Refused:") && s.submitted.length === 1, typed.slice(0, 120));
+    check("navigate, wrong password: a later navigate does not submit it again", s.submitted.length === 1, `${s.submitted.length}`);
     await executeTool(env, "report_step", {
       label: "Open the catalogue",
       status: "broken",
@@ -281,126 +372,135 @@ async function main() {
       observed: "The site only shows a password form; the catalogue is missing.",
     });
     const step = reported[0];
-    check("report_step on the locked store: written skipped / missing_access, naming the store password",
+    check("report_step, refused: skipped / missing_access, naming the store password",
       step?.status === "skipped" && step.unverifiedReason === "missing_access" && step.observed === STORE_LOCKED_OBSERVED,
       JSON.stringify(step));
     if (step) productizeStep(step);
-    check("report_step on the locked store: the sentence survives the customer-language pass",
-      step?.observed === STORE_LOCKED_OBSERVED, step?.observed);
+    check("report_step, refused: the sentence survives the customer-language pass", step?.observed === STORE_LOCKED_OBSERVED, step?.observed);
     await executeTool(env, "report_step", { label: "Next", status: "ok", attempted: "a", observed: "b" });
     check("report_step: the lock is drained with the step it belonged to", reported[1]?.status === "ok", JSON.stringify(reported[1]));
   }
   {
-    // Codex review of #220, round 2: a password we could not enter is our
-    // hands, not the store — never judged as the product, never a rejection.
+    // Cross-review point 7: a locked store and no password at all.
     const s = fakeStore(RIGHT);
-    s.page.locator = () => ({
-      first() {
-        return this;
-      },
-      count: async () => 1,
-      fill: async () => {
-        throw new Error("locator.fill: Timeout 8000ms exceeded.");
-      },
-      press: async () => {},
-    }) as never;
-    let recorded = 0;
     const reported: ReportedStep[] = [];
-    const env = toolEnv(
-      s.page,
-      { storePassword: RIGHT, storeAccess: { rejected: false }, onStorePasswordRejected: async () => void recorded++ },
-      reported,
-    );
+    const env = toolEnv(s.page, undefined, reported);
     const result = await executeTool(env, "navigate", { url: `${STORE}/` });
-    check("navigate, password could not be entered: told it is our limitation, to skip as our_capability",
-      result.includes("our_capability") && /could not be entered/.test(result) && !result.includes(RIGHT), result.slice(0, 160));
-    check("navigate, password could not be entered: not recorded as the store refusing it",
-      recorded === 0 && env.storeAccess?.rejected === false);
+    check("navigate, no store password: told the store is locked and the password is needed",
+      /no store password was given/.test(result) && result.includes("missing_access") && s.fills.length === 0, result.slice(0, 160));
     await executeTool(env, "report_step", {
-      label: "Open the store",
+      label: "Browse",
       status: "broken",
       attempted: "Opened the home page",
       observed: "The storefront is hidden behind a password form.",
     });
-    const step = reported[0];
-    check("report_step after an undriven unlock: skipped / our_capability, our gap — not a finding about the store",
-      step?.status === "skipped" && step.unverifiedReason === "our_capability" && step.gapClass === "undriven_control" &&
-        step.observed === STORE_UNDRIVEN_OBSERVED,
-      JSON.stringify(step));
+    check("report_step, no store password: skipped / missing_access in code, whatever the model said",
+      reported[0]?.status === "skipped" && reported[0].unverifiedReason === "missing_access" && reported[0].observed === STORE_MISSING_OBSERVED,
+      JSON.stringify(reported[0]));
+    // Cross-review point 5: never typing into the gate, password held or not.
+    const guess = await executeTool(env, "fill", { label: "Enter store password", value: "password123" });
+    const placeholder = await executeTool(env, "fill", { label: "Enter store password", value: "{{TEST_PASSWORD}}" });
+    check("fill on the gate with no store password: refused — a guess is not typed",
+      guess.startsWith("Refused:") && !s.fills.includes("password123"), guess.slice(0, 100));
+    check("fill on the gate: {{TEST_PASSWORD}} never resolves there — the test login's password stays out",
+      placeholder.startsWith("Refused:") && !s.fills.includes(TEST_PW), placeholder.slice(0, 100));
   }
   {
+    // Clicking into the gate is the same as navigating into it.
     const s = fakeStore(RIGHT);
+    const env = toolEnv(s.page, access(RIGHT).access);
     await s.page.goto(`${STORE}/`);
-    const env = toolEnv(s.page, { storePassword: RIGHT, storeAccess: { rejected: false } });
-    const typed = await executeTool(env, "fill", { label: "Enter store password", value: "guess" });
-    check("fill on the gate with a store password held: refused, nothing typed into the store",
-      typed.startsWith("Refused:") && s.submitted.length === 0, typed.slice(0, 120));
-    const scrubbed = scrubSecrets(env, `echo ${RIGHT} and ${encodeURIComponent(RIGHT)}`);
-    check("scrubSecrets: the store password is redacted like a test password", !scrubbed.includes(RIGHT), scrubbed);
+    const before = s.submitted.length;
+    const clicked = await executeTool(env, "click", { selector: "a.cart" });
+    check("click landing on the gate: the store password is entered, as after a navigate",
+      s.submitted.length === before + 1 && s.isUnlocked(), clicked.slice(0, 120));
   }
   {
-    // A run with no store password behaves exactly as before: the gate is
-    // reached and nothing is typed.
+    // Codex review of #220, round 2: a password we could not enter is our hands.
     const s = fakeStore(RIGHT);
-    const env = toolEnv(s.page, {});
+    s.page.locator = () =>
+      ({
+        first() {
+          return this;
+        },
+        count: async () => 1,
+        fill: async () => {
+          throw new Error("locator.fill: Timeout 8000ms exceeded.");
+        },
+        press: async () => {},
+      }) as never;
+    const reported: ReportedStep[] = [];
+    const { access: a, persisted } = access(RIGHT);
+    const env = toolEnv(s.page, a, reported);
     const result = await executeTool(env, "navigate", { url: `${STORE}/` });
-    check("navigate without a store password: unchanged — the gate is reached, nothing submitted",
-      isStoreGateUrl(s.page.url(), STORE) && s.submitted.length === 0 && !/not accepted/.test(result), result);
+    check("navigate, password could not be entered: our limitation, skip as our_capability, not a rejection",
+      result.includes("our_capability") && persisted.length === 0, result.slice(0, 160));
+    await executeTool(env, "report_step", { label: "Open", status: "broken", attempted: "a", observed: "Hidden behind a password form." });
+    check("report_step after an undriven unlock: skipped / our_capability (undriven_control)",
+      reported[0]?.status === "skipped" && reported[0].unverifiedReason === "our_capability" &&
+        reported[0].gapClass === "undriven_control" && reported[0].observed === STORE_UNDRIVEN_OBSERVED,
+      JSON.stringify(reported[0]));
   }
+  {
+    const env = toolEnv(fakeStore(RIGHT, { locked: false }).page, access(RIGHT).access);
+    const result = await executeTool(env, "navigate", { url: `${STORE}/` });
+    check("navigate on an open store: unchanged — no gate, nothing typed, no lock", !env.storeLocked && /status 200/.test(result), result);
+  }
+  const codeLines = logged.filter((l) => !/^(PASS|FAIL)/.test(l));
+  check("logs: no line the code wrote while the tools ran carries the store password",
+    codeLines.length > 0 && !codeLines.some((l) => l.includes(RIGHT) || l.includes(encodeURIComponent(RIGHT))),
+    codeLines.find((l) => l.includes(RIGHT)) ?? `${codeLines.length} lines`);
 
   // ── 4 — the smoke pass ───────────────────────────────────────────────────
+  const { smokeStoreGate, smokeOutcomeLine, smokeReplay, STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } =
+    await import("@/agent/replay");
   {
-    const { smokeStoreGate, smokeOutcomeLine, STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } = await import("@/agent/replay");
     const open = fakeStore(RIGHT);
-    const ok = await smokeStoreGate(open.page as never, `${STORE}/`, { password: RIGHT, state: { rejected: false } });
+    const ok = await smokeStoreGate(open.page as never, `${STORE}/`, access(RIGHT).access);
     check("smoke: with the right password the pass probes the store, unlocked", ok === null && open.isUnlocked());
-    const locked = fakeStore(RIGHT);
-    const refused = await smokeStoreGate(locked.page as never, `${STORE}/`, { password: WRONG, state: { rejected: false } });
+    const refused = await smokeStoreGate(fakeStore(RIGHT).page as never, `${STORE}/`, access(WRONG).access);
     check("smoke: a refused password fails the pass instead of calling the gate healthy",
-      refused !== null && refused.failures.includes(STORE_LOCKED_SMOKE_FAILURE) && refused.healthy === 0,
-      JSON.stringify(refused?.failures));
-    const none = await smokeStoreGate(fakeStore(RIGHT, false).page as never, `${STORE}/`, undefined);
+      refused?.failures.includes(STORE_LOCKED_SMOKE_FAILURE) === true && refused.healthy === 0, JSON.stringify(refused?.failures));
+    const none = await smokeStoreGate(fakeStore(RIGHT, { locked: false }).page as never, `${STORE}/`, undefined);
     check("smoke: an open store with no store password → the pass is unchanged", none === null);
-    // Codex review of #220 (P1): a store that is locked while we hold no
-    // password — cleared by the owner, or locked since the last full walk —
-    // must not pass as thirty healthy copies of its password page.
     const lockedNone = fakeStore(RIGHT);
     const gated = await smokeStoreGate(lockedNone.page as never, `${STORE}/`, undefined);
     check("smoke: a locked store with no store password fails the pass, nothing typed",
-      gated !== null && gated.failures.includes(STORE_GATED_SMOKE_FAILURE) && lockedNone.submitted.length === 0,
-      JSON.stringify(gated?.failures));
+      gated?.failures.includes(STORE_GATED_SMOKE_FAILURE) === true && lockedNone.fills.length === 0, JSON.stringify(gated?.failures));
     const line = smokeOutcomeLine({ ok: false, healthy: 0, unreached: [], failures: [STORE_LOCKED_SMOKE_FAILURE], baselineRunNumber: 1 }, STORE);
     check("smoke: its feed line names the store password", line.includes("store password was not accepted"), line);
   }
 
-  // ── 5 — the run's state ──────────────────────────────────────────────────
+  // ── 5 — the run's state, the prompt, the one-off clear ───────────────────
   {
     const enc = encryptSecret(RIGHT);
     const stub = createStubDb({
-      run: [{ id: "r1", status: "walking", events: null, storePasswordEnc: enc, storePasswordRejected: false, credentialsRejected: false }],
+      run: [{ id: "r1", status: "walking", events: null, storePasswordEnc: enc, storePasswordState: null, credentialsRejected: false }],
     });
     const env = { db: stub.db } as unknown as AgentEnv;
     const tools = await credentialToolEnv(env, { id: "r1", storePasswordEnc: enc });
     check("credentialToolEnv: decrypts the store password for the tools, in memory",
-      tools.storePassword === RIGHT && tools.storeAccess?.rejected === false && enc !== RIGHT);
-    await recordStorePasswordRejection(env, "r1");
-    await recordStorePasswordRejection(env, "r1");
+      tools.store?.password === RIGHT && tools.store?.state?.status === "untried");
+    await persistStoreState(env, "r1", "pending");
+    check("state: an attempt is written before it is made", stub.table("run")[0].storePasswordState === "pending");
+    await persistStoreState(env, "r1", "rejected");
+    await persistStoreState(env, "r1", "rejected");
     const row = stub.table("run")[0];
     const events = JSON.parse(String(row.events)) as Array<{ text: string }>;
-    check("rejection: recorded on the run, once, and said in the live feed",
-      row.storePasswordRejected === true && events.length === 1 && /store password was not accepted/.test(events[0].text),
+    check("state: a rejection is recorded on the run and said in the live feed, once",
+      row.storePasswordState === "rejected" && events.length === 1 && /store password was not accepted/.test(events[0].text),
       String(row.events));
-    check("rejection: it is about the store password, not a test login", row.credentialsRejected === false);
-    const next = await storeAccessFor(env, { id: "r1", storePasswordEnc: enc });
-    check("rejection: the next phase starts knowing it — no second attempt anywhere in the run", next.state?.rejected === true);
+    check("state: it is about the store password, not a test login", row.credentialsRejected === false);
+    check("state: the next phase starts knowing it", (await storeAccessFor(env, { id: "r1", storePasswordEnc: enc })).state?.status === "rejected");
+    const broken = { db: { run: { findUnique: async () => { throw new Error("D1 unavailable"); } } } } as unknown as AgentEnv;
+    check("state: a run whose state cannot be read is treated as pending — nothing submitted on a guess",
+      (await storeAccessFor(broken, { id: "r1", storePasswordEnc: enc })).state?.status === "pending");
+    const failing = { db: { run: { update: async () => { throw new Error("D1 unavailable"); }, findUnique: async () => null } } } as unknown as AgentEnv;
+    check("state: a lost write is reported, so the unlock can fail closed", (await persistStoreState(failing, "r1", "pending")) === false);
     const cleared = clearedCredentials({ testAccounts: null });
     check("one-off run end: the store password is cleared with the test password",
       cleared.storePasswordEnc === null && cleared.testPasswordEnc === null, JSON.stringify(cleared));
-  }
 
-  // ── 6 — the prompt ───────────────────────────────────────────────────────
-  {
-    const enc = encryptSecret(RIGHT);
     const run = { targetUrl: STORE, scopeHints: null, userNotes: null, focusAreas: null, storePasswordEnc: enc };
     for (const [phase, prompt] of [
       ["discovery", discoverySystem(run)],
@@ -410,39 +510,182 @@ async function main() {
       check(`prompt (${phase}): never the password or its encrypted blob`, !prompt.includes(RIGHT) && !prompt.includes(enc));
     }
     const without = discoverySystem({ ...run, storePasswordEnc: null });
-    check("prompt: nothing about a store password when none is held", !/STORE PASSWORD/.test(without));
+    check("prompt with no store password: still says what to do on a store's password page",
+      /PASSWORD-PROTECTED STORES/.test(without) && !/STORE PASSWORD IS PROVIDED/.test(without));
   }
 
-  // ── 7 — the verdict asks for the right thing ─────────────────────────────
+  // ── 6 — a run that reached only the gate ─────────────────────────────────
   {
+    const finding = { title: "The storefront only shows a password form", category: "broken", severity: "high" } as unknown as SynthesizedFinding;
+    const gated = gateFindings([finding], lockedJourneys(), { targetUrl: STORE });
+    check("findings: a run that reached only the store's password page keeps no finding",
+      gated.kept.length === 0 && gated.dropped[0]?.reason === STORE_GATE_ONLY, JSON.stringify(gated.dropped.map((d) => d.reason)));
+    const reached = lockedJourneys();
+    reached[0].steps[0].actions = JSON.stringify([
+      { kind: "navigate", url: `${STORE}/cart`, outcome: { urlAfter: `${STORE}/cart`, status: 200 } },
+    ]);
+    check("findings: one page of the store reached and findings stand", gateFindings([finding], reached, { targetUrl: STORE }).kept.length === 1);
+
     const synth = { verdict: "all_good" as const, bottomLine: null };
     const none = judgeVerdictIntegrity(lockedJourneys(), [], synth, STORE, { storePassword: false, storePasswordRejected: false });
     check("verdict: a store gate with no store password asks for the store password by name",
-      none.verdict === "unverified" && /The store password is what would let us check the rest\./.test(none.bottomLine ?? ""),
-      none.bottomLine ?? "");
+      none.verdict === "unverified" && /The store password is what would let us check the rest\./.test(none.bottomLine ?? ""), none.bottomLine ?? "");
     const refused = judgeVerdictIntegrity(lockedJourneys(), [], synth, STORE, { storePassword: true, storePasswordRejected: true });
     check("verdict: a refused store password says so and asks for the current one",
-      refused.verdict === "unverified" && /store password we were given was not accepted/.test(refused.bottomLine ?? ""),
-      refused.bottomLine ?? "");
-    const unknown = judgeVerdictIntegrity(lockedJourneys(), [], synth, STORE);
-    check("verdict: without access facts the generic sentence stands",
-      /A password or a test login for it/.test(unknown.bottomLine ?? ""), unknown.bottomLine ?? "");
+      /store password we were given was not accepted/.test(refused.bottomLine ?? ""), refused.bottomLine ?? "");
     const login = lockedJourneys().map((j) => ({
       ...j,
       steps: j.steps.map((s) => ({ ...s, actions: s.actions?.replaceAll("/password", "/login") })),
     }));
     const saas = judgeVerdictIntegrity(login, [], synth, STORE, { storePassword: false, storePasswordRejected: false });
     check("verdict: a sign-in page that is not the store gate keeps the generic ask",
-      saas.verdict === "unverified" && /A password or a test login for it/.test(saas.bottomLine ?? ""), saas.bottomLine ?? "");
+      /A password or a test login for it/.test(saas.bottomLine ?? ""), saas.bottomLine ?? "");
 
-    const { STORE_LOCKED_SMOKE_FAILURE, STORE_GATED_SMOKE_FAILURE } = await import("@/agent/replay");
+    // The loader the workflow calls, over a database — it must feed the rule the facts.
+    const verdictDb = (state: string | null, enc: string | null) =>
+      createStubDb({
+        run: [{ id: "rv", targetUrl: STORE, storePasswordEnc: enc, storePasswordState: state }],
+        journey: lockedJourneys().map((j, i) => ({ id: `j${i}`, runId: "rv", status: j.status })),
+        step: lockedJourneys().flatMap((j, i) => j.steps.map((s, k) => ({ id: `s${i}${k}`, journeyId: `j${i}`, ...s }))),
+        finding: [],
+      });
+    const loadedNone = await checkVerdictIntegrity({ db: verdictDb(null, null).db } as unknown as AgentEnv, "rv", synth);
+    check("verdict loader: a run without a store password is asked for it",
+      /The store password is what would let us check the rest\./.test(loadedNone.bottomLine ?? ""), loadedNone.bottomLine ?? "");
+    const loadedRefused = await checkVerdictIntegrity({ db: verdictDb("rejected", encryptSecret(WRONG)).db } as unknown as AgentEnv, "rv", synth);
+    check("verdict loader: a run whose store password was refused says so",
+      /was not accepted/.test(loadedRefused.bottomLine ?? ""), loadedRefused.bottomLine ?? "");
+  }
+
+  // ── 7 — every place a run is made or fed ─────────────────────────────────
+  {
+    const enc = encryptSecret(RIGHT);
+    const pwEnc = encryptSecret(TEST_PW);
+    const { createWatchRun } = await import("@/agent/scheduler");
+    const stub = createStubDb({ counter: [{ id: "counter", name: "runNumber", value: 10 }] });
+    const created = await createWatchRun({ db: stub.db } as unknown as AgentEnv, {
+      id: "w1", appSlug: "store.test", targetUrl: `${STORE}/`, notifyEmail: null, testEmail: null, testPasswordEnc: null,
+      storePasswordEnc: enc, appId: null, ownerId: "u1", teamId: "t1", app: null,
+    }, null);
+    const watchRun = stub.table("run").find((r) => r.id === created.id);
+    check("scheduler: a watch run carries the watch's store password", watchRun?.storePasswordEnc === enc, String(watchRun?.storePasswordEnc));
+
+    const seedTeam = () =>
+      createStubDb({
+        user: [{ id: "u1", email: "o@store.test" }],
+        team: [{ id: "t1", name: "Store", plan: "business", isPersonal: true }],
+        app: [{ id: "app1", ownerId: "u1", teamId: "t1", appSlug: "securify-demo.myshopify.com", targetUrl: `${STORE}/`,
+          targetKind: "website", testEmail: "qa@store.test", testPasswordEnc: pwEnc, storePasswordEnc: enc }],
+        watch: [],
+        run: [{ id: "r_one", publicId: "pub_one", ownerId: "u1", teamId: "t1", appId: "app1", appSlug: "securify-demo.myshopify.com",
+          targetUrl: `${STORE}/`, targetKind: "website", status: "completed", testEmail: "qa@store.test", testPasswordEnc: null,
+          storePasswordEnc: null, ephemeral: false, notifyEmail: null, scopeHints: null, userNotes: null }],
+        counter: [{ id: "counter", name: "runNumber", value: 10 }],
+      });
+    const user = { id: "u1", teamId: "t1", plan: "business" };
+    const fromApp = seedTeam();
+    await enableWatchForApp(fromApp.db, user, "app1", { frequency: "daily" });
+    check("enable watch (an app): the new watch carries the app's store password",
+      fromApp.table("watch")[0]?.storePasswordEnc === enc, String(fromApp.table("watch")[0]?.storePasswordEnc));
+    const fromRun = seedTeam();
+    const enabled = await enableWatchForRun(fromRun.db, user, { runPublicId: "pub_one", frequency: "daily", notifyOnChangeOnly: true });
+    const w = fromRun.table("watch")[0];
+    check("enable watch (a verdict whose run lost its copies): the watch carries the app's store password",
+      enabled.kind === "ok" && w?.storePasswordEnc === enc, `${enabled.kind} ${String(w?.storePasswordEnc).slice(0, 12)}`);
+    check("enable watch (a verdict): …and the app's test login, as a pair (the same path lost it before)",
+      w?.testEmail === "qa@store.test" && typeof w?.testPasswordEnc === "string" && decryptSecret(w.testPasswordEnc as string) === TEST_PW,
+      `${w?.testEmail} ${String(w?.testPasswordEnc).slice(0, 12)}`);
+
+    const recheck = seedTeam();
+    const rc = await createRecheckRun(recheck.db as PrismaClient, "pub_one", {}, {}, {
+      canMutate: async () => true,
+      trigger: async () => {},
+      siteCap: () => 20,
+      now: () => new Date(),
+      ephemeralTtlDays: () => 7,
+    });
+    const rerun = recheck.table("run").find((r) => r.publicId === (rc as { publicId?: string }).publicId);
+    check("re-check of a saved app: the new run carries the app's store password, though the old run lost its copy",
+      rc.kind === "ok" && rerun?.storePasswordEnc === enc, `${rc.kind} ${String(rerun?.storePasswordEnc).slice(0, 12)}`);
+
+    // The smoke pass: the store reaches the probe.
+    const now = new Date("2026-10-01T12:00:00.000Z");
+    const smokeDb = createStubDb({
+      run: [
+        { id: "run_now", status: "queued", storePasswordEnc: enc, storePasswordState: null },
+        { id: "run_base", runNumber: 42, status: "completed", verdict: "all_good", watchId: "w1", completedAt: new Date(now.getTime() - 86_400_000),
+          appLens: null, anatomy: JSON.stringify({ pages: ["/cart"] }) },
+      ],
+      journey: [{ id: "jb", runId: "run_base" }],
+      generatedTest: [{ id: "g1", appSlug: "store.test", title: "t", version: 1, content: "await page.goto('/cart');" }],
+    });
+    let probed: StoreAccess | undefined;
+    await smokeReplay(
+      { db: smokeDb.db } as unknown as AgentEnv,
+      { id: "run_now", appSlug: "store.test", targetUrl: `${STORE}/`, watchId: "w1", baselineRunId: "run_base", storePasswordEnc: enc },
+      null,
+      now,
+      async (_env, _url, _targets, opts) => {
+        probed = opts.store;
+        return { probes: [], healthy: 1, unreached: [], skipped: 0, failures: [], consoleErrors: 0, consoleBurstsSetAside: [], pageErrors: 0, screenshotUrl: null };
+      },
+    );
+    check("smoke pass: the run's store password reaches the probe", probed?.password === RIGHT, String(probed?.password ? "set" : "missing"));
+
+    // The surface scan: it opens the store, not its password page.
+    const { surfaceScan } = await import("@/agent/browser");
+    const scanStore = fakeStore(RIGHT);
+    const browser = { version: () => "126.0.0", newContext: async () => ({ newPage: async () => scanStore.page, close: async () => {} }) };
+    const scanDb = createStubDb({ run: [{ id: "run_scan", storePasswordEnc: enc, storePasswordState: null }] });
+    await surfaceScan({ db: scanDb.db, bindings: {} } as unknown as AgentEnv, browser as never, {
+      targetUrl: `${STORE}/`, id: "run_scan", storePasswordEnc: enc,
+    });
+    check("surface scan: a locked store is opened with the store password", scanStore.isUnlocked() && scanStore.submitted.join() === RIGHT);
+
+    // Partial mode: a store password new since the last walk means a full walk.
+    const { planPartialRun } = await import("@/agent/partial");
+    const partialEnv = (current: string | null) => {
+      const runs: Record<string, Record<string, unknown>> = {
+        run_now: { id: "run_now", testEmail: null, testPasswordEnc: null, testAccounts: null, storePasswordEnc: current },
+        run_base: { id: "run_base", runNumber: 42, status: "completed", verdict: "mostly_ok", completedAt: new Date(now.getTime() - 86_400_000),
+          testEmail: null, testPasswordEnc: null, testAccounts: null, storePasswordEnc: null, appLens: null, anatomy: JSON.stringify({ pages: ["/cart"] }) },
+      };
+      const journeys = ["ok", "broken", "ok"].map((status, i) => ({
+        id: `j${i}`, runId: "run_base", order: i, title: `Journey ${i + 1}`, status, carriedFromRunId: null, steps: [{ label: "open" }],
+      }));
+      return {
+        db: {
+          run: {
+            findUnique: async ({ where }: { where: { id: string } }) => runs[where.id] ?? null,
+            findMany: async ({ where }: { where: { id?: { in: string[] } } }) =>
+              where.id?.in ? where.id.in.map((id) => runs[id]).filter(Boolean) : [runs.run_base],
+          },
+          journey: {
+            count: async ({ where }: { where: { runId: string } }) => (where.runId === "run_base" ? journeys.length : 0),
+            findMany: async ({ where }: { where: { runId: string } }) => (where.runId === "run_base" ? journeys : []),
+          },
+          appJourney: { findMany: async () => [] },
+        },
+      } as unknown as AgentEnv;
+    };
+    const control = await planPartialRun(partialEnv(null), { id: "run_now", watchId: "w1" }, null, now);
+    const withStore = await planPartialRun(partialEnv(enc), { id: "run_now", watchId: "w1" }, null, now);
+    check("partial mode: a store password added since the last walk forces a full walk (control: none added)",
+      control.reason !== withStore.reason && !withStore.taken && /store password/.test(withStore.reason ?? ""),
+      `control: ${control.taken ? "planned" : control.reason} | with: ${withStore.taken ? "planned" : withStore.reason}`);
+  }
+
+  // ── 8 — rule 1 over every sentence a customer reads ──────────────────────
+  {
+    const synth = { verdict: "all_good" as const, bottomLine: null };
     const customerText = [
-      STORE_GATED_SMOKE_FAILURE,
-      STORE_UNDRIVEN_OBSERVED,
-      none.bottomLine ?? "",
-      refused.bottomLine ?? "",
+      judgeVerdictIntegrity(lockedJourneys(), [], synth, STORE, { storePassword: false, storePasswordRejected: false }).bottomLine ?? "",
+      judgeVerdictIntegrity(lockedJourneys(), [], synth, STORE, { storePassword: true, storePasswordRejected: true }).bottomLine ?? "",
       STORE_LOCKED_OBSERVED,
+      STORE_MISSING_OBSERVED,
+      STORE_UNDRIVEN_OBSERVED,
       STORE_LOCKED_SMOKE_FAILURE,
+      STORE_GATED_SMOKE_FAILURE,
       "The store password was not accepted, so the store behind its password page can't be checked this run.",
     ];
     for (const text of customerText) {
@@ -451,11 +694,11 @@ async function main() {
     }
   }
 
-  console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
+  report(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
 main().catch((err) => {
-  console.error(err);
+  report(String(err instanceof Error ? err.stack : err));
   process.exit(1);
 });

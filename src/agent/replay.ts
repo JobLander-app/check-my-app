@@ -55,8 +55,7 @@ import { parseJson } from "@/lib/json";
 import { applyNameShim, launchAgentBrowser, newAgentContext } from "./browser";
 import { putScreenshot, type AgentEnv } from "./env";
 import { storeAccessFor } from "./credentials";
-import { storeRefused, unlockStoreGate, type StoreAccess, type UnlockPage } from "./store-password";
-import { isStoreGateUrl } from "@/lib/store-gate";
+import { onStoreGate, storeRefused, unlockStoreGate, type StoreAccess, type UnlockPage } from "./store-password";
 import {
   MAX_SMOKE_PAGES,
   probeTargets,
@@ -426,7 +425,7 @@ export async function smokeStoreGate(
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
   const outcome = await unlockStoreGate(page, targetUrl, store ?? {});
   if (storeRefused(outcome)) return storeLockedOutcome(STORE_LOCKED_SMOKE_FAILURE);
-  if (isStoreGateUrl(page.url(), targetUrl)) return storeLockedOutcome(STORE_GATED_SMOKE_FAILURE);
+  if (await onStoreGate(page, targetUrl)) return storeLockedOutcome(STORE_GATED_SMOKE_FAILURE);
   return null;
 }
 

@@ -14,6 +14,8 @@ ALTER TABLE "Watch" ADD COLUMN "storePasswordEnc" TEXT;
 ALTER TABLE "Run" ADD COLUMN "storePasswordEnc" TEXT;
 ALTER TABLE "PendingCheck" ADD COLUMN "storePasswordEnc" TEXT;
 
--- The store's password page turned the password away. One attempt per run,
--- like Run.credentialsRejected (CHE-100): once set, no later phase submits it.
-ALTER TABLE "Run" ADD COLUMN "storePasswordRejected" BOOLEAN NOT NULL DEFAULT false;
+-- What the store's password page made of it, per run: NULL (never submitted),
+-- 'pending' (written before a submission; left when the outcome is unknown,
+-- and then nothing is submitted again), 'accepted', 'rejected' (never
+-- submitted again this run — CHE-100's one-attempt rule).
+ALTER TABLE "Run" ADD COLUMN "storePasswordState" TEXT;

@@ -232,8 +232,18 @@ export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" 
 // store's /password page (store-password.ts). The model is told only that this
 // happens, so it does not report the gate as the product or try to get past it
 // with something it typed — never the value, not even as a placeholder.
+// Said on every run, password or not: a run that holds none meets the gate too,
+// and the model must not mistake the lock for the product or try to pick it.
 function storePasswordBlock(run: Pick<Run, "storePasswordEnc">): string {
-  if (!run.storePasswordEnc) return "";
+  if (!run.storePasswordEnc) {
+    return `
+
+PASSWORD-PROTECTED STORES: if a page of the target leads to the store's own password
+page ("Enter store password"), the store is locked and no store password was given for
+this run. Never type anything into that form. Report the step "skipped" with
+unverifiedReason "missing_access" — the store password is what is needed. A locked
+store is not a defect.`;
+  }
   return `
 
 STORE PASSWORD IS PROVIDED for this run: this store is password-protected, and the

@@ -42,7 +42,9 @@
 // and rule 8's demand that a claim rest on evidence uncontaminated by our state.
 
 import { splitSentences } from "@/lib/verdict-language";
+import { STORE_GATE_PATH } from "@/lib/store-gate";
 import type { SynthesizedFinding } from "./synthesis";
+import { accessGate, type IntegrityJourney } from "./verdict-integrity";
 
 export interface GateStep {
   status: string;
@@ -58,6 +60,8 @@ export interface GateStep {
 }
 
 export interface GateJourney {
+  // CHE-372: read by the store-gate rule (accessGate); absent = walked.
+  status?: string;
   steps: GateStep[];
 }
 
@@ -501,9 +505,29 @@ export function cutNullEffectClauses(text: string | null | undefined): ClaimCut 
   return { text: out.length > 0 ? out : null, cut };
 }
 
-export function gateFindings(findings: SynthesizedFinding[], journeys: GateJourney[]): GateResult {
+// CHE-372: the reason string for a finding in a run that never got past a
+// password-protected store's own password page.
+export const STORE_GATE_ONLY = "the run reached only the store's password page";
+
+export function gateFindings(
+  findings: SynthesizedFinding[],
+  journeys: GateJourney[],
+  opts: { targetUrl?: string | null } = {},
+): GateResult {
   const kept: SynthesizedFinding[] = [];
   const dropped: GateResult["dropped"] = [];
+
+  // CHE-372: when the machine trail shows every product page we asked for
+  // ended on the store's /password page and nothing reached the store itself
+  // (accessGate — the trail rule 1b of verdict-integrity.ts reads), there is
+  // no evidence about the store in this run at all. Whatever synthesis made of
+  // the gate — "the storefront only shows a password form" — is the store
+  // being password-protected, not a defect. Every finding goes; rule 1b then
+  // records Not verified and asks for the store password.
+  const gate = opts.targetUrl ? accessGate(journeys as IntegrityJourney[], opts.targetUrl) : null;
+  if (gate && gate.split(", ").includes(STORE_GATE_PATH)) {
+    return { kept, dropped: findings.map((finding) => ({ finding, reason: STORE_GATE_ONLY })) };
+  }
 
   const steps = journeys.flatMap((j) => j.steps);
   const skipped = steps.filter((s) => s.status === "skipped");

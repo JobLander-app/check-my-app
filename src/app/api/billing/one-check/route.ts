@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getDb } from "@/lib/db";
-import { encryptSecret, hashClientKey } from "@/lib/crypto";
+import { hashClientKey } from "@/lib/crypto";
 import { BILLING_UNCONFIGURED, getStripe, getStripeEnv, oneCheckPriceId } from "@/lib/stripe";
-import { PENDING_CHECK_TTL_MS, paidCheckState } from "@/lib/one-check";
+import { PENDING_CHECK_TTL_MS, paidCheckState, parkedCredentials } from "@/lib/one-check";
 import { createCheckSchema } from "@/lib/validation";
 import { distinctIdFromCookies } from "@/lib/analytics-server";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
@@ -42,9 +42,7 @@ export async function POST(req: Request) {
     data: {
       targetUrl: input.url,
       extensionConfig: input.extension ? JSON.stringify(input.extension) : null,
-      testEmail: input.testEmail || null,
-      testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
-      storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
+      ...parkedCredentials(input),
       userNotes: input.userNotes || null,
       notifyEmail: input.notifyEmail || null,
       anonKeyHash: await hashClientKey(req.headers.get("cf-connecting-ip")),
