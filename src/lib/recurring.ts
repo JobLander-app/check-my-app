@@ -45,8 +45,7 @@
 // real meetbashar fixture; recurringByApp() loads a team's apps into it.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import { dedupKey } from "@/lib/dedup";
-import { findingSignature, signatureKind, targetOf } from "@/lib/finding-signature";
+import { findingSignature, signatureKind, targetSignature } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -160,8 +159,7 @@ export function recurrence(
     for (const s of sightings) perRun.set(s.run, (perRun.get(s.run) ?? 0) + 1);
     if ([...perRun.values()].every((n) => n < 2)) continue;
     groups.delete(signature);
-    const splitOf = (s: Sighting) =>
-      `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(s.finding.detail), failureSignature: "target" }).slice(0, 12)}`;
+    const splitOf = (s: Sighting) => targetSignature(signature, s.finding.detail);
     for (const s of sightings) groups.set(splitOf(s), [...(groups.get(splitOf(s)) ?? []), s]);
     for (const s of restated.get(signature) ?? []) restated.set(splitOf(s), [...(restated.get(splitOf(s)) ?? []), s]);
     restated.delete(signature);

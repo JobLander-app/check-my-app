@@ -137,6 +137,24 @@ check("X seen now, but the previous release carried its journey → not compared
   late?.delta?.broke.length === 0 && titles(late?.delta?.notCompared) === "Order total ignores the discount",
   `broke ${titles(late?.delta?.broke)} · notCompared ${titles(late?.delta?.notCompared)}`);
 
+// Codex round 1 on #231: one release saw two different problems under one page
+// signature (joblander #11's /login, as stored). The next release saw only one
+// of them. That is one fixed and one unchanged — not "one unchanged".
+const loginFinding = (id: string, title: string, where: string) => ({
+  id, title, category: "broken", severity: "high", mark: "none", signature: null,
+  detail: JSON.stringify({ where, whatHappened: "Nothing happened." }),
+  anchor: JSON.stringify({ stepRef: { journeyIndex: 1, stepIndex: 0 } }),
+});
+const OAUTH = ["Google OAuth button gets stuck in permanent 'Loading' state", "/login — 'Continue with Google' button"] as const;
+const RESET = ["'Send reset link' does nothing — no request, no feedback", "/login — password-reset view"] as const;
+const twoThenOne = computeReleases([
+  run({ runNumber: 40, findings: [loginFinding("o40", ...OAUTH), loginFinding("r40", ...RESET)] }),
+  run({ runNumber: 41, findings: [loginFinding("r41", ...RESET)] }),
+]).find((r) => r.runNumber === 41);
+check("two problems on one page signature, then only one: one fixed, one unchanged",
+  titles(twoThenOne?.delta?.fixed) === OAUTH[0] && titles(twoThenOne?.delta?.unchanged) === RESET[0],
+  `fixed ${titles(twoThenOne?.delta?.fixed)} · unchanged ${titles(twoThenOne?.delta?.unchanged)}`);
+
 // ── 3. Preview vs production ──────────────────────────────────────────────────
 const r13 = release(13);
 check("the preview release is its own line: env preview, first preview release we checked",

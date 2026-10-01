@@ -29,7 +29,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
-import { findingSignature, signatureKind } from "@/lib/finding-signature";
+import { findingSignature, signatureKind, targetSignature } from "@/lib/finding-signature";
 import { parseJson } from "@/lib/json";
 import type { RecurrenceFinding } from "@/lib/recurring";
 import { teamOwned } from "@/lib/tenant-db";
@@ -130,19 +130,40 @@ interface Seen {
   stepIndex: number;
 }
 
-// What one release saw, by signature. Restatements of carried journeys and our
-// own leftover test records are not the release's.
-function seenIn(run: ReleaseRunInput): Map<string, Seen> {
-  const out = new Map<string, Seen>();
+// What one release saw, with each finding's signature. Restatements of carried
+// journeys and our own leftover test records are not the release's.
+function seenIn(run: ReleaseRunInput): Array<[string, Seen]> {
+  const out: Array<[string, Seen]> = [];
   for (const finding of run.findings) {
     const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor)?.stepRef;
     const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] ?? null : null;
     if (journey?.carried) continue;
     const signature = finding.signature ?? findingSignature({ appSlug: run.appSlug, ...finding });
-    if (signatureKind(signature) === "ours" || out.has(signature)) continue;
-    out.set(signature, { finding, journey, stepIndex: typeof ref?.stepIndex === "number" ? ref.stepIndex : -1 });
+    if (signatureKind(signature) === "ours") continue;
+    out.push([signature, { finding, journey, stepIndex: typeof ref?.stepIndex === "number" ? ref.stepIndex : -1 }]);
   }
   return out;
+}
+
+// Both releases keyed the same way. A signature that either release saw twice
+// is proven to cover different problems (two broken things on one /login), so
+// in BOTH releases it is refined by its target, as recurrence does — otherwise
+// "X and Y before, only Y now" would read as Y unchanged and X never fixed.
+function keyed(before: Array<[string, Seen]>, now: Array<[string, Seen]>): [Map<string, Seen>, Map<string, Seen>] {
+  const twice = new Set<string>();
+  for (const list of [before, now]) {
+    const seen = new Set<string>();
+    for (const [sig] of list) (seen.has(sig) ? twice : seen).add(sig);
+  }
+  const key = (list: Array<[string, Seen]>) => {
+    const m = new Map<string, Seen>();
+    for (const [sig, s] of list) {
+      const k = twice.has(sig) ? targetSignature(sig, s.finding.detail) : sig;
+      if (!m.has(k)) m.set(k, s);
+    }
+    return m;
+  };
+  return [key(before), key(now)];
 }
 
 const walkedBy = (run: ReleaseRunInput) => new Set(run.journeys.filter((j) => j.walked).map((j) => j.identity));
@@ -166,8 +187,7 @@ function item(signature: string, seen: Seen): ReleaseItem {
 }
 
 function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable<Release["delta"]> {
-  const before = seenIn(previous);
-  const now = seenIn(current);
+  const [before, now] = keyed(seenIn(previous), seenIn(current));
   const d: NonNullable<Release["delta"]> = { broke: [], fixed: [], unchanged: [], notCompared: [] };
   for (const [sig, seen] of now) {
     if (before.has(sig)) d.unchanged.push(item(sig, seen));

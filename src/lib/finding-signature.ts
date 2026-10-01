@@ -123,6 +123,14 @@ export function pageOf(where: string | undefined): string | null {
 // minutes …"), and the URL was absent in three. src/lib/recurring.ts uses it
 // only for a signature that one check saw twice, where the page key is proven
 // to be too coarse.
+// A signature refined by its target — the key for a finding whose signature
+// one check is known to share between different problems. One spelling, used
+// by recurrence (src/lib/recurring.ts) and the release delta
+// (src/lib/releases.ts), so both split a coarse signature the same way.
+export function targetSignature(signature: string, detail: string | null): string {
+  return `${signature}~${dedupKey({ journeyTitle: signature, stepLabel: targetOf(detail), failureSignature: "target" }).slice(0, 12)}`;
+}
+
 export function targetOf(detail: string | null): string {
   const d = parseJson<FindingDetail>(detail) ?? {};
   const where = d.where ?? "";
