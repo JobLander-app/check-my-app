@@ -74,9 +74,9 @@ export const SELF_HOST_GUARDED_VERBS =
 // ways a product's own buttons say it. Tested only against the control itself,
 // only in a strict place, only in a run that may not write.
 export const REMOVE_VERBS =
-  /\b(delete|remove|uninstall|erase|destroy|purge|wipe|reset|clear all|block|unblock|ban|unban|disconnect|unlink|revert|roll ?back)\b/i;
+  /\b(delete|remove|uninstall|unpublish|erase|destroy|purge|wipe|reset|clear all|block|unblock|ban|unban|disconnect|unlink|revert|roll ?back)\b/i;
 export const COMMIT_VERBS =
-  /\b(update|apply|confirm|approve|install|import|generate|regenerate|duplicate|pay|charge|refund|fulfil+|transfer|grant|rotate|accept (?:the )?(?:invit\w+|terms|charge|offer)|start (?:(?:your|a|my|free) )*trial|(?:select|choose|change|switch) (?:this )?plan)\b/i;
+  /\b(update|apply|confirm|approve|install|import|generate|regenerate|duplicate|pay|charge|refund|fulfil+|transfer|grant|rotate|connect|mark (?:as|all)|unpin|pin (?:this |the )?app|accept (?:the )?(?:invit\w+|terms|charge|offer)|start (?:(?:your|a|my|free) )*trial|(?:select|choose|change|switch) (?:this )?plan)\b/i;
 
 // Where the run stands and what it may do.
 export interface HandsOffPlace {

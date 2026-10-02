@@ -118,10 +118,12 @@ async function main() {
     ["Save", "create"], ["Add rule", "create"], ["Delete", "remove"], ["Remove country", "remove"], ["Uninstall app", "remove"], ["Block IP address", "remove"],
     ["Unblock", "remove"], ["Reset to defaults", "remove"], ["Update", "commit"], ["Apply changes", "commit"], ["Confirm", "commit"], ["Approve charge", "commit"],
     ["Start free trial", "commit"], ["Select plan", "commit"], ["Accept terms", "commit"], ["Enable protection", "toggle"], ["Cancel subscription", "toggle"], ["Upgrade", "toggle"],
+    ["Unpublish", "remove"], ["Mark as fulfilled", "commit"], ["Connect account", "commit"], ["Pin app", "commit"], ["Unpin", "commit"],
   ];
   check("a person's session: the ways a button says it saves, removes, commits or toggles",
     SESSION_HELD.every(([t, rule]) => held(control(t), session) === rule), SESSION_HELD.filter(([t, rule]) => held(control(t), session) !== rule).map(([t]) => `${t}=${held(control(t), session)}`).join(" | "));
-  const SESSION_FREE = ["View details", "Search", "Apply filter", "Next", "Show more", "Blocked countries", "Blocklist", "Orders", "Updates", "Removed visitors", "Protection dashboard", "Team access", "Close", "Refresh"];
+  const SESSION_FREE = ["View details", "Search", "Apply filter", "Next", "Show more", "Blocked countries", "Blocklist", "Orders", "Updates", "Removed visitors", "Protection dashboard", "Team access", "Close", "Refresh",
+    "Connected accounts", "Connection status", "Pinned apps", "Bookmarks", "PIN code", "Discard"];
   check("a person's session: what only reads or only names a page is not held",
     SESSION_FREE.every((t) => held(control(t), session) === null), SESSION_FREE.filter((t) => held(control(t), session) !== null).join(" | "));
   check("the control is read by every name it has: its text, its accessible name, its value",
