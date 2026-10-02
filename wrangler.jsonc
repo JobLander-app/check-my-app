@@ -22,6 +22,12 @@
       "bucket_name": "checkmyapp-evidence"
     }
   ],
+  // CHE-362: resizes a step screenshot to its small copy on first request
+  // (src/lib/thumbnail.ts). The copy is stored in EVIDENCE, so each screenshot
+  // is resized once.
+  "images": {
+    "binding": "IMAGES"
+  },
   // Cross-worker binding to the durable CheckRunWorkflow defined in the agent
   // worker — the web app starts a run by creating an instance (src/lib/trigger.ts).
   "workflows": [

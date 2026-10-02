@@ -21,7 +21,42 @@ export function evidenceKey(url: string | null | undefined): string | null {
   return key.length > 0 ? key : null;
 }
 
+// A small copy of a step screenshot (CHE-362). A screenshot is ~420 KB as
+// stored; a page that shows every journey of an app as a strip of its frames
+// would weigh 20–30 MB, and the same frame at 480px is ~6 KB. The copy is made
+// on first request by /api/evidence/[...path] and kept beside the original
+// under the same content hash, so one screenshot is resized once, ever.
+//
+// One width, on purpose: the width is part of the address, and an address
+// anyone can vary is a way to make us resize without end.
+export const THUMB_WIDTH = 480;
+
+const SCREENSHOT_KEY = /^screenshots\/([0-9a-f]{64})\.png$/;
+const THUMB_KEY = new RegExp(`^thumbs/${THUMB_WIDTH}/([0-9a-f]{64})\\.webp$`);
+
+// The thumbnail's key for a screenshot's key; null for anything that is not a
+// content-addressed screenshot (a video, a transcript, an older absolute URL).
+export function thumbKeyOf(screenshotKey: string): string | null {
+  const hash = SCREENSHOT_KEY.exec(screenshotKey)?.[1];
+  return hash ? `thumbs/${THUMB_WIDTH}/${hash}.webp` : null;
+}
+
+// …and back: the screenshot a thumbnail key is a copy of.
+export function screenshotKeyOfThumb(thumbKey: string): string | null {
+  const hash = THUMB_KEY.exec(thumbKey)?.[1];
+  return hash ? `screenshots/${hash}.png` : null;
+}
+
+// What a page puts in `src` for a small frame: the thumbnail's address when
+// the stored URL is one of our screenshots, the stored URL itself otherwise.
+export function thumbUrl(screenshotUrl: string): string {
+  const key = evidenceKey(screenshotUrl);
+  const thumb = key ? thumbKeyOf(key) : null;
+  return thumb ? evidenceUrl(thumb) : screenshotUrl;
+}
+
 const CONTENT_TYPES: Record<string, string> = {
+  webp: "image/webp",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
