@@ -243,6 +243,11 @@ const CLICK_PRODUCT = [
   "The dashboard shows the click recorded a minute ago.",
   "The click showed up in the report after a refresh.",
   "The counter stays stale until the next read from the API.",
+  // Round 2 of Codex on #244: the click as an object is the product's, and
+  // "itself" does not make a product's reaction ours.
+  "The audit log recorded the click itself, but no save event appeared.",
+  "The click itself returned a 500 and the page stayed as it was.",
+  "The export shows the click's result in a column named 'Outcome'.",
 ];
 
 // A scripted model: any call is the summary call (finalizeJson sends no

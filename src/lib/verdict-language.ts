@@ -415,20 +415,22 @@ const TOOL_TAGS = [
 // product, and often a finding's whole evidence — cutting them is worse than
 // the leak (cross-review of #244: the first pattern here did). So, by who can
 // be the subject:
-//   - always the tool: "the click's result", "the click tool", "the click
-//     itself" — and the verbs only a tool does to the walk: reported, listed,
-//     noted, surfaced;
+//   - the click must be the SUBJECT — "the click", "the click itself", "the
+//     click's result", "the click tool", with its verb right after. As an
+//     object it is the product's ("the audit log recorded the click itself");
+//   - verbs only a tool does to the walk — reported, listed, noted, surfaced —
+//     are enough on their own;
 //   - verbs the product does too (returned, showed, said) only when what
 //     follows is the tool's object — "the/that (newly visible) text" — never a
 //     status, a toast, a message, a spinner;
 //   - "the next read" only as the tool's — something "gone … by the next
 //     read", or "the next re-read" — not a cache that is stale until the next
 //     read from an API.
+const CLICK_SUBJECT = "\\bthe\\s+click(?:['’]s\\s+(?:own\\s+)?result|\\s+tool|\\s+itself)?\\s+";
 const TOOL_OBJECT = "(?:that|the|this)\\s+(?:(?:newly\\s+visible|new|visible)\\s+)?(?:text|string)\\b|(?:that|the|this)\\s+newly\\s+visible\\b";
 const CLICK_VOICE = new RegExp(
-  "\\bthe\\s+click(?:['’]s\\s+(?:own\\s+)?result|\\s+tool|\\s+itself)\\b" +
-    "|\\bthe\\s+click\\s+(?:report(?:ed|s)|list(?:ed|s)|noted|surfaced)\\b" +
-    `|\\bthe\\s+click\\s+(?:return(?:ed|s)|show(?:ed|s)|said|says)\\s+(?:${TOOL_OBJECT})` +
+  `${CLICK_SUBJECT}(?:report(?:ed|s)|list(?:ed|s)|noted|surfaced)\\b` +
+    `|${CLICK_SUBJECT}(?:return(?:ed|s)|show(?:ed|s)|said|says)\\s+(?:${TOOL_OBJECT})` +
     "|\\b(?:gone|cleared|reverted|disappeared|vanished)\\b[^.;]{0,40}?\\bby\\s+the\\s+next\\s+read\\b" +
     "|\\bthe\\s+next\\s+re-?read\\b",
   "i",
