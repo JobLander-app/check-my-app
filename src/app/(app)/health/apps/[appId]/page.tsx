@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { VERDICT_META } from "@/lib/status";
 import { can } from "@/lib/scopes";
-import { shouldSkipWatch, usd } from "@/lib/plans";
+import { PLAN_LIMITS, shouldSkipWatch, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { appPath } from "@/lib/app-shell";
@@ -53,8 +53,12 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     appHealth(db, team.id),
     recurringByApp(db, team.id),
     db.run.findMany({
-      where: { ...teamOwned(team.id), appId: app.id, status: { in: FINISHED }, verdict: { not: null } },
-      orderBy: { completedAt: "desc" },
+      // The header's rule (appHealth): a check is shown with its price, which
+      // is written a step after its verdict — so the timeline never runs ahead
+      // of the badge above it. Newest first by the check's number: D1 orders
+      // completedAt as text and prod holds two spellings of it.
+      where: { ...teamOwned(team.id), appId: app.id, status: { in: FINISHED }, verdict: { not: null }, priceUsd: { not: null } },
+      orderBy: { runNumber: "desc" },
       take: TIMELINE,
       select: { publicId: true, runNumber: true, verdict: true, bottomLine: true, priceUsd: true, completedAt: true, quickPagesOpened: true },
     }),
@@ -75,6 +79,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // answers "App not found" for a teammate's app (CHE-395). A reader, or a
   // member on a teammate's app, sees the review link alone.
   const mayRun = can(scope, "run.start") && app.ownerId === user.id;
+  // The same for the tracker offer: exactly what /api/integrations/linear/start
+  // asks for — the scope, a plan that carries tracker integrations, the
+  // viewer's own app. Anyone else would follow it into a refusal.
+  const mayConnectTracker =
+    can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration && app.ownerId === user.id;
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -203,7 +212,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           />
         </section>
 
-        {app.tracker === null && (
+        {app.tracker === null && mayConnectTracker && (
           <section className="card flex flex-col gap-2 p-[18px]">
             <div className="text-[15px] font-semibold">Send problems to your tracker</div>
             <div className="text-[13px] text-fg-muted">

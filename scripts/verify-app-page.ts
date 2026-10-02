@@ -91,7 +91,14 @@ check("the app and its checks are read for the team", /db\.app\.findFirst\(\{\s*
 check("the status line is the strip's own story, not a model's sentence", /stripStory\(\(mine\?\.verdicts \?\? \[\]\)\.map/.test(page));
 check("'Keeps coming back' lists recurring problems only", /filter\(\(i\) => i\.state === "recurring"\)/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
-check("the timeline shows only finished checks with a verdict", /status: \{ in: FINISHED \}, verdict: \{ not: null \}/.test(page));
+check("the timeline shows only finished checks with a verdict and a price — the header's rule — newest first by number",
+  /status: \{ in: FINISHED \}, verdict: \{ not: null \}, priceUsd: \{ not: null \} \},\s*orderBy: \{ runNumber: "desc" \}/.test(page));
+check("the tracker offer is shown only to someone the connect flow will accept",
+  /const mayConnectTracker =\s*can\(scope, "integration\.connect"\) && PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration && app\.ownerId === user\.id;/.test(page) &&
+    /app\.tracker === null && mayConnectTracker &&/.test(page));
+const start = read("src/app/api/integrations/linear/start/route.ts");
+check("…and those are the start route's own three conditions",
+  /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) && /id: appId, ownerId: user\.id/.test(start));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
 // Codex P1 on #241: a button a reader may not press, or that answers "App not
 // found" for a teammate's app, is not shown.
