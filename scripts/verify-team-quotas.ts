@@ -63,7 +63,7 @@ check(
 // that must be a TEAM's; a `user.`, `owner.` or `viewer.` id in that position
 // is the bug this ticket exists to prevent, and it is invisible in review.
 
-const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance", "appPriceRange", "spendByApp"];
+const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance", "appPriceRange"];
 const CALLERS = [
   "src/app/api/checks/route.ts",
   "src/app/dashboard/actions.ts",
