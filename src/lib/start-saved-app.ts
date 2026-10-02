@@ -41,15 +41,21 @@ export async function startSavedApp(
   },
   extras: SavedAppRunExtras = {},
 ): Promise<{ publicId: string; alreadyRunning?: true } | { error: string; code?: RunRefusalCode }> {
-  const app = await db.app.findFirst({ where: { ...teamOwned(owner.teamId), id: appId, ownerId: owner.id } });
+  // CHE-395: the app is the team's, whoever added it. Both doors gate on
+  // `run.start` before they get here, so a filter on the person who added the
+  // app protected nothing — it answered "App not found." to a teammate the
+  // scope table allows to run it.
+  const app = await db.app.findFirst({ where: { ...teamOwned(owner.teamId), id: appId } });
   if (!app) return { error: "App not found." };
   // CHE-390: an app saved before private addresses were refused.
   if (holdsPrivateTarget(app)) return { error: PRIVATE_TARGET_MESSAGE };
   // Terminal from the one table (src/lib/enums.ts). The hand-kept list here
   // omitted `canceled`, so an app whose last run was stopped deliberately
   // answered every later start with that stopped run.
+  // The app's in-flight check, whoever started it: two teammates pressing Run
+  // get one check, not two.
   const active = await db.run.findFirst({
-    where: { ...teamOwned(owner.teamId), appId, ownerId: owner.id, status: { notIn: TERMINAL_RUN_STATUSES } },
+    where: { ...teamOwned(owner.teamId), appId, status: { notIn: TERMINAL_RUN_STATUSES } },
     select: { publicId: true },
   });
   // Said, not implied: a caller that named a build must be able to tell that
