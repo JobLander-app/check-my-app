@@ -52,7 +52,8 @@ const db = {
   },
   team,
   pendingCheck: { findUnique: async () => pending, update: async () => pending },
-  app: { findFirst: async ({where}: {where: {ownerId: string}}) => where.ownerId === "owner" ? app : null },
+  // CHE-395: a saved app is found as the team's, not as the person's who added it.
+  app: { findFirst: async ({where}: {where: {teamId: string; id: string}}) => where.teamId === "team_owner" && where.id === "app" ? app : null },
 } as unknown as PrismaClient;
 const deps = { trigger: async (runId: string) => {triggered.push(runId);} };
 await startCheck(db, {input: createCheckSchema.parse({url,extension:config}), ownerId:null,anonKeyHash:"fixture"},deps);
@@ -68,7 +69,7 @@ assert.equal(rows.length, 3);
 assert.equal(triggered.length, 3);
 assert.equal(rows[2].appId, "app");
 assert.deepEqual(await startSavedApp(db,{id:"other-owner",teamId:"team_other-owner",plan:"business"},"app",{...deps,siteCap:()=>20}),{error:"App not found."});
-assert.equal(rows.length, 3, "A different owner must not start a run with saved credentials");
+assert.equal(rows.length, 3, "A person of another team must not start a run with saved credentials");
 db.run.findFirst = (async ({ where }: { where: { status: { notIn: string[] } } }) => where.status.notIn.includes('partial') ? null : { publicId: 'old-unverified' }) as typeof db.run.findFirst;
 assert.notDeepEqual(await startSavedApp(db, { id: 'owner', teamId: 'team_owner', plan: 'business' }, 'app', { ...deps, siteCap: () => 20 }), { publicId: 'old-unverified' });
 assert.equal(rows.length, 4, 'Adding access after a partial check can start a fresh saved-app run');
