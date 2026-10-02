@@ -55,6 +55,11 @@ const PRIVATE = [
   "http://[fd12:3456:789a::1]",
   "http://[fe80::1]",
   "http://[::ffff:192.168.0.197]",
+  "https://198.18.0.1", // benchmarking — not routed (Codex P2 r3 on #237)
+  "https://192.0.2.10", // documentation
+  "https://203.0.113.7",
+  "https://224.0.0.1", // multicast
+  "https://255.255.255.255",
   "http://localhost.:3000", // the root dot does not make it public
   "https://my-macbook.local.",
 ];
@@ -68,6 +73,10 @@ const PUBLIC = [
   "https://100.128.0.1",
   "https://169.253.1.1",
   "https://8.8.8.8",
+  "https://198.17.255.1",
+  "https://198.20.0.1",
+  "https://192.0.3.1",
+  "https://223.255.255.1",
   "https://localhost.example.com",
   "https://local.example.com",
   "https://internal-tools.example.com",

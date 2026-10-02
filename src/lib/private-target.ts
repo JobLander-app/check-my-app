@@ -19,8 +19,15 @@ const LOCAL_NAMES = /(^|\.)(localhost|local|internal|lan|home\.arpa)$/i;
 function privateV4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
+  const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
   return (
+    // Not routed on the internet at all: documentation, benchmarking, protocol
+    // assignments, multicast and the reserved top of the space.
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224 ||
     a === 0 || // "this network"
     a === 10 ||
     a === 127 || // loopback
