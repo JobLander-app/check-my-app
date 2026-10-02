@@ -390,6 +390,11 @@ await check("on the host, the browser has a user of its own and does not start w
   }
   const provision = await readFile(new URL("provision.sh", dir), "utf8");
   assert.match(provision, /exit "\$fail"/, "the provision no longer fails when the isolation does not hold");
+  // Chrome requires the firewall unit, so restarting that unit restarts Chrome
+  // and ends the person's session. The rules are reloaded with nft itself.
+  assert.doesNotMatch(provision, /systemctl (try-)?restart[^\n]*session-firewall/, "a provision would restart Chrome every time");
+  assert.match(provision, /^nft -f \/etc\/session-host\/firewall\.nft$/m);
+  assert.match(rules, /fib daddr type local reject/);
 });
 
 await check("the server refuses to start without a real token", async () => {

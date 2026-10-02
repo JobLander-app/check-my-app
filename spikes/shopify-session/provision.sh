@@ -104,14 +104,18 @@ for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
   fi
 done
 systemctl daemon-reload
-# The firewall first, and loaded again on every run: the rules file may have
-# changed, and it replaces its own table.
-systemctl enable session-firewall
-systemctl restart session-firewall
+# The firewall first, and its rules loaded again on every run: the file may
+# have changed, and it replaces its own table in one step. Loaded with nft
+# directly, NOT by restarting the unit — Chrome requires that unit, so
+# restarting it restarts Chrome, and a provision would end the owner's session
+# every time (seen 2026-10-02: Chrome's pid changed across a run that changed
+# nothing).
+nft -f /etc/session-host/firewall.nft
+systemctl enable --now session-firewall
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer
 if [ ${#changed[@]} -gt 0 ]; then
   echo "provision: unit files changed: ${changed[*]}"
-  case " ${changed[*]} " in *" session-chrome.service "*|*" session-xvfb.service "*)
+  case " ${changed[*]} " in *" session-chrome.service "*|*" session-xvfb.service "*|*" session-firewall.service "*)
     echo "provision: Chrome restarts — the owner will have to sign in again." ;;
   esac
   systemctl try-restart "${changed[@]}"

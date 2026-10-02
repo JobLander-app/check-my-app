@@ -164,6 +164,16 @@ profile):
   session server and websockify run as `session-host` and are not restricted.
   `provision.sh` ends by trying each of these as the browser's user and fails
   if any is reachable (or if the public web is not).
+- **An address a check asks for must be the web's.** Any command's `url` —
+  `Page.navigate`, `Target.createTarget`, `Network.loadNetworkResource`,
+  `Fetch.continueRequest` — is `http(s):`, `data:`, `blob:` or `about:blank`.
+  A navigation asked for through DevTools is the browser's own and would
+  otherwise open `chrome://quit`, `chrome://settings/clearBrowserData` or
+  `file:///…`.
+- **No file from this host reaches a page** (`DOM.setFileInputFiles`, a drop
+  carrying file paths): the profile's own cookie database is a file. Where
+  downloads go is not the check's to set (`Page.setDownloadBehavior` is
+  answered and not passed on, like its browser-level twin).
 - **Page scope is a list of domains, not of forbidden methods**: `Page`,
   `Runtime`, `DOM`, `DOMSnapshot`, `CSS`, `Input`, `Emulation`, `Network`,
   `Fetch`, `Log`, `Console`, `Accessibility`, `Overlay`, `Performance`, `IO`.
