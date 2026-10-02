@@ -71,7 +71,7 @@ import { findingSignature, sameProblem, signatureKind, titleSimilarity, SAME_PRO
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
-import { teamOwned } from "@/lib/tenant-db";
+import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 export interface RecurringIssue {
   signature: string;
@@ -411,28 +411,34 @@ const d1Date = (v: string | Date) => (v instanceof Date ? v : new Date(v.include
 // (190 checks, 900 journeys, 4,000 steps) the engine gave up ("RuntimeError:
 // unreachable") and the page that asked took 30 s (the CHE-357 stand,
 // 2026-10-02 — before any page in prod read this).
+//
+// Each statement binds the team itself (teamRows — src/lib/tenant-db.ts), so
+// the tenant verifier sees the scope in every one of them.
+// Finished with a verdict only: `failed` is CheckMyApp not finishing, not a
+// statement about the app (CLAUDE.md §4) — and it walked nothing to compare.
+const finishedChecksOf = (team: string) =>
+  Prisma.sql`r.appId IN (SELECT id FROM "App" WHERE teamId = ${team}) AND r.status IN ('completed', 'partial')`;
+
 async function teamHistory(db: PrismaClient, teamId: string): Promise<Map<string, HistoryRun[]>> {
-  // Finished with a verdict only: `failed` is CheckMyApp not finishing, not a
-  // statement about the app (CLAUDE.md §4) — and it walked nothing to compare.
-  const ofTeam = Prisma.sql`r.appId IN (SELECT id FROM "App" WHERE teamId = ${teamId}) AND r.status IN ('completed', 'partial')`;
   const [runs, journeys, steps, findings] = await Promise.all([
     // startedAt as the text it is stored as, so the spelling is read here and
     // not guessed by the driver.
     db.$queryRaw<{ id: string; appId: string; runNumber: number | bigint; startedAt: string | Date; status: string; verdict: string | null; targetKind: string }[]>(
       Prisma.sql`SELECT r.id, r.appId, r.runNumber, CAST(r.startedAt AS TEXT) AS startedAt, r.status, r.verdict, r.targetKind
-        FROM "Run" r WHERE ${ofTeam} ORDER BY r.runNumber`,
+        FROM "Run" r WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY r.runNumber`,
     ),
     db.$queryRaw<{ id: string; runId: string; appJourneyId: string | null; journeyKey: string | null; title: string; carriedFromRunId: string | null }[]>(
       Prisma.sql`SELECT j.id, j.runId, j.appJourneyId, j.journeyKey, j.title, j.carriedFromRunId
-        FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${ofTeam} ORDER BY j.runId, j."order"`,
+        FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY j.runId, j."order"`,
     ),
     db.$queryRaw<{ journeyId: string; status: string }[]>(
       Prisma.sql`SELECT s.journeyId, s.status
-        FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId WHERE ${ofTeam} ORDER BY s.journeyId, s."order"`,
+        FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
+        WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY s.journeyId, s."order"`,
     ),
     db.$queryRaw<(RecurrenceFinding & { runId: string })[]>(
       Prisma.sql`SELECT f.id, f.runId, f.title, f.category, f.severity, f.mark, f.detail, f.anchor, f.signature
-        FROM "Finding" f JOIN "Run" r ON r.id = f.runId WHERE ${ofTeam} ORDER BY f.runId, f.number`,
+        FROM "Finding" f JOIN "Run" r ON r.id = f.runId WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY f.runId, f.number`,
     ),
   ]);
   const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => {

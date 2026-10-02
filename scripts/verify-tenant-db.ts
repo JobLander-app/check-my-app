@@ -129,6 +129,54 @@ console.log(
   `\n        ${DECLARATIONS.map((d) => `${d}: ${sites.filter((s) => s.declared === d).length}`).join("  ·  ")}\n`,
 );
 
+// A raw statement reads tenant rows without going through `db.<model>`, so the
+// registry above never sees it (Codex P1 on #236: four `$queryRaw` reads of a
+// team's whole history, scoped today, unguarded tomorrow). Each one must bind
+// the team in its own arguments through teamRows(…), and the Unsafe variants —
+// SQL assembled as a string — have no place in request-serving code.
+const rawPattern = /\b(?:db|prisma)\.\$(queryRaw|executeRaw)(Unsafe)?\b/g;
+type RawSite = { file: string; line: number; unsafe: boolean; bound: boolean };
+const rawSites: RawSite[] = [];
+for (const file of files) {
+  if (EXEMPT.has(file)) continue;
+  const text = readFileSync(join(ROOT, file), "utf8");
+  for (const match of text.matchAll(rawPattern)) {
+    // Past the type arguments, if any: `db.$queryRaw<(A & B)[]>(…)` has a
+    // parenthesis in its type that is not the call's.
+    let at = match.index! + match[0].length;
+    if (text[at] === "<") {
+      let depth = 0;
+      for (; at < text.length; at++) {
+        if (text[at] === "<") depth++;
+        else if (text[at] === ">" && --depth === 0) break;
+      }
+      at++;
+    }
+    const open = text.indexOf("(", at);
+    // A tagged template (db.$queryRaw`…`) has no parenthesis of its own: its
+    // statement runs to the closing backtick.
+    const tick = text.indexOf("`", at);
+    const body = tick >= 0 && (open < 0 || tick < open) ? text.slice(tick, text.indexOf("`", tick + 1) + 1) : callText(text, open);
+    rawSites.push({
+      file,
+      line: text.slice(0, match.index!).split("\n").length,
+      unsafe: match[2] === "Unsafe",
+      bound: body.includes("teamRows("),
+    });
+  }
+}
+const unbound = rawSites.filter((s) => !s.bound);
+check(
+  `every raw statement binds its team through teamRows — ${rawSites.length} raw statements`,
+  unbound.length === 0,
+  unbound.map((s) => `${s.file}:${s.line}`).join(", ") || "all bound",
+);
+check(
+  "no raw statement is assembled as a string ($queryRawUnsafe / $executeRawUnsafe)",
+  rawSites.every((s) => !s.unsafe),
+  rawSites.filter((s) => s.unsafe).map((s) => `${s.file}:${s.line}`).join(", ") || "none",
+);
+
 // teamOwned is the only declaration that changes the query, and it only does so
 // where it lands: in `where` it scopes, in `data` it stamps. Spread anywhere
 // else it would be a label that reads like a scope and is not one.
