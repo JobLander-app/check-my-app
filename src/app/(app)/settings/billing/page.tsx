@@ -6,7 +6,7 @@ import type { UserPlan } from "@/lib/enums";
 import { appHealth } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { appPath } from "@/lib/app-shell";
-import { appsCostLine, balanceLine, countLine, pace, sharePercent } from "@/lib/billing-page";
+import { appsCostLine, balanceLine, countLine, outsideApps, pace, sharePercent } from "@/lib/billing-page";
 import { TopUpCta } from "@/components/topup-cta";
 import { ManageBillingButton } from "@/components/manage-billing-button";
 
@@ -41,12 +41,13 @@ export default async function BillingPage({
   const mayBill = can(scope, "billing.manage");
   const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
   const apps = [...health.apps].sort((a, b) => b.spendUsd - a.spendUsd);
-  const checks = apps.reduce((n, a) => n + a.checks, 0);
+  // What was paid for outside the apps (a PR preview, an address never saved):
+  // in the total, in no app — so it gets its own row.
+  const outside = outsideApps({ usd: health.totalSpendUsd, checks: health.totalChecks }, apps);
   const withCheck = apps.filter((a) => a.latest);
   // The opened check: the one the address names, else the first app's.
   const opened = withCheck.find((a) => a.appId === check) ?? withCheck[0];
   const atThisPace = pace({
-    planCoversTimes: health.planCoversTimes,
     creditUsd: balance.creditUsd,
     renews: balance.renewsOn !== null,
     monthlyUsd: health.monthlyRunRateUsd,
@@ -79,7 +80,7 @@ export default async function BillingPage({
             <span className="text-fg-muted">a month</span>
           </span>
           <span className="text-[13px] text-fg-muted">
-            {appsCostLine({ windowDays: health.windowDays, apps: apps.length, checks, perDayUsd: health.perDayUsd, usd })}
+            {appsCostLine({ windowDays: health.windowDays, apps: apps.length, checks: health.totalChecks, perDayUsd: health.perDayUsd, usd })}
           </span>
         </Tile>
         <Tile label="Balance">
@@ -154,6 +155,24 @@ export default async function BillingPage({
                   </td>
                 </tr>
               ))}
+              {outside && (
+                <tr>
+                  <td className={`${TD} text-fg-muted`}>Outside your apps</td>
+                  <td className={`${TD} text-right font-mono text-[15px]`}>{usd(outside.usd)}</td>
+                  <td className={TD} />
+                  <td className={TD} />
+                  <td className={`${TD} whitespace-nowrap text-right`}>
+                    <span className="font-mono">{usd(outside.usd)}</span>
+                    <span className="block text-xs text-fg-muted">{countLine(outside.checks, "none")}</span>
+                  </td>
+                  <td className={`${TD} w-40`}>
+                    <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
+                      <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
+                    </span>
+                  </td>
+                  <td className={`${TD} text-right text-xs text-fg-faint`}>previews and one-off addresses</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </section>
@@ -198,7 +217,11 @@ export default async function BillingPage({
               {balance.renewsOn ? "Used only after the plan's monthly amount runs out." : "Added to what is left of the plan's amount."}
             </div>
           </div>
-          {mayBill ? <TopUpCta amounts={TOPUP_AMOUNTS_USD} /> : <p className="text-xs text-fg-faint">Top-ups are made by this team&apos;s admins.</p>}
+          {mayBill ? (
+            <TopUpCta amounts={TOPUP_AMOUNTS_USD} />
+          ) : (
+            <p className="text-xs text-fg-faint">Top-ups are made by this team&apos;s admins.</p>
+          )}
         </section>
       )}
 

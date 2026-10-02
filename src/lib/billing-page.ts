@@ -43,7 +43,6 @@ export function balanceLine(i: { plan: string; creditUsd: number | null; renewsO
  *   - unlimited / nothing spent → said plainly.
  */
 export function pace(i: {
-  planCoversTimes: number | null;
   creditUsd: number | null;
   renews: boolean;
   monthlyUsd: number;
@@ -53,8 +52,11 @@ export function pace(i: {
   if (i.monthlyUsd <= 0) return { headline: "Nothing spent yet", detail: "A month of checks shows here once your apps have been checked." };
   if (i.creditUsd === null || i.balanceUsd === null) return { headline: "No limit on this plan", detail: `Your apps come to about ${round(i.monthlyUsd)} of checks a month.` };
   const against = `${round(i.creditUsd)} a month against ${round(i.monthlyUsd)} of checks.`;
-  if (i.renews && i.planCoversTimes !== null && i.planCoversTimes >= 1) {
-    const times = Math.floor(i.planCoversTimes);
+  // From the amounts themselves, not from a ratio rounded for display: $29 of
+  // plan against $29.30 of checks rounds to "1.0 times" and is still short.
+  const covers = i.creditUsd / i.monthlyUsd;
+  if (i.renews && covers >= 1) {
+    const times = Math.floor(covers);
     return {
       headline: times >= 2 ? `The plan covers your apps ${times} times over` : "The plan covers your apps",
       detail: `${against} Top-ups are only needed beyond that.`,
@@ -72,6 +74,20 @@ export function pace(i: {
 export function sharePercent(appUsd: number, totalUsd: number): number {
   if (totalUsd <= 0 || appUsd <= 0) return 0;
   return Math.min(100, Math.max(1, Math.round((appUsd / totalUsd) * 100)));
+}
+
+/**
+ * What the team paid for outside its apps — a PR preview, an address it never
+ * saved. appHealth counts it in the total and in no app, so without this row
+ * the table adds up to less than the tile above it. Null when there is none.
+ */
+export function outsideApps(
+  total: { usd: number; checks: number },
+  apps: { spendUsd: number; checks: number }[],
+): { usd: number; checks: number } | null {
+  const usd = Math.round((total.usd - apps.reduce((s, a) => s + a.spendUsd, 0)) * 100) / 100;
+  const checks = total.checks - apps.reduce((n, a) => n + a.checks, 0);
+  return usd > 0 || checks > 0 ? { usd: Math.max(0, usd), checks: Math.max(0, checks) } : null;
 }
 
 /** "31 checks" / "1 check" / "not scheduled" for the scheduled column of an app nobody scheduled. */

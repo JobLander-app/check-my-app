@@ -181,6 +181,11 @@ async function main() {
     blog.spendUsd === 0 && blog.checks === 0 && blog.perDayUsd === 0 && blog.scheduled.count === 0 && blog.onRequest.count === 0);
   check("team: $3.43 in total — the apps' $3.03 plus the PR preview's $0.40", report.totalSpendUsd === 3.43, String(report.totalSpendUsd));
   check("team: $0.11 a day ($3.43 / 30)", report.perDayUsd === 0.11, String(report.perDayUsd));
+  // CHE-355: the checks the total was spent on — the apps' own, plus the PR
+  // preview that belongs to no app. A page that counted only the apps' checks
+  // could show money spent on "no checks".
+  const inApps = report.apps.reduce((n, a) => n + a.checks, 0);
+  check("team: the total counts every check of the window — the apps' and the PR preview's", report.totalChecks === inApps + 1, `${report.totalChecks} vs ${inApps} in apps`);
 
   // ─── 2. The window's edges ───────────────────────────────────────────────
   const daily = shop.daily;

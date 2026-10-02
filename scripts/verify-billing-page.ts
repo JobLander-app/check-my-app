@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { appsCostLine, balanceLine, countLine, pace, sharePercent } from "../src/lib/billing-page";
+import { appsCostLine, balanceLine, countLine, outsideApps, pace, sharePercent } from "../src/lib/billing-page";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -38,22 +38,38 @@ eq("balance: with a top-up", balanceLine({ plan: "growth", creditUsd: 99, renews
 eq("balance: Free does not renew", balanceLine({ plan: "free", creditUsd: 5, renewsOn: null, topupUsd: 0, usd }), "Free plan: $5 once, it does not renew.");
 eq("balance: unlimited", balanceLine({ plan: "enterprise", creditUsd: null, renewsOn: null, topupUsd: 0, usd }), "Enterprise plan: no limit on checks.");
 
-const owner = pace({ planCoversTimes: 7.4, creditUsd: 499, renews: true, monthlyUsd: 66.98, perDayUsd: 2.23, balanceUsd: 498.11 });
+const owner = pace({ creditUsd: 499, renews: true, monthlyUsd: 66.98, perDayUsd: 2.23, balanceUsd: 498.11 });
 eq("pace: the owner's plan covers the apps seven times", owner.headline, "The plan covers your apps 7 times over");
 eq("pace: …and says against what", owner.detail, "$499 a month against $67 of checks. Top-ups are only needed beyond that.");
-eq("pace: covers once", pace({ planCoversTimes: 1.6, creditUsd: 99, renews: true, monthlyUsd: 62, perDayUsd: 2.07, balanceUsd: 40 }).headline, "The plan covers your apps");
-const short = pace({ planCoversTimes: 0.5, creditUsd: 29, renews: true, monthlyUsd: 58, perDayUsd: 1.93, balanceUsd: 11 });
+eq("pace: covers once", pace({ creditUsd: 99, renews: true, monthlyUsd: 62, perDayUsd: 2.07, balanceUsd: 40 }).headline, "The plan covers your apps");
+eq("pace: covers exactly", pace({ creditUsd: 29, renews: true, monthlyUsd: 29, perDayUsd: 0.97, balanceUsd: 3 }).headline, "The plan covers your apps");
+const short = pace({ creditUsd: 29, renews: true, monthlyUsd: 58, perDayUsd: 1.93, balanceUsd: 11 });
 eq("pace: the plan does not cover the apps → how long the balance lasts", short.headline, "The balance lasts about 5 days");
 eq("pace: …and where the rest comes from", short.detail, "$29 a month against $58 of checks. The rest comes from top-ups.");
-const free = pace({ planCoversTimes: null, creditUsd: 5, renews: false, monthlyUsd: 8.4, perDayUsd: 0.28, balanceUsd: 4.72 });
+// Codex P2 on #243: $29 of plan against $29.30 of checks is "1.0 times" when
+// rounded for display, and is still short.
+const barely = pace({ creditUsd: 29, renews: true, monthlyUsd: 29.3, perDayUsd: 0.98, balanceUsd: 2 });
+check("pace: thirty cents short is short — decided on the amounts, not on a rounded ratio", !/covers/.test(barely.headline), barely.headline);
+const free = pace({ creditUsd: 5, renews: false, monthlyUsd: 8.4, perDayUsd: 0.28, balanceUsd: 4.72 });
 eq("pace: Free — the balance in days, never 'covers'", free.headline, "The balance lasts about 16 days");
 check("pace: Free says the amount does not renew", /does not renew/.test(free.detail), free.detail);
-eq("pace: an empty balance", pace({ planCoversTimes: 0.2, creditUsd: 29, renews: true, monthlyUsd: 140, perDayUsd: 4.6, balanceUsd: 0 }).headline, "The balance runs out today");
-eq("pace: one day left", pace({ planCoversTimes: 0.2, creditUsd: 29, renews: true, monthlyUsd: 140, perDayUsd: 4.6, balanceUsd: 5 }).headline, "The balance lasts about 1 day");
-eq("pace: nothing spent", pace({ planCoversTimes: null, creditUsd: 99, renews: true, monthlyUsd: 0, perDayUsd: 0, balanceUsd: 99 }).headline, "Nothing spent yet");
-eq("pace: unlimited", pace({ planCoversTimes: null, creditUsd: null, renews: true, monthlyUsd: 300, perDayUsd: 10, balanceUsd: null }).headline, "No limit on this plan");
+check("pace: Free never 'covers', even when its one-time amount is larger than a month of checks",
+  !/covers/.test(pace({ creditUsd: 5, renews: false, monthlyUsd: 1.2, perDayUsd: 0.04, balanceUsd: 4.5 }).headline));
+eq("pace: an empty balance", pace({ creditUsd: 29, renews: true, monthlyUsd: 140, perDayUsd: 4.6, balanceUsd: 0 }).headline, "The balance runs out today");
+eq("pace: one day left", pace({ creditUsd: 29, renews: true, monthlyUsd: 140, perDayUsd: 4.6, balanceUsd: 5 }).headline, "The balance lasts about 1 day");
+eq("pace: nothing spent", pace({ creditUsd: 99, renews: true, monthlyUsd: 0, perDayUsd: 0, balanceUsd: 99 }).headline, "Nothing spent yet");
+eq("pace: unlimited", pace({ creditUsd: null, renews: true, monthlyUsd: 300, perDayUsd: 10, balanceUsd: null }).headline, "No limit on this plan");
 check("pace: no branch promises 'covers' when it does not",
-  [0, 0.3, 0.99].every((c) => !/covers/.test(pace({ planCoversTimes: c, creditUsd: 29, renews: true, monthlyUsd: 100, perDayUsd: 3.3, balanceUsd: 10 }).headline)));
+  [29.01, 100, 1000].every((monthlyUsd) => !/covers/.test(pace({ creditUsd: 29, renews: true, monthlyUsd, perDayUsd: monthlyUsd / 30, balanceUsd: 10 }).headline)));
+
+// What the team paid for outside its apps (Codex P2 on #243).
+const twoApps = [{ spendUsd: 2.03, checks: 8 }, { spendUsd: 1, checks: 4 }];
+check("outside the apps: a PR preview's check and its price are their own row",
+  JSON.stringify(outsideApps({ usd: 3.43, checks: 13 }, twoApps)) === JSON.stringify({ usd: 0.4, checks: 1 }), JSON.stringify(outsideApps({ usd: 3.43, checks: 13 }, twoApps)));
+check("outside the apps: nothing outside → no row", outsideApps({ usd: 3.03, checks: 12 }, twoApps) === null);
+check("outside the apps: a free check outside (a failed preview) is still counted",
+  JSON.stringify(outsideApps({ usd: 3.03, checks: 13 }, twoApps)) === JSON.stringify({ usd: 0, checks: 1 }));
+eq("apps cost: money spent only outside the apps is not 'no checks'", appsCostLine({ windowDays: 30, apps: 0, checks: 2, perDayUsd: 0.03, usd }), "Last 30 days, 0 apps, 2 checks. About $0.03 a day.");
 
 // ── 2. The table's small parts ──────────────────────────────────────────────
 eq("share: the owner's biggest app", sharePercent(27.91, 66.98), 42);
@@ -74,7 +90,9 @@ check("the opened check says what it did, how that compares, and its parts",
   /opened\.latest\.price\.work/.test(page) && /opened\.latest\.price\.comparison/.test(page) && /opened\.latest\.price\.parts\.map/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("top-ups and the Stripe portal are offered only to those who may bill",
-  /mayBill \? <TopUpCta/.test(page) && /mayBill \? \(\s*<>\s*<ManageBillingButton \/>/.test(page));
+  /mayBill \? \(\s*<TopUpCta/.test(page) && /mayBill \? \(\s*<>\s*<ManageBillingButton \/>/.test(page));
+check("the tile counts every check the total was spent on, and the table has a row for what was outside the apps",
+  /checks: health\.totalChecks/.test(page) && /outsideApps\(\{ usd: health\.totalSpendUsd, checks: health\.totalChecks \}, apps\)/.test(page) && /Outside your apps/.test(page));
 check("the old #balance anchor still lands on the balance", /id="balance"/.test(page));
 check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
 check("nothing in src still calls the old per-app spend helper", !/spendByApp/.test(read("src/lib/plans.ts")));
