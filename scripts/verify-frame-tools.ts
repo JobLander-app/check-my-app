@@ -31,7 +31,7 @@ import { chromium, type Browser, type BrowserContext, type Frame, type Page } fr
 import type { PrismaClient } from "@/generated/prisma/client";
 import { replayJourney } from "@/agent/journey-replay";
 import type { AgentEnv } from "@/agent/env";
-import { classifyGap, walkGapEvidence } from "@/agent/gap-classes";
+import { classifyGap, settleStepGap, walkGapEvidence } from "@/agent/gap-classes";
 import { createWatchRun, type DueWatch } from "@/agent/scheduler";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { createRecheckRun } from "@/lib/recheck";
@@ -315,16 +315,23 @@ async function main() {
     "gap class: …while without the list it is (the fixture discriminates)",
     classifyGap(walkGapEvidence({ targetOrigin: TOP }, gapText, [])) === "third_party_block",
   );
-  // The walk itself cannot be driven here (it is the model's loop), so the call
-  // site is held by its shape: every classifyGap in execution.ts is fed by
-  // walkGapEvidence from the walk's own tool env. A call that spells the
-  // evidence by hand is the one that dropped allowedOrigins with every check
-  // above still green.
+  // Report time classifies through settleStepGap (CHE-374), which builds its
+  // evidence with walkGapEvidence from the env it is handed — run here with
+  // the origins, not pattern-matched.
   {
+    const settle = (allowedOrigins?: string[]) => {
+      const step: { unverifiedReason: string; observed: string; gapClass?: string } = { unverifiedReason: "our_capability", observed: gapText };
+      settleStepGap({ reported: { label: "Sign in", observed: gapText }, step: step as never, machineClass: undefined, actionTrail: [], env: { targetOrigin: TOP, allowedOrigins }, targetUrl: `${TOP}/` });
+      return step.gapClass;
+    };
+    check("gap class, at report time: an allowed origin's 403 is not a third party's block", settle([APP]) !== "third_party_block", String(settle([APP])));
+    check("gap class, at report time: …while without the list it is", settle() === "third_party_block", String(settle()));
+    // The walk itself cannot be driven here (it is the model's loop), so the
+    // one thing left to its call site is held by shape: it hands settleStepGap
+    // the walk's own tool env and classifies nothing itself.
     const walk = readFileSync(join(import.meta.dirname, "..", "src/agent/execution.ts"), "utf8");
-    const calls = walk.match(/\bclassifyGap\(/g) ?? [];
-    const fed = walk.match(/\bclassifyGap\(\s*walkGapEvidence\(\s*toolEnv\s*,/g) ?? [];
-    check("gap class: the walk classifies on its tool env's origins (execution.ts)", calls.length > 0 && calls.length === fed.length, `${fed.length} of ${calls.length} calls`);
+    check("gap class: the walk settles the step on its tool env's origins (execution.ts)",
+      /settleStepGap\(\{[^}]*\benv:\s*toolEnv\s*,/.test(walk) && !/\bclassifyGap\(/.test(walk));
   }
 
   // Every way a run is created carries the app's allowed origins; without them
