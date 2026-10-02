@@ -115,6 +115,7 @@
     "verify:model-ampersand": "tsx --tsconfig tsconfig.json scripts/verify-model-ampersand.ts",
     "verify:recurring-load": "tsx --tsconfig tsconfig.json scripts/verify-recurring-load.ts",
     "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts",
+    "verify:agent-id-lists": "tsx --tsconfig tsconfig.json scripts/verify-agent-id-lists.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
