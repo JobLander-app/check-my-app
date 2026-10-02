@@ -134,7 +134,9 @@ console.log(
 // team's whole history, scoped today, unguarded tomorrow). Each one must bind
 // the team in its own arguments through teamRows(…), and the Unsafe variants —
 // SQL assembled as a string — have no place in request-serving code.
-const rawPattern = /\b(?:db|prisma)\.\$(queryRaw|executeRaw)(Unsafe)?\b/g;
+// Whatever the client is called at the call site (`db`, `prisma`, a helper's
+// `client`): the method name is what identifies a raw statement.
+const rawPattern = /\.\$(queryRaw|executeRaw)(Unsafe)?\b/g;
 type RawSite = { file: string; line: number; unsafe: boolean; bound: boolean };
 const rawSites: RawSite[] = [];
 for (const file of files) {
