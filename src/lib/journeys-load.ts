@@ -77,13 +77,14 @@ function shotOf(url: string | null): JourneyFrame["shot"] {
   return url && key && thumbKeyOf(key) ? { thumb: thumbUrl(url), full: url } : null;
 }
 
-// `appId` is an app the caller has already read as the team's; the checks are
-// bound to the team here all the same, so a catalog row can never show another
-// team's screens whatever it points at.
+// The page passes an app it has already read as the team's. Both reads are
+// bound to the team here all the same — the catalog through its app, the walks
+// through their checks — so an app id from anywhere else gets nothing: not
+// another team's screens, and not the names of its journeys either.
 export async function journeysOfApp(db: PrismaClient, teamId: string, appId: string): Promise<JourneyCard[]> {
   const [catalog, history] = await Promise.all([
     db.appJourney.findMany({
-      where: { appId, retiredAt: null },
+      where: { appId, retiredAt: null, app: { ...teamOwned(teamId) } },
       orderBy: { createdAt: "asc" },
       select: { id: true, title: true },
     }),

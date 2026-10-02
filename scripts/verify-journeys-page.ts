@@ -283,8 +283,7 @@ async function loader() {
     eq("real D1: a journey walked only by a check that did not finish is not walked (rule 4)", `${unfinished.walk} ${unfinished.walkCount} ${unfinished.title}`, "null 0 Export a report");
     check("real D1: nothing of another team's is in it", !JSON.stringify(cards).includes("Their") && !JSON.stringify(cards).includes("5".repeat(64)));
 
-    eq("real D1: another team asking for this app gets its catalog rows with no walks (the page refuses the app before that)",
-      (await journeysOfApp(db, "o", "a")).map((c) => String(c.walk)).join(","), "null,null,null,null,null,null");
+    eq("real D1: another team asking for this app gets nothing — not its walks, not the names of its journeys", (await journeysOfApp(db, "o", "a")).length, 0);
     eq("real D1: the team's other app has its own", (await journeysOfApp(db, "t", "b")).map((c) => `${c.id} #${c.walk?.runNumber}`).join(","), "b-home #7");
     const ext = await journeysOfApp(db, "t", "e");
     eq("real D1: an extension's check with no verdict shows nothing", ext.map((c) => String(c.walk)).join(","), "null");
@@ -327,6 +326,7 @@ async function loader() {
 const lib = read("src/lib/journeys-load.ts");
 check("the loader holds no nested journey → steps select", !/steps:\s*\{/.test(lib) && !/checks:\s*\{/.test(lib));
 check("its raw statement binds the team, and its checks are read as the team's", /r\.teamId = \$\{teamRows\(teamId\)\}/.test(lib) && /\.\.\.teamOwned\(teamId\), id: \{ in: runIds \}/.test(lib));
+check("the catalog is read through an app of the team", /where: \{ appId, retiredAt: null, app: \{ \.\.\.teamOwned\(teamId\) \} \}/.test(lib));
 check("its one raw statement binds no list (a raw statement's values are not split under D1's cap)", (lib.match(/\$queryRaw/g) ?? []).length === 1 && !/Prisma\.join/.test(lib));
 check("the steps are ordered by columns the query selects", /orderBy: \[\{ journeyId: "asc" \}, \{ order: "asc" \}\],\s*select: \{ id: true, journeyId: true, order: true,/.test(lib));
 const numbersLib = read("src/lib/journey-numbers-load.ts");
