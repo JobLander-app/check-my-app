@@ -16,7 +16,7 @@ import {
   type LlmConfig,
   type UsageTotals,
 } from "./llm";
-import { productProse } from "@/lib/verdict-language";
+import { productName } from "@/lib/verdict-language";
 import { browserToolsFor, executeTool, type ToolEnv } from "./tools";
 
 export interface AgentLoopArgs {
@@ -221,7 +221,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
         // CHE-180: the note is the live feed the owner watches; the label goes
         // through the same gate as the written step.
         const label = String(input.label ?? "");
-        await onProgress(`${input.status}: ${productProse(label, 0) ?? label}`);
+        await onProgress(`${input.status}: ${productName(label) ?? label}`);
       }
     }
 
