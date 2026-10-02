@@ -490,6 +490,13 @@ export async function recurringByApp(db: PrismaClient, teamId: string, only?: st
   return new Map([...byApp].map(([appId, r]) => [appId, r.recurrences.map((x) => x.issue)]));
 }
 
+// The same answer in full — every problem with its sightings and the check it
+// was gone by — for the page that lists them (Health → Issues, CHE-360).
+export async function teamRecurrences(db: PrismaClient, teamId: string, only?: string): Promise<Map<string, Recurrence[]>> {
+  const byApp = await recurrencesByApp(db, teamId, only);
+  return new Map([...byApp].map(([appId, r]) => [appId, r.recurrences]));
+}
+
 // One app's problems as they stood at check `runNumber` (CHE-371): the same
 // rule over the app's history up to and including that check, so a page about
 // a past check says what was new, still there and gone THEN — not what is true

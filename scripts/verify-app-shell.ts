@@ -33,6 +33,7 @@ import { BALANCE_PATH } from "../src/lib/balance-links";
 import robots from "../src/app/robots";
 import { loadShellData } from "../src/lib/shell-data";
 import { appHealth } from "../src/lib/app-health";
+import { OUR_LEFTOVERS_WHERE } from "../src/lib/finding-signature";
 import type { PrismaClient } from "../src/generated/prisma/client";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -247,7 +248,10 @@ async function shellChecks() {
   check("the sidebar's data is three queries for one app", one.calls.length === 3, one.calls.map((c) => c.op).join(", "));
   check("…and three for sixty", sixty.calls.length === 3, sixty.calls.map((c) => c.op).join(", "));
   const raw = sixty.calls.find((c) => c.op === "$queryRaw")?.args as { values: unknown[]; sql?: string } | undefined;
-  check("verdicts and open findings come in one statement bound to the team alone", raw?.values.length === 1 && raw.values[0] === "team_x", JSON.stringify(raw?.values));
+  // Two bound values whatever the team's size: the team, and the constant that
+  // names our own leftovers finding — never a list of app ids.
+  check("verdicts and open findings come in one statement bound to the team alone",
+    raw?.values.length === 2 && raw.values.includes("team_x") && raw.values.includes(`%"where":"${OUR_LEFTOVERS_WHERE}"%`), JSON.stringify(raw?.values));
   check(
     "each app gets its latest verdict, an app with none gets none",
     big.apps.find((a) => a.id === "app_0")?.verdict === "broken" &&
@@ -313,7 +317,12 @@ async function realChecks() {
     };
     // own: the newer attached check wins; of its four findings two are open.
     await run("own", "own.test", "2026-09-20T10:00:00Z", "broken", { marks: ["none", "none", "none"] });
-    await run("own", "own.test", "2026-09-28T10:00:00Z", "all_good", { marks: ["none", "watch", "known", "false_positive"] });
+    const ownLatest = await run("own", "own.test", "2026-09-28T10:00:00Z", "all_good", { marks: ["none", "watch", "known", "false_positive"] });
+    // …and a fifth that is about US — test records our check left behind. It
+    // is unanswered and is not a problem of the app (CHE-360).
+    await real.db.finding.create({
+      data: { runId: ownLatest, number: 9, title: "Test records we created are still in your app", category: "bug", severity: "medium", mark: "none", detail: JSON.stringify({ where: OUR_LEFTOVERS_WHERE, whatHappened: "2 records" }) },
+    });
     // loose: its only check predates the app. Another team's newer check of the
     // same slug is not its check.
     await run(null, "loose.test", "2026-09-10T10:00:00Z", "mostly_ok", { marks: ["none"] });
@@ -350,14 +359,20 @@ async function realChecks() {
     check("real D1: an app never checked has no verdict", verdict("none") === null, String(verdict("none")));
     check("real D1: of two same-day checks in two spellings, the later by time is the latest", verdict("mixed") === "broken", String(verdict("mixed")));
     check("real D1: …also when one of the two is attached and the other is not", verdict("mixedloose") === "broken", String(verdict("mixedloose")));
-    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1 + 1 + 1", shell.openIssues === 6, String(shell.openIssues));
+    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1 + 1 + 1 — our own leftovers are not one of them", shell.openIssues === 6, String(shell.openIssues));
+    const latestRun = (id: string) => shell.apps.find((a) => a.id === id)?.latestRunNumber;
+    check("real D1: each app carries the number of the check its dot and its count come from (Issues reads it)",
+      latestRun("own") === 2 && latestRun("loose") === 3 && latestRun("both") === 6 && latestRun("none") === null,
+      `${latestRun("own")} / ${latestRun("loose")} / ${latestRun("both")} / ${latestRun("none")}`);
     const health = await appHealth(real.db, T, { now: new Date("2026-10-01T12:00:00.000Z") });
     const differ = health.apps.filter((a) => (a.latest?.verdict ?? null) !== (verdict(a.appId) ?? null)).map((a) => `${a.appId}: ${a.latest?.verdict} vs ${verdict(a.appId)}`);
     check("real D1: the sidebar and appHealth name the same latest verdict for every app", differ.length === 0, differ.join("; "));
 
     const shellSrc = read("src/lib/shell-data.ts");
     const sql = shellSrc.slice(shellSrc.indexOf("Prisma.sql`") + "Prisma.sql`".length, shellSrc.indexOf("`;", shellSrc.indexOf("Prisma.sql`")));
-    const plan = (await real.db.$queryRawUnsafe(`EXPLAIN QUERY PLAN ${sql.replace("${teamId}", "'tr'")}`)) as { detail: string }[];
+    const plan = (await real.db.$queryRawUnsafe(
+      `EXPLAIN QUERY PLAN ${sql.replace("${teamId}", "'tr'").replace("${OUR_LEFTOVERS}", `'%"where":"${OUR_LEFTOVERS_WHERE}"%'`)}`,
+    )) as { detail: string }[];
     // `o` and `l` are the statement's two lookups (attached, unattached); no
     // table of the statement may be read whole.
     const details = plan.map((p) => p.detail);

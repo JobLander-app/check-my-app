@@ -25,9 +25,11 @@ import { cache } from "react";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { utcDayStart } from "@/lib/plans";
+import { OUR_LEFTOVERS_WHERE } from "@/lib/finding-signature";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
-export type ShellApp = { id: string; label: string; verdict: string | null };
+// `latestRunNumber`: the check the dot's colour and the open count come from.
+export type ShellApp = { id: string; label: string; verdict: string | null; latestRunNumber: number | null };
 
 export type ShellData = {
   apps: ShellApp[];
@@ -56,10 +58,17 @@ const WINDOW_DAYS = 30;
 // so the seek finds the newest day; within that day the candidates are ordered
 // with the two spellings made one — what appHealth does with parsed dates
 // (CHE-382), so the sidebar's dot and All apps never name different checks.
+//
+// Open findings are the app's own. The one finding that is about US — test
+// records our check left behind (finding-signature.ts, OUR_LEFTOVERS_WHERE) —
+// is on the check's page for the owner to act on, and is not counted as a
+// problem of their product here or on Issues (CHE-360).
+const OUR_LEFTOVERS = `%"where":"${OUR_LEFTOVERS_WHERE}"%`;
 const LATEST_WITH_OPEN = (teamId: string) => Prisma.sql`
-  SELECT appId, verdict, open FROM (
-    SELECT a.id AS appId, r.verdict AS verdict,
-      (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = r.id AND f.mark IN ('none', 'watch')) AS open,
+  SELECT appId, verdict, runNumber, open FROM (
+    SELECT a.id AS appId, r.verdict AS verdict, r.runNumber AS runNumber,
+      (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = r.id AND f.mark IN ('none', 'watch')
+        AND (f.detail IS NULL OR f.detail NOT LIKE ${OUR_LEFTOVERS})) AS open,
       ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY replace(r.completedAt, ' ', 'T') DESC) AS rn
     FROM "App" a
     JOIN "Run" r ON r.id IN (
@@ -94,7 +103,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
       orderBy: { createdAt: "asc" },
       select: { id: true, appSlug: true, targetKind: true, targetUrl: true },
     }),
-    db.$queryRaw<{ appId: string; verdict: string; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId))),
+    db.$queryRaw<{ appId: string; verdict: string; runNumber: number | bigint; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId))),
     db.run.findMany({
       where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: new Date(until.getTime() - 1) } },
       select: { appId: true, appSlug: true, priceUsd: true, createdAt: true },
@@ -102,6 +111,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
   ]);
 
   const verdictOf = new Map(latest.map((r) => [r.appId, r.verdict]));
+  const latestRunOf = new Map(latest.map((r) => [r.appId, Number(r.runNumber)]));
   // "Your apps cost": the checks that belong to a saved app, by appHealth's
   // rule — attached to it, or made before the team's only app with that
   // address was saved. A preview or a one-off address is the team's spending
@@ -119,6 +129,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
       id: a.id,
       label: a.targetKind === "extension" ? extensionDisplayName(a.targetUrl) : a.appSlug,
       verdict: verdictOf.get(a.id) ?? null,
+      latestRunNumber: latestRunOf.get(a.id) ?? null,
     })),
     openIssues: latest.reduce((n, r) => n + Number(r.open), 0),
     monthlyCostUsd: Math.round((totalCents / WINDOW_DAYS) * 30) / 100,

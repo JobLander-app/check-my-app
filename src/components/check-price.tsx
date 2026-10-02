@@ -9,10 +9,12 @@ import type { PriceExplanation } from "@/lib/check-price";
 const money = (n: number) => `$${n.toFixed(2)}`;
 
 // `label: null` is for a table column that already says what the price is of.
-export function CheckPrice({ explanation, label = "This check" }: { explanation: PriceExplanation; label?: string | null }) {
+// `open`: the reason is shown from the start — a list of many checks loads the
+// reason of the one the reader asked about (Health → Checks, CHE-360).
+export function CheckPrice({ explanation, label = "This check", open = false }: { explanation: PriceExplanation; label?: string | null; open?: boolean }) {
   const e = explanation;
   return (
-    <details className="group mt-1 font-mono text-xs text-fg-faint">
+    <details open={open} className="group mt-1 font-mono text-xs text-fg-faint">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1 hover:text-fg-muted">
         {label !== null && `${label}: `}
         <span className="text-fg-muted">{money(e.price_usd)}</span>
