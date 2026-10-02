@@ -12,13 +12,14 @@
 // The WebSocket address is the one the extension runner serves, so the Worker
 // reaches this browser with the client it already has.
 //
-// The server never starts, stops or navigates Chrome. It forwards a check's
-// DevTools messages, refuses the ones that would end the person's session, and
-// closes the tabs the check opened when the check goes away — including when it
-// goes away without saying so. An abandoned DevTools connection is not
-// harmless here: Playwright attaches with waitForDebuggerOnStart, and while
-// such a connection stays open every new tab sits paused at about:blank
-// (README.md, the 2026-10-01 note).
+// The server never starts, stops or navigates Chrome. Every DevTools message,
+// in both directions, goes through the gate in lease.mjs: a check is given its
+// own tabs and nothing else, and the session's cookies never reach it as
+// values. The tabs (and contexts) a check opened are closed when it goes away —
+// including when it goes away without saying so. An abandoned DevTools
+// connection is not harmless here: Playwright attaches with
+// waitForDebuggerOnStart, and while such a connection stays open every new tab
+// sits paused at about:blank (README.md, the 2026-10-01 note).
 //
 // Environment:
 //   SESSION_SERVER_TOKEN   bearer token, at least 32 characters (required)

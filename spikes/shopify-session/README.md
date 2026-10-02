@@ -126,21 +126,36 @@ What the server holds a check to (`lease.mjs`, checked by
 profile):
 
 - **One check at a time.** A run takes the lease at each phase; the same run
-  taking it again renews it and keeps its session id.
-- **A check ends nothing it did not start.** `Browser.close` only disconnects
-  the check. Closing a tab the check did not open, disposing a context it did
-  not make, and anything that clears or rewrites cookies or site storage are
-  refused with a DevTools error. Reading is not restricted.
-- **A check leaves nothing behind.** Its tabs — and the tabs those opened — are
-  closed when it disconnects, when its connection dies or goes silent (two
-  missed 20 s beats), when its lease runs out, and when the same run connects
-  again. This is not tidiness: an abandoned Playwright connection leaves every
-  new tab paused at `about:blank` (see the portability note above).
+  taking it again renews it and keeps its session id. Connections for one
+  session id are admitted one after another; the latest takes over.
+- **A check has its own tabs and nothing else.** It is never told the person's
+  tab exists (no attach event, not in `Target.getTargets`), cannot attach to
+  it, and nothing it sends on a DevTools session it was not given is forwarded.
+  At the level of the browser it may say `Browser.getVersion` and the
+  `Target.*` commands that open, list and close its own tabs and contexts;
+  everything else there is refused. `Browser.close` only disconnects it.
+- **Inside its own tab a check does what a page can do, and no more.** Refused
+  there: the cookie jar under every name (`Network.*`, `Page.*`, `Storage.*` —
+  reading as well as writing), other origins' storage, the `Browser` domain, and
+  a self-written response carrying `Set-Cookie`.
+- **The session's cookies never leave the host as values.** The `Cookie` and
+  `Set-Cookie` headers and the cookie lists DevTools reports beside each request
+  are replaced with `[redacted]` before they reach the check.
+- **A check leaves nothing behind.** Its tabs — the tabs those opened, and any
+  browser context it made — are closed when it disconnects, when its connection
+  dies or goes silent (two missed 20 s beats), when its lease runs out, and when
+  the same run connects again. This is not tidiness: an abandoned Playwright
+  connection leaves every new tab paused at `about:blank` (see the portability
+  note above). A tab that is not the check's and opens while it is connected is
+  started and let go at once.
 
-A check works in the profile's own context and its own new tab. It can see the
-person's tab — Playwright attaches to every tab, as the hourly probe already
-does — and must not drive it; the Worker side never takes a page it did not
-open.
+What this layer does not stop, by design: a page can sign itself out. A check
+that walks its own tab to the logout address, or clicks "Log out", ends the
+session like any visitor would. That is the tool-level guard's rule for a run
+of this kind (the Worker half of CHE-389), not the gate's.
+
+Every refusal is logged by method and scope (`journalctl -u session-server`) —
+the first place to look when a client that worked stops working.
 
 **Secrets** (GCP Secret Manager, project `meet-assistant-6d8ad`; on the host
 only the first, in `/etc/session-host/server.env`, root, 0600):
@@ -152,10 +167,10 @@ that, and every check of a signed-in app would stop at our own door.
 Proven through the tunnel on 2026-10-02, from outside Cloudflare: no token →
 Access 401; the bearer alone → Access 401; the Access token alone → the
 server's 401; both → a lease, a second run refused with 409, Playwright
-connected in 0.4 s, its own tab opened on the admin (and, nobody being signed
-in yet, landed on `accounts.shopify.com`), a screenshot came back, clearing
-cookies was refused, and after the check left the host had the one tab it
-started with.
+connected, saw no tab but its own, its own tab opened on the admin (and, nobody
+being signed in yet, landed on `accounts.shopify.com`), a screenshot came back,
+reading and clearing cookies were refused, and after the check left the host
+had the one tab it started with.
 
 A look from a desk, without the tunnel:
 
