@@ -403,6 +403,16 @@ const TOOL_TAGS = [
   /\s*\([^()]*\boembed\b[^()]*\)/gi,
   /\s*(?:via|through|using|with|by)\s+(?:the\s+)?(?:youtube(?:['’]s)?\s+)?oembed(?:\s+(?:api|verification|check|lookup|endpoint|response|call))?/gi,
 ];
+// CHE-392: our click, speaking. Since that ticket a click tells the model what
+// text became visible after it — and the first run after it (our own site,
+// 2026-10-02) published "…; the click reported the newly visible text." in a
+// step. The click as the subject of a reporting verb is the walk talking about
+// its tool, as is "the next read"; cut at the clause like the pronoun. The
+// product's own clicks ("clicking 'copy' changes the label", "the click-through
+// report lists …") have no such verb after "the click" and pass.
+const CLICK_VOICE =
+  /\bthe\s+click(?:['’]s)?(?:\s+(?:itself|tool|result|own\s+result))?\s+(?:report(?:ed|s)|return(?:ed|s)|list(?:ed|s)|said|says|show(?:ed|s)|noted|recorded|surfaced)\b|\b(?:by|at|on|until|before)\s+the\s+next\s+read\b/i;
+
 function scrubTools(sentence: string): string {
   if (!TOOL_NAMES.test(sentence)) return sentence;
   return TOOL_TAGS.reduce((s, re) => s.replace(re, ""), sentence).replace(/\s{2,}/g, " ");
@@ -465,6 +475,8 @@ export function walkerIn(sentence: string): number | null {
   }
   const tool = TOOL_NAMES.exec(sentence);
   if (tool && (at === null || tool.index < at)) at = tool.index;
+  const click = CLICK_VOICE.exec(sentence);
+  if (click && (at === null || click.index < at)) at = click.index;
   return at;
 }
 

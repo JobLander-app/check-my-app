@@ -203,6 +203,35 @@ const TOOLS: Array<[string, string | null]> = [
   ["The link check ran through verify_links and every link resolved.", null],
 ];
 
+// ─── Our click, speaking (CHE-392) ────────────────────────────────────────────
+// Since CHE-392 a click tells the model what text became visible after it, and
+// the model began to say where it had heard that. Run cmuqei9b… on our own
+// site, 2026-10-02, the first run after that change, published the first
+// sentence below in a step's `observed`. The clause goes; what the product did
+// stays.
+const CLICK_VOICE: Array<[string, string | null]> = [
+  [
+    "The disclosure expanded and revealed Test email, Test password, a free-text notes box and a 'Where to email the result?' field; the click reported the newly visible text.",
+    "The disclosure expanded and revealed Test email, Test password, a free-text notes box and a 'Where to email the result?' field.",
+  ],
+  [
+    "The button's label changed to \"copied ✓\" for a moment, as the click's result listed.",
+    "The button's label changed to \"copied ✓\" for a moment.",
+  ],
+  [
+    "The label switched to 'Saved' — the click itself returned that text, and it was gone by the next read.",
+    "The label switched to 'Saved'.",
+  ],
+  ["The click reported the text 'Saved'.", null],
+];
+// The product's own clicks are not ours.
+const CLICK_PRODUCT = [
+  "Clicking 'copy' changes the button's label to 'copied ✓' for about a second.",
+  "The click-through report lists 12 campaigns and the click count updates on refresh.",
+  "A click on the row opens the detail panel, which showed the order's status.",
+  "The dashboard's 'Next read' badge shows the article queued after this one.",
+];
+
 // A scripted model: any call is the summary call (finalizeJson sends no
 // tools); counts them and answers `reply`.
 function scriptedLlm(reply: string) {
@@ -297,6 +326,17 @@ async function main() {
     const out = stripNarration(s, "");
     check(`tools: ${JSON.stringify(s)}`, out === (after ?? ""), out);
     check(`  … no tool named in what remains`, !MACHINERY_TERMS.test(out), out);
+  }
+
+  // 5b — our click, speaking: the clause it speaks in is cut, the product's
+  // half of the sentence stays; the product's own "click" is untouched.
+  for (const [s, after] of CLICK_VOICE) {
+    const out = productProse(s);
+    check(`click voice: ${JSON.stringify(s)}`, out === after, out ?? "(null)");
+    check(`  … hasNarration sees it`, hasNarration(s));
+  }
+  for (const s of CLICK_PRODUCT) {
+    check(`the product's click: ${JSON.stringify(s)}`, productProse(s, 0) === s && !hasNarration(s), productProse(s, 0) ?? "(null)");
   }
 
   // 6 — summarizeWalk: the envelope alone is not a summary, so the walk asks
