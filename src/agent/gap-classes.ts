@@ -43,6 +43,7 @@ export type GapClass =
   | "unfunnelled_journey"
   | "journey_rotation"
   | "shopify_admin"
+  | "target_door"
   | "unclassified";
 
 export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
@@ -124,6 +125,12 @@ export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
   shopify_admin: {
     label: "Checker cannot check an app that lives inside the Shopify admin",
     why: "An embedded Shopify app lives in an iframe inside admin.shopify.com, behind the store owner's Shopify sign-in. Until the walk can sign in to a test store's admin and use the app there, every Shopify app's product is a page we cannot open — a whole platform of customers we cannot serve.",
+  },
+  // CHE-390: decided by the surface scan (src/agent/closed-door.ts), never by
+  // a step's words.
+  target_door: {
+    label: "Checker is turned away at the target's own first page (401/403 before anything loads)",
+    why: "Run #292: a new account's first check answered 403 on every address, the first page included, and we published \"Broken — your server blocks access\" and charged for it. A first page that refuses us is not a page we saw: it may be a network rule, a sign-in at the address itself, or a block on where we run from, and from outside we cannot tell which. Until the check can come from a path the app answers — or hold the sign-in its address asks for — that app is one we cannot open at all.",
   },
   unclassified: {
     label: "Checker could not verify a step for an unclassified reason",

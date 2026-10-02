@@ -66,12 +66,12 @@
 // real meetbashar fixture through toRecurrenceRun; recurringByApp() loads a
 // team's apps into it.
 
-import type { PrismaClient } from "@/generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { findingSignature, sameProblem, signatureKind, titleSimilarity, SAME_PROBLEM } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
-import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 export interface RecurringIssue {
   signature: string;
@@ -391,55 +391,95 @@ export function sameIssue(a: { signature: string; title: string }, b: { signatur
   return !isBucket(a.signature) || sameProblem(a, b);
 }
 
-// A run that finished with a verdict. `failed` is CheckMyApp not finishing, not
-// a statement about the app (CLAUDE.md §4) — and it walked nothing to compare.
-const FINISHED = ["completed", "partial"];
+interface HistoryRun extends RecurrenceRunRow {
+  id: string;
+  startedAt: Date;
+  status: string;
+  verdict: string | null;
+  targetKind: string;
+}
+
+// D1 hands a DateTime back as text, in one of the two spellings prod holds
+// ("2026-09-02 21:23:10", written by hand, and ISO). The first has no zone and
+// JS would read it as local time.
+const d1Date = (v: string | Date) => (v instanceof Date ? v : new Date(v.includes("T") ? v : `${v.replace(" ", "T")}Z`));
+
+// Every finished check of a team's apps with its journeys, steps and findings:
+// four flat statements for the whole team, one bound parameter each, stitched
+// here. The nested select this replaces asked the query engine to assemble
+// run → journey → step for an app's whole history; on one team of four apps
+// (190 checks, 900 journeys, 4,000 steps) the engine gave up ("RuntimeError:
+// unreachable") and the page that asked took 30 s (the CHE-357 stand,
+// 2026-10-02 — before any page in prod read this).
+//
+// Each statement binds the team itself (teamRows — src/lib/tenant-db.ts), so
+// the tenant verifier sees the scope in every one of them.
+// Finished with a verdict only: `failed` is CheckMyApp not finishing, not a
+// statement about the app (CLAUDE.md §4) — and it walked nothing to compare.
+const finishedChecksOf = (team: string) =>
+  Prisma.sql`r.appId IN (SELECT id FROM "App" WHERE teamId = ${team}) AND r.status IN ('completed', 'partial')`;
+
+async function teamHistory(db: PrismaClient, teamId: string): Promise<Map<string, HistoryRun[]>> {
+  const [runs, journeys, steps, findings] = await Promise.all([
+    // startedAt as the text it is stored as, so the spelling is read here and
+    // not guessed by the driver.
+    db.$queryRaw<{ id: string; appId: string; runNumber: number | bigint; startedAt: string | Date; status: string; verdict: string | null; targetKind: string }[]>(
+      Prisma.sql`SELECT r.id, r.appId, r.runNumber, CAST(r.startedAt AS TEXT) AS startedAt, r.status, r.verdict, r.targetKind
+        FROM "Run" r WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY r.runNumber`,
+    ),
+    db.$queryRaw<{ id: string; runId: string; appJourneyId: string | null; journeyKey: string | null; title: string; carriedFromRunId: string | null }[]>(
+      Prisma.sql`SELECT j.id, j.runId, j.appJourneyId, j.journeyKey, j.title, j.carriedFromRunId
+        FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY j.runId, j."order"`,
+    ),
+    db.$queryRaw<{ journeyId: string; status: string }[]>(
+      Prisma.sql`SELECT s.journeyId, s.status
+        FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
+        WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY s.journeyId, s."order"`,
+    ),
+    db.$queryRaw<(RecurrenceFinding & { runId: string })[]>(
+      Prisma.sql`SELECT f.id, f.runId, f.title, f.category, f.severity, f.mark, f.detail, f.anchor, f.signature
+        FROM "Finding" f JOIN "Run" r ON r.id = f.runId WHERE ${finishedChecksOf(teamRows(teamId))} ORDER BY f.runId, f.number`,
+    ),
+  ]);
+  const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => {
+    const list = m.get(k);
+    if (list) list.push(v);
+    else m.set(k, [v]);
+  };
+  const stepsOf = new Map<string, Array<{ status: string }>>();
+  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status });
+  const journeysOf = new Map<string, HistoryRun["journeys"]>();
+  for (const j of journeys) push(journeysOf, j.runId, { ...j, steps: stepsOf.get(j.id) ?? [] });
+  const findingsOf = new Map<string, RecurrenceFinding[]>();
+  for (const { runId, ...f } of findings) push(findingsOf, runId, f);
+  const byApp = new Map<string, HistoryRun[]>();
+  for (const r of runs) {
+    push(byApp, r.appId, {
+      id: r.id,
+      runNumber: Number(r.runNumber),
+      startedAt: d1Date(r.startedAt),
+      status: r.status,
+      verdict: r.verdict,
+      targetKind: r.targetKind,
+      journeys: journeysOf.get(r.id) ?? [],
+      findings: findingsOf.get(r.id) ?? [],
+    });
+  }
+  return byApp;
+}
 
 export async function recurringByApp(db: PrismaClient, teamId: string): Promise<Map<string, RecurringIssue[]>> {
-  const apps = await db.app.findMany({
-    where: { ...teamOwned(teamId) },
-    select: { id: true, appSlug: true },
-  });
+  const [apps, history] = await Promise.all([
+    db.app.findMany({
+      where: { ...teamOwned(teamId) },
+      select: { id: true, appSlug: true },
+    }),
+    teamHistory(db, teamId),
+  ]);
   const entries = await Promise.all(
     apps.map(async (app): Promise<[string, RecurringIssue[]]> => {
-      const [runs, links, catalog] = await Promise.all([
-        db.run.findMany({
-          ...alreadyScoped("the caller resolved this app"),
-          where: { appId: app.id, status: { in: FINISHED } },
-          orderBy: { runNumber: "asc" },
-          select: {
-            id: true,
-            runNumber: true,
-            startedAt: true,
-            status: true,
-            verdict: true,
-            targetKind: true,
-            journeys: {
-              orderBy: { order: "asc" },
-              select: {
-                appJourneyId: true,
-                journeyKey: true,
-                title: true,
-                carriedFromRunId: true,
-                status: true,
-                steps: { orderBy: { order: "asc" }, select: { status: true } },
-              },
-            },
-            findings: {
-              orderBy: { number: "asc" },
-              select: {
-                id: true,
-                title: true,
-                category: true,
-                severity: true,
-                mark: true,
-                detail: true,
-                anchor: true,
-                signature: true,
-              },
-            },
-          },
-        }),
+      const runs = history.get(app.id) ?? [];
+      const [links, catalog] = await Promise.all([
         db.issueLink.findMany({
           where: { appId: app.id },
           select: { id: true, status: true, findingId: true, dedupKey: true, firstSeenRunId: true },
