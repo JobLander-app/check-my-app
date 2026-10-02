@@ -31,7 +31,7 @@ export function TeamSwitcher({
             </span>
           ) : (
             <form key={t.id} action={switchTeamAction.bind(null, t.id, undefined)}>
-              <button type="submit" className="rounded border border-border px-2 py-1 text-xs hover:border-accent">
+              <button type="submit" className="rounded border border-ink-600 px-2 py-1 text-xs hover:border-accent">
                 {t.name}
                 {t.isPersonal && <span className="text-fg-muted"> · yours</span>}
               </button>

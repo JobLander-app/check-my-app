@@ -84,6 +84,22 @@ export async function recordTeamEvent(db: PrismaClient, event: TeamEventInput): 
   }
 }
 
+// The person a membership event is about, by email: TeamEvent.subject names
+// people, never ids, and "changed someone's access" answers nothing the log is
+// for. Never throws, for the same reason recordTeamEvent does — a failed lookup
+// costs the line its name, never the change. Callers take it before they mutate.
+export async function memberEmailForLog(db: PrismaClient, userId: string): Promise<string> {
+  try {
+    const row = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+    return row?.email || "a former member";
+  } catch (err) {
+    console.warn(
+      `[team-event] could not name member ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return "a team member";
+  }
+}
+
 // How an event reads on the page. The action is a machine word; this is the
 // sentence. Kept here rather than in the component so the log reads the same
 // wherever it is shown — and so a new action without a sentence is visible.
