@@ -203,6 +203,12 @@ async function main() {
         <button id="b6" onclick="${write("plan")}">Start free trial</button>
         <button id="b7" onclick="${write("pause")}">Pause protection</button>
         <a id="b8" href="#" onclick="${write("add")}">Add rule</a>
+        <button id="b9" aria-labelledby="l9" style="width:24px;height:24px" onclick="${write("labelled")}"></button><span id="l9" style="position:absolute;left:-999px">Delete rule</span>
+        <button id="b10" onclick="${write("alt")}"><img alt="Remove" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="16" height="16"></button>
+        <button id="b11" style="width:24px;height:24px" onclick="${write("unnamed")}"></button>
+        <button id="b12" onclick="${write("both")}">Save and continue</button>
+        <a id="b13" href="/admin/write/cancel">Details</a>
+        <a id="b14" href="/admin?products-new">Add product</a>
         <button id="view" onclick="document.title = 'Details'">View details</button>
         <section id="card" onclick="document.title = 'Card'"><p>Rules you save here apply to every visitor. You can add, update or delete a rule at any time, and block or unblock a country from the list below this card.</p></section>`);
     } else if (url.pathname === "/signin") {
@@ -414,6 +420,14 @@ async function main() {
     await heldAt("\"Start free trial\" by selector", { selector: "#b6" });
     await heldAt("\"Pause protection\" by selector", { selector: "#b7" });
     await heldAt("a link that leads nowhere (href=\"#\") and is called \"Add rule\"", { selector: "#b8" });
+    // Codex on #261, round 1.
+    await heldAt("an icon button named only through aria-labelledby (\"Delete rule\")", { selector: "#b9" });
+    await heldAt("an icon button named only by its image's alt (\"Remove\")", { selector: "#b10" });
+    await heldAt("a button with no name at all", { selector: "#b11" });
+    await heldAt("\"Save and continue\" — a word that only reads does not cancel the one that saves", { selector: "#b12" });
+    await heldAt("a link called \"Details\" that leads to an address naming an action (/admin/write/cancel)", { selector: "#b13" });
+    const typed = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/write/delete` });
+    check("…and such an address is not opened when the walk types it either", typed.startsWith("Refused:") && typed.includes("not_applicable") && menuPage.url() === `${SITE}/admin/app`, typed.slice(0, 110));
     check("…and none of it reached the product", writes.length === 0, writes.join(", "));
     // The refusal is a request to a model. A walk that was refused "Save" and
     // then reports the button as dead must not publish that about the product.
@@ -434,9 +448,19 @@ async function main() {
     check("a tab called \"Order protection\", a \"View details\" button, a card whose paragraph mentions saving and deleting, and a field whose placeholder says \"Add a note…\" are pressed and typed into",
       tab.startsWith("Clicked") && view.startsWith("Clicked") && card.startsWith("Clicked") && note.startsWith("Filled"),
       [tab, view, card, note].map((r) => r.slice(0, 40)).join(" | "));
-    const led = await executeTool(toolEnv, "click", { selector: "#nav-block" });
-    check("a link called \"Block countries\" that leads to a page is followed — opening a page is reading",
-      led.startsWith("Clicked") && menuPage.url() === `${SITE}/admin?block-countries`, `${led.slice(0, 60)} → ${menuPage.url()}`);
+    // A link whose words say it changes something is not clicked — a click
+    // runs whatever the page hung on it — and the walk is sent to its address.
+    const notClicked = await executeTool(toolEnv, "click", { selector: "#nav-block" });
+    check("a link called \"Block countries\" is not clicked, and the walk is told to open its address instead",
+      notClicked.startsWith("Refused:") && /open that page by its address with navigate/.test(notClicked) && menuPage.url() === `${SITE}/admin/app`, notClicked.slice(0, 120));
+    await executeTool(toolEnv, "report_step", { label: "Open the countries page", status: "skipped", unverifiedReason: "our_capability", attempted: "Opened the countries page", observed: "The page could not be opened." });
+    check("…a refusal that leaves a way open settles no step: what the walk reports next is its own", reported[2]?.unverifiedReason === "our_capability" && reported[2]?.observed !== SELF_CHECK_REFUSED_OBSERVED, JSON.stringify(reported[2]));
+    const led = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin?block-countries` });
+    check("…and opened by its address, the page is read", led.startsWith("Navigated") && menuPage.url() === `${SITE}/admin?block-countries`, `${led.slice(0, 60)} → ${menuPage.url()}`);
+    await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/app` });
+    const form = await executeTool(toolEnv, "click", { selector: "#b14" });
+    check("a link called \"Add product\" that leads to a page is followed — opening a form is reading",
+      form.startsWith("Clicked") && menuPage.url() === `${SITE}/admin?products-new`, `${form.slice(0, 60)} → ${menuPage.url()}`);
     check("…and still nothing was written", writes.length === 0, writes.join(", "));
     await guarded.close();
 

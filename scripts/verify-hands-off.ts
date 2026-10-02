@@ -26,7 +26,7 @@
 
 import { chromium, type Browser, type Page } from "playwright";
 import { executeTool, prepareAgentPage, type ToolEnv } from "@/agent/tools";
-import { COMMIT_VERBS, handsOffIn, handsOffRefusal, isStrictPlace, REMOVE_VERBS, type HandsOffPlace } from "@/agent/hands-off";
+import { COMMIT_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, isActionAddress, isStrictPlace, REMOVE_VERBS, type HandsOffPlace } from "@/agent/hands-off";
 import type { ControlSeen } from "@/agent/session-browser";
 import { hasEnvironmentLeak, hasHomework, SELF_CHECK_REFUSED_OBSERVED } from "@/lib/verdict-language";
 
@@ -129,9 +129,34 @@ async function main() {
   check("the control is read by every name it has: its text, its accessible name, its value",
     held({ texts: ["×", "Remove country"], addresses: [], kind: "button" }, session) === "remove" && held({ texts: ["Save"], addresses: [], kind: "input:submit" }, session) === "create");
   check("a switch changes a setting when pressed, whatever it is called — in a session", held(control("VPN traffic", { kind: "switch" }), session) === "switch" && held(control("VPN traffic", { kind: "switch" }), oursReadOnly) === null);
-  check("a link that leads to a page is reading; one that leads nowhere is a button",
-    held(control("Add product", { kind: "a", link: "/admin/products/new" }), session) === null && held(control("Block countries", { kind: "a", link: "https://admin.shop.test/apps/x/countries" }), session) === null &&
+  check("a link that opens a form is reading; one that leads nowhere is a button",
+    held(control("Add product", { kind: "a", link: "/admin/products/new" }), session) === null && held(control("Orders", { kind: "a", link: "/admin/orders" }), session) === null &&
       held(control("Add rule", { kind: "a", link: "#" }), session) === "create" && held(control("Delete", { kind: "a", link: "javascript:void(0)" }), session) === "remove" && held(control("Delete", { kind: "a", link: "" }), session) === "remove");
+  // Codex on #261, round 1.
+  check("a link whose words say it changes something is not clicked — the walk is sent to its address, where no script of the link's runs",
+    held(control("Cancel subscription", { kind: "a", link: "/billing" }), session) === "link" && held(control("Delete", { kind: "a", link: "/items/42" }), session) === "link" &&
+      held(control("Block countries", { kind: "a", link: "https://admin.shop.test/apps/x/countries" }), session) === "link" && held(control("Export", { kind: "a", link: "/runs/1/specs" }), oursMayWrite) === "link" &&
+      /open that page by its address with navigate/.test(handsOffRefusal({ rule: "link", what: "Block countries" })));
+  check("a link, or a form, that leads to an address naming an action is not opened at all — whatever its words",
+    held(control("Details", { kind: "a", link: "/orders/7/cancel" }), session) === "address" && held(control("Go", { kind: "a", link: "/admin/post.php?post=1&action=trash" }), session) === "address" &&
+      held(control("OK", { kind: "button", addresses: ["/items/42/delete"] }), session) === "address" && held(control("Details", { kind: "a", link: "/orders/7/cancel" }), ordinary) === null);
+  const ACTIONS = ["/delete/42", "/orders/7/cancel", "/admin?action=trash", "https://x.test/apps/1/uninstall", "/subscription/cancel-now", "/users/3/deactivate", "/keys/9/revoke?next=/"];
+  const PAGES_ONLY = ["/removed-items", "/cancellation-policy", "/settings/disabled-features", "/blog/how-to-delete-a-rule", "/dashboard?removed=shop.test", "/apps/x/block-countries", "/archived", "/trashcan-guide"];
+  check("addresses: a segment or a query value that begins with the verb — never a word inside a longer one",
+    ACTIONS.every((a) => isActionAddress(a, THEIRS)) && !PAGES_ONLY.some((a) => isActionAddress(a, THEIRS)),
+    [...ACTIONS.filter((a) => !isActionAddress(a, THEIRS)), ...PAGES_ONLY.filter((a) => isActionAddress(a, THEIRS))].join(" | "));
+  check("the same for an address the walk types: refused in a strict place, nowhere else",
+    handsOffAddress(`${THEIRS}/orders/7/cancel`, session)?.rule === "address" && handsOffAddress(`${OURS}/api/x/delete`, oursMayWrite)?.rule === "address" &&
+      handsOffAddress(`${THEIRS}/orders/7/cancel`, ordinary) === null && handsOffAddress(`${THEIRS}/orders/7`, session) === null);
+  const BOTH: [string, string][] = [["Save and continue", "create"], ["Confirm and next", "commit"], ["Delete and refresh", "remove"], ["Save & show preview", "create"], ["Find and remove duplicates", "remove"]];
+  const READS = ["Apply filter", "Apply filters", "Reset filters", "Clear all filters", "Remove filter", "Add filter", "Show next", "Continue", "Refresh preview", "Search", "Sign in"];
+  check("a word that only reads does not cancel a verb beside it: \"Save and continue\" saves; \"Apply filter\" filters",
+    BOTH.every(([t, rule]) => held(control(t), session) === rule) && READS.every((t) => held(control(t), session) === null),
+    [...BOTH.filter(([t, rule]) => held(control(t), session) !== rule).map(([t]) => `${t}=${held(control(t), session)}`), ...READS.filter((t) => held(control(t), session) !== null)].join(" | "));
+  check("a button with no name at all is not pressed in a person's account — and is, as before, anywhere else",
+    held({ texts: [], addresses: [], kind: "button" }, session) === "unnamed" && held({ texts: [], addresses: [], kind: "input:submit" }, session) === "unnamed" &&
+      held({ texts: [], addresses: [], kind: "" }, session) === null && held({ texts: [], addresses: [], kind: "a", link: "/x" }, session) === null &&
+      held({ texts: [], addresses: [], kind: "button" }, oursReadOnly) === null && held({ texts: [], addresses: [], kind: "button" }, ordinary) === null);
   check("a tab is reading", held(control("Order protection", { kind: "tab" }), session) === null && held(control("Order protection", { kind: "button" }), session) === "create");
   check("a field is not a press: its placeholder and its label are not judged",
     ["input:text", "input:search", "input:email", "textarea", "select"].every((kind) => held(control("Add a note…", { kind }), session) === null) &&
@@ -141,10 +166,14 @@ async function main() {
   check("words: a word inside a longer one is not the verb",
     !["Blocked", "Blocklist", "Updates", "Removed", "Installer", "Payment history", "Application", "Resetting"].some((w) => REMOVE_VERBS.test(w) || COMMIT_VERBS.test(w)),
     ["Blocked", "Blocklist", "Updates", "Removed", "Installer", "Payment history", "Application", "Resetting"].filter((w) => REMOVE_VERBS.test(w) || COMMIT_VERBS.test(w)).join(" | "));
-  const told = (["own_host", "toggle", "create", "remove", "commit", "switch"] as const).map((rule) => handsOffRefusal({ rule, what: "Save" }));
+  const told = (["own_host", "toggle", "create", "remove", "commit", "switch", "unnamed"] as const).map((rule) => handsOffRefusal({ rule, what: "Save" }));
   check("what the walk is told: refused, skipped / not_applicable, no other way to press it — and nothing of ours, no homework",
-    told.every((t) => t.startsWith('Refused: "Save"') && t.includes('"not_applicable"') && /Do not press it by another name, another selector or another route/.test(t) && !/CSS selector instead/.test(t) && !hasEnvironmentLeak(t) && !hasHomework(t)),
+    told.every((t) => t.startsWith("Refused: ") && t.includes('"not_applicable"') && /Do not press it by another name, another selector or another route/.test(t) && !/CSS selector instead/.test(t) && !hasEnvironmentLeak(t) && !hasHomework(t)),
     told.find((t) => hasEnvironmentLeak(t) || hasHomework(t)) ?? "");
+  const toldAddress = handsOffRefusal({ rule: "address", what: "/orders/7/cancel" });
+  check("…and of an address that names an action: not by a click, not by typing it, not by another route",
+    toldAddress.startsWith('Refused: the address "/orders/7/cancel"') && toldAddress.includes('"not_applicable"') && /Do not reach it by a click, by typing it or by another route/.test(toldAddress) &&
+      !hasEnvironmentLeak(toldAddress) && !hasHomework(toldAddress), toldAddress);
 
   const browser = await launch();
   try {

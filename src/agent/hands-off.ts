@@ -23,18 +23,30 @@
 // commit something — no list tested those before, and the instruction not to
 // press them was the only thing in the way.
 //
-// Deliberately not judged this way:
-//   - a link that leads somewhere, and a tab: opening "Add product" or the
-//     "Block countries" page is reading. What would act is the button there;
+// A link that leads to an address is judged as a link (Codex on #261):
+//   - where it leads decides. An address that names an action — /delete,
+//     /orders/7/cancel, ?action=trash — is not opened, by a click or by
+//     navigate: "a GET that changes state is a GET a scanner will press"
+//     (AGENTS.md), and so would a walk;
+//   - a link whose words say it changes something ("Cancel subscription",
+//     "Delete", and equally "Block countries", which only opens a page) is not
+//     CLICKED — a click runs whatever script the page hung on it — and the
+//     walk is told to open its address instead, where the rule above applies
+//     and no script of the link's runs;
+//   - a link that opens a form ("Add product") is followed: that is reading.
+//
+// Deliberately not judged at all:
+//   - a tab: switching the view is reading;
 //   - a field: its placeholder ("Add a note…") is not a press;
 //   - text longer than a label: a card or a row the walk pressed to open it is
 //     not named by every word inside it.
 //
 // Known limit, said so it is not mistaken for coverage: a control whose words
-// say nothing of what it does — an icon with no name, "OK", "Yes", "Continue"
-// on a confirmation — is not seen here. Everywhere else (an ordinary run on a
-// customer's app) the gates still read only the name; that half needs numbers
-// on what it would refuse before it is switched on.
+// say nothing of what it does — "OK", "Yes" on a confirmation — is not seen
+// here, and neither is an address that changes state without saying so.
+// Everywhere else (an ordinary run on a customer's app) the gates still read
+// only the name; that half needs numbers on what it would refuse before it is
+// switched on.
 
 import type { ControlSeen } from "./session-browser";
 
@@ -88,7 +100,7 @@ export interface HandsOffPlace {
   writeAllowed: boolean;
 }
 
-export type HandsOffRule = "own_host" | "toggle" | "create" | "remove" | "commit" | "switch";
+export type HandsOffRule = "own_host" | "toggle" | "create" | "remove" | "commit" | "switch" | "unnamed" | "address" | "link";
 
 export interface HandsOff {
   rule: HandsOffRule;
@@ -113,10 +125,37 @@ function leadsSomewhere(control: ControlSeen): boolean {
   return href !== "" && !href.startsWith("#") && !/^javascript:/i.test(href);
 }
 
+// What makes a label safe is the whole of what it does, not a word in it:
+// "Apply filter" filters, "Save and continue" saves (Codex on #261). So the
+// words that only read are taken out, and the verbs are looked for in what is
+// left.
+const READS_ONLY =
+  /\b(?:(?:add|apply|reset|clear(?: all)?|remove) (?:all |the |a )?(?:filters?|search|sorting)|search|filters?|log ?in|sign ?in|continue|next|show|find|preview|refresh)\b/gi;
+
 function named(texts: string[], verbs: RegExp): string | null {
-  const hit = texts.find((t) => verbs.test(t) && !SAFE_SUBMITS.test(t));
+  const hit = texts.find((t) => verbs.test(t.replace(READS_ONLY, " ")));
   return hit ? hit.replace(/\s+/g, " ").trim().slice(0, 80) : null;
 }
+
+// An address that names an action: a path segment or a query value that
+// begins with the verb — "/orders/7/cancel", "/delete/42", "?action=trash",
+// "/cancel-subscription" — never a word inside a longer one ("/removed-items",
+// "/cancellation-policy").
+const ACTION_ADDRESS = /(^|[/=?&])(delete|destroy|remove|trash|cancel|uninstall|unsubscribe|deactivate|disable|revoke|archive|unpublish)(?![a-z])/i;
+
+export function isActionAddress(url: string | null | undefined, base?: string): boolean {
+  if (!url) return false;
+  let address = url;
+  try {
+    const parsed = new URL(url, base);
+    address = `${parsed.pathname}${parsed.search}`;
+  } catch {
+    /* not an address we can resolve — judged as written */
+  }
+  return ACTION_ADDRESS.test(address);
+}
+
+const PRESSED = /^(button|menuitem|input:(submit|button|image))$/;
 
 // → the rule this control falls under in this place, or null. Null in an
 // ordinary run on a customer's app, whatever the control: there the name the
@@ -124,26 +163,47 @@ function named(texts: string[], verbs: RegExp): string | null {
 export function handsOffIn(control: ControlSeen, place: HandsOffPlace): HandsOff | null {
   if (!isStrictPlace(place)) return null;
   const kind = control.kind ?? "";
-  if (TYPED_INTO.test(kind) || kind === "tab" || leadsSomewhere(control)) return null;
+  if (TYPED_INTO.test(kind) || kind === "tab") return null;
   const texts = control.texts.filter((t) => t.length <= LABEL_LIMIT);
+  const link = leadsSomewhere(control);
 
-  if (place.ownHost) {
-    const what = named(texts, SELF_HOST_GUARDED_VERBS);
-    if (what) return { rule: "own_host", what };
-  }
-  const toggled = named(texts, STATE_TOGGLE_VERBS);
-  if (toggled) return { rule: "toggle", what: toggled };
+  // Where it leads, or where its form is sent.
+  const acts = [control.link ?? "", ...control.addresses].find((a) => isActionAddress(a, control.base));
+  if (acts) return { rule: "address", what: acts.slice(0, 120) };
+
+  const held = (rule: HandsOffRule, verbs: RegExp): HandsOff | null => {
+    const what = named(texts, verbs);
+    return what ? { rule: link ? "link" : rule, what } : null;
+  };
+  const always = (place.ownHost ? held("own_host", SELF_HOST_GUARDED_VERBS) : null) ?? held("toggle", STATE_TOGGLE_VERBS);
+  if (always) return always;
   if (place.writeAllowed) return null;
 
-  const created = named(texts, CREATE_VERBS);
-  if (created) return { rule: "create", what: created };
-  const removed = named(texts, REMOVE_VERBS);
-  if (removed) return { rule: "remove", what: removed };
-  const committed = named(texts, COMMIT_VERBS);
-  if (committed) return { rule: "commit", what: committed };
-  // An on/off setting takes effect when it is pressed, and says so nowhere.
-  if (place.session && kind === "switch") return { rule: "switch", what: texts[0]?.replace(/\s+/g, " ").trim().slice(0, 80) || "the switch" };
+  // A link that opens a form is reading; a button that says "Add" adds.
+  const created = link ? null : held("create", CREATE_VERBS);
+  const changed = created ?? held("remove", REMOVE_VERBS) ?? held("commit", COMMIT_VERBS);
+  if (changed) return changed;
+  if (place.session && !link) {
+    // An on/off setting takes effect when it is pressed, and says so nowhere.
+    if (kind === "switch") return { rule: "switch", what: texts[0]?.replace(/\s+/g, " ").trim().slice(0, 80) || "the switch" };
+    // A button with no name at all — no text, no accessible name, no title —
+    // cannot be told from "Delete". In a person's account it is not pressed.
+    if (PRESSED.test(kind) && control.texts.length === 0) return { rule: "unnamed", what: "a button with no name" };
+  }
   return null;
+}
+
+// The same judgement for an address the walk types (tools.ts navigate).
+export function handsOffAddress(url: string, place: HandsOffPlace): HandsOff | null {
+  if (!isStrictPlace(place) || !isActionAddress(url)) return null;
+  let what = url;
+  try {
+    const parsed = new URL(url);
+    what = `${parsed.pathname}${parsed.search}`;
+  } catch {
+    /* as written */
+  }
+  return { rule: "address", what: what.slice(0, 120) };
 }
 
 const THEN =
@@ -184,6 +244,24 @@ export function handsOffRefusal(held: HandsOff): string {
       return (
         `Refused: "${held.what}" is an on/off setting of this product, and pressing it changes the ` +
         `setting. This run only reads. ${THEN}`
+      );
+    case "unnamed":
+      return (
+        `Refused: this is ${held.what} — no text, no accessible name, no title — so what it does ` +
+        `cannot be read before it is pressed, and this run only reads. ${THEN}`
+      );
+    case "address":
+      return (
+        `Refused: the address "${held.what}" names an action, and opening it would carry that ` +
+        `action out. This run only reads. Report the step "skipped" with unverifiedReason ` +
+        `"not_applicable" and move on. Do not reach it by a click, by typing it or by another route.`
+      );
+    case "link":
+      return (
+        `Refused: "${held.what}" is a link whose words say it changes something, so it is not ` +
+        `pressed. If it only opens a page, open that page by its address with navigate — what the ` +
+        `page shows is yours to read. Otherwise report the step "skipped" with unverifiedReason ` +
+        `"not_applicable" and move on.`
       );
   }
 }

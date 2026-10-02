@@ -329,6 +329,23 @@ export async function controlSeen(locator: Locator): Promise<ControlSeen | null>
               node.getAttribute("title") ?? "",
               node.getAttribute("value") ?? "",
             );
+            // CHE-406 (Codex on #261): the name assistive technology gives it —
+            // the elements aria-labelledby points at, an image's alt, an icon's
+            // <title> — where an icon-only "Delete" keeps its only word.
+            const labelledBy = node.getAttribute("aria-labelledby");
+            if (labelledBy) {
+              const root = node.getRootNode() as Document | ShadowRoot;
+              for (const id of labelledBy.split(/\s+/).filter(Boolean).slice(0, 4)) {
+                const naming = (typeof root.getElementById === "function" ? root.getElementById(id) : null) ?? document.getElementById(id);
+                if (naming) texts.push((naming as HTMLElement).innerText ?? naming.textContent ?? "");
+              }
+            }
+            if (node.matches("a, button, summary, [role=button], [role=menuitem], [role=link], [role=option], [role=checkbox], [role=switch], input")) {
+              const inside = node.querySelectorAll("img[alt], svg title, [aria-label]");
+              for (let i = 0; i < inside.length && i < 6; i++) {
+                texts.push(inside[i].getAttribute("alt") ?? inside[i].getAttribute("aria-label") ?? inside[i].textContent ?? "");
+              }
+            }
             addresses.push(node.getAttribute("href") ?? "", node.getAttribute("formaction") ?? "", node.getAttribute("data-href") ?? "", node.getAttribute("data-url") ?? "");
           }
           node = node.parentElement;

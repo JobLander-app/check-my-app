@@ -34,7 +34,7 @@ import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
-import { CREATE_VERBS, handsOffIn, handsOffRefusal, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
+import { CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
 
 // The word lists live with the rest of what a walk does not press (CHE-406).
 export { SELF_HOST_GUARDED_VERBS };
@@ -856,6 +856,20 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     console.warn(`[navigate] refused a sign-out address in a signed-in session: ${scrubSecrets(env, target.toString())}`);
     return signOutRefusal(`${target.pathname}${target.search}`.slice(0, 120));
   }
+  // CHE-406: nor, there and on our own product, an address that names an
+  // action — "/orders/7/cancel", "?action=delete". Loading it would carry the
+  // action out, and a link the click gate refused must not be reachable by
+  // typing where it leads.
+  const heldAddress = handsOffAddress(target.toString(), {
+    session: inSignedInSession(env.page),
+    ownHost: isSelfTarget(env),
+    writeAllowed: Boolean(env.writeAllowed),
+  });
+  if (heldAddress) {
+    console.warn(`[navigate] refused an address that names an action: ${scrubSecrets(env, heldAddress.what)}`);
+    noteSelfCheckRefusal(env, `navigate gate: ${heldAddress.what}`);
+    return handsOffRefusal(heldAddress);
+  }
   const logBefore = env.networkLog.length;
   let res = await env.page.goto(target.toString(), {
     waitUntil: "domcontentloaded",
@@ -1378,7 +1392,9 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   const held = seen ? handsOffIn(seen, place) : null;
   if (held) {
     console.warn(`[click] refused by what the control is (${held.rule}): ${held.what} — addressed as ${label || "nothing"}`);
-    noteSelfCheckRefusal(env, `click gate: ${held.what}`);
+    // A link's refusal sends the walk to its address: nothing was held back
+    // yet, so there is no refusal for the next step to be settled by.
+    if (held.rule !== "link") noteSelfCheckRefusal(env, `click gate: ${held.what}`);
     return handsOffRefusal(held);
   }
   // Never interact before hydration: a click landing before listeners attach
