@@ -10,6 +10,7 @@ import { triggerRun } from "./trigger";
 import { effectiveSiteCap } from "./site-cap";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 // What one run of a saved app may add on top of the app's own settings. The
 // dashboard's button sends none of it; an agent starting the run after a deploy
@@ -42,6 +43,8 @@ export async function startSavedApp(
 ): Promise<{ publicId: string; alreadyRunning?: true } | { error: string; code?: RunRefusalCode }> {
   const app = await db.app.findFirst({ where: { ...teamOwned(owner.teamId), id: appId, ownerId: owner.id } });
   if (!app) return { error: "App not found." };
+  // CHE-390: an app saved before private addresses were refused.
+  if (isPrivateTarget(app.targetUrl)) return { error: PRIVATE_TARGET_MESSAGE };
   // Terminal from the one table (src/lib/enums.ts). The hand-kept list here
   // omitted `canceled`, so an app whose last run was stopped deliberately
   // answered every later start with that stopped run.

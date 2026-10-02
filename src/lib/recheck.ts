@@ -16,6 +16,7 @@ import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -109,6 +110,11 @@ export async function createRecheckRun(
   // owner; anonymous runs are authorized by the unguessable publicId (CHE-33).
   if (!(await deps.canMutate(prisma, { ownerId: prev.ownerId, teamId: prev.teamId })))
     return { kind: "unauthorized" };
+
+  // CHE-390: the checks that were accepted on a private address before it was
+  // refused at intake (#291–#293) still carry a Re-check button. It starts
+  // nothing: the address cannot be opened, and a re-check would be priced.
+  if (isPrivateTarget(prev.targetUrl)) return { kind: "quota", reason: PRIVATE_TARGET_MESSAGE, code: "private_target" };
 
   // CHE-94. Everything below is about the ANONYMOUS path: the caller proved
   // nothing except that they have the link.
