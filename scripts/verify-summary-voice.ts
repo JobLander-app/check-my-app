@@ -223,6 +223,8 @@ const CLICK_VOICE: Array<[string, string | null]> = [
     "The label switched to 'Saved'.",
   ],
   ["The click reported the text 'Saved'.", null],
+  ["The settings form closed after saving, and the click returned the newly visible text 'Draft stored'.", "The settings form closed after saving."],
+  ["The badge read 'Saved' but had reverted to 'Save' by the next read.", null],
 ];
 // The product's own clicks are not ours.
 const CLICK_PRODUCT = [
@@ -230,6 +232,17 @@ const CLICK_PRODUCT = [
   "The click-through report lists 12 campaigns and the click count updates on refresh.",
   "A click on the row opens the detail panel, which showed the order's status.",
   "The dashboard's 'Next read' badge shows the article queued after this one.",
+  // Cross-review of #244: a click is also what the PRODUCT reacts to, and the
+  // verbs "returned", "showed", "recorded" are its reaction as often as our
+  // tool's voice. Cutting these removes the finding's own evidence — worse
+  // than the leak. And a click is some products' own object.
+  "The click returned a 500 from /api/save and the form stayed as it was.",
+  "The click showed a toast reading 'Saved'.",
+  "The click shows a spinner and then nothing.",
+  "The click showed the message 'Invalid email' under the field.",
+  "The dashboard shows the click recorded a minute ago.",
+  "The click showed up in the report after a refresh.",
+  "The counter stays stale until the next read from the API.",
 ];
 
 // A scripted model: any call is the summary call (finalizeJson sends no

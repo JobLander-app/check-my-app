@@ -406,12 +406,33 @@ const TOOL_TAGS = [
 // CHE-392: our click, speaking. Since that ticket a click tells the model what
 // text became visible after it — and the first run after it (our own site,
 // 2026-10-02) published "…; the click reported the newly visible text." in a
-// step. The click as the subject of a reporting verb is the walk talking about
-// its tool, as is "the next read"; cut at the clause like the pronoun. The
-// product's own clicks ("clicking 'copy' changes the label", "the click-through
-// report lists …") have no such verb after "the click" and pass.
-const CLICK_VOICE =
-  /\bthe\s+click(?:['’]s)?(?:\s+(?:itself|tool|result|own\s+result))?\s+(?:report(?:ed|s)|return(?:ed|s)|list(?:ed|s)|said|says|show(?:ed|s)|noted|recorded|surfaced)\b|\b(?:by|at|on|until|before)\s+the\s+next\s+read\b/i;
+// step. That is the walk talking about its tool; cut at the clause like the
+// pronoun.
+//
+// But a click is also what the PRODUCT reacts to, and some products' own
+// object. "The click returned a 500", "the click showed a toast reading
+// 'Saved'", "the dashboard shows the click recorded a minute ago" are the
+// product, and often a finding's whole evidence — cutting them is worse than
+// the leak (cross-review of #244: the first pattern here did). So, by who can
+// be the subject:
+//   - always the tool: "the click's result", "the click tool", "the click
+//     itself" — and the verbs only a tool does to the walk: reported, listed,
+//     noted, surfaced;
+//   - verbs the product does too (returned, showed, said) only when what
+//     follows is the tool's object — "the/that (newly visible) text" — never a
+//     status, a toast, a message, a spinner;
+//   - "the next read" only as the tool's — something "gone … by the next
+//     read", or "the next re-read" — not a cache that is stale until the next
+//     read from an API.
+const TOOL_OBJECT = "(?:that|the|this)\\s+(?:(?:newly\\s+visible|new|visible)\\s+)?(?:text|string)\\b|(?:that|the|this)\\s+newly\\s+visible\\b";
+const CLICK_VOICE = new RegExp(
+  "\\bthe\\s+click(?:['’]s\\s+(?:own\\s+)?result|\\s+tool|\\s+itself)\\b" +
+    "|\\bthe\\s+click\\s+(?:report(?:ed|s)|list(?:ed|s)|noted|surfaced)\\b" +
+    `|\\bthe\\s+click\\s+(?:return(?:ed|s)|show(?:ed|s)|said|says)\\s+(?:${TOOL_OBJECT})` +
+    "|\\b(?:gone|cleared|reverted|disappeared|vanished)\\b[^.;]{0,40}?\\bby\\s+the\\s+next\\s+read\\b" +
+    "|\\bthe\\s+next\\s+re-?read\\b",
+  "i",
+);
 
 function scrubTools(sentence: string): string {
   if (!TOOL_NAMES.test(sentence)) return sentence;
