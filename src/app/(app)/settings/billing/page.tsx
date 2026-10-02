@@ -6,7 +6,7 @@ import type { UserPlan } from "@/lib/enums";
 import { appHealth } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { appPath } from "@/lib/app-shell";
-import { appsCostLine, balanceLine, countLine, outsideApps, pace, sharePercent } from "@/lib/billing-page";
+import { appsCostLine, balanceLine, countLine, daysToNextMonth, outsideApps, pace, sharePercent } from "@/lib/billing-page";
 import { TopUpCta } from "@/components/topup-cta";
 import { ManageBillingButton } from "@/components/manage-billing-button";
 
@@ -50,9 +50,13 @@ export default async function BillingPage({
   const atThisPace = pace({
     creditUsd: balance.creditUsd,
     renews: balance.renewsOn !== null,
+    // Everything the balance pays for, the apps and what was outside them.
     monthlyUsd: health.monthlyRunRateUsd,
     balanceUsd: balance.balanceUsd,
+    topupUsd: balance.topupUsd,
+    daysToRenewal: balance.renewsOn !== null ? daysToNextMonth(new Date()) : null,
   });
+  const appsSpendUsd = apps.reduce((s, a) => s + a.spendUsd, 0);
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
@@ -75,11 +79,18 @@ export default async function BillingPage({
       <section id="balance" className="grid gap-4 md:grid-cols-3">
         <Tile label="Your apps cost">
           <span className="flex items-baseline gap-2">
-            <span className="font-mono text-[32px] leading-none">{usd(health.monthlyRunRateUsd)}</span>
+            <span className="font-mono text-[32px] leading-none">{usd(health.appsMonthlyUsd)}</span>
             <span className="text-fg-muted">a month</span>
           </span>
           <span className="text-[13px] text-fg-muted">
-            {appsCostLine({ windowDays: health.windowDays, apps: apps.length, checks: health.totalChecks, perDayUsd: health.perDayUsd, usd })}
+            {appsCostLine({
+              windowDays: health.windowDays,
+              apps: apps.length,
+              checks: apps.reduce((n, a) => n + a.checks, 0),
+              perDayUsd: appsSpendUsd / health.windowDays,
+              outsideUsd: outside?.usd,
+              usd,
+            })}
           </span>
         </Tile>
         <Tile label="Balance">

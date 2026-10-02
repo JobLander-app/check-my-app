@@ -15,7 +15,7 @@ import { recurringByApp } from "@/lib/recurring";
 import { shellData } from "@/lib/shell-data";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { firstSentence, splitBottomLine } from "@/lib/app-page";
-import { balanceLine, pace, sharePercent } from "@/lib/billing-page";
+import { balanceLine, daysToNextMonth, pace, sharePercent } from "@/lib/billing-page";
 import { briefing, dayLabel, daysAgo, hhmm, latestPerApp, longDate } from "@/lib/today";
 
 const FINISHED = ["completed", "partial"];
@@ -51,8 +51,11 @@ export default async function HomePage({
     db.watch.findMany({ where: { ...teamOwned(team.id) }, select: { appId: true, appSlug: true, active: true, trialEndsAt: true } }),
     db.run.findMany({
       where: { ...teamOwned(team.id), status: { in: FINISHED }, verdict: { not: null }, priceUsd: { not: null }, createdAt: { gte: since } },
+      // Every check of the window, no row limit: the sentence above the feed
+      // needs the latest check of EACH app, and a cap on rows would drop a
+      // quiet app's check behind a busy one's (seven apps checked every six
+      // hours are 56 rows in two days). The window is what bounds it.
       orderBy: { runNumber: "desc" },
-      take: 40,
       select: {
         publicId: true, runNumber: true, appId: true, appSlug: true, verdict: true, bottomLine: true,
         priceUsd: true, completedAt: true, quickPagesOpened: true,
@@ -110,6 +113,8 @@ export default async function HomePage({
     renews: balance.renewsOn !== null,
     monthlyUsd: health.monthlyRunRateUsd,
     balanceUsd: balance.balanceUsd,
+    topupUsd: balance.topupUsd,
+    daysToRenewal: balance.renewsOn !== null ? daysToNextMonth(now) : null,
   });
   const notice = integrationNotice(integration);
   const empty = shell.apps.length === 0 && feed.length === 0;
@@ -281,7 +286,7 @@ export default async function HomePage({
           <section className="card flex flex-col gap-3 p-[18px]">
             <div className="text-[13px] text-fg-muted">Your apps cost</div>
             <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[30px] leading-none">{usd(health.monthlyRunRateUsd)}</span>
+              <span className="font-mono text-[30px] leading-none">{usd(health.appsMonthlyUsd)}</span>
               <span className="text-fg-muted">a month</span>
             </div>
             {costly.map((a) => (

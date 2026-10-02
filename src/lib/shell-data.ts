@@ -12,7 +12,7 @@
 //      an IN list of app ids would break at 50 apps);
 //   3. the window's priced runs, for the monthly figure.
 //
-// The month is appHealth's run rate (CHE-353), computed the same way: the last
+// The month is appHealth's `appsMonthlyUsd` (CHE-353), computed the same way: the last
 // 30 UTC days to the midnight after now, runs placed by createdAt, one day of
 // slack at the start because rows written before 2026-09-04 spell createdAt so
 // that it sorts before the window's first midnight. scripts/verify-app-shell.ts
@@ -97,13 +97,21 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
     db.$queryRaw<{ appId: string; verdict: string; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId))),
     db.run.findMany({
       where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: new Date(until.getTime() - 1) } },
-      select: { priceUsd: true, createdAt: true },
+      select: { appId: true, appSlug: true, priceUsd: true, createdAt: true },
     }),
   ]);
 
   const verdictOf = new Map(latest.map((r) => [r.appId, r.verdict]));
+  // "Your apps cost": the checks that belong to a saved app, by appHealth's
+  // rule — attached to it, or made before the team's only app with that
+  // address was saved. A preview or a one-off address is the team's spending
+  // (Billing lists it), not what an app costs.
+  const ids = new Set(apps.map((a) => a.id));
+  const slugCount = new Map<string, number>();
+  for (const a of apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
+  const ofAnApp = (r: { appId: string | null; appSlug: string }) => (r.appId ? ids.has(r.appId) : slugCount.get(r.appSlug) === 1);
   const totalCents = runs
-    .filter((r) => r.createdAt >= since && r.createdAt < until)
+    .filter((r) => r.createdAt >= since && r.createdAt < until && ofAnApp(r))
     .reduce((sum, r) => sum + Math.round((r.priceUsd ?? 0) * 100), 0);
 
   return {
