@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { VERDICT_META } from "@/lib/status";
+import { can } from "@/lib/scopes";
 import { shouldSkipWatch, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { extensionDisplayName } from "@/lib/extension-target";
@@ -32,11 +33,11 @@ const Row = ({ href, label, value }: { href: string; label: string; value: strin
 // each part of its settings.
 export default async function AppPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = await params;
-  const { db, team } = await requireUser();
+  const { user, db, team, scope } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     select: {
-      id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
+      id: true, ownerId: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
       posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
       tracker: { select: { id: true } },
       repo: { select: { id: true } },
@@ -61,13 +62,19 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     db.testAccount.count({ ...alreadyScoped("the App was just scoped to this team"), where: { appId: app.id } }),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
-  const name = app.targetKind === "extension" ? extensionDisplayName(app.targetUrl) : app.appSlug;
+  const isExtension = app.targetKind === "extension";
+  const name = isExtension ? extensionDisplayName(app.targetUrl) : app.appSlug;
   const meta = mine?.latest?.verdict ? VERDICT_META[mine.latest.verdict] : null;
   const watch = app.watch
     ? { active: app.watch.active, frequency: app.watch.frequency, trialEnded: shouldSkipWatch(app.watch, team.plan as UserPlan) }
     : undefined;
   const again = (recurring.get(app.id) ?? []).filter((i) => i.state === "recurring");
   const settings = appPath.settings(app.id);
+  // The button is shown only where pressing it starts a check: the viewer's
+  // scope allows it, and the app is one they added — today startSavedApp
+  // answers "App not found" for a teammate's app (CHE-395). A reader, or a
+  // member on a teammate's app, sees the review link alone.
+  const mayRun = can(scope, "run.start") && app.ownerId === user.id;
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -84,7 +91,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           <p className="max-w-2xl text-xl leading-snug">{stripStory((mine?.verdicts ?? []).map((v) => v.verdict))}</p>
           {mine && mine.verdicts.length > 0 && <VerdictStrip verdicts={mine.verdicts} className="h-5 max-w-md" />}
           <div className="mt-1 flex flex-wrap items-start gap-2.5">
-            <RunSavedApp appId={app.id} primary />
+            {mayRun && <RunSavedApp appId={app.id} primary />}
             {mine?.latest && (
               <Link
                 href={`/verdict/${mine.latest.publicId}`}
@@ -174,7 +181,15 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
         <section className="card px-[18px] py-1.5">
           <Row href={settings} label="What we check" value={journeysLabel(journeys)} />
           <Row href={settings} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
-          <Row href={appPath.schedule(app.id)} label="Schedule" value={scheduleLabel(watch)} />
+          {isExtension ? (
+            // An extension is checked on request only: there is no schedule to open.
+            <div className="flex items-center justify-between gap-4 border-b border-ink-800 py-3 text-sm">
+              <span>Schedule</span>
+              <span className="truncate text-[13px] text-fg-muted">On request only</span>
+            </div>
+          ) : (
+            <Row href={appPath.schedule(app.id)} label="Schedule" value={scheduleLabel(watch)} />
+          )}
           <Row
             href={settings}
             label="Integrations"

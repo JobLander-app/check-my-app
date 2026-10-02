@@ -93,6 +93,12 @@ check("'Keeps coming back' lists recurring problems only", /filter\(\(i\) => i\.
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("the timeline shows only finished checks with a verdict", /status: \{ in: FINISHED \}, verdict: \{ not: null \}/.test(page));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
+// Codex P1 on #241: a button a reader may not press, or that answers "App not
+// found" for a teammate's app, is not shown.
+check("the Run button is shown only where pressing it starts a check: the scope allows it and the app is the viewer's own",
+  /const mayRun = can\(scope, "run\.start"\) && app\.ownerId === user\.id;/.test(page) && /\{mayRun && <RunSavedApp appId=\{app\.id\} primary \/>\}/.test(page));
+check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
+  /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",
   /run\.quickPagesOpened !== null\s*\? \{ coverage: null, said: `\$\{quickCheckWork\(run\.quickPagesOpened\)\}\.` \}/.test(page));
 eq("quick check: the line", quickCheckWork(31), "Quick check — nothing had changed, 31 pages opened");
