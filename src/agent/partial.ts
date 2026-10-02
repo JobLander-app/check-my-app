@@ -653,13 +653,17 @@ export async function planKnownJourneys(
         carriedFromRunId: null,
         status: { not: "skipped" },
       },
-      orderBy: { order: "asc" },
-      select: { id: true, runId: true, appJourneyId: true },
+      // CHE-403: no orderBy here, on purpose. Both id lists grow with the app,
+      // and past D1's bound-parameter cap Prisma splits the query and merges
+      // the parts — a merge that aborts the wasm engine when the query sorts
+      // by a column it does not select (measured on a real local D1, PR #256).
+      // The column comes back with the rows and they are put in order below.
+      select: { id: true, runId: true, appJourneyId: true, order: true },
     }),
     env.db.run.findMany({ where: { id: { in: walkedRunIds } }, select: { id: true, runNumber: true } }),
   ]);
   const rowFor = new Map<string, string>();
-  for (const j of sourceJourneys) {
+  for (const j of [...sourceJourneys].sort((a, b) => a.order - b.order)) {
     const key = `${j.runId}:${j.appJourneyId}`;
     if (!rowFor.has(key)) rowFor.set(key, j.id);
   }
