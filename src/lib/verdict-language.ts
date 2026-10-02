@@ -925,7 +925,9 @@ const OUR_SIDE_OF_A_PRODUCT_NOUN = new RegExp(
       // the walk driving the page
       `the\\s+(?:${WALKER_NOUN}|model)\\s+${TRIED}\\s+(?:\\w+\\s+)?${DRIVE}`,
       `the\\s+(?:${WALKER_NOUN}|model)\\s+${DROVE}`,
-      `the\\s+${WALKER_NOUN}\\s+(?:${TRIED}\\s+)?(?:find|locate|see|reach|open|load|complete|use|operate)\\s+(?:the|a|an|any)\\s+(?:[\\w'"“”‘’-]+\\s+){0,4}${PAGE_PART}`,
+      `the\\s+(?:${WALKER_NOUN}|model)\\s+(?:tried|attempted|kept|was)\\s+(?:clicking|tapping|pressing|typing|filling|scrolling|navigating|submitting|signing\\s+in|logging\\s+in)`,
+      `the\\s+(?:${WALKER_NOUN}|model)\\s+(?:${TRIED}\\s+)?(?:find|locate|see|reach|open|load|complete|use|operate)\\s+(?:the|a|an|any)\\s+(?:[\\w'"“”‘’-]+\\s+){0,4}${PAGE_PART}`,
+      "the\\s+model\\s+(?:was|got)\\s+(?:blocked|stuck)\\s+(?:on|at|by)",
       `the\\s+${WALKER_NOUN}\\s+never\\s+(?:reached|got|made\\s+it|saw|found)`,
       `the\\s+${WALKER_NOUN}\\s+(?:was|got)\\s+(?:blocked|stuck|stopped)`,
       `the\\s+${WALKER_NOUN}\\s+ran\\s+out\\s+of\\s+(?:steps|time|turns|budget)`,

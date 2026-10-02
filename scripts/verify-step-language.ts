@@ -415,6 +415,8 @@ async function main() {
     "The Models page lists 12 models with their context sizes.",
     "The model failed to load and the page showed 'Out of memory'.",
     "The model chose the wrong language for the reply.",
+    "The model got stuck generating and the spinner never stopped.",
+    "The agent tried to book the earliest slot and offered two alternatives.",
     "Bot and automation protection is enabled for the storefront.",
     "The Blocked browsers list shows Chrome 90 and older.",
     "The browser failed to display the saved bookmarks.",
@@ -461,6 +463,11 @@ async function main() {
     "The model was unable to interact with the checkout form.",
     "Screenshot shows the checkout page after Save was clicked.",
     "Screenshots show the menu stayed closed.",
+    // round 3
+    "The model could not find the Save button.",
+    "The model got stuck on the login form.",
+    "The agent tried clicking the Save button.",
+    "The agent attempted filling the form.",
   ]);
   for (const s of WALK_VOICE_ANYWAY) {
     check(`the product uses the word, the walk still speaks: ${JSON.stringify(s)}`, productProse(s, 20, ALL) === null && namesOurSide(s, ALL), productProse(s, 20, ALL) ?? "(null)");
