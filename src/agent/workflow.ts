@@ -521,12 +521,15 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // whole of that run. A run that finds it held waits its turn here —
       // asleep, not retrying — and starts once the lease is its own. A host
       // held past the limit fails the run with an internal reason (rule 4).
+      // The wait is ours to know about, not the customer's: whose turn it is
+      // on our host says nothing about their product (rule 1), so it goes to
+      // our log and never to the run's feed, which is public.
       if (isSession) {
         await waitForSession({
           ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
-              await appendEvent(env, runId, "connecting", { icon: "info", text: "Another check is still running — this one starts when it finishes" });
+              console.log(`[session] run ${runId} waits for the host: another check holds it`);
             }),
           sleep: (name, seconds) => step.sleep(name, seconds * 1000),
         });

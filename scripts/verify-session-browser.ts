@@ -344,6 +344,13 @@ async function main() {
     check("the workflow: a session run waits for the host before its first phase, in steps that sleep",
       waitAt > 0 && scanAt > waitAt && /if \(isSession\) \{\s*await waitForSession\(/.test(workflow) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(workflow),
       `wait at ${waitAt}, scan at ${scanAt}`);
+    // Whose turn it is on our host is not about the customer's product (rule
+    // 1): nothing between the wait and the first phase writes to the run's
+    // feed, which the live page and get_check_status show to anyone.
+    const waitBlock = workflow.slice(waitAt, scanAt);
+    check("the workflow: the wait says nothing in the run's public feed",
+      waitAt > 0 && scanAt > waitAt && !/appendEvent|transition\(|setLive/.test(waitBlock) && /console\.log\(/.test(waitBlock),
+      waitBlock.match(/appendEvent|transition\(|setLive/)?.[0] ?? "");
 
     // ── the host is not there ──
     let down = "";
