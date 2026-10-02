@@ -107,6 +107,7 @@
     "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
     "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
     "verify:session-server": "node scripts/verify-session-server.mjs",
+    "verify:session-browser": "tsx --tsconfig tsconfig.json scripts/verify-session-browser.ts",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
     "verify:recurring-load": "tsx --tsconfig tsconfig.json scripts/verify-recurring-load.ts",
     "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts",
