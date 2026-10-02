@@ -24,7 +24,7 @@ export default async function AllAppsPage() {
           <p className="mt-1 text-sm text-fg-muted">
             {health.apps.length === 0
               ? "No apps yet."
-              : `${health.apps.length} app${health.apps.length === 1 ? "" : "s"} · ${usd(health.monthlyRunRateUsd)} a month at the rate of the last ${health.windowDays} days`}
+              : `${health.apps.length} app${health.apps.length === 1 ? "" : "s"} · ${usd(health.appsMonthlyUsd)} a month at the rate of the last ${health.windowDays} days`}
           </p>
         </div>
         <Link

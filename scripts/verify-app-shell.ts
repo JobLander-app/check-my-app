@@ -186,8 +186,9 @@ check("the shell has no useEffect", effects.length === 0, effects.map((f) => pat
 // whole appHealth report, ~5 queries per app, on every page). Over a stub
 // database that counts calls: three queries for one app and for sixty, the
 // verdicts and open findings in one statement with one bound parameter (D1
-// caps a statement at 100), and the month equal to appHealth's run rate on
-// the same runs — window edges included.
+// caps a statement at 100), and the month equal to what appHealth says the
+// apps cost on the same runs — window edges included, the team's spending
+// outside its apps left out.
 
 type Call = { op: string; args: unknown };
 function stubDb(appCount: number, runs: { appId: string | null; appSlug: string; watchId: string | null; priceUsd: number | null; createdAt: Date }[]) {
@@ -255,10 +256,16 @@ async function shellChecks() {
   );
   check("open findings add up across apps (a BigInt count included)", big.openIssues === 3, String(big.openIssues));
   check("an extension is named, not shown as a store host", big.apps.find((a) => a.id === "app_1")?.label !== "chromewebstore.google.com", big.apps.find((a) => a.id === "app_1")?.label);
-  check("the month is the window's priced runs: $1 + $0.72 + $0.50 + $0.04", small.monthlyCostUsd === 2.26, String(small.monthlyCostUsd));
+  // "Your apps cost" is the saved apps' checks. The $0.50 preview is the
+  // team's spending and belongs to no app; with one app saved, neither does
+  // the $0.72 check of an address that is not (yet) an app.
+  check("the month is the window's priced checks of the saved apps: $1 + $0.04 with one app", small.monthlyCostUsd === 1.04, String(small.monthlyCostUsd));
+  const three = await loadShellData(stubDb(3, runs).db, "team_x", now);
+  check("…$1 + $0.72 + $0.04 with three — never the $0.50 preview", three.monthlyCostUsd === 1.76, String(three.monthlyCostUsd));
 
   const health = await appHealth(stubDb(3, runs).db, "team_x", { now });
-  check("…the same number appHealth reports as the run rate", health.monthlyRunRateUsd === small.monthlyCostUsd, `${health.monthlyRunRateUsd} vs ${small.monthlyCostUsd}`);
+  check("…the same number appHealth reports as what the apps cost", health.appsMonthlyUsd === three.monthlyCostUsd, `${health.appsMonthlyUsd} vs ${three.monthlyCostUsd}`);
+  check("…while the run rate the plan is measured against is everything the balance paid for", health.monthlyRunRateUsd === 2.26, String(health.monthlyRunRateUsd));
 }
 
 // ── 7. The statement itself, in a real D1 ───────────────────────────────────
