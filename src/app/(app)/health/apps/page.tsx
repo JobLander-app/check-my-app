@@ -215,7 +215,10 @@ export default async function AllAppsPage({
           <p className="mt-1.5 text-sm text-fg-muted">
             {all.length === 0
               ? "No apps yet."
-              : `${usd(health.totalSpendUsd)} in the last ${health.windowDays} days. Each bar is one check, the latest on the right.`}
+              : // The apps' own checks — the sum of the column below, and the
+                // sidebar's number over the same window. What the team paid
+                // for outside its apps is on Billing.
+                `${usd(health.apps.reduce((sum, a) => sum + a.spendUsd, 0))} in the last ${health.windowDays} days. Each bar is one check, the latest on the right.`}
           </p>
         </div>
         <div className="flex items-center gap-2.5">

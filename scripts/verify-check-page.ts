@@ -71,6 +71,11 @@ check("who may see and press what is decided in the body, for both routes", /vie
 check("the price explanation stays the paying team's alone", /viewerTeam\.team\.id === run\.teamId/.test(view));
 check("inside the app, a newer check opens inside the app", /inApp \? inApp\.checkHref\(newerRun\) : `\/verdict\/\$\{newerRun\.publicId\}`/.test(view));
 
+// Seen on the stand: a check the owner started by hand carries no watch, and
+// the page offered "Enable Daily Watch" on an app already checked daily.
+check("'watched' is the check's own watch or the viewer's app's — never an offer to enable what is on",
+  /watch: \{ select: \{ active: true \} \} \},\s*\}\)\s*: null;/.test(view) && /const hasWatch = Boolean\(run\.watch\?\.active \|\| viewerApp\?\.watch\?\.active\);/.test(view));
+
 // ── 3. The in-app page ──────────────────────────────────────────────────────
 const runQueries = inApp.match(/db\.run\.findFirst\(\{\s*where: \{[^\n]*/g) ?? [];
 check("every read of a check is the team's, and this app's", runQueries.length === 3 && runQueries.every((q) => /\.\.\.teamOwned\(team\.id\), \.\.\.ofThisApp/.test(q)), `${runQueries.length} queries`);
@@ -100,6 +105,12 @@ check("no page inside the app links a check straight to the permalink", straight
 const linkers = ["src/app/(app)/home/page.tsx", "src/app/(app)/health/apps/page.tsx", "src/app/(app)/health/apps/[appId]/page.tsx", "src/app/(app)/settings/billing/page.tsx", "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx"];
 const notLinking = linkers.filter((f) => !/appPath\.check\(|checkHref\(/.test(read(f)));
 check("Today, All apps, the app's page, Billing and Schedule open checks inside the app", notLinking.length === 0, notLinking.join(", "));
+
+// The same money under the same words everywhere: All apps' header is the sum
+// of its own column — the apps' checks — not the team's total with previews.
+const allApps = read("src/app/(app)/health/apps/page.tsx");
+check("All apps' header is the apps' own spending, as the sidebar's figure is",
+  /usd\(health\.apps\.reduce\(\(sum, a\) => sum \+ a\.spendUsd, 0\)\)\} in the last/.test(allApps) && !/usd\(health\.totalSpendUsd\)/.test(allApps));
 
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);

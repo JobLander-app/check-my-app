@@ -106,7 +106,6 @@ export async function VerdictView({
   }));
   const fmtTok = (n: number) =>
     n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`;
-  const hasWatch = Boolean(run.watch?.active);
   const generatedTests = await prisma.generatedTest.findMany({
     where: { appSlug: run.appSlug },
     orderBy: [{ title: "asc" }, { version: "desc" }],
@@ -125,9 +124,15 @@ export async function VerdictView({
     viewer && !run.ephemeral
       ? await prisma.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
         where: { ownerId_appSlug: { ownerId: viewer.id, appSlug: run.appSlug } },
-        include: { repo: { select: { repoFullName: true } } },
+        include: { repo: { select: { repoFullName: true } }, watch: { select: { active: true } } },
       })
     : null;
+  // Watched: this check was started by a watch, or the viewer's app of this
+  // address has one. The second half matters for every check the owner started
+  // by hand — it carries no watch of its own, and the page offered "Enable
+  // Daily Watch" on an app already checked daily (checkmyapp.dev #294, seen on
+  // the CHE-371 stand).
+  const hasWatch = Boolean(run.watch?.active || viewerApp?.watch?.active);
   // CHE-108: a verdict link is public, and the owner's controls used to render
   // for whoever opened it — the server refused the click, which is a button
   // that does nothing, on our own page. Each control now appears only when the

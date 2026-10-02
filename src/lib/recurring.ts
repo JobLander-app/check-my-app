@@ -193,8 +193,9 @@ export function recurrence(
     // journey was retired (AppJourney.retiredAt). From that check on it is no
     // longer waited for.
     retiredSince?: Map<string, number>;
-    // The journeys the app has today (AppJourney ids, not retired). A journey
-    // identity outside it can never be walked again: checks from before the
+    // The journeys the app's catalog knows (AppJourney ids; the loader passes
+    // retired ones too — `retiredSince` releases those). A journey identity
+    // outside it can never be walked again: checks from before the
     // catalog (CHE-231) named their journeys by title, a new set every run.
     // Without this, a finding of run #29 waits for those titles forever and
     // reads as "recurring" a hundred checks later (checkmyapp.dev listed
@@ -418,17 +419,27 @@ const d1Date = (v: string | Date) => (v instanceof Date ? v : new Date(v.include
 // statement about the app (CLAUDE.md §4) — and it walked nothing to compare.
 // `only` narrows the same statements to one of the team's apps — still inside
 // the team's scope, so an id from another team reads nothing.
+//
+// Which checks are an app's is appHealth's rule (src/lib/app-health.ts), the
+// one every page that lists an app's checks uses: the checks attached to it,
+// and the team's checks of its address that carry no app — made before it was
+// saved, or started from the public form — when it is the team's only app
+// with that address. Without the second half a check the app's page lists
+// (prod: checkmyapp.dev #155, #294) had no history to stand in, and its
+// findings were nobody's (Codex P1 on #247).
+const appOfCheck = (team: string) =>
+  Prisma.sql`COALESCE(r.appId, (SELECT b.id FROM "App" b WHERE b.teamId = ${team} AND b.appSlug = r.appSlug))`;
 const finishedChecksOf = (team: string, only?: string) =>
-  Prisma.sql`r.appId IN (SELECT id FROM "App" WHERE teamId = ${team}) AND r.status IN ('completed', 'partial')${
-    only === undefined ? Prisma.empty : Prisma.sql` AND r.appId = ${only}`
-  }`;
+  Prisma.sql`(r.appId IN (SELECT id FROM "App" WHERE teamId = ${team})
+      OR (r.appId IS NULL AND r.teamId = ${team} AND (SELECT COUNT(*) FROM "App" c WHERE c.teamId = ${team} AND c.appSlug = r.appSlug) = 1))
+    AND r.status IN ('completed', 'partial')${only === undefined ? Prisma.empty : Prisma.sql` AND ${appOfCheck(team)} = ${only}`}`;
 
 async function teamHistory(db: PrismaClient, teamId: string, only?: string): Promise<Map<string, HistoryRun[]>> {
   const [runs, journeys, steps, findings] = await Promise.all([
     // startedAt as the text it is stored as, so the spelling is read here and
     // not guessed by the driver.
     db.$queryRaw<{ id: string; appId: string; runNumber: number | bigint; startedAt: string | Date; status: string; verdict: string | null; targetKind: string }[]>(
-      Prisma.sql`SELECT r.id, r.appId, r.runNumber, CAST(r.startedAt AS TEXT) AS startedAt, r.status, r.verdict, r.targetKind
+      Prisma.sql`SELECT r.id, ${appOfCheck(teamRows(teamId))} AS appId, r.runNumber, CAST(r.startedAt AS TEXT) AS startedAt, r.status, r.verdict, r.targetKind
         FROM "Run" r WHERE ${finishedChecksOf(teamRows(teamId), only)} ORDER BY r.runNumber`,
     ),
     db.$queryRaw<{ id: string; runId: string; appJourneyId: string | null; journeyKey: string | null; title: string; carriedFromRunId: string | null }[]>(
@@ -523,7 +534,16 @@ async function recurrencesByApp(
       ]);
       const published = runs.filter((r) => extensionReportPublished(r));
       const retiredSince = retiredSinceRun(catalog.filter((j) => j.retiredAt !== null), published);
-      const liveJourneys = new Set(catalog.filter((j) => j.retiredAt === null).map((j) => j.id));
+      // Every journey the catalog knows, retired or not. A retired one is
+      // released by `retiredSince` — at the first check that started after its
+      // retirement, and at no other. Were it left out of this set, any check
+      // that merely did not list it would release its findings as "left the
+      // catalog", including checks from BEFORE it was retired: a problem would
+      // read as gone with no second look, and — asked about a past check — as
+      // gone at a check where the journey was still the app's (Codex P1 on
+      // #247). What stays outside the set is what the rule was written for:
+      // identities from before the catalog, which no check can walk again.
+      const liveJourneys = new Set(catalog.map((j) => j.id));
       const runNumberOf = new Map(runs.map((r) => [r.id, r.runNumber]));
       const recurrenceLinks = links.map((l) => ({
         id: l.id,

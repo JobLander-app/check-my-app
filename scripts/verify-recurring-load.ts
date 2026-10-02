@@ -86,6 +86,48 @@ async function main() {
     await inChunks(steps, 20, (data) => db.step.createMany({ data }));
     await db.finding.createMany({ data: findings });
 
+    // CHE-371 (Codex P1s on #247). Three small apps beside the two above:
+    //   presave — a check of its address made with no app (#401), then an
+    //             attached one (#402); another team checked the same address
+    //             with no app too (#601);
+    //   twin_a / twin_b — two apps of one address, and a check of it with no
+    //             app (#501): it is neither's;
+    //   cat — a journey walked in #701, not listed in #702, retired between
+    //             #702 and #703.
+    await db.user.create({ data: { id: "u2", clerkUserId: "ck_u2", email: "load2@example.test" } });
+    await db.app.createMany({
+      data: [app("presave", "t"), app("cat", "t"), { ...app("twin_a", "t"), appSlug: "twin.test" }, { ...app("twin_b", "t"), ownerId: "u2", appSlug: "twin.test" }],
+    });
+    const loose = (id: string, n: number, slug: string, teamId: string) => ({ ...runRow(id, n, "none", teamId), appId: null, appSlug: slug, targetUrl: `https://${slug}` });
+    await db.run.createMany({
+      data: [
+        loose("p1", 401, "presave.test", "t"), runRow("p2", 402, "presave", "t"), loose("tw1", 501, "twin.test", "t"), loose("o1", 601, "presave.test", "other"),
+        runRow("c1", 701, "cat", "t"), runRow("c2", 702, "cat", "t"), runRow("c3", 703, "cat", "t"),
+      ] as never,
+    });
+    await db.appJourney.createMany({
+      data: [
+        { id: "aj_old", appId: "cat", key: "old-flow", title: "Old flow", retiredAt: new Date(day(702).getTime() + 12 * 3_600_000) },
+        { id: "aj_new", appId: "cat", key: "new-flow", title: "New flow" },
+      ],
+    });
+    const oneJourney = (runId: string, appJourneyId?: string) => ({ id: `${runId}_j0`, runId, order: 0, title: "Journey 0", status: "ok", journeyKey: "journey-0", appJourneyId });
+    await db.journey.createMany({
+      data: [oneJourney("p1"), oneJourney("p2"), oneJourney("tw1"), oneJourney("o1"), oneJourney("c1", "aj_old"), oneJourney("c2", "aj_new"), oneJourney("c3", "aj_new")],
+    });
+    await db.step.createMany({
+      data: ["p1", "p2", "tw1", "o1", "c1", "c2", "c3"].map((r) => ({ id: `${r}_j0_s0`, journeyId: `${r}_j0`, order: 0, label: "step 0", status: "ok" })),
+    });
+    await db.finding.createMany({
+      data: [
+        finding("f_p1", "p1", "Export button returns an empty file", "/export", 0, 0),
+        finding("f_p2", "p2", "Export button returns an empty file", "/export", 0, 0),
+        finding("f_tw", "tw1", "Twin page shows a blank screen", "/twin", 0, 0),
+        finding("f_o1", "o1", "Export button returns an empty file", "/export", 0, 0),
+        finding("f_c1", "c1", "Old flow shows a blank page", "/old", 0, 0),
+      ],
+    });
+
     const started = Date.now();
     const byApp = await recurringByApp(db, "t");
     const ms = Date.now() - started;
@@ -101,8 +143,8 @@ async function main() {
     check("the big app has exactly those two issues", big.length === 2, String(big.length));
     const small = byApp.get("small") ?? [];
     check("the second app's single finding is new", small.length === 1 && small[0].state === "new", JSON.stringify(small.map((i) => i.state)));
-    check("another team's checks stay out: only the team's two apps are answered for",
-      [...byApp.keys()].sort().join(",") === "big,small" && ![...byApp.values()].flat().some((i) => /Their sign-in/.test(i.title)),
+    check("another team's checks stay out: only the team's own apps are answered for",
+      [...byApp.keys()].sort().join(",") === "big,cat,presave,small,twin_a,twin_b" && ![...byApp.values()].flat().some((i) => /Their sign-in/.test(i.title)),
       [...byApp.keys()].join(","));
 
     // One app's page asks for one app (CHE-358): the same answer for it, and
@@ -132,6 +174,26 @@ async function main() {
     check("history cut at #149 holds no check after it", at149 !== null && Math.max(...at149.checks) === 149 && !at149.recurrences.some((r) => r.sightings.some((s) => s.runNumber > 149)));
     eq("a number that is not one of this app's checks has no history to stand in", await lineAt("big", 201), null);
     eq("another team's app, asked for by id and by its own check's number: nothing", await lineAt("theirs", 301), null);
+
+    // A check of the app's address that carries no app is the app's when it is
+    // the team's only app of that address — appHealth's rule, which the app's
+    // page and the check's page already list by.
+    const presave = byApp.get("presave") ?? [];
+    check("a check with no app joins the history of the team's only app of that address: seen 2×, #401 → #402",
+      presave.length === 1 && presave[0].state === "recurring" && presave[0].firstSeenRunNumber === 401 && presave[0].lastSeenRunNumber === 402,
+      JSON.stringify(presave.map((i) => [i.state, i.firstSeenRunNumber, i.lastSeenRunNumber])));
+    eq("…so the attached check after it is not 'the first', and its problem is not 'new'", await lineAt("presave", 402), "Since check #401: nothing new, 1 still there.");
+    eq("…and the check with no app has a history to stand in", await lineAt("presave", 401), "The first check of this app.");
+    const presaveAt = await recurrencesAsOf(db, "t", "presave", 402);
+    eq("…another team's check of the same address stays out of it", presaveAt?.checks.join(","), "401,402");
+    check("an address two apps share: a check of it with no app is neither's",
+      (byApp.get("twin_a") ?? []).length === 0 && (byApp.get("twin_b") ?? []).length === 0 && (await recurrencesAsOf(db, "t", "twin_a", 501)) === null);
+
+    // The catalog as of the check asked about: a journey retired after it was
+    // still the app's then, and a check that merely did not list it is not a
+    // second look.
+    eq("as of #702 the journey is not yet retired: its problem is not released by a check that did not list it", await lineAt("cat", 702), "Since check #701: nothing new.");
+    eq("as of #703, the first check after the retirement, it is", await lineAt("cat", 703), "Since check #702: nothing new, 1 gone.");
 
     const src = readFileSync(path.join(repoRoot, "src/lib/recurring.ts"), "utf8");
     check("the loader holds no nested run → journey → step select", !/steps:\s*\{\s*orderBy/.test(src) && !/db\.run\.findMany/.test(src));
