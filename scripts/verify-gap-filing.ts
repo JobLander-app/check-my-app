@@ -17,14 +17,19 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-gap-filing.ts
 
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { AgentEnv } from "@/agent/env";
 import { fileCapabilityGaps, type GapBoard } from "@/agent/capability-gaps";
-import { GAP_CLASSES, classifyGap, gapEvidenceText, type GapClass } from "@/agent/gap-classes";
+import { GAP_CLASSES, classifyGap, gapEvidenceText, settleStepGap, type GapClass, type GapEvidence } from "@/agent/gap-classes";
 import type { RecordedAction, ReportedStep } from "@/agent/tools";
 import { productizeStep } from "@/agent/tools";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import type { CreatedIssue, IssueOutcome, TicketDraft, Tracker } from "@/lib/tracker/types";
+import { CHE_333, readBackSql, seedProblem, seedSql, shopifyAdminDedupKey, type LinkRow } from "./seed-gap-link-che-333";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -127,6 +132,7 @@ function stubWorld(
     extensionAudit?: boolean;
     unpricedJourneys?: string[];
     unfunnelledJourneys?: string[];
+    targetUrl?: string;
   } = {},
 ) {
   const filed: Filed[] = [];
@@ -158,7 +164,7 @@ function stubWorld(
     publicId: "pub-1",
     startedAt: new Date("2026-09-06T16:45:42Z"),
     appSlug: "joblander.app",
-    targetUrl: "https://joblander.app",
+    targetUrl: opts.targetUrl ?? "https://joblander.app",
     appId: "app-customer",
   };
 
@@ -482,6 +488,296 @@ async function main() {
     const w = stubWorld([], { unfunnelledJourneys: [] });
     await fileCapabilityGaps(w.env, "run-1", { board: w.board });
     check("every walked journey has a funnel → no ticket", w.filed.length === 0, w.filed.map((f) => f.title).join(" | "));
+  }
+
+  // 8 — CHE-374: the Shopify admin is one capability, filed on CHE-333, and it
+  // is decided by where the walk was, never by what a step says. Run #283's
+  // step (prod D1, step cmuptq3f7001ez90n9413w9zo, byte for byte, gapClass
+  // included) was classified third_party_block and counted on CHE-309; its 403
+  // came from a server-side link check, so no trail shows a landing and it
+  // keeps that class — a known limit, stated in gap-classes.ts.
+  {
+    const SHOPIFY_283: StoredStep = {
+      label: 'Follow the "Log in here" link on the gate',
+      attempted:
+        'Checked the gate\'s only link, "Log in here" (/admin), which leads to the Shopify admin sign-in for the store owner.',
+      observed:
+        "The link resolves to the Shopify admin host (admin.shopify.com), which answers HTTP 403 to an automated check, so the destination could not be confirmed this run. It is the merchant sign-in, not a shopper-facing page; without owner credentials nothing behind it was inspected.",
+      gapClass: "third_party_block",
+      actions: null,
+      journey: { title: "Explore storefront (blocked by password gate)" },
+    };
+    // Words never decide this class: the run's target and the machine trail
+    // do. S = a store's storefront, SA = a store's admin as the target, J/A =
+    // products that are not stores.
+    const S = "https://securify-demo.myshopify.com";
+    const SA = "https://securify-demo.myshopify.com/admin";
+    const J = "https://joblander.app";
+    const A = "https://acme.app";
+    const sliderTrail: RecordedAction[] = JSON.parse(SLIDER_153.actions ?? "[]");
+    const silentLink: RecordedAction[] = JSON.parse(NEW_TAB_154.actions ?? "[]");
+    const nav = (url: string, urlAfter = url, status: number | null = 200): RecordedAction => ({ kind: "navigate", url, outcome: { urlAfter, status } });
+    const landedBy = (urlAfter: string): RecordedAction => ({
+      kind: "click",
+      role: "link",
+      name: "Log in here",
+      outcome: { urlAfter, navigated: true, requests: 4, mutations: 30 },
+    });
+    const fileChooser = (urlAfter: string): RecordedAction => ({
+      kind: "click",
+      selector: 'input[type="file"]',
+      outcome: { urlAfter, navigated: false, requests: 1, mutations: 2 },
+    });
+    const adminStore = "https://admin.shopify.com/store/securify-demo";
+    // Inside an app in the admin — past the door.
+    const insideApp = `${adminStore}/apps/securify`;
+    const AT = "https://admin.shopify.com";
+    // The door: Shopify's sign-in, where an unsigned visit to the admin ends.
+    const signIn = "https://accounts.shopify.com/lookup?rid=abc";
+    const said403 = "admin.shopify.com answered HTTP 403.";
+    const cases: [string, GapEvidence, GapClass][] = [
+      // (a) The step's walk ended at the admin's door: the admin, whatever the
+      // step set out to do and whatever its words say.
+      ["(a) the admin answered 403, label 'Import products from CSV', file-upload words", { text: `Import products from CSV · the file upload never appeared: ${said403}`, targetOrigin: S, actions: [nav(adminStore, adminStore, 403)] }, "shopify_admin"],
+      ["ended on the sign-in, with OAuth / CAPTCHA / new-tab words", { text: "We could not follow the link; the OAuth sign-in shows a reCAPTCHA and opens in a new tab.", targetOrigin: S, actions: [landedBy(signIn)] }, "shopify_admin"],
+      ["ended on accounts.shopify.com (the store owner's sign-in)", { text: "The login page did not accept us.", targetOrigin: S, actions: [landedBy(signIn)] }, "shopify_admin"],
+      ["navigated to the store's /admin, redirected to accounts.shopify.com", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, signIn)] }, "shopify_admin"],
+      ["navigated to the store's /admin/apps, 403", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin/apps/securify`, `${S}/admin/apps/securify`, 403)] }, "shopify_admin"],
+      ["ended on admin.shopify.com's own /login", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com/login?errorHint=no_cookie_session")] }, "shopify_admin"],
+      ["ended on 'admin.shopify.com.' (trailing dot, same host)", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("https://admin.shopify.com./login")] }, "shopify_admin"],
+      ["ended on an upper-case admin URL", { text: "The page did not load.", targetOrigin: S, actions: [landedBy("HTTPS://ADMIN.SHOPIFY.COM/LOGIN")] }, "shopify_admin"],
+      ["navigated to an upper-case /ADMIN on the store", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/ADMIN`, `${S}/ADMIN`, 403)] }, "shopify_admin"],
+      ["a slider was driven, then the walk ended on the sign-in", { text: "The discount could not be set.", targetOrigin: AT, actions: [...sliderTrail, landedBy(signIn)] }, "shopify_admin"],
+      ["the target is the store's /admin, no trail", { text: "The orders page did not load.", targetOrigin: S, targetUrl: SA }, "shopify_admin"],
+      ["the target is admin.shopify.com, no trail", { text: "The orders page did not load.", targetOrigin: AT }, "shopify_admin"],
+
+      // The landing decides, not the address a navigation asked for, and only
+      // the LAST landing of the step.
+      ["the store's /admin redirected to the store's own /password page", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, `${S}/password`)] }, "unclassified"],
+      ["the store's /admin redirected off Shopify", { text: "The page did not load.", targetOrigin: S, actions: [nav(`${S}/admin`, "https://securify.example/login")] }, "unclassified"],
+      ["an early hop through the sign-in, then the storefront and a third party's timeout", { text: "The reviews widget on reviews.io timed out.", targetOrigin: S, actions: [nav(`${S}/admin`, signIn), nav(`${S}/`)] }, "egress_unreachable"],
+
+      // (b) Past the door — inside an app in the admin — every other class
+      // decides as it always did, so this class can empty once we sign in.
+      ["(b) inside the app: a camera prompt → media_devices", { text: "The camera prompt for product photos stopped the step.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "media_devices"],
+      ["inside the app: records left behind → test_records", { text: "Records still present: product cma-1.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "test_records"],
+      ["inside the app: a third party's 403 → third_party_block", { text: "youtube.com answered HTTP 403.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp)] }, "third_party_block"],
+      ["inside the app: a file input was clicked, upload words → file_transfer", { text: "The file upload did not start.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), fileChooser(`${adminStore}/products/import`)] }, "file_transfer"],
+      ["inside the app: a slider was driven → range_input", { text: "The discount could not be set.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), ...sliderTrail] }, "range_input"],
+      ["inside the app: a link opened a new tab → new_tab", { text: "Nothing happened.", targetOrigin: AT, targetUrl: insideApp, actions: [landedBy(insideApp), ...silentLink] }, "new_tab"],
+      ["an app inside the admin as the target, no trail: not the door", { text: "The page did not load.", targetOrigin: AT, targetUrl: insideApp }, "unclassified"],
+      ["the admin as target, and a slider was driven → range_input", { text: "The discount could not be set.", targetOrigin: S, targetUrl: SA, actions: sliderTrail }, "range_input"],
+
+      // (d) A "Connect Shopify" OAuth hop from another product is the admin sign-in.
+      ["(d) Connect Shopify landed on admin.shopify.com/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy("https://admin.shopify.com/oauth/authorize?client_id=x")] }, "shopify_admin"],
+      ["Connect Shopify landed on <store>/admin/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy(`${S}/admin/oauth/authorize?client_id=x`)] }, "shopify_admin"],
+      ["Connect Shopify landed on admin.shopify.com/store/x/oauth/authorize", { text: "Connect Shopify: the OAuth sign-in could not be completed.", targetOrigin: A, actions: [landedBy(`${adminStore}/oauth/authorize?client_id=x`)] }, "shopify_admin"],
+
+      // (c) No trail landing: words about the admin change nothing — the class
+      // the rules gave before this change.
+      ["(c) run #283's words on its storefront target, no trail (known limit)", { text: gapEvidenceText(SHOPIFY_283.observed, SHOPIFY_283.attempted, SHOPIFY_283.label), targetOrigin: S, targetUrl: `${S}/` }, "third_party_block"],
+      ["UNREACHABLE (HTTP 403 from admin.shopify.com) on J", { text: "UNREACHABLE (HTTP 403 from admin.shopify.com) https://admin.shopify.com/store/x", targetOrigin: J }, "third_party_block"],
+      ["admin.shopify.com timed out on J", { text: "UNREACHABLE (timeout) https://admin.shopify.com/store/x", targetOrigin: J }, "egress_unreachable"],
+      ["a reCAPTCHA on a page that syncs to the Shopify admin", { text: "The signup page, which syncs orders to the Shopify admin, shows a reCAPTCHA.", targetOrigin: A }, "captcha"],
+      ["a markdown link to the admin", { text: "[Open the admin](https://admin.shopify.com/store/x) did nothing.", targetOrigin: J }, "unclassified"],
+      ["a JSON href to the admin", { text: '{"href":"https://admin.shopify.com/store/x"} did nothing.', targetOrigin: J }, "unclassified"],
+      ["'not inside the Shopify admin', on a store", { text: "The app is not inside the Shopify admin; nothing loaded.", targetOrigin: S }, "unclassified"],
+      ["'embedded Shopify app', on a store", { text: "The embedded Shopify app could not be opened from here.", targetOrigin: S }, "unclassified"],
+      ["Google sign-in words on a store, no trail", { text: "The store owner login on accounts.shopify.com offers Continue with Google.", targetOrigin: S }, "oauth"],
+      ["'footprint' is not an OTP", { text: "The footprint chart did not load.", targetOrigin: A }, "unclassified"],
+      ["the file-transfer words are back to what they were", { text: "Uploading the products CSV: Import did nothing.", targetOrigin: J }, "unclassified"],
+
+      // Trail URLs that only look like the admin.
+      ...(
+        [
+          "https://admin.shopify.com.1337.io/",
+          "https://accounts.shopify.com.0x.io/",
+          "https://admin.shopify.com@evil.io/login",
+          "https://evil.io/go?next=admin.shopify.com",
+          "https://evil.io/admin.shopify.com",
+          "https://evil.io/x.myshopify.com/admin",
+          "https://admin.shopify.comé.io/",
+          "https://admin.shopify.com.​evil.io/",
+          "https://shop.admin.shopify.com/",
+          "https://fakeaccounts.shopify.com/",
+          "https://x.myshopify.com/administrator",
+          "https://x.myshopify.com/admin-tools",
+          "https://myshopify.com/admin",
+          "https://securify-demo.myshopify.com/products/x",
+          "not a url",
+        ] as const
+      ).map((url): [string, GapEvidence, GapClass] => [`look-alike landing ${JSON.stringify(url)}`, { text: "The page did not load.", targetOrigin: J, actions: [landedBy(url)] }, "unclassified"]),
+      ["a look-alike target: x.myshopify.com/administrator", { text: "The page did not load.", targetOrigin: J, targetUrl: "https://x.myshopify.com/administrator" }, "unclassified"],
+      ["a look-alike target: admin.shopify.com.1337.io", { text: "The page did not load.", targetOrigin: "https://admin.shopify.com.1337.io" }, "unclassified"],
+      ["the storefront as target is not the admin", { text: "The page did not load.", targetOrigin: S, targetUrl: `${S}/` }, "unclassified"],
+
+      // The neighbours stay where they were.
+      ["unchanged: Google sign-in on the product → oauth", { text: "Sign in with Google via OAuth popup", targetOrigin: J }, "oauth"],
+      ["unchanged: Cloudflare challenge on hugedomains.com", { text: "Cloudflare security verification blocking automated access (HTTP 403) on hugedomains.com", targetOrigin: "https://your-app.com" }, "third_party_block"],
+    ];
+    for (const [name, evidence, expected] of cases) {
+      const got = classifyGap(evidence);
+      check(`${expected}: ${name}`, got === expected, got);
+    }
+    check("the third-party key is CHE-309's, the ticket #283 landed on", keyFor("third_party_block") === "48076e4280e98ec6be313a3f0680b8e7", keyFor("third_party_block"));
+
+    // The seed's key is pinned like every prod key above: a label that drifts
+    // detaches CHE-333 from its row.
+    const seedKey = shopifyAdminDedupKey();
+    check("the shopify_admin key is the seeded one", seedKey === "44180f6e9c56bab68cd7084eb555927a", seedKey);
+    check("the class key is its own", !Object.values(PROD_KEYS).some((p) => p.key === seedKey) && seedKey !== keyFor("third_party_block"));
+
+    // (e) Run #283's row as stored keeps the class it was given then: filing
+    // reads the class and never re-guesses it, so history stays on CHE-309.
+    const stored = stubWorld([SHOPIFY_283], { targetUrl: S });
+    await fileCapabilityGaps(stored.env, "run-1", { board: stored.board });
+    check("(e) the stored #283 row files where it always did (CHE-309's key)", stored.filed[0]?.dedupKey === keyFor("third_party_block"), stored.filed[0]?.dedupKey);
+
+    // The same gate met by a click that landed on the admin: reported after
+    // this change it carries shopify_admin, and the real filer keys it on the
+    // seeded key.
+    const LANDED: StoredStep = {
+      ...SHOPIFY_283,
+      gapClass: null,
+      label: 'Click "Log in here" on the password page',
+      actions: JSON.stringify([landedBy(signIn)]),
+    };
+    const reportedNow = (s: StoredStep): StoredStep => ({
+      ...s,
+      gapClass: classifyGap({
+        text: gapEvidenceText(s.label, s.attempted, s.observed),
+        actions: JSON.parse(s.actions ?? "[]"),
+        targetOrigin: S,
+      }),
+    });
+    check("a landed step reported now is shopify_admin", reportedNow(LANDED).gapClass === "shopify_admin", reportedNow(LANDED).gapClass ?? "");
+    const fresh = stubWorld([reportedNow(LANDED)], { targetUrl: S });
+    await fileCapabilityGaps(fresh.env, "run-1", { board: fresh.board });
+    check(
+      "the filer keys the class on the seeded key",
+      fresh.filed[0]?.kind === "created" && fresh.filed[0].dedupKey === seedKey,
+      `${fresh.filed[0]?.dedupKey} vs ${seedKey}`,
+    );
+
+    // A legacy row on a run whose target is the store's admin: the filer
+    // classifies it from the run's target URL alone.
+    const onAdmin = stubWorld([{ ...SHOPIFY_283, gapClass: null, actions: null, label: "Open orders", observed: "The orders page did not load." }], { targetUrl: SA });
+    await fileCapabilityGaps(onAdmin.env, "run-1", { board: onAdmin.board });
+    check("a legacy row on an admin target files on the seeded key", onAdmin.filed[0]?.dedupKey === seedKey, onAdmin.filed[0]?.dedupKey);
+
+    // Report time is where the class is decided (execution.ts → settleStepGap):
+    // on the step's own trail and the run's full target URL, and the trail is
+    // handed over and emptied by that same call. Run here, not pattern-matched
+    // in the caller's source: a caller that drained the trail first satisfied
+    // the old pattern while classifying nothing (review of PR #217).
+    {
+      const live: RecordedAction[] = [nav(`${S}/admin`, signIn)];
+      const step: { unverifiedReason: string; observed: string; gapClass?: GapClass } = { unverifiedReason: "our_capability", observed: "The page did not load." };
+      const handed = settleStepGap({ reported: { label: "Open the app", attempted: "Opened the app", observed: "The page did not load." }, step, machineClass: undefined, actionTrail: live, targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: the step is classified on its own trail", step.gapClass === "shopify_admin", step.gapClass ?? "");
+      check("report time: the trail is handed over and emptied for the next step", handed.length === 1 && live.length === 0, `${handed.length}/${live.length}`);
+
+      const onTarget: typeof step = { unverifiedReason: "our_capability", observed: "The orders page did not load." };
+      settleStepGap({ reported: { label: "Open orders" }, step: onTarget, machineClass: undefined, actionTrail: [], targetOrigin: S, targetUrl: SA });
+      check("report time: the run's full target URL reaches the classifier (a store's /admin)", onTarget.gapClass === "shopify_admin", onTarget.gapClass ?? "");
+
+      const machine: typeof step = { unverifiedReason: "our_capability", observed: "x" };
+      settleStepGap({ reported: {}, step: machine, machineClass: "undriven_control", actionTrail: [nav(`${S}/admin`, signIn)], targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: a class the tools already decided stands", machine.gapClass === "undriven_control", machine.gapClass ?? "");
+
+      const access: typeof step = { unverifiedReason: "missing_access", observed: "x", gapClass: "oauth" };
+      const accessTrail: RecordedAction[] = [nav(`${S}/admin`, signIn)];
+      const accessHanded = settleStepGap({ reported: {}, step: access, machineClass: undefined, actionTrail: accessTrail, targetOrigin: S, targetUrl: `${S}/` });
+      check("report time: a step that is not our gap carries no class, and its trail is still handed over", access.gapClass === undefined && accessHanded.length === 1 && accessTrail.length === 0);
+
+      // The caller makes that one call and drains the trail nowhere else.
+      const execution = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "agent", "execution.ts"), "utf8");
+      check(
+        "execution.ts settles the step through settleStepGap, with run.targetUrl, and never drains the trail itself",
+        /settleStepGap\(\{[^}]*actionTrail,[^}]*targetUrl:\s*run\.targetUrl,/.test(execution) && !/actionTrail\.(splice|length\s*=)/.test(execution) && !/classifyGap\(/.test(execution),
+      );
+    }
+
+    // With the seeded row in place, a Shopify-admin run counts on CHE-333 and
+    // opens nothing — a reported row, and a legacy row without a class that
+    // the filer classifies from its stored trail.
+    const legacy: StoredStep = {
+      ...SHOPIFY_283,
+      gapClass: null,
+      label: "Sign in to the Shopify admin",
+      observed: "Continue with Google was offered; the sign-in could not be completed.",
+      actions: JSON.stringify([nav(`${S}/admin`, "https://accounts.shopify.com/lookup?rid=abc")]),
+    };
+    const seeded = stubWorld([reportedNow(LANDED), legacy], { existing: { [seedKey]: CHE_333.identifier }, targetUrl: S });
+    await fileCapabilityGaps(seeded.env, "run-1", { board: seeded.board });
+    check(
+      "with the seed, every Shopify-admin gap comments on CHE-333 and creates nothing",
+      seeded.filed.length === 1 && seeded.filed[0].kind === "commented" && seeded.filed[0].identifier === CHE_333.identifier,
+      JSON.stringify(seeded.filed),
+    );
+
+    // The seed statement itself, run against the real schema in SQLite. CHE-329
+    // fixture: a NEWER checkmyapp.dev row (another account saved our URL) that
+    // holds someone else's tracker — the seed must pick ours, by our board.
+    const migrations = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "prisma", "migrations");
+    const schemaDb = () => {
+      const d = new DatabaseSync(":memory:");
+      for (const f of readdirSync(migrations).filter((n) => n.endsWith(".sql")).sort()) d.exec(readFileSync(path.join(migrations, f), "utf8"));
+      d.exec(`INSERT INTO User (id, clerkUserId, email, updatedAt) VALUES ('u1','c1','o@x.dev','x'), ('u2','c2','s@x.dev','x');`);
+      return d;
+    };
+    const seedRun = (d: DatabaseSync): { changes: number; error?: string } => {
+      try {
+        return { changes: Number(d.prepare(seedSql()).run().changes) };
+      } catch (err) {
+        return { changes: -1, error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+
+    const empty = schemaDb();
+    const none = seedRun(empty);
+    check("seed: without our app it writes nothing and does not fail", none.changes === 0 && !none.error, JSON.stringify(none));
+    empty.close();
+
+    const db = schemaDb();
+    db.exec(`INSERT INTO App (id, ownerId, targetUrl, appSlug, updatedAt, createdAt) VALUES
+        ('app-ours','u1','https://checkmyapp.dev','checkmyapp.dev','x','2026-07-25T13:06:19.499+00:00'),
+        ('app-newer','u2','https://checkmyapp.dev','checkmyapp.dev','x','2026-09-28T00:00:00.000+00:00');
+      INSERT INTO TrackerIntegration (id, appId, accessTokenEnc, teamId, updatedAt) VALUES
+        ('t1','app-ours','x','b9503451-107e-41b6-a933-5959324a72af','x'),
+        ('t2','app-newer','x','someone-elses-linear-team','x');`);
+    const first = seedRun(db);
+    const afterFirst = db.prepare(readBackSql()).all() as unknown as LinkRow[];
+    const written = db.prepare("SELECT appId, createdAt, lastSeenAt, updatedAt FROM IssueLink").all() as unknown as {
+      appId: string;
+      createdAt: string;
+      lastSeenAt: string;
+      updatedAt: string;
+    }[];
+    const snapshot = JSON.stringify(db.prepare("SELECT * FROM IssueLink").all());
+    const second = seedRun(db);
+    check("seed: the first run writes one row", first.changes === 1, JSON.stringify(first));
+    check("seed: the row is on our app, not the newer row with another team's tracker", written.length === 1 && written[0].appId === "app-ours", JSON.stringify(written));
+    check(
+      "seed: on our app, open, CHE-333, under the pinned key",
+      afterFirst.length === 1 && afterFirst[0].appId === "app-ours" && seedProblem(afterFirst[0]) === null && afterFirst[0].dedupKey === seedKey,
+      JSON.stringify(afterFirst),
+    );
+    const prismaTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00$/;
+    check(
+      "seed: timestamps in the shape Prisma writes on D1",
+      written.length === 1 && [written[0].createdAt, written[0].lastSeenAt, written[0].updatedAt].every((t) => prismaTime.test(t)),
+      JSON.stringify(written[0]),
+    );
+    check("seed: a second run changes nothing", second.changes === 0 && JSON.stringify(db.prepare("SELECT * FROM IssueLink").all()) === snapshot, JSON.stringify(second));
+    db.exec("DELETE FROM IssueLink");
+    db.exec(`INSERT INTO IssueLink (id, appId, dedupKey, externalIssueId, updatedAt) VALUES ('cuid-x','app-ours','${seedKey}','CHE-400','x')`);
+    const taken = seedRun(db);
+    const takenRow = (db.prepare(readBackSql()).all() as unknown as LinkRow[])[0];
+    check("seed: a key held by another ticket is not overwritten", taken.changes === 0 && takenRow?.externalIssueId === "CHE-400", JSON.stringify(takenRow));
+    check("seed: …and the script reports it instead of claiming success", seedProblem(takenRow) !== null);
+    check("seed: a link that is not open is reported", seedProblem({ ...afterFirst[0], status: "suppressed" }) !== null);
+    db.close();
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
