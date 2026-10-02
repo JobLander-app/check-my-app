@@ -206,6 +206,7 @@ async function loader() {
         catalog("pay", "a", "Pay", { walkCount: 2, lastWalkedRunId: "r4", failingSince: at(12), consecutiveBad: 1 }),
         catalog("never", "a", "Invite a teammate"),
         catalog("unfinished", "a", "Export a report", { walkCount: 1, lastWalkedRunId: "r5" }),
+        catalog("listed", "a", "Change the plan", { walkCount: 1, lastWalkedRunId: "r1" }),
         catalog("retired", "a", "Old checkout", { walkCount: 9, retiredAt: at(9) }),
         catalog("b-home", "b", "Open the dashboard", { walkCount: 1 }),
         catalog("e-practice", "e", "Practice", { walkCount: 1 }),
@@ -220,6 +221,9 @@ async function loader() {
         walk("r2_pay", "r2", 1, "pay", "ok"),
         walk("r3_signup", "r3", 0, "signup", "partial", { carriedFromRunId: "r2" }),
         walk("r3_pay", "r3", 1, "pay", "broken"),
+        // #3 listed this one and did not walk it: its walk is still #1's.
+        walk("r1_listed", "r1", 3, "listed", "ok"),
+        walk("r3_listed", "r3", 3, "listed", "skipped"),
         walk("r4_signup", "r4", 0, "signup", "broken"),
         walk("r4_pay", "r4", 1, "pay", "broken"),
         walk("r5_unfinished", "r5", 0, "unfinished", "ok"),
@@ -249,8 +253,9 @@ async function loader() {
     });
 
     const cards = await journeysOfApp(db, "t", "a");
-    eq("real D1: the app's live journeys in the catalog's order — not the retired one, not another app's", cards.map((c) => c.id).join(","), "signup,pay,never,unfinished");
-    const [signup, pay, never, unfinished] = cards;
+    eq("real D1: the app's live journeys in the catalog's order — not the retired one, not another app's", cards.map((c) => c.id).join(","), "signup,pay,never,unfinished,listed");
+    const [signup, pay, never, unfinished, listed] = cards;
+    eq("real D1: a check that listed the journey without walking it (skipped) is not its walk — the last real one is", `${listed.walk?.journeyId} #${listed.walk?.runNumber}`, "r1_listed #1");
     eq("real D1: the walk is the newest one in a finished check — not the carried copy in #3, not the failed #4, not another team's row",
       `${signup.walk?.journeyId} #${signup.walk?.runNumber} ${signup.walk?.status}`, "r2_signup #2 partial");
     eq("real D1: …with that check's own day, link and words", `${signup.walk?.at?.toISOString()} ${signup.walk?.publicId} ${signup.walk?.summary}`, `${at(11).toISOString()} p_r2 Sign-up works up to the confirmation mail.`);
@@ -265,7 +270,7 @@ async function loader() {
     check("real D1: nothing of another team's is in it", !JSON.stringify(cards).includes("Their") && !JSON.stringify(cards).includes("5".repeat(64)));
 
     eq("real D1: another team asking for this app gets its catalog rows with no walks (the page refuses the app before that)",
-      (await journeysOfApp(db, "o", "a")).map((c) => String(c.walk)).join(","), "null,null,null,null");
+      (await journeysOfApp(db, "o", "a")).map((c) => String(c.walk)).join(","), "null,null,null,null,null");
     eq("real D1: the team's other app has its own", (await journeysOfApp(db, "t", "b")).map((c) => `${c.id} #${c.walk?.runNumber}`).join(","), "b-home #7");
     const ext = await journeysOfApp(db, "t", "e");
     eq("real D1: an extension's check with no verdict shows nothing", ext.map((c) => String(c.walk)).join(","), "null");
@@ -287,7 +292,7 @@ async function loader() {
 const lib = read("src/lib/journeys-load.ts");
 check("the loader holds no nested journey → steps select", !/steps:\s*\{/.test(lib) && !/checks:\s*\{/.test(lib));
 check("its raw statement binds the team, and its checks are read as the team's", /r\.teamId = \$\{teamRows\(teamId\)\}/.test(lib) && /\.\.\.teamOwned\(teamId\), id: \{ in: ids \}/.test(lib));
-check("a carried copy is never the walk", /j\.carriedFromRunId IS NULL/.test(lib));
+check("a carried copy is never the walk, nor a row the check skipped", /j\.carriedFromRunId IS NULL AND j\.status <> 'skipped'/.test(lib));
 check("only a finished check, and not an extension's without a verdict", /r\.status IN \('completed', 'partial'\)/.test(lib) && /r\.targetKind <> 'extension' OR \(r\.verdict IS NOT NULL AND r\.verdict <> ''\)/.test(lib));
 check("the loader reads no cost (CLAUDE.md §10)", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(lib));
 

@@ -105,9 +105,9 @@ export default async function JourneysPage({ searchParams }: { searchParams: Pro
             {j.walk ? (
               <>
                 <p className="text-[13px] text-fg-muted">
-                  {lastWalkedLabel(j.walk.at, now)} in{" "}
+                  {lastWalkedLabel(j.walk.at, now)} in check{" "}
                   <Link href={appPath.check(app.id, j.walk.runNumber)} className="font-mono text-accent hover:underline">
-                    check #{j.walk.runNumber}
+                    #{j.walk.runNumber}
                   </Link>
                   {count && <> · {count}</>}
                   {failing && <span className="text-status-broken"> · {failing}</span>}

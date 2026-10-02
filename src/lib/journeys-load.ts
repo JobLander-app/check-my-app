@@ -4,7 +4,10 @@
 // "The walk" is the journey's latest row in a finished check whose report is
 // published, and never a carried copy: a partial check copies a healthy journey
 // forward without walking it (CHE-57), and a strip of screens under that
-// check's number would say we saw them then. It is found from the checks, not
+// check's number would say we saw them then. Nor a row that ended "skipped":
+// that check listed the journey and did not walk it, which is what the catalog
+// means by a walk too (src/agent/journey-catalog.ts — `walked` is "not
+// skipped", and only then does walkCount move). It is found from the checks, not
 // from AppJourney.lastWalkedRunId: on prod four live journeys name a check that
 // failed or was canceled (#207, #301) — a check that publishes nothing (rule 4)
 // — while an earlier check holds a walk that can be shown.
@@ -77,7 +80,7 @@ export async function journeysOfApp(db: PrismaClient, teamId: string, appId: str
           JOIN "Run" r ON r.id = j.runId
           JOIN "AppJourney" aj ON aj.id = j.appJourneyId
           WHERE r.teamId = ${teamRows(teamId)} AND r.appId = ${appId} AND aj.appId = ${appId} AND aj.retiredAt IS NULL
-            AND j.carriedFromRunId IS NULL
+            AND j.carriedFromRunId IS NULL AND j.status <> 'skipped'
             AND r.status IN ('completed', 'partial')
             AND (r.targetKind <> 'extension' OR (r.verdict IS NOT NULL AND r.verdict <> ''))
         ) WHERE nth = 1`,
