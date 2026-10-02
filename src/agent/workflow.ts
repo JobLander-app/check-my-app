@@ -205,6 +205,28 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
       });
     };
+    // The host is one browser, held by one run for as long as that run needs
+    // it. Before every phase that opens it, the run takes its turn: asleep
+    // while another run holds the host, not retrying (session-browser.ts). A
+    // host held past the limit fails the run with an internal reason (rule 4).
+    // What the feed says while it waits is that it waits — nothing about whose
+    // turn it is on our host, which is not the customer's product (rule 1);
+    // saying nothing at all would read as a check that hung.
+    const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
+      if (!isSession) return;
+      await waitForSession(
+        {
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          waiting: (name) =>
+            step.do(name, async () => {
+              console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
+              await appendEvent(env, runId, feed.phase, { icon: "info", text: feed.text });
+            }),
+          sleep: (name, seconds) => step.sleep(name, seconds * 1000),
+        },
+        phase,
+      );
+    };
 
     // Everything below is inside the failure handler: a run left in a
     // non-terminal status is worse than a failed one — the scheduler treats it
@@ -517,23 +539,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await transition(env, runId, "connecting", { icon: "info", text: "Spinning up agent" });
       });
 
-      // CHE-389: the session host is one browser, held by one run for the
-      // whole of that run. A run that finds it held waits its turn here —
-      // asleep, not retrying — and starts once the lease is its own. A host
-      // held past the limit fails the run with an internal reason (rule 4).
-      // The wait is ours to know about, not the customer's: whose turn it is
-      // on our host says nothing about their product (rule 1), so it goes to
-      // our log and never to the run's feed, which is public.
-      if (isSession) {
-        await waitForSession({
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
-          waiting: (name) =>
-            step.do(name, async () => {
-              console.log(`[session] run ${runId} waits for the host: another check holds it`);
-            }),
-          sleep: (name, seconds) => step.sleep(name, seconds * 1000),
-        });
-      }
+      // CHE-389: a session run takes its turn on the host before it starts.
+      await sessionTurn("scan", { phase: "connecting", text: "Waiting to start" });
 
       // Phase 2 — Surface scan (deterministic).
       const scan = await step.do("surface_scan", extensionStepConfig(isExtension), async () => {
@@ -630,6 +637,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           });
         });
       }
+      if (!plan.taken) await sessionTurn("discovery", { phase: "discovery", text: "Waiting to continue" });
       const discovery = plan.taken ? null : await step.do("discovery", extensionStepConfig(isExtension), async () => {
         // CHE-133: a watched app was mapped on its last full check; hand that
         // map to discovery so it confirms rather than redraws. Same swallow
@@ -792,6 +800,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // it 0 and publishes nothing. Read only from step outputs, so a
         // replayed workflow trips at the same journey.
         assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
+        await sessionTurn(`walk-${order}`, { phase: "walking", text: "Waiting to continue" });
         const jcost = await step.do(`walk-${order}`, extensionStepConfig(isExtension), async () => {
           const browser = await launchAgentBrowser(env, { run, phase: `walk-${order}`, expected: scan.extensionIdentity ?? undefined, scenario: proposed.extensionScenario }).catch(rethrowBudgetNonRetryable);
           try {
@@ -860,6 +869,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         });
         walkCost += jcost;
       }
+      // CHE-389: the last phase that opens the browser is behind us — the host
+      // goes back now, not after the verdict is written, so the next run does
+      // not wait through minutes of work that needs no browser. The releases
+      // at each way out below stay: giving back what is not held is a no-op.
+      await releaseSessionHost("release-session-walked");
       assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
 
       // CHE-331: the app's other known journeys, as of their last real walk.

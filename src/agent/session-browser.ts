@@ -72,8 +72,10 @@ const sessions = new WeakMap<Browser, SessionBrowser>();
 export const sessionBrowserFor = (browser: Browser) => sessions.get(browser);
 // Is this page a tab inside a person's signed-in session? Asked of the page
 // itself — the browser it belongs to — so no caller has to remember to say so.
+// A page that cannot say which browser it belongs to (the hand-made pages our
+// own guards drive the tools with) is not one.
 export function inSignedInSession(page: Page): boolean {
-  const browser = page.context().browser();
+  const browser = typeof page.context === "function" ? page.context()?.browser?.() : null;
   return Boolean(browser && sessions.has(browser));
 }
 
@@ -156,14 +158,22 @@ export interface SessionSteps {
 }
 
 // → how long the run waited. Throws SessionBusyError once the limit is spent.
-export async function waitForSession(steps: SessionSteps, limitSeconds = SESSION_WAIT_LIMIT_SECONDS): Promise<number> {
+//
+// Called before EVERY phase that opens the browser, under that phase's name,
+// not only before the first: a run whose lease lapsed between two phases (a
+// long gap, a restarted instance) may find the host taken, and it waits its
+// turn again here — where it can sleep — instead of failing inside the phase.
+// While the lease is its own, the ask is a renewal and costs one step.
+// (The host itself never lets two runs work at once: a lease that lapses under
+// a live connection ends that connection — session-server.mjs's sweep.)
+export async function waitForSession(steps: SessionSteps, phase: string, limitSeconds = SESSION_WAIT_LIMIT_SECONDS): Promise<number> {
   let waited = 0;
   for (let attempt = 1; ; attempt++) {
-    const turn = await steps.ask(`session-turn-${attempt}`);
+    const turn = await steps.ask(`session-turn-${phase}-${attempt}`);
     if (turn.taken) return waited;
     if (waited >= limitSeconds) throw new SessionBusyError(null);
-    if (attempt === 1) await steps.waiting("session-waiting");
-    await steps.sleep(`session-wait-${attempt}`, turn.waitSeconds);
+    if (attempt === 1) await steps.waiting(`session-waiting-${phase}`);
+    await steps.sleep(`session-wait-${phase}-${attempt}`, turn.waitSeconds);
     waited += turn.waitSeconds;
   }
 }

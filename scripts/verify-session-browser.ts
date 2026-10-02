@@ -339,7 +339,7 @@ async function main() {
 
     const free = stepsFor(RUN_A);
     check("a free host: the run takes it at the first ask and waits for nothing",
-      (await waitForSession(free.steps)) === 0 && free.log.join(" ") === "session-turn-1:taken" && (await state()).lease?.ownerRunId === RUN_A,
+      (await waitForSession(free.steps, "scan")) === 0 && free.log.join(" ") === "session-turn-scan-1:taken" && (await state()).lease?.ownerRunId === RUN_A,
       free.log.join(" "));
 
     const turn = await askForSession(host, RUN_B, fetchImpl);
@@ -351,13 +351,18 @@ async function main() {
     const queued = stepsFor(RUN_B, async (nth) => {
       if (nth === 2) await releaseSession(host, RUN_A, fetchImpl);
     });
-    const waited = await waitForSession(queued.steps);
+    const waited = await waitForSession(queued.steps, "scan");
     check("a held host: the second run asks, sleeps, asks again — and starts once the first has finished",
-      queued.log.join(" ") === "session-turn-1:held session-waiting session-wait-1 session-turn-2:held session-wait-2 session-turn-3:taken" &&
+      queued.log.join(" ") === "session-turn-scan-1:held session-waiting-scan session-wait-scan-1 session-turn-scan-2:held session-wait-scan-2 session-turn-scan-3:taken" &&
         (await state()).lease?.ownerRunId === RUN_B,
       queued.log.join(" "));
     check("…it says so once, and every step has a name of its own",
-      queued.log.filter((name) => name === "session-waiting").length === 1 && new Set(queued.log.map((entry) => entry.split(":")[0])).size === queued.log.length);
+      queued.log.filter((name) => name === "session-waiting-scan").length === 1 && new Set(queued.log.map((entry) => entry.split(":")[0])).size === queued.log.length);
+    // The same run before its next phase: the lease is its own, so the ask is
+    // a renewal — one step, under that phase's name, no wait.
+    const next = stepsFor(RUN_B);
+    check("the holder before its next phase: one ask under that phase's name, no wait",
+      (await waitForSession(next.steps, "walk-3")) === 0 && next.log.join(" ") === "session-turn-walk-3-1:taken", next.log.join(" "));
     check("…and what it reports having waited is what it slept",
       waited === queued.slept.reduce((sum, seconds) => sum + seconds, 0) && queued.slept.every((s) => s >= SESSION_WAIT_MIN_SECONDS && s <= SESSION_WAIT_MAX_SECONDS),
       `${waited}s in ${JSON.stringify(queued.slept)}`);
@@ -366,7 +371,7 @@ async function main() {
     const stuck = stepsFor(RUN_A);
     let gaveUp: unknown = null;
     try {
-      await waitForSession(stuck.steps, 400);
+      await waitForSession(stuck.steps, "discovery", 400);
     } catch (error) {
       gaveUp = error;
     }
@@ -375,11 +380,15 @@ async function main() {
       gaveUp instanceof SessionBusyError && gaveUp.message.startsWith("internal:") && sleptStuck >= 400 && sleptStuck - stuck.slept[stuck.slept.length - 1] < 400,
       `${String(gaveUp)} after ${sleptStuck}s`);
     check("…and the holder still holds", (await state()).lease?.ownerRunId === RUN_B);
+    // The run that gave up goes through its failure path, which gives the host
+    // back — a host it never held. That must not take it from the holder.
+    check("a run that does not hold the host cannot give it back for the one that does",
+      (await releaseSession(host, RUN_A, fetchImpl)) === false && (await state()).lease?.ownerRunId === RUN_B);
     await releaseSession(host, RUN_B, fetchImpl);
 
     let notBusy = "";
     try {
-      await waitForSession({ ...stepsFor(RUN_A).steps, ask: () => askForSession({ ...host, token: "w".repeat(40) }, RUN_A, fetchImpl) });
+      await waitForSession({ ...stepsFor(RUN_A).steps, ask: () => askForSession({ ...host, token: "w".repeat(40) }, RUN_A, fetchImpl) }, "scan");
     } catch (error) {
       notBusy = error instanceof SessionBusyError ? "SessionBusyError" : (error as Error).message;
     }
@@ -398,18 +407,38 @@ async function main() {
     // The run waits BEFORE its first phase: a wait inside a phase would be a
     // step failing and being retried — the very thing this replaces.
     const workflow = await readFile(join(process.cwd(), "src/agent/workflow.ts"), "utf8");
-    const waitAt = workflow.indexOf("await waitForSession(");
-    const scanAt = workflow.indexOf('step.do("surface_scan"');
-    check("the workflow: a session run waits for the host before its first phase, in steps that sleep",
-      waitAt > 0 && scanAt > waitAt && /if \(isSession\) \{\s*await waitForSession\(/.test(workflow) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(workflow),
-      `wait at ${waitAt}, scan at ${scanAt}`);
-    // Whose turn it is on our host is not about the customer's product (rule
-    // 1): nothing between the wait and the first phase writes to the run's
-    // feed, which the live page and get_check_status show to anyone.
-    const waitBlock = workflow.slice(waitAt, scanAt);
-    check("the workflow: the wait says nothing in the run's public feed",
-      waitAt > 0 && scanAt > waitAt && !/appendEvent|transition\(|setLive/.test(waitBlock) && /console\.log\(/.test(waitBlock),
-      waitBlock.match(/appendEvent|transition\(|setLive/)?.[0] ?? "");
+    const helperAt = workflow.indexOf("const sessionTurn = async");
+    const helper = workflow.slice(helperAt, workflow.indexOf("// Everything below is inside the failure handler", helperAt));
+    check("the workflow: a session run takes its turn in steps that sleep — and only a session run",
+      helperAt > 0 && /if \(!isSession\) return;\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
+      helper.slice(0, 80));
+    // Before every phase that opens the browser, under that phase's name: a
+    // wait inside a phase would be a step failing and being retried.
+    const before = (turn: string, phaseStep: string) => {
+      const turnAt = workflow.indexOf(turn);
+      const phaseAt = workflow.indexOf(phaseStep);
+      return turnAt > 0 && phaseAt > turnAt && phaseAt - turnAt < 400;
+    };
+    check("the workflow: the turn is taken before the scan, before discovery and before every walk",
+      before('await sessionTurn("scan"', 'step.do("surface_scan"') &&
+        before('await sessionTurn("discovery"', 'step.do("discovery"') &&
+        before("await sessionTurn(`walk-${order}`", "step.do(`walk-${order}`") &&
+        (workflow.match(/launchAgentBrowser\(env, \{ run, phase:/g) ?? []).length === 3,
+      `${(workflow.match(/launchAgentBrowser\(env, \{ run, phase:/g) ?? []).length} phases open the run's browser`);
+    // What a person watching reads while the run waits: that it waits. Whose
+    // turn it is on our host is not about their product (rule 1) — the feed is
+    // public (the live page, get_check_status) — and nothing at all would read
+    // as a check that hung.
+    const said = [...workflow.matchAll(/sessionTurn\([^)]*?text: "([^"]+)"/g)].map((m) => m[1]);
+    check("the workflow: the feed says the run waits, and nothing about who it waits for",
+      (helper.match(/appendEvent\(/g) ?? []).length === 1 && /appendEvent\(env, runId, feed\.phase, \{ icon: "info", text: feed\.text \}\)/.test(helper) &&
+        said.length === 3 && said.every((text) => text === "Waiting to start" || text === "Waiting to continue") && said[0] === "Waiting to start",
+      said.join(" | "));
+    // The host goes back when the last walk is done, not after the verdict.
+    const walkedAt = workflow.indexOf('releaseSessionHost("release-session-walked")');
+    check("the workflow: the host is given back after the last walk, before the verdict is written",
+      walkedAt > workflow.indexOf("step.do(`walk-${order}`") && walkedAt < workflow.indexOf('step.do("anatomy"') && walkedAt < workflow.indexOf('"Writing your verdict"'),
+      `released at ${walkedAt}`);
 
     // ── the host is not there ──
     let down = "";
