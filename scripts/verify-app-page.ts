@@ -87,7 +87,7 @@ eq("cost: nothing in the window", costSplit({ count: 0, usd: 0 }, { count: 0, us
 // ── 3. The page ─────────────────────────────────────────────────────────────
 const page = read("src/app/(app)/health/apps/[appId]/page.tsx");
 check("the app and its checks are read for the team", /db\.app\.findFirst\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(page) &&
-  /db\.run\.findMany\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\), appId: app\.id/.test(page));
+  /db\.run\.findMany\(\{(?:\s*\/\/[^\n]*)*\s*where: \{ \.\.\.teamOwned\(team\.id\), appId: app\.id/.test(page));
 check("the status line is the strip's own story, not a model's sentence", /stripStory\(\(mine\?\.verdicts \?\? \[\]\)\.map/.test(page));
 check("'Keeps coming back' lists recurring problems only", /filter\(\(i\) => i\.state === "recurring"\)/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
