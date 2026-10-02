@@ -265,6 +265,16 @@ const UNGUARDED_ACTIONS: Record<string, string> = {};
 //                    caller's own browser, then a redirect to the provider;
 //   { writes, needs } — it can write, and only after something our checker
 //                    cannot produce. `needs` says what.
+//
+// What none of the three is a claim about (Codex on #262, round 3): being
+// signed in. requireUser() and getOptionalUser() keep the signed-in person's
+// own mirror row current on every signed-in request — a page, a handler, an
+// action alike — and give an account its personal team the first time it is
+// seen (src/lib/auth.ts, src/lib/users.ts). That is what signing in does, for
+// the account that signed in, and the self-check signs in as an ordinary
+// account by design (CLAUDE.md §6); no header could refuse it without refusing
+// the sign-in. It is pinned below instead: the mirror writes the email and the
+// name of the row keyed by the signed-in identity, and nothing else.
 type GetKind = "reads" | "browser-only" | { writes: string; needs: string };
 const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/.well-known/posthog-client.json/route.ts": "reads",
@@ -293,6 +303,7 @@ const GET_HANDLERS: Record<string, GetKind> = {
   },
 };
 const WRITE_CALL = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/;
+const WRITE_CALL_ALL = new RegExp(WRITE_CALL.source, "g");
 
 const ROUTE_GUARD = /^if \(isSelfCheckRequest\((_?req)\.headers\)\) return selfCheckReadOnlyResponse\(\)$/;
 const ACTION_GUARD = /^(await refuseSelfCheck\(|if \(isSelfCheckRequest\(await headers\(\)\)\) redirect\()/;
@@ -389,6 +400,16 @@ function inventory() {
         const writeAt = src.search(/\.upsert\(/);
         return nonceAt > 0 && exchangeAt > nonceAt && writeAt > exchangeAt;
       }));
+
+  // What signing in keeps current, and only that: one upsert, keyed by the
+  // signed-in identity, writing the email and the name.
+  const users = readFileSync(path.join(repoRoot, "src/lib/users.ts"), "utf8");
+  const mirrorAt = users.indexOf("export async function upsertUserFromClerk(");
+  const mirror = mirrorAt < 0 ? "" : users.slice(mirrorAt, users.indexOf("\n}\n", mirrorAt)).replace(/\s+/g, " ");
+  check("src/lib/users.ts upsertUserFromClerk: the one write signing in makes on every request touches the signed-in identity's own row — its email and name — and nothing else",
+    /return db\.user\.upsert\(\{ where: \{ clerkUserId: u\.clerkUserId \}, create: \{ clerkUserId: u\.clerkUserId, email: u\.email, name: u\.name \?\? undefined, \}, update: \{ email: u\.email, name: u\.name \?\? undefined, \}, \}\);?\s*$/.test(mirror) &&
+      (mirror.match(WRITE_CALL_ALL) ?? []).length === 1,
+    mirror.slice(0, 200));
 
   // The shared helper: reads the request, redirects with the flag, and is not
   // itself an action.
