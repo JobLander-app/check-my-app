@@ -4,16 +4,16 @@
 
 import { dayLabel } from "./today";
 
-// The card's order: what needs the owner first. A journey that is failing, then
-// by how its last walk ended, then the ones never walked; the catalog's own
-// order (oldest first) inside each.
+// The card's order: what needs the owner first — by how the last walk ended,
+// worst first, then the ones never walked; the catalog's own order (oldest
+// first) inside each.
 const BY_TROUBLE = ["broken", "exposed", "risky", "confusing", "partial", "ok", "skipped"];
 
-export function sortJourneys<T extends { failingSince: Date | null; walk: { status: string } | null }>(journeys: T[]): T[] {
+export function sortJourneys<T extends { walk: { status: string } | null }>(journeys: T[]): T[] {
   const rank = (j: T) => {
     if (!j.walk) return BY_TROUBLE.length + 1;
     const at = BY_TROUBLE.indexOf(j.walk.status);
-    return (j.failingSince ? -BY_TROUBLE.length : 0) + (at === -1 ? BY_TROUBLE.length : at);
+    return at === -1 ? BY_TROUBLE.length : at;
   };
   return journeys.map((j, i) => ({ j, i })).sort((a, b) => rank(a.j) - rank(b.j) || a.i - b.i).map((x) => x.j);
 }
@@ -36,27 +36,30 @@ export function lastWalkedLabel(at: Date | null, now: Date): string {
   return `Last walked ${day === "Today" || day === "Yesterday" ? day.toLowerCase() : day}`;
 }
 
-/** "walked 5 times" — the catalog's own count, every check that went through the journey. */
+/** "walked 5 times" — the walks in published checks, the shown one included. */
 export function walkCountLabel(walkCount: number): string {
   return walkCount > 0 ? `walked ${times(walkCount)}` : "";
 }
 
 /**
- * A journey with no walk to show: never walked, or walked only by checks that
- * did not finish — which publish nothing (CLAUDE.md §4), their screens included.
- * No promise about when it will be walked: which journeys a check walks is the
- * rotation's call (CHE-232), not this page's.
+ * A journey with no walk in a published check. A check that did not finish
+ * publishes nothing (CLAUDE.md §4), so a journey only such checks went through
+ * is, on this page, not walked. No promise about when it will be: which
+ * journeys a check walks is the rotation's call (CHE-232), not this page's.
  */
-export function noWalkLine(walkCount: number): string {
-  return walkCount > 0 ? `Walked ${times(walkCount)}, but not yet in a check that finished.` : "Not walked yet.";
-}
+export const NOT_WALKED = "Not walked yet.";
 
-/** "Failing since 28 September — 3 walks in a row." */
-export function failingLine(since: Date | null, inARow: number, now: Date): string | null {
-  if (!since) return null;
-  const day = dayLabel(since, now);
-  const when = day === "Today" || day === "Yesterday" ? day.toLowerCase() : day;
-  return inARow > 1 ? `Failing since ${when} — ${inARow} walks in a row.` : `Failing since ${when}.`;
+/**
+ * "In trouble since 28 September — 3 walks in a row." The last `inARow` walks
+ * ended neither "works" nor "works, partly verified"; `since` is the day of the
+ * first of them. Null when the last walk was healthy. The pill beside it says
+ * how the last one ended, so this names no status of its own.
+ */
+export function failingLine(inARow: number, since: Date | null, now: Date): string | null {
+  if (inARow <= 0) return null;
+  const day = since ? dayLabel(since, now) : null;
+  const when = day === null ? "" : ` since ${day === "Today" || day === "Yesterday" ? day.toLowerCase() : day}`;
+  return inARow > 1 ? `In trouble${when} — ${inARow} walks in a row.` : `In trouble${when}.`;
 }
 
 /** "Step 2 of 5: Enter email and password" — a frame's accessible name. */

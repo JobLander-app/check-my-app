@@ -7,7 +7,7 @@ import { appPath } from "@/lib/app-shell";
 import { shellData } from "@/lib/shell-data";
 import { journeysOfApp } from "@/lib/journeys-load";
 import { numbersForJourneys } from "@/lib/journey-numbers-load";
-import { failingLine, journeysHref, journeysLine, lastWalkedLabel, noWalkLine, sortJourneys, walkCountLabel } from "@/lib/journeys-page";
+import { failingLine, journeysHref, journeysLine, lastWalkedLabel, NOT_WALKED, sortJourneys, walkCountLabel } from "@/lib/journeys-page";
 import { Filmstrip } from "@/components/filmstrip";
 import { JourneyNumbersBlock } from "@/components/journey-numbers-block";
 
@@ -78,7 +78,7 @@ export default async function JourneysPage({ searchParams }: { searchParams: Pro
 
       {journeys.map((j) => {
         const meta = j.walk ? STEP_STATUS_META[j.walk.status] ?? STEP_STATUS_META.skipped : null;
-        const failing = failingLine(j.failingSince, j.consecutiveBad, now);
+        const failing = failingLine(j.failingWalks, j.failingSince, now);
         const count = walkCountLabel(j.walkCount);
         const journeyNumbers = j.walk ? numbers[j.walk.journeyId] : undefined;
         return (
@@ -117,7 +117,7 @@ export default async function JourneysPage({ searchParams }: { searchParams: Pro
                 {journeyNumbers && <JourneyNumbersBlock {...journeyNumbers} title={j.title} />}
               </>
             ) : (
-              <p className="text-[13px] text-fg-muted">{noWalkLine(j.walkCount)}</p>
+              <p className="text-[13px] text-fg-muted">{NOT_WALKED}</p>
             )}
           </article>
         );

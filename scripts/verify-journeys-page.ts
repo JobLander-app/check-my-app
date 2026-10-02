@@ -14,9 +14,11 @@ import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { Prisma } from "../src/generated/prisma/client";
 import { fileURLToPath } from "node:url";
-import { failingLine, frameLabel, journeysHref, journeysLine, lastWalkedLabel, noWalkLine, sortJourneys, walkCountLabel } from "../src/lib/journeys-page";
+import { failingLine, frameLabel, journeysHref, journeysLine, lastWalkedLabel, NOT_WALKED, sortJourneys, walkCountLabel } from "../src/lib/journeys-page";
 import { journeysOfApp } from "../src/lib/journeys-load";
+import { numbersForJourneys } from "../src/lib/journey-numbers-load";
 import { extensionReportPublished } from "../src/lib/extension-target";
 import { evidenceUrl, screenshotKeyOfThumb, thumbKeyOf, thumbUrl, THUMB_WIDTH } from "../src/lib/storage";
 import { thumbnail, type ThumbResizer, type ThumbStore } from "../src/lib/thumbnail";
@@ -49,10 +51,10 @@ const sentences = [
   lastWalkedLabel(day(28, 8), now),
   walkCountLabel(1),
   walkCountLabel(5),
-  noWalkLine(0),
-  noWalkLine(2),
-  failingLine(day(28, 8), 3, now)!,
-  failingLine(day(1), 1, now)!,
+  NOT_WALKED,
+  failingLine(3, null, now)!,
+  failingLine(3, day(28, 8), now)!,
+  failingLine(1, day(1), now)!,
   frameLabel(1, 5, "Enter email and password"),
 ];
 eq("header: no journeys", sentences[0], "No journeys of checkmyapp.dev yet. They appear after its first full check.");
@@ -68,20 +70,20 @@ eq("last walked: a check with no finish time still reads", lastWalkedLabel(null,
 eq("count: once", sentences[9], "walked once");
 eq("count: many", sentences[10], "walked 5 times");
 eq("count: none says nothing", walkCountLabel(0), "");
-eq("no walk: never", sentences[11], "Not walked yet.");
-eq("no walk: only in checks that did not finish", sentences[12], "Walked twice, but not yet in a check that finished.");
-eq("failing: since a date, in a row", sentences[13], "Failing since 28 September — 3 walks in a row.");
-eq("failing: one walk", sentences[14], "Failing since yesterday.");
-eq("failing: not failing says nothing", failingLine(null, 0, now), null);
+eq("no walk in a published check", sentences[11], "Not walked yet.");
+eq("in trouble: a check with no finish time still reads", sentences[12], "In trouble — 3 walks in a row.");
+eq("in trouble: since a date, in a row", sentences[13], "In trouble since 28 September — 3 walks in a row.");
+eq("in trouble: one walk", sentences[14], "In trouble since yesterday.");
+eq("in trouble: a healthy last walk says nothing", failingLine(0, day(1), now), null);
 eq("frame: its accessible name", sentences[15], "Step 2 of 5: Enter email and password");
 eq("address: one app", journeysHref("app 1"), "/product/journeys?app=app%201");
 check("no sentence of the page names how we check (CLAUDE.md §1)", sentences.every((s) => !hasLeak(s)), sentences.filter((s) => hasLeak(s)).join(" | "));
 check("no sentence promises when a journey will be walked", sentences.every((s) => !/next (full )?check/i.test(s)));
 
-const j = (id: string, status: string | null, failing = false) => ({ id, failingSince: failing ? day(1) : null, walk: status ? { status } : null });
-eq("order: failing first, then by how the last walk ended, never-walked last, the catalog's order inside each",
-  sortJourneys([j("ok1", "ok"), j("never", null), j("partial", "partial"), j("broken", "broken"), j("failing-risky", "risky", true), j("ok2", "ok"), j("confusing", "confusing")]).map((x) => x.id).join(","),
-  "failing-risky,broken,confusing,partial,ok1,ok2,never");
+const j = (id: string, status: string | null) => ({ id, walk: status ? { status } : null });
+eq("order: by how the last walk ended, worst first, never-walked last, the catalog's order inside each",
+  sortJourneys([j("ok1", "ok"), j("never", null), j("partial", "partial"), j("risky", "risky"), j("broken", "broken"), j("ok2", "ok"), j("confusing", "confusing")]).map((x) => x.id).join(","),
+  "broken,risky,confusing,partial,ok1,ok2,never");
 
 // ── 2. The small copy ───────────────────────────────────────────────────────
 const HASH = "a".repeat(64);
@@ -202,11 +204,15 @@ async function loader() {
     const catalog = (id: string, appId: string, title: string, over: object = {}) => ({ id, appId, key: id, title, walkCount: 0, ...over });
     await db.appJourney.createMany({
       data: [
-        catalog("signup", "a", "Sign up", { walkCount: 3, lastWalkedRunId: "r4" }),
-        catalog("pay", "a", "Pay", { walkCount: 2, lastWalkedRunId: "r4", failingSince: at(12), consecutiveBad: 1 }),
+        // The catalog as the failed #4 left it: it walked "signup" and "pay",
+        // found both broken, renamed one, moved the counters — and published
+        // nothing. None of that may reach a card (Codex P1 on #256).
+        catalog("signup", "a", "Sign up (as the failed check called it)", { walkCount: 3, lastWalkedRunId: "r4", failingSince: at(13), consecutiveBad: 1 }),
+        catalog("pay", "a", "Pay", { walkCount: 3, lastWalkedRunId: "r4", failingSince: at(12), consecutiveBad: 2 }),
         catalog("never", "a", "Invite a teammate"),
         catalog("unfinished", "a", "Export a report", { walkCount: 1, lastWalkedRunId: "r5" }),
         catalog("listed", "a", "Change the plan", { walkCount: 1, lastWalkedRunId: "r1" }),
+        catalog("streak", "a", "Reset the password", { walkCount: 3, lastWalkedRunId: "r3" }),
         catalog("retired", "a", "Old checkout", { walkCount: 9, retiredAt: at(9) }),
         catalog("b-home", "b", "Open the dashboard", { walkCount: 1 }),
         catalog("e-practice", "e", "Practice", { walkCount: 1 }),
@@ -217,7 +223,11 @@ async function loader() {
     await db.journey.createMany({
       data: [
         walk("r1_signup", "r1", 0, "signup", "ok"),
-        walk("r2_signup", "r2", 0, "signup", "partial", { summary: "Sign-up works up to the confirmation mail." }),
+        walk("r2_signup", "r2", 0, "signup", "partial", { title: "Sign up", summary: "Sign-up works up to the confirmation mail." }),
+        // Healthy, then two unhealthy walks in a row.
+        walk("r1_streak", "r1", 4, "streak", "ok"),
+        walk("r2_streak", "r2", 4, "streak", "risky"),
+        walk("r3_streak", "r3", 4, "streak", "broken"),
         walk("r2_pay", "r2", 1, "pay", "ok"),
         walk("r3_signup", "r3", 0, "signup", "partial", { carriedFromRunId: "r2" }),
         walk("r3_pay", "r3", 1, "pay", "broken"),
@@ -253,8 +263,12 @@ async function loader() {
     });
 
     const cards = await journeysOfApp(db, "t", "a");
-    eq("real D1: the app's live journeys in the catalog's order — not the retired one, not another app's", cards.map((c) => c.id).join(","), "signup,pay,never,unfinished,listed");
-    const [signup, pay, never, unfinished, listed] = cards;
+    eq("real D1: the app's live journeys in the catalog's order — not the retired one, not another app's", cards.map((c) => c.id).join(","), "signup,pay,never,unfinished,listed,streak");
+    const [signup, pay, never, unfinished, listed, streak] = cards;
+    eq("real D1: a check that failed after walking the journey moves nothing on its card — not the title, the count or the trouble mark",
+      `${signup.title} | ${signup.walkCount} | ${signup.failingWalks} | ${signup.failingSince}`, "Sign up | 2 | 0 | null");
+    eq("real D1: in trouble = the unhealthy walks that end the published history, since the day of the first of them",
+      `${streak.walkCount} ${streak.failingWalks} ${streak.failingSince?.toISOString()}`, `3 2 ${at(11).toISOString()}`);
     eq("real D1: a check that listed the journey without walking it (skipped) is not its walk — the last real one is", `${listed.walk?.journeyId} #${listed.walk?.runNumber}`, "r1_listed #1");
     eq("real D1: the walk is the newest one in a finished check — not the carried copy in #3, not the failed #4, not another team's row",
       `${signup.walk?.journeyId} #${signup.walk?.runNumber} ${signup.walk?.status}`, "r2_signup #2 partial");
@@ -264,25 +278,46 @@ async function loader() {
     eq("real D1: a step with no picture has none", signup.walk?.frames[2].shot, null);
     eq("real D1: another journey of the same check is its own walk", `${pay.walk?.journeyId} #${pay.walk?.runNumber} ${pay.walk?.status}`, "r3_pay #3 broken");
     eq("real D1: an address that is not a content-addressed screenshot is not shown as a picture", pay.walk?.frames[1].shot, null);
-    eq("real D1: the catalog's own count and failing mark come with it", `${pay.walkCount} ${pay.consecutiveBad} ${pay.failingSince?.toISOString()}`, `2 1 ${at(12).toISOString()}`);
+    eq("real D1: its count and trouble mark are the published walks' — #2 and #3, not the failed #4", `${pay.walkCount} ${pay.failingWalks} ${pay.failingSince?.toISOString()}`, `2 1 ${at(12).toISOString()}`);
     eq("real D1: a journey never walked has no walk", `${never.walk} ${never.walkCount}`, "null 0");
-    eq("real D1: a journey walked only by a check that did not finish has no walk either (rule 4)", `${unfinished.walk} ${unfinished.walkCount}`, "null 1");
+    eq("real D1: a journey walked only by a check that did not finish is not walked (rule 4)", `${unfinished.walk} ${unfinished.walkCount} ${unfinished.title}`, "null 0 Export a report");
     check("real D1: nothing of another team's is in it", !JSON.stringify(cards).includes("Their") && !JSON.stringify(cards).includes("5".repeat(64)));
 
     eq("real D1: another team asking for this app gets its catalog rows with no walks (the page refuses the app before that)",
-      (await journeysOfApp(db, "o", "a")).map((c) => String(c.walk)).join(","), "null,null,null,null,null");
+      (await journeysOfApp(db, "o", "a")).map((c) => String(c.walk)).join(","), "null,null,null,null,null,null");
     eq("real D1: the team's other app has its own", (await journeysOfApp(db, "t", "b")).map((c) => `${c.id} #${c.walk?.runNumber}`).join(","), "b-home #7");
     const ext = await journeysOfApp(db, "t", "e");
     eq("real D1: an extension's check with no verdict shows nothing", ext.map((c) => String(c.walk)).join(","), "null");
     eq("…which is what extensionReportPublished says of that check", extensionReportPublished({ targetKind: "extension", status: "completed", verdict: null }), false);
     eq("real D1: an app with no journeys", (await journeysOfApp(db, "t", "nope")).length, 0);
 
-    // At real size: more walks than D1 binds in one statement.
+    // At real size: more journeys than D1 binds values in one statement.
     await db.appJourney.createMany({ data: Array.from({ length: 130 }, (_, i) => catalog(`many${i}`, "b", `Journey ${i}`, { walkCount: 1 })) });
     await db.journey.createMany({ data: Array.from({ length: 130 }, (_, i) => walk(`b1_many${i}`, "b1", i + 1, `many${i}`, "ok")) });
     await db.step.createMany({ data: Array.from({ length: 130 }, (_, i) => step(`b1_many${i}`, 0, `Open ${i}`, "ok", shot("7"))) });
     const many = await journeysOfApp(db, "t", "b");
-    eq("real D1: 131 journeys, each with its walk and its frame (portions under the 100-value cap)", `${many.length} ${many.filter((c) => c.walk?.frames.length === 1).length}`, "131 131");
+    eq("real D1: 131 journeys, each with its walk and its frame", `${many.length} ${many.filter((c) => c.walk?.frames.length === 1).length}`, "131 131");
+    // …and the numbers block's loader, asked about all of them as the page asks (Codex P2 on #256).
+    const numbers = await numbersForJourneys(db, many.map((c) => ({ id: c.walk!.journeyId, appJourneyId: c.id, status: c.walk!.status })));
+    eq("real D1: the two numbers are read for all 131", Object.keys(numbers).length, 131);
+    // Why neither loader cuts its lists itself: the cap is on a statement's
+    // bound values, this database enforces it, and Prisma splits a model
+    // query's `in` list under it — merging the parts itself, so every column
+    // the query orders by has to be selected (one that is not aborts the query
+    // engine with "unreachable"; seen here before `order` was selected, which
+    // is why this cannot be a case of its own: it takes the process down). A
+    // raw statement is not split — which is why the one raw statement above
+    // binds two values, whatever the app's size.
+    const ids = many.map((c) => c.walk!.journeyId);
+    let rawRefused = "";
+    try {
+      await db.$queryRaw(Prisma.sql`SELECT id FROM "Step" WHERE journeyId IN (${Prisma.join(ids)})`);
+    } catch (err) {
+      rawRefused = err instanceof Error ? err.message : String(err);
+    }
+    check("real D1: a raw statement with 131 bound values is refused — the cap is real here", /too many SQL variables/i.test(rawRefused), rawRefused.slice(0, 120));
+    eq("real D1: …and a model query with the same list is split by Prisma, ordered, when what it orders by is selected",
+      (await db.step.findMany({ where: { journeyId: { in: ids } }, orderBy: [{ journeyId: "asc" }, { order: "asc" }], select: { id: true, journeyId: true, order: true } })).length, 131);
   } finally {
     await real.dispose();
   }
@@ -291,10 +326,17 @@ async function loader() {
 // ── 4. The page ─────────────────────────────────────────────────────────────
 const lib = read("src/lib/journeys-load.ts");
 check("the loader holds no nested journey → steps select", !/steps:\s*\{/.test(lib) && !/checks:\s*\{/.test(lib));
-check("its raw statement binds the team, and its checks are read as the team's", /r\.teamId = \$\{teamRows\(teamId\)\}/.test(lib) && /\.\.\.teamOwned\(teamId\), id: \{ in: ids \}/.test(lib));
+check("its raw statement binds the team, and its checks are read as the team's", /r\.teamId = \$\{teamRows\(teamId\)\}/.test(lib) && /\.\.\.teamOwned\(teamId\), id: \{ in: runIds \}/.test(lib));
+check("its one raw statement binds no list (a raw statement's values are not split under D1's cap)", (lib.match(/\$queryRaw/g) ?? []).length === 1 && !/Prisma\.join/.test(lib));
+check("the steps are ordered by columns the query selects", /orderBy: \[\{ journeyId: "asc" \}, \{ order: "asc" \}\],\s*select: \{ id: true, journeyId: true, order: true,/.test(lib));
+const numbersLib = read("src/lib/journey-numbers-load.ts");
+check("…and so are the numbers block's last steps", /select: \{ journeyId: true, order: true, status: true, unverifiedReason: true \},\s*orderBy: \{ order: "desc" \}/.test(numbersLib));
 check("a carried copy is never the walk, nor a row the check skipped", /j\.carriedFromRunId IS NULL AND j\.status <> 'skipped'/.test(lib));
 check("only a finished check, and not an extension's without a verdict", /r\.status IN \('completed', 'partial'\)/.test(lib) && /r\.targetKind <> 'extension' OR \(r\.verdict IS NOT NULL AND r\.verdict <> ''\)/.test(lib));
 check("the loader reads no cost (CLAUDE.md §10)", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(lib));
+const loaderBody = lib.slice(lib.indexOf("export async function journeysOfApp"));
+check("nothing on a card is read from the catalog's counters, which an unpublished check moves too",
+  /select: \{ id: true, title: true \},/.test(loaderBody) && !/walkCount: true|failingSince: true|consecutiveBad|lastWalked/.test(loaderBody));
 
 const page = read("src/app/(app)/product/journeys/page.tsx");
 check("the page does not exist for whoever lacks the lens", /if \(!\(await productLensFor\(user\)\)\) notFound\(\);/.test(page) && page.indexOf("productLensFor(user)") < page.indexOf("journeysOfApp("));
