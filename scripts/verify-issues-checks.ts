@@ -12,6 +12,8 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-issues-checks.ts
 
+import "./fixtures/wasm-module-loader.mjs";
+import { realD1 } from "./fixtures/real-d1";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +22,7 @@ import {
   type IssueView,
 } from "../src/lib/issues-page";
 import { CHECKS_PAGE, checksHref, checksLine, outcome, runNumberParam, startedFilter, startedLabel, whenLine } from "../src/lib/checks-page";
+import { BY_SCHEDULE, ON_REQUEST, startedBySchedule } from "../src/lib/started-via";
 import type { RecurringIssue } from "../src/lib/recurring";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -90,7 +93,13 @@ eq("ticket: an opaque id is not shown as a key", ticketLabel({ externalIssueId: 
 check("ids go to D1 in portions under its cap of a hundred", portions(Array.from({ length: 211 }, (_, i) => i)).map((p) => p.length).join(",") === "80,80,51" && portions([]).length === 0);
 
 // ── 2. Checks ───────────────────────────────────────────────────────────────
-eq("started: a watch's check is scheduled, whatever door is recorded", startedLabel({ watchId: "w", startedVia: "mcp" }), "Scheduled");
+// Codex P1 on #249: the watch a run carries is not what started it.
+eq("started: the scheduler's own check", startedLabel({ watchId: "w", startedVia: "watch" }), "Scheduled");
+eq("started: a re-check by hand copies its predecessor's watch and is still on request", startedLabel({ watchId: "w", startedVia: "ui" }), "From the app");
+eq("started: a scheduled check stays scheduled after its watch was removed", startedLabel({ watchId: null, startedVia: "watch" }), "Scheduled");
+eq("started: a row from before the door was recorded is judged by its watch", startedLabel({ watchId: "w", startedVia: null }), "Scheduled");
+check("one rule: scheduled", startedBySchedule({ watchId: null, startedVia: "watch" }) && startedBySchedule({ watchId: "w", startedVia: null }) && startedBySchedule({ watchId: "w" }));
+check("one rule: on request", !startedBySchedule({ watchId: "w", startedVia: "mcp" }) && !startedBySchedule({ watchId: null, startedVia: null }) && !startedBySchedule({ watchId: null }));
 eq("started: the owner's agent", startedLabel({ watchId: null, startedVia: "mcp" }), "Your agent");
 eq("started: the GitHub Action", startedLabel({ watchId: null, startedVia: "action" }), "GitHub Action");
 eq("started: the app's own button", startedLabel({ watchId: null, startedVia: "ui" }), "From the app");
@@ -138,7 +147,10 @@ check("…the four marks the check's page has, no fifth", ["known", "watch", "fi
 check("the mark buttons hold no effect: they act on the click", !/useEffect/.test(marks));
 
 check("Checks reads the team's rows, newest first by number, a page and one more",
-  /db\.run\.findMany\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\), \.\.\.ofApp, \.\.\.byStart,/.test(checks) && /orderBy: \{ runNumber: "desc" \}/.test(checks) && /take: CHECKS_PAGE \+ 1/.test(checks));
+  /where: \{ \.\.\.teamOwned\(team\.id\), AND: \[ofApp, byStart\],/.test(checks) && /orderBy: \{ runNumber: "desc" \}/.test(checks) && /take: CHECKS_PAGE \+ 1/.test(checks));
+check("its scheduled / on request filter is the label's rule, and appHealth's split is the same one",
+  /started === "scheduled" \? BY_SCHEDULE : started === "request" \? ON_REQUEST : \{\}/.test(checks) &&
+    /const side = startedBySchedule\(r\) \? t\.scheduled : t\.onRequest;/.test(read("src/lib/app-health.ts")) && !/r\.watchId \? t\.scheduled/.test(read("src/lib/app-health.ts")));
 check("its header's numbers are appHealth's — the ones All apps and Billing show", /appHealth\(db, team\.id, app \? \{ only: app\.id \} : \{\}\)/.test(checks) && /checks: health\.totalChecks, usd: usd\(health\.totalSpendUsd\)/.test(checks));
 check("one price's reason is loaded, for a check on the page — not one per row", (checks.match(/explainPrice\(/g) ?? []).length === 1 && /runs\.find\(\(r\) => r\.runNumber === why\)/.test(checks));
 check("a finished check opens inside the app, one that is running or did not finish on its own page",
@@ -151,5 +163,42 @@ for (const [name, src] of [["Issues", issues], ["Checks", checks]] as const) {
 const shellSrc = read("src/lib/shell-data.ts");
 check("the sidebar's count leaves out the one finding that is about us", /f\.detail NOT LIKE \$\{OUR_LEFTOVERS\}/.test(shellSrc) && /OUR_LEFTOVERS = `%"where":"\$\{OUR_LEFTOVERS_WHERE\}"%`/.test(shellSrc));
 
-console.log(failures ? `\n${failures} FAILED` : "\nall passed");
-process.exit(failures ? 1 : 0);
+// ── 4. The filter, in a real D1 ─────────────────────────────────────────────
+// The rule in code and the rule as a database filter must put every row on the
+// same side — and SQL's NULL <> 'watch' is where the two part ways.
+async function filterChecks() {
+  const real = await realD1();
+  try {
+    await real.db.team.create({ data: { id: "t", name: "T", plan: "business" } });
+    const rowsIn: Array<{ startedVia: string | null; watchId: string | null }> = [
+      { startedVia: "watch", watchId: "w" }, // the scheduler's
+      { startedVia: "watch", watchId: null }, // …after its watch was removed
+      { startedVia: "ui", watchId: "w" }, // a re-check by hand of a scheduled check
+      { startedVia: "mcp", watchId: null },
+      { startedVia: "action", watchId: null },
+      { startedVia: null, watchId: "w" }, // before the door was recorded: a watch's
+      { startedVia: null, watchId: null }, // …and somebody's
+    ];
+    await real.db.watch.create({ data: { id: "w", teamId: "t", appSlug: "a.test", targetUrl: "https://a.test" } });
+    for (const [i, r] of rowsIn.entries()) {
+      await real.db.run.create({
+        data: {
+          id: `r${i}`, publicId: `p${i}`, runNumber: i + 1, teamId: "t", appSlug: "a.test", targetUrl: "https://a.test", targetKind: "website",
+          status: "completed", startedVia: r.startedVia, watchId: r.watchId,
+        } as never,
+      });
+    }
+    const numbers = async (where: object) => (await real.db.run.findMany({ where: { teamId: "t", ...where }, orderBy: { runNumber: "asc" }, select: { runNumber: true } })).map((r) => r.runNumber).join(",");
+    const byRule = (want: boolean) => rowsIn.map((r, i) => (startedBySchedule(r) === want ? i + 1 : 0)).filter(Boolean).join(",");
+    eq("real D1: 'Scheduled' holds exactly the rows the rule calls scheduled", await numbers(BY_SCHEDULE), byRule(true));
+    eq("real D1: 'On request' holds exactly the rest — the rows with no door recorded included", await numbers(ON_REQUEST), byRule(false));
+    eq("real D1: the two filters share no row and leave none out", `${byRule(true)}|${byRule(false)}`, "1,2,6|3,4,5,7");
+  } finally {
+    await real.dispose();
+  }
+}
+
+filterChecks().then(() => {
+  console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+  process.exit(failures ? 1 : 0);
+});

@@ -2,6 +2,8 @@
 // first — its number, its app, when, what started it, how it came out and its
 // price. Prices only (CLAUDE.md §10).
 
+import { startedBySchedule } from "@/lib/started-via";
+
 export type StartedFilter = "all" | "scheduled" | "request";
 
 export const STARTED_FILTERS: { key: StartedFilter; label: string }[] = [
@@ -21,10 +23,10 @@ export function runNumberParam(raw: string | undefined): number | null {
   return raw && /^\d{1,9}$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
 }
 
-// What started a check, in the reader's words. A watch is what "scheduled"
-// means everywhere else (appHealth's split, All apps' columns), so it is asked
-// first. `startedVia` exists since CHE-327; a row from before it says only
-// that somebody asked.
+// What started a check, in the reader's words. "Scheduled" is one rule
+// everywhere (startedBySchedule — appHealth's split, All apps' columns, this
+// page's filter). `startedVia` exists since CHE-327; a row from before it says
+// only that somebody asked, or that a watch did.
 const VIA: Record<string, string> = {
   ui: "From the app",
   api: "API",
@@ -36,7 +38,7 @@ const VIA: Record<string, string> = {
 };
 
 export function startedLabel(run: { watchId: string | null; startedVia: string | null }): string {
-  if (run.watchId) return "Scheduled";
+  if (startedBySchedule(run)) return "Scheduled";
   return (run.startedVia && VIA[run.startedVia]) || "On request";
 }
 

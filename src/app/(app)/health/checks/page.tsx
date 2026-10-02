@@ -9,6 +9,7 @@ import { appPath, checkHref } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { explainPrice } from "@/lib/check-price";
+import { BY_SCHEDULE, ON_REQUEST } from "@/lib/started-via";
 import { CheckPrice } from "@/components/check-price";
 import {
   CHECKS_PAGE,
@@ -50,12 +51,14 @@ export default async function ChecksPage({
   // no app.
   const onlyOneWithSlug = app ? (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1 : false;
   const ofApp = app ? { OR: [{ appId: app.id }, ...(onlyOneWithSlug ? [{ appId: null, appSlug: app.appSlug }] : [])] } : {};
-  const byStart = started === "scheduled" ? { watchId: { not: null } } : started === "request" ? { watchId: null } : {};
+  // The filter is the label's own rule (src/lib/started-via.ts), in the database.
+  const byStart = started === "scheduled" ? BY_SCHEDULE : started === "request" ? ON_REQUEST : {};
 
   const [health, found] = await Promise.all([
     appHealth(db, team.id, app ? { only: app.id } : {}),
     db.run.findMany({
-      where: { ...teamOwned(team.id), ...ofApp, ...byStart, ...(before ? { runNumber: { lt: before } } : {}) },
+      // Each of the two filters is an OR of its own, so they are joined by AND.
+      where: { ...teamOwned(team.id), AND: [ofApp, byStart], ...(before ? { runNumber: { lt: before } } : {}) },
       // By number: D1 orders dates as text and prod holds two spellings of them.
       orderBy: { runNumber: "desc" },
       take: CHECKS_PAGE + 1,

@@ -21,8 +21,10 @@
 //   - A check is every run of the app started in the window, whatever became of
 //     it. A failed run counts as a check at $0 (our failure is free, rule 4 —
 //     its price is 0); one still in flight counts at $0 until it is priced.
-//   - Scheduled means a watch started it (watchId set); everything else — the
-//     coding agent, the API, the dashboard's button, a re-check — is on request.
+//   - Scheduled means the schedule started it: the door it came through says
+//     so (startedBySchedule in src/lib/started-via.ts — a run can carry a watch
+//     it was not started by). Everything else — the coding agent, the API, the
+//     app's own button, a re-check — is on request.
 //   - A run belongs to an app by appId. A run with no appId (checked before the
 //     app was saved, or detached from it) belongs to the team's app with the
 //     same host when exactly one has it: the team paid for it, and it checked
@@ -51,6 +53,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan } from "@/lib/enums";
 import { explainPrice, type PriceExplanation } from "@/lib/check-price";
 import { planCredit, utcDayStart } from "@/lib/plans";
+import { startedBySchedule } from "@/lib/started-via";
 import { teamOwned } from "@/lib/tenant-db";
 
 export interface AppHealth {
@@ -151,7 +154,7 @@ export async function appHealth(
     // would silently drop out (Run #137).
     db.run.findMany({
       where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: lastInstant } },
-      select: { appId: true, appSlug: true, watchId: true, priceUsd: true, createdAt: true },
+      select: { appId: true, appSlug: true, watchId: true, startedVia: true, priceUsd: true, createdAt: true },
     }),
   ]);
   const plan = (team?.plan ?? "free") as UserPlan;
@@ -179,7 +182,7 @@ export async function appHealth(
     if (!app) continue;
     const t = tallies.get(app.id)!;
     t.cents += c;
-    const side = r.watchId ? t.scheduled : t.onRequest;
+    const side = startedBySchedule(r) ? t.scheduled : t.onRequest;
     side.count++;
     side.cents += c;
     const day = isoDay(r.createdAt);
