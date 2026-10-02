@@ -403,6 +403,43 @@ const TOOL_TAGS = [
   /\s*\([^()]*\boembed\b[^()]*\)/gi,
   /\s*(?:via|through|using|with|by)\s+(?:the\s+)?(?:youtube(?:['’]s)?\s+)?oembed(?:\s+(?:api|verification|check|lookup|endpoint|response|call))?/gi,
 ];
+// CHE-392: our click, speaking. Since that ticket a click tells the model what
+// text became visible after it — and the first run after it (our own site,
+// 2026-10-02) published "…; the click reported the newly visible text." in a
+// step. That is the walk talking about its tool; cut at the clause like the
+// pronoun.
+//
+// But a click is also what the PRODUCT reacts to, and some products' own
+// object. "The click returned a 500", "the click showed a toast reading
+// 'Saved'", "the dashboard shows the click recorded a minute ago" are the
+// product, and often a finding's whole evidence — cutting them is worse than
+// the leak (cross-review of #244: the first pattern here did). So, by who can
+// be the subject:
+//   - the click must be the SUBJECT — "the click", "the click itself", "the
+//     click's result", "the click tool", with its verb right after. As an
+//     object it is the product's ("the audit log recorded the click itself");
+//   - and what follows the verb must be the tool's: its object — "the/that
+//     (newly visible) text" — or the end of the clause ("…, as the click's
+//     result listed."). Never a status, a toast, a message, a spinner; and
+//     never a preposition, which makes the verb a participle about a click the
+//     product keeps ("the click's result listed in the Outcome column", "the
+//     click reported by the audit log had no save event");
+//   - "the next read" only as the tool's — something "gone … by the next
+//     read", or "the next re-read" — not a cache that is stale until the next
+//     read from an API.
+// The gate errs to the product's side: a phrasing it does not know stays in,
+// and a leaked "the click …" costs less than a finding's evidence cut out.
+const CLICK_SUBJECT = "\\bthe\\s+click(?:['’]s\\s+(?:own\\s+)?result|\\s+tool|\\s+itself)?\\s+";
+const CLICK_VERB = "(?:report(?:ed|s)|list(?:ed|s)|noted|surfaced|return(?:ed|s)|show(?:ed|s)|said|says)";
+const TOOL_OBJECT = "\\s+(?:(?:that|the|this)\\s+(?:(?:newly\\s+visible|new|visible)\\s+)?(?:text|string)\\b|(?:that|the|this)\\s+newly\\s+visible\\b)";
+const CLAUSE_END = "(?=\\s*(?:[.,;:!?—–]|$))";
+const CLICK_VOICE = new RegExp(
+  `${CLICK_SUBJECT}${CLICK_VERB}(?:${TOOL_OBJECT}|${CLAUSE_END})` +
+    "|\\b(?:gone|cleared|reverted|disappeared|vanished)\\b[^.;]{0,40}?\\bby\\s+the\\s+next\\s+read\\b" +
+    "|\\bthe\\s+next\\s+re-?read\\b",
+  "i",
+);
+
 function scrubTools(sentence: string): string {
   if (!TOOL_NAMES.test(sentence)) return sentence;
   return TOOL_TAGS.reduce((s, re) => s.replace(re, ""), sentence).replace(/\s{2,}/g, " ");
@@ -465,6 +502,8 @@ export function walkerIn(sentence: string): number | null {
   }
   const tool = TOOL_NAMES.exec(sentence);
   if (tool && (at === null || tool.index < at)) at = tool.index;
+  const click = CLICK_VOICE.exec(sentence);
+  if (click && (at === null || click.index < at)) at = click.index;
   return at;
 }
 
