@@ -699,6 +699,11 @@ function clientGraph(root: string, modules: Map<string, Module>): Map<string, st
 // A key put together at run time — `lens-${name}`, "lens-" + name — names a
 // server flag without spelling one. The stem that gives it away: what every
 // server flag's key begins with, up to and including a dash.
+//
+// What this does not catch, and is not meant to: a key assembled with no such
+// stem in the source (from character codes, from a string fetched at run
+// time). No reading of source can; the flags' "server" runtime is what refuses
+// that read, and --live is what shows it does.
 function keyStems(keys: string[]): string[] {
   return [...new Set(keys.flatMap((k) => [...k.matchAll(/-/g)].map((d) => k.slice(0, d.index! + 1))))];
 }
