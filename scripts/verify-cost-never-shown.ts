@@ -38,6 +38,11 @@ const PAYLOAD_SOURCES = [
   "src/lib/review.ts",
   "src/lib/latest-results.ts",
   "src/lib/email.ts",
+  // CHE-353: what each app costs — Home, Health, the App page, Billing.
+  "src/lib/app-health.ts",
+  // CHE-354 / CHE-367: recurring issues and releases (Health, Release lens).
+  "src/lib/recurring.ts",
+  "src/lib/releases.ts",
 ];
 
 // Identifiers that carry our side of the invoice. `priceUsd` / `price_usd` —

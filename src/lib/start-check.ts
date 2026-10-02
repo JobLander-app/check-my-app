@@ -22,7 +22,8 @@ export interface StartCheckOptions {
   // is — an anonymous check belongs to nobody and is billed to nobody.
   teamId?: string | null;
   // CHE-327: which door started it (Run.startedVia) — measurement only.
-  startedVia?: "ui" | "api" | "mcp" | "anon";
+  // CHE-383: "action" is MCP called by our GitHub Action (src/lib/started-via.ts).
+  startedVia?: "ui" | "api" | "mcp" | "action" | "anon";
   anonKeyHash: string | null;
   // A paid one-off check: the Stripe Checkout Session that paid for it. The
   // column is unique, so a second start on the same payment fails at the
@@ -85,6 +86,7 @@ export async function startCheck(
       appSlug,
       testEmail: input.testEmail || null,
       testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
+      storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
       scopeHints: input.scopeHints || null,
       userNotes: input.userNotes || null,
       notifyEmail: input.notifyEmail || null,

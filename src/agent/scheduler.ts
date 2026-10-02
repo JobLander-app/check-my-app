@@ -15,6 +15,7 @@ import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } f
 import { sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
+import { isPrivateTarget } from "@/lib/private-target";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -95,6 +96,8 @@ export async function runDueWatches(
       notifyEmail: true,
       testEmail: true,
       testPasswordEnc: true,
+      // CHE-372: mirrored onto the watch like the test login.
+      storePasswordEnc: true,
       appId: true,
       ownerId: true,
       teamId: true,
@@ -108,7 +111,7 @@ export async function runDueWatches(
       // Owner-configured scope/notes live on the App; watch runs must carry
       // them (run #19 self-check submitted a real paid check because the
       // "don't press the button" scope hint never reached the agent).
-      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, targetKind: true, extensionId: true, extensionConfig: true } },
+      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, allowedOrigins: true, targetKind: true, extensionId: true, extensionConfig: true } },
     },
   });
 
@@ -126,6 +129,15 @@ export async function runDueWatches(
             `${watch.trialEndsAt?.toISOString()}, team still on free`,
         );
         await pauseExpiredTrial(env, bindings, watch, now);
+        continue;
+      }
+      // CHE-390: an address on somebody's own network is never started. No
+      // such watch exists (prod, 2026-10-02) and none can be made any more —
+      // every door refuses the address — so this is a backstop, and it leaves
+      // the row where it is rather than rescheduling it.
+      if (isPrivateTarget(watch.targetUrl)) {
+        skipped++;
+        console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — private-network address`);
         continue;
       }
 
@@ -185,13 +197,14 @@ export async function runDueWatches(
   return { started, skipped };
 }
 
-type DueWatch = {
+export type DueWatch = {
   id: string;
   appSlug: string;
   targetUrl: string;
   notifyEmail: string | null;
   testEmail: string | null;
   testPasswordEnc: string | null;
+  storePasswordEnc: string | null;
   appId: string | null;
   ownerId: string | null;
   teamId: string | null;
@@ -199,13 +212,17 @@ type DueWatch = {
     scopeHints: string | null;
     userNotes: string | null;
     focusAreas: string | null;
+    allowedOrigins: string | null;
     targetKind: string;
     extensionId: string | null;
     extensionConfig: string | null;
   } | null;
 };
 
-async function createWatchRun(
+// Exported for scripts/verify-store-password.ts and verify-frame-tools.ts: what
+// a scheduled run carries from its app is decided here, and only a test of
+// this function sees a credential or an allowed origin dropped.
+export async function createWatchRun(
   env: AgentEnv,
   watch: DueWatch,
   baselineRunId: string | null,
@@ -221,6 +238,7 @@ async function createWatchRun(
       appSlug: watch.appSlug,
       testEmail: watch.testEmail,
       testPasswordEnc: watch.testPasswordEnc,
+      storePasswordEnc: watch.storePasswordEnc,
       // CHE-322: the app's named accounts, read from the app itself — the
       // Watch keeps a copy of the default login only (legacy), never these.
       testAccounts: await snapshotAppAccounts(env.db, {
@@ -232,6 +250,8 @@ async function createWatchRun(
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
       focusAreas: watch.app?.focusAreas ?? null,
+      // CHE-373: like scopeHints, read from the app as it is now.
+      allowedOrigins: watch.app?.allowedOrigins ?? null,
       watchId: watch.id,
       baselineRunId,
       appId: watch.appId,

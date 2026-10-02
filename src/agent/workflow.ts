@@ -38,13 +38,16 @@ import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
+import { completeClosedDoor } from "./closed-door";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
+import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
 import { loadKnownMap } from "./known-map";
 import { loadAppKnowledge, type AppKnowledge } from "./knowledge";
 import { walkOneJourney, type WalkRun } from "./execution";
+import { parseAllowedOrigins, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import {
   catalogIsDeduplicated,
   clearUnsupportablePrices,
@@ -55,7 +58,7 @@ import {
 import { orderByFocus } from "./limits";
 import { parseActions, replayJourney, type ReplayResult } from "./journey-replay";
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
-import { judgeVerdictIntegrity, type IntegrityResult } from "./verdict-integrity";
+import { checkVerdictIntegrity } from "./verdict-load";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
 import {
@@ -157,9 +160,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           testEmail: true,
           testPasswordEnc: true,
           testAccounts: true,
+          // CHE-372: the store password, for every phase that opens the store.
+          storePasswordEnc: true,
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
+          // CHE-373: the origins the owner allowed besides the target's.
+          allowedOrigins: true,
           notifyEmail: true,
           watchId: true,
           baselineRunId: true,
@@ -172,7 +179,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
-      return r;
+      // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
+      // here, so neither the tools, the evidence rules nor the prompt ever
+      // treat one of our hosts as the customer's product.
+      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
     });
     const isExtension = isExtensionTarget(run);
 
@@ -472,9 +482,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         testEmail: run.testEmail,
         testPasswordEnc: run.testPasswordEnc,
         testAccounts: run.testAccounts,
+        storePasswordEnc: run.storePasswordEnc,
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
+        allowedOrigins: run.allowedOrigins,
         writeAllowed,
         testMarker: `CheckMyApp test r${run.runNumber}`,
       };
@@ -492,9 +504,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (extension) {
             await env.db.run.update({ where: { id: runId }, data: { extensionEvidence: JSON.stringify({ identity: extension.identity }) } });
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
-            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, extensionIdentity: extension.identity };
+            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, door: null, extensionIdentity: extension.identity };
           }
-          const r = await surfaceScan(env, browser, run.targetUrl);
+          // CHE-390: what earlier looks at this app found, so a closed first
+          // page is not taken for a closed app.
+          const r = await surfaceScan(env, browser, run, knownAddresses(survey));
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
@@ -517,6 +531,46 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await closeAgentBrowser(browser, { env, runId, phase: "scan" }).catch(rethrowBudgetNonRetryable);
         }
       });
+
+      // CHE-390: the app's own first page turned us away, twice, and showed
+      // nothing of the product (closed-door.ts). There is nothing to map or
+      // walk and nothing a model could say about it that would be about the
+      // product — run #292 mapped, walked and published "Broken" about a door
+      // it never got through, and charged for it. The run ends here: Not
+      // verified, nothing spent, the gap on our own board. Like the quick-check
+      // branch above, not routed through synthesis or the verdict guards — no
+      // finding can exist, and the bottom line is the fixed sentence.
+      if (scan.door) {
+        const door = scan.door;
+        await step.do("closed-door", async () => {
+          await appendEvent(env, runId, "surface_scan", {
+            icon: "warn",
+            text: "The first page turned the check away before anything loaded — nothing to check this run",
+          });
+          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door);
+        });
+        await step.do("price-closed-door", async () => {
+          await priceRun(env.db, runId);
+        });
+        await step.do("capability-gaps-closed-door", async () => {
+          try {
+            for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [] })) {
+              await appendEvent(env, runId, "writing", note);
+            }
+          } catch (err) {
+            console.warn(`[capability] gap filing failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        });
+        if (run.notifyEmail) {
+          await step.do("notify-closed-door", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
+        }
+        await step.do("cleanup-closed-door", async () => {
+          if (!run.watchId) {
+            await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
+          }
+        });
+        return;
+      }
 
       // Phase 3 — Discovery (LLM), or its partial-mode stand-in. A partial run
       // already knows this app's map: re-mapping it would spend Sonnet tokens to
@@ -894,6 +948,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await env.db.journey.findMany({
             where: { runId },
             select: {
+              status: true,
               steps: {
                 orderBy: { order: "asc" },
                 select: {
@@ -908,6 +963,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             },
             orderBy: { order: "asc" },
           }),
+          // CHE-372: a run that only ever reached a store's password page has
+          // no finding to make about the store.
+          { targetUrl: run.targetUrl },
         );
         for (const d of gated.dropped) {
           console.log(`[findings] dropped: ${d.finding.title} — ${d.reason}`);
@@ -1508,34 +1566,9 @@ async function notifyAndRecord(
 }
 
 // ─── Verdict integrity (CHE-42, CHE-365) ─────────────────────────────────────
-// The rules — zero coverage is never a pass, walking only the access gate is
-// zero coverage too, "broken" needs a body — live in ./verdict-integrity.ts,
-// pure so scripts/verify-verdict-integrity.ts tests what runs. This loads what
-// they read.
-
-async function checkVerdictIntegrity(
-  env: AgentEnv,
-  runId: string,
-  synth: { verdict: Verdict; bottomLine: string | null },
-): Promise<IntegrityResult> {
-  const journeys = await env.db.journey.findMany({
-    where: { runId },
-    select: {
-      status: true,
-      steps: { select: { status: true, unverifiedReason: true, actions: true } },
-    },
-  });
-  const findings = await env.db.finding.findMany({
-    where: { runId },
-    select: { category: true, severity: true },
-  });
-  const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
-  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
-  if (checked.verdict !== synth.verdict) {
-    console.log(`[verdict] run ${runId}: synthesis said ${synth.verdict}, recorded ${checked.verdict}`);
-  }
-  return checked;
-}
+// The rules live in ./verdict-integrity.ts; what they read is loaded by
+// checkVerdictIntegrity in ./verdict-load.ts, which a verify script can drive
+// over a stub database (this module cannot be loaded on plain Node).
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was
 // sent to (a sitemap entry, a homepage link: published by the product) and the
@@ -1544,6 +1577,12 @@ async function checkVerdictIntegrity(
 function surveyedUrls(survey: SurveyOutcome | null | undefined): string[] {
   const pages = survey?.snapshot?.pages ?? [];
   return pages.flatMap((p) => [p.url, p.path]);
+}
+
+// CHE-390: every address an earlier or the current survey of this app holds —
+// what the surface scan tries before it calls a closed first page a closed app.
+function knownAddresses(survey: SurveyOutcome | null | undefined): string[] {
+  return [...(survey?.previous?.pages ?? []), ...(survey?.snapshot?.pages ?? [])].map((p) => p.url);
 }
 
 // ─── Outbound integrations (CHE-53) ──────────────────────────────────────────
@@ -1724,6 +1763,8 @@ async function persistFindings(env: AgentEnv, runId: string, findings: Synthesiz
         number: number++,
         ...shaped,
         anchor,
+        // CHE-354: the identity recurrence is counted by (src/lib/recurring.ts).
+        signature: run ? findingSignature({ appSlug: run.appSlug, ...shaped, anchor }) : null,
         ...(mark ? { mark } : {}),
         evidence: shot
           ? { create: [{ type: "screenshot", storageUrl: shot.storageUrl, sha256: shot.sha256 }] }

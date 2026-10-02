@@ -10,6 +10,7 @@ import { triggerRun } from "./trigger";
 import { effectiveSiteCap } from "./site-cap";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
+import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 // What one run of a saved app may add on top of the app's own settings. The
 // dashboard's button sends none of it; an agent starting the run after a deploy
@@ -32,7 +33,7 @@ export async function startSavedApp(
   db: PrismaClient,
   owner: { id: string; teamId: string; plan: UserPlan },
   appId: string,
-  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "api" } = {
+  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "action" | "api" } = {
     trigger: triggerRun,
     siteCap: effectiveSiteCap,
     capture: captureServer,
@@ -42,6 +43,8 @@ export async function startSavedApp(
 ): Promise<{ publicId: string; alreadyRunning?: true } | { error: string; code?: RunRefusalCode }> {
   const app = await db.app.findFirst({ where: { ...teamOwned(owner.teamId), id: appId, ownerId: owner.id } });
   if (!app) return { error: "App not found." };
+  // CHE-390: an app saved before private addresses were refused.
+  if (holdsPrivateTarget(app)) return { error: PRIVATE_TARGET_MESSAGE };
   // Terminal from the one table (src/lib/enums.ts). The hand-kept list here
   // omitted `canceled`, so an app whose last run was stopped deliberately
   // answered every later start with that stopped run.
@@ -76,7 +79,11 @@ export async function startSavedApp(
       testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc,
       // CHE-322: and every named account, as they are right now.
       testAccounts: await snapshotAppAccounts(db, app),
+      // CHE-372: and the store password, for a password-protected store.
+      storePasswordEnc: app.storePasswordEnc,
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
+      // CHE-373: the origins the owner allowed besides the app's own.
+      allowedOrigins: app.allowedOrigins,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
       startedVia: deps.source ?? "ui",
       forceFull: app.targetKind === "extension", status: "queued",

@@ -1,0 +1,10 @@
+{
+  "name": "shopify-session-probe",
+  "private": true,
+  "type": "module",
+  "description": "CHE-378: how long a human-signed-in Shopify admin session lives; CHE-389: the server that lets a check work inside it. Installed on the session host by provision.sh.",
+  "dependencies": {
+    "playwright-core": "1.60.0",
+    "ws": "8.20.1"
+  }
+}

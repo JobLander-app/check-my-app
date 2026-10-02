@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly Shopify admin session probe (CHE-378)
+After=session-chrome.service
+Wants=session-chrome.service
+
+[Service]
+Type=oneshot
+User=session-host
+Group=session-host
+WorkingDirectory=/opt/session-host/probe
+ExecStart=/usr/bin/node /opt/session-host/probe/probe.mjs
+TimeoutStartSec=300

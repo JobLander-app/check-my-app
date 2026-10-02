@@ -78,17 +78,30 @@ export function comparePrice(input: {
   const range = `${usd(usual.low)}–${usd(usual.high)}`;
   if (input.price >= usual.low && input.price <= usual.high) return `In this app's usual range (${range}).`;
   const above = input.price > usual.high;
+  // CHE-379: nothing was walked, so no journey or step explains the price —
+  // the work line already says what it paid for. Without this, a usual of
+  // earlier all-skipped checks (0 vs 0) fell through to "the journeys took
+  // longer than usual".
+  if (input.journeys === 0) return `${above ? "Above" : "Below"} this app's usual ${range}.`;
+  // A reason is given only when it points the way the price went. Check #294
+  // read "Below this app's usual $0.65–$0.89: more steps than usual (18 vs
+  // 15)" — a count that went up cannot explain a price that went down. When
+  // the counts differ the other way, the price is stated without a reason
+  // rather than with a wrong one.
+  const explains = (now: number, usual: number | null): usual is number => usual !== null && (above ? now > usual : now < usual);
+  const differs = (now: number, usual: number | null) => usual !== null && now !== usual;
   const why = (() => {
-    if (input.usualJourneys !== null && input.journeys !== input.usualJourneys) {
+    if (explains(input.journeys, input.usualJourneys)) {
       const d = Math.abs(input.journeys - input.usualJourneys);
-      return `${plural(d, "journey")} ${input.journeys > input.usualJourneys ? "more" : "fewer"} than usual (${input.journeys} vs ${input.usualJourneys})`;
+      return `${plural(d, "journey")} ${above ? "more" : "fewer"} than usual (${input.journeys} vs ${input.usualJourneys})`;
     }
-    if (input.usualSteps !== null && input.steps !== input.usualSteps) {
-      return `${input.steps > input.usualSteps ? "more" : "fewer"} steps than usual (${input.steps} vs ${input.usualSteps})`;
+    if (explains(input.steps, input.usualSteps)) {
+      return `${above ? "more" : "fewer"} steps than usual (${input.steps} vs ${input.usualSteps})`;
     }
+    if (differs(input.journeys, input.usualJourneys) || differs(input.steps, input.usualSteps)) return null;
     return above ? "the journeys took longer than usual" : "the journeys were shorter than usual";
   })();
-  return `${above ? "Above" : "Below"} this app's usual ${range}: ${why}.`;
+  return `${above ? "Above" : "Below"} this app's usual ${range}${why ? `: ${why}` : ""}.`;
 }
 
 const median = (xs: number[]) => {
@@ -96,6 +109,10 @@ const median = (xs: number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)];
 };
+
+// Journeys with at least one step that was not skipped; `_count.steps` counts
+// only those.
+const walkedJourneys = (journeys: { _count: { steps: number } }[]) => journeys.filter((j) => j._count.steps > 0).length;
 
 // The explanation for a run addressed by its public id, within one team — the
 // shape the MCP tools and the verdict page ask for.
@@ -122,11 +139,16 @@ export async function explainPrice(
     select: { id: true, title: true, _count: { select: { steps: { where: { status: { not: "skipped" } } } } } },
   });
   const steps = journeys.reduce((s, j) => s + j._count.steps, 0);
+  // CHE-379: a journey was walked when at least one of its steps was. Every
+  // journey of run #221 was skipped, and it read "Walked 5 journeys, 0 steps".
+  const walked = walkedJourneys(journeys);
   const kind: "quick" | "walk" = journeys.length === 0 && run.quickPagesOpened !== null ? "quick" : "walk";
   const work =
     kind === "quick"
       ? `Quick check — nothing had changed, ${plural(run.quickPagesOpened ?? 0, "page")} opened`
-      : `Walked ${plural(journeys.length, "journey")}, ${plural(steps, "step")}`;
+      : walked > 0
+        ? `Walked ${plural(walked, "journey")}, ${plural(steps, "step")}`
+        : null;
 
   const usage = await db.llmUsage.findMany({ where: { runId: run.id }, select: { phase: true, journeyId: true, costUsd: true } });
   const byJourney = new Map<string, number>();
@@ -137,6 +159,8 @@ export async function explainPrice(
     else if (u.phase === "discovery") mapping += u.costUsd;
     else writing += u.costUsd;
   }
+  // Nothing walked: the price paid for what was done instead.
+  const workLine = work ?? (mapping > 0 ? "Mapped the app; no journey was walked" : "No journey was walked");
   const parts = splitByCost(run.priceUsd, [
     ...(mapping > 0 ? [{ label: "Mapping the app", cost: mapping }] : []),
     ...journeys.map((j) => ({ label: j.title, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
@@ -151,17 +175,17 @@ export async function explainPrice(
     take: 20,
     select: { journeys: { where: { carriedFromRunId: null }, select: { _count: { select: { steps: { where: { status: { not: "skipped" } } } } } } } },
   });
-  const usualJourneys = history.length >= 3 ? median(history.map((h) => h.journeys.length)) : null;
+  const usualJourneys = history.length >= 3 ? median(history.map((h) => walkedJourneys(h.journeys))) : null;
   const usualSteps = history.length >= 3 ? median(history.map((h) => h.journeys.reduce((s, j) => s + j._count.steps, 0))) : null;
 
   return {
     price_usd: run.priceUsd,
     kind,
-    work,
-    journeys_walked: journeys.length,
+    work: workLine,
+    journeys_walked: walked,
     steps_walked: steps,
     parts,
     usual: usual ? { low: usual.low, high: usual.high } : null,
-    comparison: comparePrice({ kind, price: run.priceUsd, usual, journeys: journeys.length, steps, usualJourneys, usualSteps }),
+    comparison: comparePrice({ kind, price: run.priceUsd, usual, journeys: walked, steps, usualJourneys, usualSteps }),
   };
 }

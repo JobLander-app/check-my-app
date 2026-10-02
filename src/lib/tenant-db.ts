@@ -8,7 +8,8 @@
 // another team's app while looking entirely normal in review. That is not a bug
 // anyone would catch by reading; it is a bug that has to be impossible to write.
 //
-// So each of those queries carries one of five declarations, and
+// So each of those queries carries one of five declarations (a raw statement
+// binds `teamRows` instead — see below), and
 // `scripts/verify-tenant-db.ts` fails the build for any tenant query that
 // carries none — over the registry of call sites, so the FIRST query written
 // without one is caught rather than the hundredth:
@@ -41,6 +42,16 @@
 // stamp — the same fact, read or written.
 export function teamOwned(teamId: string): { teamId: string } {
   return { teamId };
+}
+
+// The same declaration for a raw statement, which has no `where` to spread
+// into: the team id passes through here on its way into the SQL, as
+// `teamId = ${teamRows(teamId)}`. It changes nothing; it is what the verifier
+// looks for — every `$queryRaw` / `$executeRaw` in request-serving code must
+// bind one in its own arguments, and the `Unsafe` variants are not allowed
+// there at all.
+export function teamRows(teamId: string): string {
+  return teamId;
 }
 
 // The row is already pinned to its tenant, so no clause is added. Empty on

@@ -7,6 +7,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { TRIAL_ENDED_REASON, assertCanAddWatch, shouldSkipWatch, watchTrialEnd } from "@/lib/plans";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 export type EnableWatchResult =
   | { kind: "unauthenticated" }
@@ -50,6 +51,7 @@ export async function enableWatchForRun(
       extensionConfig: true,
       testEmail: true,
       testPasswordEnc: true,
+      storePasswordEnc: true,
       scopeHints: true,
       userNotes: true,
       notifyEmail: true,
@@ -67,6 +69,9 @@ export async function enableWatchForRun(
   // before any row is written.
   if (run.ephemeral) return { kind: "ephemeral" };
   if (run.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
+  // CHE-390: a check from before private addresses were refused must not
+  // become an app and a daily schedule on an address nothing can open.
+  if (isPrivateTarget(run.targetUrl)) return { kind: "gated", reason: PRIVATE_TARGET_MESSAGE };
 
   // Find-or-create the owner's App for this target. upsert is race-safe under
   // D1 (no transactions) vs a check-then-create double-submit window.
@@ -83,15 +88,29 @@ export async function enableWatchForRun(
       appSlug: run.appSlug,
       testEmail: run.testEmail,
       testPasswordEnc: run.testPasswordEnc,
+      storePasswordEnc: run.storePasswordEnc,
       scopeHints: run.scopeHints,
       userNotes: run.userNotes,
     },
   });
 
+  // A one-off run loses its passwords when it ends (clearedCredentials), so by
+  // the time anyone presses "Watch this app" the run's copy is usually gone
+  // while the App — saved before or after it — still holds one. The watch is
+  // seeded from whichever still has it, the login as a pair (an email with
+  // the other source's password would be a login nobody has), the store
+  // password on its own. Before CHE-372 the test login was lost this way too:
+  // the App kept it and every daily run walked signed out.
+  const login = run.testPasswordEnc ? run : app.testPasswordEnc ? app : run;
   const enabled = await upsertWatch(db, user, app, {
     frequency: opts.frequency,
     notifyOnChangeOnly: opts.notifyOnChangeOnly,
-    seed: { notifyEmail: run.notifyEmail, testEmail: run.testEmail, testPasswordEnc: run.testPasswordEnc },
+    seed: {
+      notifyEmail: run.notifyEmail,
+      testEmail: login.testEmail,
+      testPasswordEnc: login.testPasswordEnc,
+      storePasswordEnc: run.storePasswordEnc ?? app.storePasswordEnc,
+    },
   });
   if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
   const watch = enabled.watch;
@@ -131,13 +150,25 @@ async function watchGate(
 async function upsertWatch(
   db: PrismaClient,
   user: { id: string; teamId: string; plan: string },
-  app: { id: string; appSlug: string; targetUrl: string; testEmail: string | null; testPasswordEnc: string | null },
+  app: {
+    id: string;
+    appSlug: string;
+    targetUrl: string;
+    testEmail: string | null;
+    testPasswordEnc: string | null;
+    storePasswordEnc: string | null;
+  },
   opts: {
     frequency: WatchFrequency;
     notifyOnChangeOnly?: boolean;
     // What a NEW watch starts with. Enabling from a verdict carries that run's
     // inputs; enabling an app carries the app's own credentials.
-    seed?: { notifyEmail: string | null; testEmail: string | null; testPasswordEnc: string | null };
+    seed?: {
+      notifyEmail: string | null;
+      testEmail: string | null;
+      testPasswordEnc: string | null;
+      storePasswordEnc: string | null;
+    };
     // The clock the trial is read against; the MCP server passes its own.
     now?: Date;
   },
@@ -157,7 +188,12 @@ async function upsertWatch(
   const gate = await watchGate(db, user, opts.frequency, existing);
   if (!gate.ok) return { ok: false as const, reason: gate.reason };
 
-  const seed = opts.seed ?? { notifyEmail: null, testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc };
+  const seed = opts.seed ?? {
+    notifyEmail: null,
+    testEmail: app.testEmail,
+    testPasswordEnc: app.testPasswordEnc,
+    storePasswordEnc: app.storePasswordEnc,
+  };
   const watch = await db.watch.upsert({ ...alreadyScoped("the App was just scoped to this team"),
     where: { appId: app.id },
     create: {
@@ -171,6 +207,7 @@ async function upsertWatch(
       notifyEmail: seed.notifyEmail,
       testEmail: seed.testEmail,
       testPasswordEnc: seed.testPasswordEnc,
+      storePasswordEnc: seed.storePasswordEnc,
       nextRunAt: nextRunFrom(opts.frequency),
       // CHE-54: Free enables a 7-day trial watch; paid plans get null (no expiry).
       trialEndsAt: watchTrialEnd(user.plan as UserPlan),
@@ -198,7 +235,7 @@ export async function enableWatchForApp(
 ): Promise<EnableWatchResult> {
   const app = await db.app.findFirst({
     where: { ...teamOwned(user.teamId), id: appId, ownerId: user.id },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true },
+    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true },
   });
   if (!app) return { kind: "not_found" };
   if (app.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };

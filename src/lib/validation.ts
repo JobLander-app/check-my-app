@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isChromeStoreUrl, parseExtensionLink } from "./extension-target";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "./private-target";
 
 export const extensionOptionsSchema = z.object({
   companionUrl: z.string().trim().url().refine(u => {
@@ -7,7 +8,9 @@ export const extensionOptionsSchema = z.object({
       const url = new URL(u);
       return url.protocol === "https:" && !url.username && !url.password && url.hostname.includes(".");
     } catch { return false; }
-  }, "Enter the HTTPS address where your extension works").optional().or(z.literal("")),
+  }, "Enter the HTTPS address where your extension works")
+    // The page the extension is opened on is a target too (CHE-390).
+    .refine((u) => !isPrivateTarget(u), PRIVATE_TARGET_MESSAGE).optional().or(z.literal("")),
   expectedOutcome: z.string().trim().max(1000).optional(),
   allowSessions: z.boolean().optional(),
   maxSessionSeconds: z.number().int().min(60).max(600).optional(),
@@ -39,6 +42,8 @@ export const createCheckSchema = z.object({
       z
         .string()
         .url("Doesn't look like a working URL")
+        // First, so "localhost:3000" is told why and not that it is no URL.
+        .refine((u) => !isPrivateTarget(u), PRIVATE_TARGET_MESSAGE)
         .refine((u) => {
           try {
             return new URL(u).hostname.includes(".") && (!isChromeStoreUrl(u) || Boolean(parseExtensionLink(u)));
@@ -50,6 +55,9 @@ export const createCheckSchema = z.object({
   testEmail: z.string().email().optional().or(z.literal("")),
   extension: extensionOptionsSchema.optional(),
   testPassword: z.string().optional().or(z.literal("")),
+  // CHE-372: a password-protected store's storefront password (Shopify's
+  // /password page). Encrypted like testPassword, never returned.
+  storePassword: z.string().max(500).optional().or(z.literal("")),
   scopeHints: z.string().max(2000).optional().or(z.literal("")),
   userNotes: z.string().max(2000).optional().or(z.literal("")),
   notifyEmail: z.string().email("Enter a valid email").optional().or(z.literal("")),

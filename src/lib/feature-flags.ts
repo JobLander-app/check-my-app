@@ -18,7 +18,7 @@
 // Same public client token as the browser and analytics-server.ts (project
 // 595090, US cloud). The flags endpoint takes the public token; no secret
 // ever reaches this file.
-const POSTHOG_FLAGS_TOKEN = "phc_yDqQQgx3vGfFvp97tEWsExEsLPnnGi6jp9XAqfooQTcn";
+export const POSTHOG_FLAGS_TOKEN ="phc_yDqQQgx3vGfFvp97tEWsExEsLPnnGi6jp9XAqfooQTcn";
 // https://posthog.com/docs/api/flags — `v=2` returns
 // `{ flags: { <key>: { enabled, variant, reason } } }`.
 export const POSTHOG_FLAGS_URL = "https://us.i.posthog.com/flags?v=2";
@@ -30,6 +30,17 @@ export const POSTHOG_FLAGS_URL = "https://us.i.posthog.com/flags?v=2";
  */
 export const HOME_EXTENSION_CHECK_FLAG = "home-extension-check";
 
+/**
+ * The beta lenses of the redesign (CHE-348), read by the sidebar and the
+ * lens routes. Created by `npm run posthog:setup`: Product (CHE-352) and
+ * Release (CHE-367) on for the owner's e-mail only, the same condition as
+ * the extension flag; Marketing (CHE-352) off for everyone, with no teaser.
+ * Never on for a test account (see evaluateFlag).
+ */
+export const LENS_PRODUCT_FLAG = "lens-product";
+export const LENS_MARKETING_FLAG = "lens-marketing";
+export const LENS_RELEASE_FLAG = "lens-release";
+
 /** Who the flag is asked about. The distinct id is the Clerk user id — the id the browser identifies with. */
 export type FlagPerson = { distinctId: string; email: string; isTestAccount: boolean };
 
@@ -38,17 +49,40 @@ export type FlagFetch = (input: string, init: RequestInit) => Promise<{ ok: bool
 /** The whole wait a page will accept for a flag before it renders without it. */
 export const FLAG_TIMEOUT_MS = 1500;
 
+/**
+ * Every person property a flag condition may read, each sent as an override
+ * with every request (CHE-380). For a property the request leaves out,
+ * PostHog falls back to what it has stored about the person — and anyone can
+ * store anything about their own distinct id with the public token above.
+ * A stale `is_test_account = "true"` condition on `home-extension-check`
+ * therefore switched the extension check on for a stranger who had `$set`
+ * that property from devtools. With both properties always overridden, no
+ * stored value can decide a flag; posthog:setup and `verify:lens-flags --live`
+ * refuse any condition on a property outside this list.
+ */
+export const FLAG_PERSON_PROPERTIES = ["email", "is_test_account"] as const;
+
 /** The exact body sent to PostHog. Pure, so the verification script can check it. */
 export function buildFlagsPayload(key: string, person: FlagPerson) {
+  const personProperties: Record<(typeof FLAG_PERSON_PROPERTIES)[number], string | boolean> = {
+    // Sent with the request, not left for PostHog to remember: the browser
+    // sets `email` on identify, but only after a visit. Sent even when empty:
+    // an absent override would let a stored e-mail decide (CHE-381).
+    email: person.email,
+    // Always false here — a test account never reaches this request
+    // (evaluateFlag, CHE-334) — and sent anyway so a stored "true" cannot
+    // match (CHE-380).
+    is_test_account: person.isTestAccount,
+  };
   return {
     api_key: POSTHOG_FLAGS_TOKEN,
     distinct_id: person.distinctId,
-    // Sent with the request, not left for PostHog to remember: the browser
-    // sets `email` on identify, but only after a visit. PostHog evaluates
-    // against this override. No `is_test_account` since CHE-334: a test
-    // account never reaches this request (evaluateFlag).
-    person_properties: { email: person.email },
+    person_properties: personProperties,
     flag_keys_to_evaluate: [key],
+    // The flags read here are declared server-only in PostHog (CHE-381), so
+    // posthog-js in the browser never receives them; a request that does not
+    // say it is a server gets no answer for them at all.
+    evaluation_runtime: "server",
   };
 }
 

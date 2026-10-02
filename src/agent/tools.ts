@@ -9,7 +9,7 @@
 //   model-driven, the harness owns evidence and artifacts.
 
 import type Anthropic from "@anthropic-ai/sdk";
-import type { Page } from "@cloudflare/playwright";
+import type { Frame, Locator, Page } from "@cloudflare/playwright";
 import { credentialFingerprint } from "@/lib/crypto";
 import {
   hasEnvironmentLeak,
@@ -30,6 +30,8 @@ import type { ExtensionBrowser } from "./extension-browser";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
+import { isStoreGateUrl } from "@/lib/store-gate";
+import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
 
 export interface ToolEnv {
   page: Page;
@@ -37,6 +39,16 @@ export interface ToolEnv {
   // Origin the agent is allowed to touch. Credential substitution and
   // navigation are hard-refused off this origin (defence vs prompt injection).
   targetOrigin: string;
+  // CHE-373: further origins the owner named for this app (App.allowedOrigins,
+  // copied onto the run) — an embedded app's host page and its frame. Navigation,
+  // credential entry, reading a frame into the digest and acting in one accept
+  // them as they accept targetOrigin; the evidence rules count their hosts
+  // (exactly, no subdomains) as the product. Normalized origins
+  // (src/lib/allowed-origins.ts). Absent or empty = a single-origin run: nothing
+  // off the target's origin is opened, read into the prompt, typed into or
+  // pressed. (What did change for every run: a frame on the target's own origin
+  // is pressed and filled, where page locators used to stop at its boundary.)
+  allowedOrigins?: string[];
   testEmail?: string;
   testPassword?: string;
   // CHE-322: the app's named accounts beyond the default one above, decrypted
@@ -114,6 +126,44 @@ export interface ToolEnv {
   // not_applicable and stops counting toward its journey. Optional so a bare
   // ToolEnv still builds.
   selfCheckRefusals?: string[];
+  // CHE-372: a password-protected store's storefront password (decrypted in
+  // memory like testPassword), the run's state for it and the hook that
+  // records it. Never a placeholder the model can type: the tools enter it on
+  // the store's password page themselves (store-password.ts), and every tool
+  // result goes through scrubSecrets, which redacts it.
+  store?: StoreAccess;
+  // CHE-372: the walk stood on the store's password page since the last
+  // report_step — "refused": the store turned our password away; "missing":
+  // the run holds none (both access); "undriven": we could not enter it, or
+  // will not risk entering it again (our capability). Written by the tools,
+  // drained by report_step (coerceStoreLocked).
+  storeLocked?: "refused" | "missing" | "undriven";
+}
+
+// CHE-373: may this run navigate to, and type a test login on, this origin?
+// The target's own, or one the owner listed. Compared as origins (scheme, host
+// and port), never as hosts: a subdomain is not an allowed origin unless named.
+// One of OUR hosts is never allowed this way, whatever was stored: the click
+// gates that keep a self-check from spending money key on the target, so a
+// customer's run let onto our product would walk it with none of them. The
+// stored list was checked against the built-in hosts when it was saved; this
+// is where the SELF_CHECK_HOSTS binding (staging, previews) is known.
+export function isAllowedOrigin(
+  env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins" | "selfCheckHosts">,
+  origin: string,
+): boolean {
+  const o = origin.toLowerCase();
+  if (o === env.targetOrigin.toLowerCase()) return true;
+  return Boolean(env.allowedOrigins?.includes(o)) && !isSelfUrl(o, env.selfCheckHosts);
+}
+
+function urlOrigin(url: string): string | null {
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
 }
 
 // CHE-193: is this run checking CheckMyApp itself?
@@ -194,6 +244,9 @@ export type RecordedAction =
       role?: string;
       name?: string;
       selector?: string;
+      // CHE-373: the embedded frame it acted in (frameKey), so a replay acts
+      // there too instead of searching afresh. Absent = the page.
+      frame?: string;
       surface?: { kind: "native_popup"; extensionId: string; targetId: string };
       outcome: { urlAfter: string; navigated: boolean | null; requests: number | null; mutations: number | null };
     }
@@ -201,12 +254,20 @@ export type RecordedAction =
       kind: "fill";
       label?: string;
       selector?: string;
+      frame?: string;
       value: string;
       surface?: { kind: "native_popup"; extensionId: string; targetId: string };
       outcome: { urlAfter: string };
     };
 
-function recordAction(env: ToolEnv, action: RecordedAction): void {
+function recordAction(env: ToolEnv, raw: RecordedAction): void {
+  // CHE-372: the trail becomes Step.actions, a stored column. An address can
+  // carry a secret (a form that submits by GET puts its fields in the query),
+  // so every address in it is scrubbed like a tool result.
+  const action: RecordedAction =
+    raw.kind === "navigate"
+      ? { ...raw, url: scrubSecrets(env, raw.url), outcome: { ...raw.outcome, urlAfter: scrubSecrets(env, raw.outcome.urlAfter) } }
+      : { ...raw, outcome: { ...raw.outcome, urlAfter: scrubSecrets(env, raw.outcome.urlAfter) } } as RecordedAction;
   env.actionTrail?.push(action);
   env.extension?.recordPageAction(action);
 }
@@ -282,7 +343,50 @@ export function scrubSecrets(env: ToolEnv, text: string): string {
       out = out.split(encodeURIComponent(secret)).join("[redacted]");
     }
   }
-  return out;
+  return scrubStorePassword(env, out);
+}
+
+// CHE-372: the store password, which a page or an address may echo back.
+//
+// A store password is often a plain word — "demo" on securify-demo.myshopify.com.
+// Replaced wherever it occurs, it would rewrite the store's own address in
+// every tool result and in the stored trail ("securify-[redacted].myshopify.com"),
+// and the walk and every replay would navigate to an address that does not
+// exist. So the target's host is never touched, a strong password is redacted
+// wherever it stands, and a plain word only where it stands as a value: a
+// parameter of a query or a fragment, which is how a form leaks one into an
+// address. The value ends where nothing that can continue a value follows — a
+// sentence's full stop included, since the model's own step text quotes
+// addresses mid-sentence (review of this rule).
+//
+// Left alone on purpose: a plain word in running text ("the demo store"). It
+// cannot be told from the word, and redacting it would rewrite the page.
+const STORE_SUBSTRING_MIN = 8;
+
+function scrubStorePassword(env: ToolEnv, text: string): string {
+  const secret = env.store?.password;
+  if (!secret) return text;
+  // As written, percent-encoded, and the way a form writes a space ("+").
+  const encoded = encodeURIComponent(secret);
+  const forms = [...new Set([secret, encoded, encoded.replace(/%20/g, "+")])];
+  let host = "";
+  try {
+    host = new URL(env.targetOrigin).host;
+  } catch {
+    /* no target host to protect */
+  }
+  const SHIELD = "\u0000store-host\u0000";
+  let out = host ? text.split(host).join(SHIELD) : text;
+  const strong = secret.length >= STORE_SUBSTRING_MIN && !/^[a-z]+$/i.test(secret);
+  for (const form of forms) {
+    if (strong) {
+      out = out.split(form).join("[redacted]");
+    } else {
+      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(`([?&#][^=&#\\s]*=)${escaped}(?![A-Za-z0-9_%~+-])`, "g"), "$1[redacted]");
+    }
+  }
+  return host ? out.split(SHIELD).join(host) : out;
 }
 
 // ─── CHE-322: which account a placeholder names ───────────────────────────────
@@ -409,32 +513,34 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "read_page",
     description:
-      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
+      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. An embedded frame of the target app on another origin follows as its own section, labelled FRAME <n> with its origin; other embedded frames are listed by address only. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "click",
     description:
-      "Click an element. Identify it by role and accessible name (preferred) or CSS selector.",
+      "Click an element. Identify it by role and accessible name (preferred) or CSS selector. The page is searched first, then each embedded frame of the target app in order; pass frame to act inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
         role: { type: "string", description: 'ARIA role, e.g. "button", "link"' },
         name: { type: "string", description: "Accessible name (visible text/label)" },
         selector: { type: "string", description: "CSS selector fallback" },
+        frame: { type: "string", description: 'Optional: the FRAME number from read_page (e.g. "1"), or part of the frame\'s name or URL' },
       },
     },
   },
   {
     name: "fill",
     description:
-      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials.",
+      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
         label: { type: "string", description: "Field label, placeholder or accessible name" },
         selector: { type: "string", description: "CSS selector fallback" },
         value: { type: "string", description: "Text, or {{TEST_EMAIL}} / {{TEST_PASSWORD}}, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}" },
+        frame: { type: "string", description: 'Optional: the FRAME number from read_page (e.g. "1"), or part of the frame\'s name or URL' },
       },
       required: ["value"],
     },
@@ -598,7 +704,18 @@ export function browserToolsFor(env: Pick<ToolEnv, "visionTriggers" | "extension
 
 // ─── Executor ────────────────────────────────────────────────────────────────
 
+// CHE-372: every result leaves through scrubSecrets — not only the network log
+// and the fill value. A page can echo a secret anywhere (a URL, a heading, an
+// error), and what this returns goes to the model, the transcript and the run.
 export async function executeTool(
+  env: ToolEnv,
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string> {
+  return scrubSecrets(env, await executeToolUnscrubbed(env, name, input));
+}
+
+async function executeToolUnscrubbed(
   env: ToolEnv,
   name: string,
   input: Record<string, unknown>,
@@ -620,7 +737,7 @@ export async function executeTool(
       case "get_network_log":
         return scrubSecrets(env, drainLogs(env));
       case "verify_links":
-        return await verifyLinks(input, env.targetOrigin);
+        return await verifyLinks(input, env.targetOrigin, env.allowedOrigins);
       case "record_created": {
         if (!env.onResourceCreated) return "No ledger available — do not create records in this run.";
         const marker = String(input.marker ?? "");
@@ -652,6 +769,11 @@ export async function executeTool(
       }
       case "report_step": {
         const step = input as unknown as ReportedStep;
+        // CHE-372: the step's words become stored columns; a secret the page
+        // showed the model never lands in one.
+        for (const key of ["label", "attempted", "observed", "consoleExcerpt", "networkExcerpt"] as const) {
+          if (typeof step[key] === "string") step[key] = scrubSecrets(env, step[key] as string);
+        }
         // The model occasionally invents enum values — coerce to the schema.
         const valid = ["ok", "risky", "confusing", "broken", "exposed", "skipped"];
         if (!valid.includes(step.status)) step.status = "confusing";
@@ -669,6 +791,10 @@ export async function executeTool(
         // already-reasoned skipped step alone.
         coerceUndrivenControl(step, env);
         if (env.undrivenControls) env.undrivenControls.length = 0;
+        // CHE-372: a step on the store's locked password page is about access
+        // or our own hands, never the store. Before classifyUnverified, which
+        // leaves a reasoned skipped step alone.
+        coerceStoreLocked(step, env);
         classifyUnverified(step);
         // CHE-190 after both: a risky step is never judged (CHE-169) and never
         // classified above, so a link we could not reach had no gate at all.
@@ -699,17 +825,34 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   const target = new URL(url, env.page.url() || undefined);
   // Hard origin guard: the system prompt says "stay on origin", but a malicious
   // page could instruct the model to navigate off-site and exfiltrate creds.
-  if (target.origin !== env.targetOrigin) {
-    return `Refused: ${target.origin} is outside the target app (${env.targetOrigin}). Stay on the target.`;
+  // CHE-373: the origins the owner listed for this app are part of the target.
+  if (!isAllowedOrigin(env, target.origin)) {
+    const others = env.allowedOrigins?.length ? ` or the origins allowed for it (${env.allowedOrigins.join(", ")})` : "";
+    return `Refused: ${target.origin} is outside the target app (${env.targetOrigin})${others}. Stay on the target.`;
   }
   const logBefore = env.networkLog.length;
-  const res = await env.page.goto(target.toString(), {
+  let res = await env.page.goto(target.toString(), {
     waitUntil: "domcontentloaded",
     timeout: 20_000,
   });
   // Give client JS a real chance to hydrate: clicking a not-yet-interactive
   // button is the #1 source of false "broken" findings on React/Next targets.
   await waitForHydration(env.page, 3_000);
+  // CHE-372: a password-protected store answered with its /password page. The
+  // store password is entered here, by code, before anything is recorded — so
+  // the trail says where the navigation really ended (the product page behind
+  // the gate, or the gate itself when the store refused us), and the model
+  // never meets the gate unless the password we hold was turned away.
+  const store = await passStoreGate(env);
+  // The store sends an unlocked visitor to its home page, not to the address
+  // they asked for, and `res` is still the gate's answer. A person would go on
+  // to that address, and so does the walk: the status everything below reads
+  // (the unpublished-404 guard among it) is the destination's, never the
+  // gate's 200 — and "/cart" does not read as a redirect to "/".
+  if (store === "unlocked") {
+    res = await env.page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await waitForHydration(env.page, 3_000);
+  }
   const status = res?.status() ?? null;
   // Resolved, not as the model typed it: a relative URL only means something
   // next to the page it was typed on, and a replay starts from a blank one.
@@ -718,6 +861,11 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     url: target.toString(),
     outcome: { urlAfter: env.page.url(), status },
   });
+  const gateNote = storeGateNote(store);
+  if (gateNote) {
+    console.warn(`[navigate] store password page (${store}): ${scrubSecrets(env, env.page.url())}`);
+    return `Navigated to ${env.page.url()} (status ${status ?? "?"}). ${gateNote}`;
+  }
   // CHE-171: a 404/410 on an address nothing has published is not a fact
   // about the product — no user arrives there. Decided against the set, not
   // the model's story about the URL ("the documented landing URL" was the
@@ -725,7 +873,7 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   // page for the CHE-169 look to judge, and the address is NOT remembered,
   // so typing it twice does not make it real.
   if ((status === 404 || status === 410) && env.knownUrls && !isKnownUrl(env, target.toString())) {
-    console.warn(`[navigate] ${status} on an unpublished address: ${target.toString()}`);
+    console.warn(`[navigate] ${status} on an unpublished address: ${scrubSecrets(env, target.toString())}`);
     return (
       `Navigated to ${env.page.url()} (status ${status}). This address is not linked from any ` +
       `page you have read or from the site's own map — a 404 here says nothing about the ` +
@@ -739,7 +887,7 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   // CHE-193: a server action on our own product answered the self-check by
   // redirecting back with ?self_check=read_only. Not a page to judge.
   if (isSelfTarget(env) && isSelfCheckRedirect(env.page.url(), env.selfCheckHosts)) {
-    console.warn(`[navigate] self-check refused by the product: ${env.page.url()}`);
+    console.warn(`[navigate] self-check refused by the product: ${scrubSecrets(env, env.page.url())}`);
     noteSelfCheckRefusal(env, `redirected back as read-only: ${env.page.url()}`);
     return selfCheckRefusedText(`Navigated to ${env.page.url()}`, "redirected back as read-only");
   }
@@ -750,6 +898,92 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     status,
   });
   return `Navigated to ${env.page.url()} (status ${status ?? "?"})${looked}`;
+}
+
+// ─── CHE-372: the store's password page ──────────────────────────────────────
+
+// What the model is told when the store keeps us on its password page because
+// the store password we hold was turned away. Tool output, not customer text.
+export const STORE_PASSWORD_REFUSED =
+  "This is the store's password page, and the store password we hold was not accepted, so nothing " +
+  "behind it can be checked this run. That is the store refusing a wrong password — correct " +
+  "behaviour, not a defect. Do NOT type anything into this password form. Report this step " +
+  '"skipped" with unverifiedReason "missing_access" and say that the store password was not accepted.';
+
+// The observed sentence a step on the locked store is written with
+// (coerceStoreLocked). Customer-facing: an ask for access, nothing about us.
+export const STORE_LOCKED_OBSERVED =
+  "The store password was not accepted, so the store behind its password page could not be checked this run.";
+
+// What the model is told when we hold a store password and could not enter it
+// (the field would not fill, the form would not submit, no field to fill).
+// Our hands, not the store (CHE-214's rule for an undriven control).
+export const STORE_UNLOCK_UNDRIVEN =
+  "This is the store's password page. The store password we hold could not be entered here — " +
+  "that is our limitation and says nothing about the store. Do not judge this page, and do not " +
+  'report it as broken, risky or confusing. Report this step "skipped" with unverifiedReason "our_capability".';
+
+// The observed sentence for a step we could not take past the gate ourselves.
+// Customer-facing coverage language; the gap is ours and goes to our board.
+export const STORE_UNDRIVEN_OBSERVED =
+  "We could not get past the store's password page this run, so the store behind it was not checked.";
+
+// What the model is told on the gate when the run holds no store password.
+export const STORE_PASSWORD_MISSING =
+  "This is the store's password page, and no store password was given for this run, so nothing " +
+  "behind it can be checked. That is the store being password-protected, not a defect. Do NOT type " +
+  'anything into this password form. Report this step "skipped" with unverifiedReason ' +
+  '"missing_access" and say that the store password is needed.';
+
+// The observed sentence for a step on a gate we hold no password for.
+// Customer-facing: the ask for access CLAUDE.md rule 2 permits, by name.
+export const STORE_MISSING_OBSERVED =
+  "This store is password-protected and no store password was given, so the store behind its password page could not be checked this run.";
+
+async function passStoreGate(env: ToolEnv): Promise<UnlockOutcome> {
+  const outcome = await unlockStoreGate(env.page, env.targetOrigin, env.store ?? {});
+  if (outcome === "unlocked") await waitForHydration(env.page, 3_000);
+  if (storeRefused(outcome)) env.storeLocked = "refused";
+  if (outcome === "no_password") env.storeLocked = "missing";
+  if (storeUndriven(outcome)) env.storeLocked = "undriven";
+  return outcome;
+}
+
+// What the model is told for an outcome that leaves it on the gate; null when
+// the gate is behind us or was never there.
+function storeGateNote(outcome: UnlockOutcome): string | null {
+  if (storeRefused(outcome)) return STORE_PASSWORD_REFUSED;
+  if (outcome === "no_password") return STORE_PASSWORD_MISSING;
+  if (storeUndriven(outcome)) return STORE_UNLOCK_UNDRIVEN;
+  return null;
+}
+
+/**
+ * A step reported while the walk stood on the store's locked password page is
+ * about the gate and nothing else: whatever the model called it — "ok"
+ * included, since the one page that rendered was the lock, not the product —
+ * it is written skipped. With the store password turned away or missing,
+ * missing_access with the sentence that names the input; with a password we
+ * could not (or would not risk) entering, our_capability — a gap on our board,
+ * never the store's defect. A step that already carries the right reason keeps
+ * its own words. Drains the flag.
+ */
+export function coerceStoreLocked(step: ReportedStep, env: Pick<ToolEnv, "storeLocked">): void {
+  const locked = env.storeLocked;
+  if (!locked) return;
+  env.storeLocked = undefined;
+  const reason = locked === "undriven" ? "our_capability" : "missing_access";
+  if (step.status === "skipped" && step.unverifiedReason === reason) return;
+  step.status = "skipped";
+  step.unverifiedReason = reason;
+  if (locked === "missing") {
+    step.observed = STORE_MISSING_OBSERVED;
+  } else if (locked === "refused") {
+    step.observed = STORE_LOCKED_OBSERVED;
+  } else {
+    step.observed = STORE_UNDRIVEN_OBSERVED;
+    step.gapClass = "undriven_control";
+  }
 }
 
 // ─── CHE-169: vision on demand ───────────────────────────────────────────────
@@ -783,7 +1017,7 @@ async function attachLook(env: ToolEnv, reason: string): Promise<string> {
 // anywhere (CLAUDE.md rule 3: our own volume, and the recovery UX is what the
 // model must judge by eye), or a 4xx/5xx from the target itself. The CHE-100
 // credential rejection is excluded — it has its own path and its own text.
-export function errorResponseIn(entries: string[], targetOrigin: string): string | null {
+export function errorResponseIn(entries: string[], targetOrigin: string, allowedOrigins: readonly string[] = []): string | null {
   for (const line of entries) {
     const m = line.match(/^([A-Z]+)\s+(\S+)\s+→\s+(\d{3})$/);
     if (!m) continue;
@@ -798,7 +1032,7 @@ export function errorResponseIn(entries: string[], targetOrigin: string): string
     } catch {
       continue;
     }
-    if (origin === targetOrigin) return line;
+    if (origin === targetOrigin || allowedOrigins.includes(origin)) return line;
   }
   return null;
 }
@@ -832,7 +1066,7 @@ async function lookIfJudgmentMoment(
 ): Promise<string> {
   if (!env.visionTriggers) return "";
   const err =
-    errorResponseIn(action.requests, env.targetOrigin) ??
+    errorResponseIn(action.requests, env.targetOrigin, env.allowedOrigins) ??
     (action.status != null && action.status >= 400 ? `HTTP ${action.status} on navigate` : null);
   if (err) return attachLook(env, `error response (${err})`);
   if (await mediaSignals(env)) return attachLook(env, "media/WebRTC signals on the page");
@@ -843,7 +1077,9 @@ async function lookIfJudgmentMoment(
 // the framework flush the effects that attach event listeners), then a capped
 // network-idle wait (hydration chunks still in flight). Every wait is
 // best-effort — a chatty page must not stall the walk.
-async function waitForHydration(page: Page, networkIdleMs: number): Promise<void> {
+// CHE-373: a frame hydrates on its own schedule, so the gate runs in whichever
+// document the control lives in — the page, or the frame it was found in.
+async function waitForHydration(page: Pick<Page, "waitForLoadState" | "evaluate">, networkIdleMs: number): Promise<void> {
   await page.waitForLoadState("load", { timeout: 8_000 }).catch(() => {});
   await page
     .evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
@@ -857,11 +1093,78 @@ interface ReactionSnapshot {
   net: number;
   mut: number;
   url: string;
+  // CHE-373: set when the control is inside a frame. `mut` is then the frame's
+  // counter and `hostMut` the page's.
+  frameUrl?: string;
+  hostMut?: number;
 }
 
-async function snapshotReaction(env: ToolEnv): Promise<ReactionSnapshot> {
-  const mut = await env.page.evaluate("window.__cmaMutations || 0").catch(() => 0);
-  return { net: env.networkLog.length, mut: Number(mut) || 0, url: env.page.url() };
+const mutationCount = (doc: Page | Frame) =>
+  doc.evaluate("window.__cmaMutations || 0").then((n) => Number(n) || 0, () => 0);
+
+// CHE-392: text that appeared in a document, by running number (see
+// MUTATION_COUNTER_SCRIPT). A piece longer than this is a region re-rendering,
+// not a message — and stays on the page for read_page to find.
+const APPEARED_MAX_CHARS = 200;
+const APPEARED_MAX_ITEMS = 6;
+
+// Starts the watch in one document and returns where its log stands.
+const appearedMark = (doc: Page | Frame) =>
+  doc.evaluate("window.__cmaWatch ? window.__cmaWatch() : 0").then((n) => Number(n) || 0, () => 0);
+
+export interface Appeared {
+  /** The words. */
+  t: string;
+  /** "text" a person could see; "name" an aria-label or title, which is not on the page. */
+  k: "text" | "name";
+}
+
+const appearedAfter = (doc: Page | Frame, mark: number): Promise<Appeared[]> =>
+  doc
+    .evaluate(`(window.__cmaAppeared || []).filter((e) => e.n > ${mark}).map((e) => ({ t: e.t, k: e.k }))`)
+    .then(
+      (list) =>
+        Array.isArray(list)
+          ? list.map((e: { t?: unknown; k?: unknown }) => ({ t: String(e?.t ?? ""), k: e?.k === "name" ? ("name" as const) : ("text" as const) }))
+          : [],
+      () => [],
+    );
+
+// What the page showed after a click, for the model — or "" when nothing new
+// was shown. The last few pieces win: a confirmation comes after the spinner
+// that preceded it.
+//
+// The wording claims only what was observed (cross-review of #242): "within a
+// few seconds of", not "because of" — a clock or a rotating banner changes by
+// itself; and never the word "confirmation" — whether the words are one is for
+// the model to read in them.
+export function appearedSentence(entries: Appeared[]): string {
+  const quote = (kind: Appeared["k"], limit: number) => {
+    const texts = entries.filter((e) => e.k === kind && e.t).map((e) => e.t);
+    const unique = texts.filter((t, i) => texts.indexOf(t) === i);
+    return unique.slice(-limit).map((t) => JSON.stringify(t)).join(", ");
+  };
+  const texts = quote("text", APPEARED_MAX_ITEMS);
+  const names = quote("name", 3);
+  return (
+    (texts
+      ? ` Text that became visible within a few seconds of the click: ${texts}. It may be gone by the next read; text shown briefly was still shown.`
+      : "") +
+    (names ? ` Accessible names (aria-label or title — not text on the page) that changed in that time: ${names}.` : "")
+  );
+}
+
+// CHE-373: the mutation counters of every document a click can move. A click
+// inside an embedded app changes the frame's DOM — or, when the app talks to
+// its host (postMessage, a host-rendered modal), only the page's. Counted in
+// one document alone, either reads as "did not react AT ALL": our blindness,
+// written up as their dead button.
+async function snapshotReaction(env: ToolEnv, frame?: Frame | null): Promise<ReactionSnapshot> {
+  const net = env.networkLog.length;
+  const url = env.page.url();
+  if (!frame) return { net, mut: await mutationCount(env.page), url };
+  const [mut, hostMut] = await Promise.all([mutationCount(frame), mutationCount(env.page)]);
+  return { net, mut, url, frameUrl: frame.url(), hostMut };
 }
 
 interface Reaction {
@@ -873,14 +1176,19 @@ interface Reaction {
 // Let the page settle after an interaction, then measure what it did: network
 // requests, DOM mutations, navigation. Navigation resets the mutation counter
 // (fresh document), so it is reported as its own definitive signal.
-async function settleAndMeasure(env: ToolEnv, before: ReactionSnapshot): Promise<Reaction> {
+async function settleAndMeasure(env: ToolEnv, before: ReactionSnapshot, frame?: Frame | null): Promise<Reaction> {
   await env.page.waitForLoadState("domcontentloaded").catch(() => {});
   await env.page.waitForTimeout(1_200);
-  const after = await snapshotReaction(env);
-  const navigated = after.url !== before.url;
+  const after = await snapshotReaction(env, frame);
+  const pageNavigated = after.url !== before.url;
+  const navigated = pageNavigated || after.frameUrl !== before.frameUrl;
+  // A fresh document starts its counter at zero, so after a navigation its
+  // whole count is the reaction.
+  const delta = (now: number, then: number, fresh: boolean) => (fresh ? now : Math.max(now - then, 0));
+  const hostMutations = frame ? delta(after.hostMut ?? 0, before.hostMut ?? 0, pageNavigated) : 0;
   return {
     requests: Math.max(after.net - before.net, 0),
-    mutations: navigated ? after.mut : Math.max(after.mut - before.mut, 0),
+    mutations: delta(after.mut, before.mut, navigated) + hostMutations,
     navigated,
   };
 }
@@ -1018,13 +1326,22 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       `selector instead and say why in the step.`
     );
   }
-  const target = (await resolveClickTarget(env.page, input)).first();
+  // CHE-373: the page first, then each embedded frame.
+  const located = await locateAcrossFrames(env, "click", input, (scope) => resolveClickTarget(scope, input));
+  if (typeof located === "string") return located;
+  const target = located.locator.first();
+  const inFrame = located.frame;
+  const where = located.label ? ` inside ${located.label}` : "";
   const sessionRefusal = await env.extension?.guardClick(target);
   if (sessionRefusal) return sessionRefusal;
   // Never interact before hydration: a click landing before listeners attach
   // is indistinguishable from a dead button.
-  await waitForHydration(env.page, 1_500);
-  const before = await snapshotReaction(env);
+  await waitForHydration(inFrame ?? env.page, 1_500);
+  const before = await snapshotReaction(env, inFrame);
+  // CHE-392: where each document's "text that appeared" log stands now — the
+  // frame's and, as with mutations, the page hosting it.
+  const watched: (Page | Frame)[] = inFrame ? [inFrame, env.page] : [env.page];
+  const marks = await Promise.all(watched.map(appearedMark));
 
   // CHE-214: a click that could not be PERFORMED is our limitation and says
   // nothing about the control. A click that was performed and produced nothing
@@ -1035,7 +1352,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     if (!isUndrivable(err)) throw err;
     return recordUndriven(env, "click", label ?? String(input.selector ?? "control"), err);
   }
-  let reaction = await settleAndMeasure(env, before);
+  let reaction = await settleAndMeasure(env, before, inFrame);
   let strategy = "trusted click";
   const tried = [strategy];
 
@@ -1063,7 +1380,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
         .catch(() => false);
       if (submitted) {
         tried.push("form.requestSubmit()");
-        reaction = await settleAndMeasure(env, before);
+        reaction = await settleAndMeasure(env, before, inFrame);
         if (!isInert(reaction)) strategy = "form.requestSubmit() fallback (trusted click was inert)";
       }
       if (isInert(reaction)) {
@@ -1090,7 +1407,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
           .catch(() => false);
         if (dispatched) {
           tried.push("synthetic event dispatch");
-          reaction = await settleAndMeasure(env, before);
+          reaction = await settleAndMeasure(env, before, inFrame);
           if (!isInert(reaction))
             strategy = "synthetic event dispatch fallback (untrusted events; trusted click was inert)";
         }
@@ -1098,6 +1415,9 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     }
   }
 
+  // CHE-372: a click can land on the store's password page too (a link to the
+  // cart of a locked store). Same pass as after a navigation.
+  const store = isStoreGateUrl(env.page.url(), env.targetOrigin) ? await passStoreGate(env) : "not_gate";
   // CHE-129: the click happened (whatever the page made of it), so it is part
   // of the path. Recorded before the rejection/inert returns below because
   // those are readings of the outcome, not reasons the action did not run.
@@ -1106,6 +1426,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     ...(input.role ? { role: String(input.role) } : {}),
     ...(input.name ? { name: String(input.name) } : {}),
     ...(input.selector ? { selector: String(input.selector) } : {}),
+    ...(inFrame ? { frame: frameKey(inFrame) } : {}),
     outcome: {
       urlAfter: env.page.url(),
       navigated: reaction.navigated,
@@ -1115,6 +1436,8 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   });
   // CHE-171: wherever a click lands, the product itself took the user there.
   rememberUrls(env, [env.page.url()]);
+  const gateNote = storeGateNote(store);
+  if (gateNote) return `Clicked. Current URL: ${env.page.url()}. ${gateNote}`;
 
   // CHE-100: before anything is said about the product, check whether what just
   // happened was our own credential being turned away. Sliced from the tail so
@@ -1172,7 +1495,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     // nothing at all" instead of silence, and must not translate it straight
     // into "broken" — this environment is known to be ignored by some apps.
     return (
-      `Clicked, but the page did not react AT ALL: 0 network requests and 0 DOM mutations ` +
+      `Clicked${where}, but the page did not react AT ALL: 0 network requests and 0 DOM mutations ` +
       `(strategies tried: ${tried.join(", ")}). Current URL: ${env.page.url()}. ` +
       `This is either a genuinely dead control or this test browser being ignored ` +
       `(overlay/consent layer, bot gating). Check for overlays with read_page/screenshot; ` +
@@ -1195,7 +1518,13 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     strategy !== "trusted click"
       ? await attachLook(env, `click needed a fallback (${strategy})`)
       : await lookIfJudgmentMoment(env, { requests: fresh });
-  return `Clicked (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${note}${ledgerNudge}${looked}`;
+  // CHE-392: no special case for "navigated". A click that loads a new
+  // document leaves nothing to report — the new document's log is empty and
+  // nobody started a watch in it — while a client-side route change (the URL
+  // moves, the document stays) keeps what it showed, which is the common case
+  // of a confirmation shown on the way to the next screen.
+  const appeared = appearedSentence((await Promise.all(watched.map((doc, i) => appearedAfter(doc, marks[i])))).flat());
+  return `Clicked${where} (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${appeared}${note}${ledgerNudge}${looked}`;
 }
 
 // CHE-172: a placeholder the model padded with whitespace — " {{TEST_EMAIL}}",
@@ -1215,6 +1544,31 @@ export function normalizeFillValue(raw: string): string {
 }
 
 async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
+  // CHE-372: the store's password form is filled by code, with the store
+  // password, and by nothing else — password held or not. Not a guess, and
+  // never a placeholder: {{TEST_PASSWORD}} typed here would hand the test
+  // login's password to a form it does not belong to. Checked before any
+  // substitution, on the page's own form rather than its address alone.
+  if (await onStoreGate(env.page, env.targetOrigin)) {
+    if (env.store?.state?.status === "rejected") return `Refused: ${STORE_PASSWORD_REFUSED}`;
+    if (!env.store?.password) return `Refused: ${STORE_PASSWORD_MISSING}`;
+    return (
+      "Refused: this is the store's password page. The store password is entered automatically " +
+      "when a page of the store leads here — navigate to the page you want instead of filling this form."
+    );
+  }
+  // CHE-373: the same lock met on an origin the app declared (allowed_origins).
+  // The store password is entered only on the target's own gate; no store's
+  // password form is typed into by the model, on any origin the run may act in
+  // — a placeholder resolved here would hand a test login to that form.
+  for (const origin of env.allowedOrigins ?? []) {
+    if (await onStoreGate(env.page, origin)) {
+      return (
+        "Refused: this is a store's password page. Nothing is typed into it. Report this step " +
+        '"skipped" with unverifiedReason "missing_access" and say that the store is password-protected.'
+      );
+    }
+  }
   // CHE-172: before any gate, any record, any substitution.
   let value = normalizeFillValue(String(input.value));
   // CHE-129: what gets recorded is the value as the model wrote it, placeholders
@@ -1227,9 +1581,11 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   const usedSecret = accounts.length > 0;
   // Never type real credentials into an off-origin form (prompt-injection
   // exfiltration): the substituted value would be the decrypted password.
+  // CHE-373: "off-origin" is off every origin this run may act on; the frame
+  // the field sits in is held to the same rule below, once it is found.
   if (usedSecret) {
     try {
-      if (new URL(env.page.url()).origin !== env.targetOrigin) {
+      if (!isAllowedOrigin(env, new URL(env.page.url()).origin)) {
         return `Refused: will not enter test credentials on ${env.page.url()} (outside the target app).`;
       }
     } catch {
@@ -1273,42 +1629,49 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     return "No test credentials were provided for this run, so this field cannot be filled. Do NOT click the login/submit button on an empty form — a form that refuses empty input is working correctly. Report this step as \"skipped\" (no test credentials), never \"broken\" or \"confusing\".";
   }
   value = substituted.value;
+
+  const label = input.label ? String(input.label) : undefined;
+  // CHE-373: the page first, then each embedded frame.
+  const located = await locateAcrossFrames(env, "fill", input, async (scope) =>
+    input.selector
+      ? scope.locator(String(input.selector))
+      : label
+        ? scope
+            .getByLabel(label)
+            .or(scope.getByPlaceholder(label))
+            .or(scope.getByRole("textbox", { name: label }))
+        : scope.locator("input:visible"),
+  );
+  if (typeof located === "string") return located;
   if (usedSecret) env.activeAccount = accounts[accounts.length - 1];
   // Fingerprint only (sha256 prefix + length), never the value: lets a cred
   // mismatch be localized to save vs store vs fill without exposing anything.
-  for (const label of usedSecret ? accounts : []) {
-    const password = accountFor(env, label)?.password;
-    if (password) console.log(`[fill] substituting test password for "${label}": ${credentialFingerprint(password)}`);
+  for (const account of usedSecret ? accounts : []) {
+    const password = accountFor(env, account)?.password;
+    if (password) console.log(`[fill] substituting test password for "${account}": ${credentialFingerprint(password)}`);
   }
 
-  const page = env.page;
-  const label = input.label ? String(input.label) : undefined;
-  const locator = input.selector
-    ? page.locator(String(input.selector))
-    : label
-      ? page
-          .getByLabel(label)
-          .or(page.getByPlaceholder(label))
-          .or(page.getByRole("textbox", { name: label }))
-      : page.locator("input:visible");
-
-  const field = locator.first();
+  const field = located.locator.first();
   const fixtureRefusal = await env.extension?.guardFixtureControl(field);
   if (fixtureRefusal) return fixtureRefusal;
   // Same hydration gate as click: values typed before listeners attach are
   // silently dropped by controlled inputs.
-  await waitForHydration(page, 1_000);
+  await waitForHydration(located.frame ?? env.page, 1_000);
   const named = label ?? (input.selector ? String(input.selector) : "field");
   const landed = () => {
     recordAction(env, {
       kind: "fill",
       ...(label ? { label } : {}),
       ...(input.selector ? { selector: String(input.selector) } : {}),
+      ...(located.frame ? { frame: frameKey(located.frame) } : {}),
       value: recordedValue,
       outcome: { urlAfter: env.page.url() },
     });
-    return usedSecret ? "Filled (credential substituted server-side)." : "Filled.";
+    const where = located.label ? ` inside ${located.label}` : "";
+    return usedSecret ? `Filled${where} (credential substituted server-side).` : `Filled${where}.`;
   };
+
+  if (usedSecret) return fillSecret(env, field, value, named, landed);
 
   try {
     await field.fill(value, { timeout: 8_000 });
@@ -1355,12 +1718,97 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   return landed();
 }
 
+// CHE-373: a substituted credential is written by one function running inside
+// the field's own document, which first checks that this document is on an
+// origin the run may act on. That is the ONLY place the question can be asked
+// truthfully. Asked in Node and then typed, question and write are apart in
+// time, and a locator follows its frame through a navigation: an embedded app
+// that bounces to its identity provider while we wait for hydration had the
+// provider's "Password" field receive the real test password while the tool
+// said it filled the app (4 of 14 timed runs in the cross-review of #222). The
+// address Node holds for a frame lags the document as well — it was still the
+// app's with the provider's page already in place — so there is no check in
+// Node beside this one to disagree with it. One synchronous task in the page
+// cannot be split by a navigation.
+//
+// insertText is what a keyboard does (beforeinput/input, so frameworks see
+// it); the value setter plus input/change is the fallback for a field that
+// refuses it. Returns "ok", "not-stuck", or "elsewhere <origin>" with nothing
+// written.
+//
+// location.origin, not self.origin: Location is unforgeable, while
+// window.origin is replaceable by the page's own script — a stranger's page
+// could set it to an origin we allow. The price is that a field inside a
+// srcdoc/about:blank frame of the app reads "null" and is refused too; a login
+// form living in such a frame has not been met, and refusing is the safe side.
+const WRITE_SECRET = (el: Element, arg: { value: string; origins: string[] }): string => {
+  if (!el.isConnected || !arg.origins.includes(location.origin)) return `elsewhere ${location.origin}`;
+  const text = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  (el as HTMLElement).focus();
+  if (text) text.select();
+  let inserted = false;
+  try {
+    inserted = document.execCommand("insertText", false, arg.value);
+  } catch {
+    inserted = false;
+  }
+  if (!text) return inserted && (el.textContent ?? "").includes(arg.value) ? "ok" : "not-stuck";
+  if (!inserted || text.value !== arg.value) {
+    const proto = text instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(text, arg.value);
+    else text.value = arg.value;
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    text.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  return text.value === arg.value ? "ok" : "not-stuck";
+};
+
+async function fillSecret(
+  env: ToolEnv,
+  field: Locator,
+  value: string,
+  named: string,
+  landed: () => string,
+): Promise<string> {
+  // Every origin this run may act on, as the document itself will spell its own.
+  const origins = [env.targetOrigin, ...(env.allowedOrigins ?? [])]
+    .map((o) => o.toLowerCase())
+    .filter((o) => isAllowedOrigin(env, o));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Like the plain fill's retry: a controlled input can drop a value written
+    // before it hydrated.
+    if (attempt) await env.page.waitForTimeout(600);
+    let outcome: string;
+    try {
+      outcome = await field.evaluate(WRITE_SECRET, { value, origins }, { timeout: 8_000 });
+    } catch (err) {
+      if (!isUndrivable(err)) throw err;
+      return recordUndriven(env, "fill", named, err);
+    }
+    if (outcome.startsWith("elsewhere")) {
+      // The field was found on the app and its document is another one now (a
+      // sign-in that bounced to its identity provider), or it never had an
+      // address of its own (srcdoc, about:blank, data:, sandboxed — "null",
+      // which cannot be told from a stranger's). The credential stays with us.
+      const at = outcome.slice("elsewhere ".length);
+      const where = at && at !== "null" ? at : "an embedded document with no address of its own";
+      return (
+        `Refused: will not enter test credentials on ${where} (outside the target app). Nothing was typed. ` +
+        `If the page moved, read it again before deciding what the step is.`
+      );
+    }
+    if (outcome === "ok" && (await field.inputValue().catch(() => value)) === value) return landed();
+  }
+  return recordUndriven(env, "fill", named, new Error(`the value did not stick in ${named}`));
+}
+
 // Exact accessible name first (CHE-79): getByRole's `name` matches SUBSTRINGS,
 // so clicking "Continue" on a Clerk modal picked "Continue with Google" (it
 // sits above the form in DOM order) and bounced the agent into OAuth — a false
 // broken/high on our own sign-in. When an exact-name match exists it wins;
 // the substring behavior stays as the fallback for the model's loose labels.
-async function resolveClickTarget(page: Page, input: Record<string, unknown>) {
+async function resolveClickTarget(page: LocatorScope, input: Record<string, unknown>): Promise<Locator> {
   if (input.role && input.name) {
     const exact = page.getByRole(String(input.role) as Parameters<Page["getByRole"]>[0], {
       name: String(input.name),
@@ -1369,6 +1817,188 @@ async function resolveClickTarget(page: Page, input: Record<string, unknown>) {
     if ((await exact.count().catch(() => 0)) > 0) return exact;
   }
   return resolveLocator(page, input);
+}
+
+// ─── CHE-373: embedded frames ────────────────────────────────────────────────
+//
+// A Shopify app renders inside admin.shopify.com in iframe[name=app-iframe],
+// served from the app's own origin. Playwright's page locators stop at a frame
+// boundary, same-origin or not, and read_page could open only a same-origin
+// frame's document — so the app itself was a "FRAMES: <src>" line the walk
+// could neither read nor press. Playwright reaches every frame through the
+// browser, whatever its origin; these helpers give the tools that reach.
+//
+// A frame is named by its 1-based position among the page's child frames
+// (page.frames() without the main frame), the same list for read_page and for
+// click/fill, so "FRAME 2" in a digest is the frame a following click means.
+
+// The four ways a tool finds a control, which a Page and a Frame both offer.
+type LocatorScope = Pick<Page, "getByRole" | "getByText" | "getByLabel" | "getByPlaceholder" | "locator">;
+
+// Reaching into frames is not a way past bot protection, which is out of scope
+// and prohibited (browser.ts, agentContextOptions): a challenge widget's frame
+// is never listed, so it can be neither read, searched nor picked — the walk
+// meets it exactly as it did before frames were reachable at all.
+const CHALLENGE_FRAME =
+  /^https:\/\/(?:[a-z0-9-]+\.)*(?:google\.com|recaptcha\.net)\/recaptcha\/|^https:\/\/(?:[a-z0-9-]+\.)*(?:hcaptcha\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)\/|^https:\/\/challenges\.cloudflare\.com\//i;
+
+// A bare ToolEnv in a script carries a stub page with no frames at all.
+function childFrames(page: Page): Frame[] {
+  if (typeof page.frames !== "function" || typeof page.mainFrame !== "function") return [];
+  const main = page.mainFrame();
+  return page.frames().filter((f) => f !== main && !f.isDetached() && !insideChallenge(f));
+}
+
+// The challenge's own frame, or any frame it nests.
+function insideChallenge(frame: Frame): boolean {
+  for (let f: Frame | null = frame; f; f = f.parentFrame()) {
+    if (CHALLENGE_FRAME.test(f.url())) return true;
+  }
+  return false;
+}
+
+function frameLabel(frame: Frame, index: number): string {
+  return `FRAME ${index + 1} (${urlOrigin(frame.url()) ?? frame.url()})`;
+}
+
+// "1" / "frame 1" / "FRAME 1 (…)" by number; "top" / "main" / "0" for the page
+// itself; otherwise the first frame whose name or URL contains the text.
+function pickFrame(page: Page, wanted: string): { frame: Frame | null; label: string | null } | null {
+  const text = wanted.trim();
+  if (/^(?:0|top|main|page)$/i.test(text)) return { frame: null, label: null };
+  const frames = childFrames(page);
+  const numbered = text.match(/^(?:frame\s*)?(\d+)\b/i);
+  if (numbered) {
+    const index = Number(numbered[1]) - 1;
+    return frames[index] ? { frame: frames[index], label: frameLabel(frames[index], index) } : null;
+  }
+  const needle = text.toLowerCase();
+  const index = frames.findIndex((f) => f.name().toLowerCase().includes(needle) || f.url().toLowerCase().includes(needle));
+  return index >= 0 ? { frame: frames[index], label: frameLabel(frames[index], index) } : null;
+}
+
+async function hasMatch(locator: Locator): Promise<boolean> {
+  try {
+    return (await locator.count()) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// The origin a frame acts for: its own, or — for about:blank and srcdoc, which
+// take their creator's, and data:, whose content its creator wrote — the
+// nearest ancestor's that has one. That is enough to press a button in it. A
+// credential is held to more: the secret write asks the document itself for
+// its location.origin (WRITE_SECRET), which is "null" in every one of these.
+function frameOrigin(frame: Frame): string | null {
+  for (let f: Frame | null = frame; f; f = f.parentFrame()) {
+    const origin = urlOrigin(f.url());
+    if (origin) return origin;
+  }
+  return null;
+}
+
+// Reading a frame is looking at the page; acting in one is acting on whoever
+// serves it. A payment field, a chat widget, an ad, a vendor's login: none of
+// them is the owner's to have us press, so click and fill act only in frames
+// on an origin this run may act on — the target's or one the owner allowed —
+// exactly as navigate and credential entry do.
+function mayActIn(env: ToolEnv, frame: Frame): boolean {
+  const origin = frameOrigin(frame);
+  return origin !== null && isAllowedOrigin(env, origin);
+}
+
+// Rule 2: a control we will not act in is OUR limit, never the customer's
+// homework. The answer names no setting for them to change — allowed origins
+// are theirs to set deliberately, not something a step solicits (the first
+// version of this text told the model to say the origin "would have to be
+// allowed for this app", which is an ask in every step that meets a widget).
+// And the machine half, as for any control our hands did not drive (CHE-214):
+// the refusal is recorded, so a step that blames the product after it becomes
+// skipped / our_capability at report time, whatever the model wrote.
+function outsideFrameRefusal(
+  env: ToolEnv,
+  hand: "fill" | "click",
+  input: Record<string, unknown>,
+  label: string,
+  frame: Frame,
+): string {
+  const origin = frameOrigin(frame) ?? frame.url();
+  const target = String(input.name ?? input.label ?? input.selector ?? "control");
+  env.undrivenControls?.push({ hand, target, reason: `inside an embedded frame outside the target app (${origin})` });
+  console.warn(`[${hand}] refused ${JSON.stringify(target)}: ${label} is outside the target app`);
+  return (
+    `Refused: ${label} is outside the target app (${origin}) — the checker does not act inside another ` +
+    `party's embedded frame, and that says NOTHING about the control. Do not report it broken, risky or ` +
+    `confusing. If the step needs this control, report it "skipped" with unverifiedReason ` +
+    `"our_capability". If it is a third party's widget the journey does not depend on (chat, ads, a ` +
+    `social embed), report it "skipped" with unverifiedReason "not_applicable" or leave it out.`
+  );
+}
+
+// How a recorded action names its frame for a replay (journey-replay.ts): the
+// frame's name, else its address without the query — the number is a position
+// on one page load, and an embedded app's query carries its session.
+function frameKey(frame: Frame): string {
+  if (frame.name()) return frame.name();
+  try {
+    const u = new URL(frame.url());
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return frame.url();
+  }
+}
+
+// The head of the answer when a named frame is not on the page. A replay reads
+// it as nothing having been pressed (journey-replay.ts classifyResult).
+export const NO_FRAME_MATCH = "No frame matches";
+
+interface Located {
+  locator: Locator;
+  frame: Frame | null;
+  label: string | null;
+}
+
+// Where a click or a fill acts. With `frame` named, there and nowhere else.
+// Without it: the page when the control is there — so a page with no frames
+// resolves exactly as it always did, and a page whose control is on top never
+// reaches into a frame — otherwise the first frame, in order, that has it and
+// may be acted in. A control found only in frames outside the target app is
+// refused, saying so. A control found nowhere resolves on the page, so the miss
+// reads as it always has (the click's own timeout, the fill's undriven-control
+// answer).
+async function locateAcrossFrames(
+  env: ToolEnv,
+  hand: "fill" | "click",
+  input: Record<string, unknown>,
+  build: (scope: LocatorScope) => Promise<Locator>,
+): Promise<Located | string> {
+  const wanted = input.frame === undefined || input.frame === null ? "" : String(input.frame).trim();
+  if (wanted) {
+    const picked = pickFrame(env.page, wanted);
+    if (!picked) {
+      return (
+        `${NO_FRAME_MATCH} "${wanted}" on this page. read_page lists the embedded frames as ` +
+        `FRAME <n> with their origin; pass that number, or leave frame out to search the page and every frame.`
+      );
+    }
+    if (picked.frame && !mayActIn(env, picked.frame)) {
+      return outsideFrameRefusal(env, hand, input, picked.label ?? "that frame", picked.frame);
+    }
+    return { locator: await build(picked.frame ?? env.page), ...picked };
+  }
+  const top = await build(env.page);
+  const frames = childFrames(env.page);
+  if (frames.length === 0 || (await hasMatch(top))) return { locator: top, frame: null, label: null };
+  let outside: { frame: Frame; label: string } | null = null;
+  for (let i = 0; i < frames.length; i++) {
+    const inFrame = await build(frames[i]).catch(() => null);
+    if (!inFrame || !(await hasMatch(inFrame))) continue;
+    if (mayActIn(env, frames[i])) return { locator: inFrame, frame: frames[i], label: frameLabel(frames[i], i) };
+    outside ??= { frame: frames[i], label: frameLabel(frames[i], i) };
+  }
+  if (outside) return outsideFrameRefusal(env, hand, input, outside.label, outside.frame);
+  return { locator: top, frame: null, label: null };
 }
 
 // CHE-82/83. An interaction that produced nothing for US is not a product
@@ -1543,23 +2173,35 @@ function bareHost(hostname: string): string {
 
 // The target and anything under it (api.target.test is theirs); www. is not a
 // different site.
-export function isTargetHost(hostname: string, targetOrigin: string): boolean {
-  let target: string;
-  try {
-    target = bareHost(new URL(targetOrigin).hostname);
-  } catch {
-    return false;
-  }
+// CHE-373: an origin the owner allowed for this app is the product too — the
+// embedding page an app lives in is where its users meet it. Its host EXACTLY:
+// an allowed admin.shopify.com does not make every *.shopify.com the product,
+// and a suffix that slipped past validation (allowed-origins.ts) cannot make a
+// whole namespace of strangers' sites evidence against the customer (rule 8).
+export function isTargetHost(hostname: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
   const host = bareHost(hostname);
-  return host === target || host.endsWith(`.${target}`);
+  try {
+    const own = bareHost(new URL(targetOrigin).hostname);
+    if (host === own || host.endsWith(`.${own}`)) return true;
+  } catch {
+    // A target that is not a URL owns no host; the allowed list still applies.
+  }
+  const exact = hostname.toLowerCase();
+  return allowedOrigins.some((origin) => {
+    try {
+      return new URL(origin).hostname.toLowerCase() === exact;
+    } catch {
+      return false;
+    }
+  });
 }
 
-function evidenceAgainstProduct(text: string, targetOrigin: string): boolean {
+function evidenceAgainstProduct(text: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
   for (const sentence of splitSentences(text)) {
     if (CONSOLE_EVIDENCE.test(sentence)) return true;
     if (!HTTP_ERROR_STATUS.test(sentence) || /\bUNREACHABLE\b/.test(sentence)) continue;
     const hosts = citedHosts(sentence);
-    const foreign = hosts.filter((h) => !isTargetHost(h, targetOrigin));
+    const foreign = hosts.filter((h) => !isTargetHost(h, targetOrigin, allowedOrigins));
     if (foreign.length === 0) return true;
     if (foreign.length < hosts.length || BARE_PATH.test(sentence)) return true;
   }
@@ -1635,16 +2277,17 @@ export function coerceUndrivenControl(
     : UNVERIFIABLE_FALLBACK;
 }
 
-export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin">): void {
+export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
   if (step.status !== "risky" && step.status !== "confusing" && step.status !== "broken") return;
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
   if (!EGRESS_PHRASE.test(text)) return;
-  const foreign = citedHosts(text).filter((h) => !isTargetHost(h, env.targetOrigin));
+  const allowed = env.allowedOrigins ?? [];
+  const foreign = citedHosts(text).filter((h) => !isTargetHost(h, env.targetOrigin, allowed));
   // A timeout with no foreign host named is about the product itself unless
   // the tool's own word is there — verify_links names UNREACHABLE and nothing
   // else does.
   if (foreign.length === 0 && !/\bUNREACHABLE\b/.test(text)) return;
-  if (evidenceAgainstProduct(text, env.targetOrigin)) return;
+  if (evidenceAgainstProduct(text, env.targetOrigin, allowed)) return;
   console.warn(`[report_step] "${step.label}": ${step.status} on an unreachable host (${listHosts(foreign)}) → skipped`);
   step.status = "skipped";
   step.unverifiedReason = "our_capability";
@@ -1837,7 +2480,7 @@ function unreachableReason(err: unknown): string {
   return `connection failed: ${message.slice(0, 60)}`;
 }
 
-async function verifyLinks(input: Record<string, unknown>, targetOrigin: string): Promise<string> {
+async function verifyLinks(input: Record<string, unknown>, targetOrigin: string, allowedOrigins: readonly string[] = []): Promise<string> {
   const raw = Array.isArray(input.urls) ? input.urls.map(String) : [];
   const mailtos = [...new Set(raw)].filter((u) => /^mailto:/i.test(u)).slice(0, 60);
   const urls = [...new Set(raw)].filter((u) => /^https?:\/\//i.test(u)).slice(0, 60);
@@ -1870,7 +2513,7 @@ async function verifyLinks(input: Record<string, unknown>, targetOrigin: string)
       }
       const gated =
         GATING_STATUSES.has(res.status) &&
-        (res.status === 429 || !answeredBy || !isTargetHost(answeredBy, targetOrigin));
+        (res.status === 429 || !answeredBy || !isTargetHost(answeredBy, targetOrigin, allowedOrigins));
       if (gated) return `UNREACHABLE (HTTP ${res.status} from ${answeredBy || "the host"}) ${url}`;
       return `BROKEN ${res.status}${via} ${url}`;
     } catch (err) {
@@ -1891,7 +2534,7 @@ async function verifyLinks(input: Record<string, unknown>, targetOrigin: string)
   return `${summary}${note}\n${results.join("\n")}`;
 }
 
-function resolveLocator(page: Page, input: Record<string, unknown>) {
+function resolveLocator(page: LocatorScope, input: Record<string, unknown>): Locator {
   if (input.selector) return page.locator(String(input.selector));
   if (input.role) {
     return page.getByRole(String(input.role) as Parameters<Page["getByRole"]>[0], {
@@ -1923,18 +2566,41 @@ async function screenshot(env: ToolEnv, input: Record<string, unknown> = {}): Pr
 
 // Privacy §5: blur password fields before any screenshot. Covers native
 // type=password plus "show password" toggles that flip it to type=text.
-async function blurPasswordFields(page: Pick<Page, "evaluate">): Promise<void> {
-  await page
-    .evaluate(() => {
-      document
-        .querySelectorAll<HTMLInputElement>(
-          'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[name*="pass" i]',
-        )
-        .forEach((el) => {
-          el.style.filter = "blur(6px)";
-        });
-    })
-    .catch(() => {});
+// CHE-373: in every frame too — fill now types the test password into an
+// embedded frame, and the screenshot shows that frame as part of the page.
+async function blurPasswordFields(page: Pick<Page, "evaluate"> & Partial<Pick<Page, "frames" | "mainFrame">>): Promise<void> {
+  const blur = () => {
+    document
+      .querySelectorAll<HTMLInputElement>(
+        'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[name*="pass" i]',
+      )
+      .forEach((el) => {
+        el.style.filter = "blur(6px)";
+      });
+  };
+  await page.evaluate(blur).catch(() => {});
+  const frames = typeof page.frames === "function" ? childFrames(page as Page) : [];
+  await Promise.all(frames.map((frame) => withinMs(frame.evaluate(blur), FRAME_EVALUATE_MS, undefined)));
+}
+
+// CHE-373: a frame still loading has no document to evaluate in yet, and
+// Playwright waits for one. No read of a frame may hold the walk up.
+const FRAME_EVALUATE_MS = 3_000;
+
+function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
 }
 
 function drainLogs(env: ToolEnv): string {
@@ -1949,9 +2615,10 @@ function drainLogs(env: ToolEnv): string {
   ].join("\n");
 }
 
-// Structured page digest — the agent's primary "eyes".
-async function readPage(env: ToolEnv): Promise<string> {
-  const digest = await env.page.evaluate(() => {
+// Structured page digest — the agent's primary "eyes". One reader for the page
+// and for each embedded frame (CHE-373): evaluated inside whichever document it
+// is handed, so a frame from another origin is read from within, as itself.
+const PAGE_DIGEST = () => {
     const clip = (s: string | null | undefined, n = 80) =>
       (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
     const roots: Array<Document | ShadowRoot> = [document];
@@ -2017,13 +2684,15 @@ async function readPage(env: ToolEnv): Promise<string> {
       fields,
       shadowText,
       frameUrls,
+      // CHE-373: shown for a frame only (see frameSections) — an embedded app's
+      // status line or empty state is often plain text with no heading.
+      text: clip(document.body?.innerText, 1500),
     };
-  });
-  // CHE-171: the page read is published (it rendered), and so is everything
-  // it links to. Relative hrefs the stub or an old digest may carry resolve
-  // against the page itself.
-  rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+};
 
+type PageDigest = ReturnType<typeof PAGE_DIGEST>;
+
+function digestSections(digest: PageDigest): string[] {
   return [
     `URL: ${digest.url}`,
     `TITLE: ${digest.title}`,
@@ -2033,7 +2702,81 @@ async function readPage(env: ToolEnv): Promise<string> {
     `FORM FIELDS:\n${digest.fields.join("\n") || "(none)"}`,
     ...(digest.shadowText?.length ? [`SHADOW PANELS:\n${digest.shadowText.join("\n").slice(0, 8000)}`] : []),
     ...(digest.frameUrls?.length ? [`FRAMES:\n${digest.frameUrls.join("\n")}`] : []),
-  ].join("\n\n");
+  ];
+}
+
+async function readPage(env: ToolEnv): Promise<string> {
+  const digest = await env.page.evaluate(PAGE_DIGEST);
+  // CHE-171: the page read is published (it rendered), and so is everything
+  // it links to. Relative hrefs the stub or an old digest may carry resolve
+  // against the page itself.
+  rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+
+  return [...digestSections(digest), ...(await frameSections(env, digest.url))].join("\n\n");
+}
+
+// CHE-373: how much of a frame the digest carries. Three frames is more than
+// any embedded app has shown us (the app, perhaps a payment or chat widget);
+// past that it is ads and trackers, and the context is the walk's budget.
+const MAX_FRAMES_READ = 3;
+const FRAME_SECTION_CHARS = 5_000;
+// Smaller than this on either side is a pixel, a beacon or a hidden helper.
+const MIN_FRAME_SIDE_PX = 20;
+
+// A frame whose document the page reader already walked into: same origin as
+// the page all the way up (an about:blank or srcdoc frame takes its parent's
+// origin). Reading it again would print its controls twice.
+function readWithPage(frame: Frame, pageOrigin: string | null): boolean {
+  for (let f: Frame | null = frame; f && f.parentFrame(); f = f.parentFrame()) {
+    const origin = urlOrigin(f.url());
+    if (origin === null) continue;
+    if (origin !== pageOrigin) return false;
+  }
+  return true;
+}
+
+// A frame worth showing: big enough to be seen. When its size cannot be read
+// the frame is kept — losing an app costs more than printing a widget.
+async function visibleFrame(frame: Frame): Promise<boolean> {
+  const element = await withinMs(frame.frameElement(), FRAME_EVALUATE_MS, null);
+  if (!element) return true;
+  const box = await withinMs(element.boundingBox(), FRAME_EVALUATE_MS, undefined);
+  await element.dispose().catch(() => {});
+  if (box === undefined) return true;
+  return box !== null && box.width >= MIN_FRAME_SIDE_PX && box.height >= MIN_FRAME_SIDE_PX;
+}
+
+function meaningfulDigest(d: PageDigest): boolean {
+  return Boolean(
+    d.headings.length || d.links.length || d.buttons.length || d.fields.length || d.shadowText.length || (d.text ?? "").length >= 20,
+  );
+}
+
+async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
+  const frames = childFrames(env.page);
+  const pageOrigin = urlOrigin(pageUrl);
+  const sections: string[] = [];
+  for (let i = 0; i < frames.length && sections.length < MAX_FRAMES_READ; i++) {
+    const frame = frames[i];
+    if (readWithPage(frame, pageOrigin)) continue;
+    // Only the product's own documents enter the prompt: the target's origin or
+    // one the owner allowed. A chat widget, a payment field, a vendor's login
+    // stay the "FRAMES: <src>" line they always were — their words in front of
+    // the model invite findings about a third party's widget (rule 8).
+    if (!mayActIn(env, frame)) continue;
+    if (!(await visibleFrame(frame))) continue;
+    const digest = await withinMs(frame.evaluate(PAGE_DIGEST), FRAME_EVALUATE_MS, null);
+    if (!digest || !meaningfulDigest(digest)) continue;
+    // What an embedded app links to is published by it, like the page's own.
+    rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+    const name = frame.name() ? `, name ${frame.name()}` : "";
+    const header = `FRAME ${i + 1} (origin ${frameOrigin(frame) ?? frame.url()}${name}) — click/fill inside it with frame "${i + 1}":`;
+    const body = [...digestSections(digest), ...(digest.text ? [`TEXT:\n${digest.text}`] : [])].join("\n\n");
+    // The frame's TEXT is the whole visible document, which is where an app
+    // shows "signed in as …" — the test account's email never reaches the model.
+    sections.push(scrubSecrets(env, `${header}\n${body}`).slice(0, FRAME_SECTION_CHARS));
+  }
+  return sections;
 }
 
 // Counts every DOM mutation from document creation onward. Gives interactions
@@ -2042,13 +2785,199 @@ async function readPage(env: ToolEnv): Promise<string> {
 // N mutations" is client-side validation / in-page state change — a real
 // difference the model previously could not see. Kept as a plain string so
 // esbuild cannot inject helpers into it.
+//
+// CHE-392: it also keeps the last few pieces of TEXT that appeared — a label
+// that flips to "copied ✓" for a second and a half, a toast, a validation line
+// that clears. A count says the page reacted; only the text says how, and by
+// the next read_page it is gone: run #294 reported "no Copied confirmation" on
+// a button that had shown one, because nothing we had could see it. Each entry
+// carries a running number so a click can ask for what came after it.
+//
+// Text is recorded only while a click is watching (__cmaWatch, a few seconds),
+// and "became visible" means: a text node a person can see now — rendered, with
+// a box, inside the viewport, not cut off by a one-pixel container — whose
+// text they could not read anywhere on the screen when the watch began. The
+// unit is the text node, asked one by one: a visible block can hold a hidden
+// or transparent error beside its "Saved". Ways text gets there, each one a
+// way to report a confirmation as missing if left out:
+//   - a node is added, or its text changes;
+//   - a node that was in the page all along is revealed (hidden removed, a
+//     class, style or data-state changed) — hence the list of what was visible
+//     at the start;
+//   - a node arrives transparent or off-screen and fades or slides in — hence
+//     the second look.
+// And ways to report one that nobody saw, each found in review of #242:
+//   - text for screen readers only (an aria-live announcer in a 1px clipped
+//     box; Next.js writes every new page's title into one, inside an open
+//     shadow root, on every client-side navigation);
+//   - a component re-mounted with the words it already showed;
+//   - an accessible name, which is not text on the page — kept apart ('name').
+// What became visible together is one piece; a piece too long to be a message
+// is a region re-rendering: read_page's.
+//
+// Still not seen, and so still "nothing became visible": a confirmation with
+// no text node (an icon swapped, ::after content), text in a closed shadow
+// root, and text under another layer is not told from text on top. Nothing
+// here says the click CAUSED the text: a clock ticks by itself.
 const MUTATION_COUNTER_SCRIPT = `(() => {
   window.__cmaMutations = 0;
+  window.__cmaAppeared = [];
+  window.__cmaAppearedSeq = 0;
   try {
     window.__cmaMutationObserver?.disconnect();
-    const observer = new MutationObserver((records) => { window.__cmaMutations += records.length; });
-    observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    let watchUntil = 0;
+    let spent = 0;
+    let nodesAtStart = new WeakSet();
+    let textAtStart = new Set();
+    let namesBefore = new Set();
+    let asked = new WeakSet();
+    let later = [];
+    let laterNodes = 0;
+    let timer = 0;
+    const clean = (raw) => String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+    const parentOf = (node) => node.parentElement || (node.parentNode && node.parentNode.host) || null;
+    const rendered = (el) => !!el && el.isConnected && !el.closest('script,style,noscript,template') &&
+      (typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+    // A box of a pixel that cuts off what is inside it: how text is kept for
+    // screen readers only. (A box with no height that does NOT cut — a toast
+    // list whose toasts are positioned out of it — hides nothing.)
+    const cutOff = (el) => {
+      for (let a = el, depth = 0; a && depth < 12; a = parentOf(a), depth++) {
+        const box = a.getBoundingClientRect();
+        if (box.width > 1 && box.height > 1) continue;
+        const style = getComputedStyle(a);
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible' ||
+            (style.clip && style.clip !== 'auto') || (style.clipPath && style.clipPath !== 'none')) return true;
+      }
+      return false;
+    };
+    const shown = (textNode) => {
+      const el = parentOf(textNode);
+      if (!rendered(el)) return false;
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const box = range.getBoundingClientRect();
+      if (box.width <= 1 || box.height <= 1) return false;
+      if (box.bottom <= 0 || box.right <= 0 || box.top >= window.innerHeight || box.left >= window.innerWidth) return false;
+      return !cutOff(el);
+    };
+    const note = (text, kind) => {
+      if (!text || text.length > ${APPEARED_MAX_CHARS}) return;
+      const log = window.__cmaAppeared;
+      const last = log[log.length - 1];
+      if (last && last.t === text && last.k === kind) return;
+      log.push({ n: ++window.__cmaAppearedSeq, t: text, k: kind });
+      if (log.length > 40) log.splice(0, log.length - 40);
+    };
+    // Mutations do not cross a shadow boundary, and neither does a tree walk:
+    // a copy button inside a web component would change its label unseen and
+    // uncounted. Every open shadow root met on a walk is walked too, and
+    // watched from then on. (A closed one is closed to us as to any script.)
+    const OPTIONS = { subtree: true, childList: true, attributes: true, characterData: true, attributeOldValue: true };
+    const watched = new WeakSet();
+    const enter = (shadow, limit, found) => {
+      if (!watched.has(shadow)) { watched.add(shadow); observer.observe(shadow, OPTIONS); }
+      walk(shadow, limit, found);
+    };
+    const walk = (root, limit, found) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      let steps = 0;
+      while (found.length < limit && steps++ < limit * 20 && walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.nodeType === 3) { if (node.data.trim()) found.push(node); }
+        else if (node.shadowRoot) enter(node.shadowRoot, limit, found);
+      }
+    };
+    const textNodes = (root, limit) => {
+      if (root.nodeType === 3) return root.data.trim() ? [root] : [];
+      if (root.nodeType !== 1) return [];
+      const found = [];
+      if (root.shadowRoot) enter(root.shadowRoot, limit, found);
+      walk(root, limit, found);
+      return found;
+    };
+    // Of a group, what a person can see now and could not read anywhere on the
+    // screen before. → whether the group has shown itself (and is done with).
+    const say = (nodes) => {
+      const seen = nodes.filter(shown);
+      if (!seen.length) return false;
+      note(clean(seen.map((n) => n.data).filter((t) => !textAtStart.has(clean(t))).join(' ')), 'text');
+      return true;
+    };
+    const consider = (nodes) => {
+      if (!nodes.length || say(nodes) || laterNodes + nodes.length > 2000) return;
+      later.push(nodes);
+      laterNodes += nodes.length;
+    };
+    // The watch is a guest on the page it is judging. Past its allowance it
+    // stops recording — what it had already seen stays true.
+    const within = (work) => {
+      const began = performance.now();
+      try { work(); } catch (e) {}
+      spent += performance.now() - began;
+      if (spent > 150) { watchUntil = 0; later = []; laterNodes = 0; }
+    };
+    const lookAgain = () => {
+      timer = 0;
+      if (Date.now() > watchUntil) { later = []; laterNodes = 0; return; }
+      within(() => {
+        later = later.filter((nodes) => nodes.some((n) => n.isConnected) && !say(nodes));
+        laterNodes = later.reduce((sum, nodes) => sum + nodes.length, 0);
+      });
+      if (later.length) timer = setTimeout(lookAgain, 250);
+    };
+    const REVEALS = /^(class|style|hidden|open|aria-hidden|aria-expanded|data-.+)$/;
+    const observer = new MutationObserver((records) => {
+      window.__cmaMutations += records.length;
+      if (Date.now() > watchUntil) return;
+      within(() => {
+        // One walk per element per batch, however many of its attributes moved.
+        const revealed = new Set();
+        for (const r of records) {
+          if (r.type === 'characterData') consider(textNodes(r.target, 1));
+          else if (r.type === 'childList') {
+            for (const added of r.addedNodes) consider(textNodes(added, 400));
+          } else if (r.attributeName === 'aria-label' || r.attributeName === 'title') {
+            namesBefore.add(clean(r.oldValue));
+            const name = clean(r.target.getAttribute(r.attributeName));
+            if (name && !namesBefore.has(name) && rendered(r.target)) note(name, 'name');
+          } else if (REVEALS.test(r.attributeName || '')) revealed.add(r.target);
+        }
+        for (const target of revealed) {
+          const fresh = textNodes(target, 4000).filter((n) => !nodesAtStart.has(n) && !asked.has(n));
+          for (const n of fresh) asked.add(n);
+          consider(fresh);
+        }
+      });
+      if (later.length && !timer) timer = setTimeout(lookAgain, 120);
+    });
+    observer.observe(document, OPTIONS);
     window.__cmaMutationObserver = observer;
+    window.__cmaWatch = () => {
+      watchUntil = 0;
+      spent = 0;
+      later = [];
+      laterNodes = 0;
+      nodesAtStart = new WeakSet();
+      textAtStart = new Set();
+      namesBefore = new Set();
+      asked = new WeakSet();
+      try {
+        const began = performance.now();
+        // This walk is also what finds the shadow roots there are now.
+        const all = textNodes(document.documentElement, 30000);
+        // A page too large or too slow to list is one where "became visible"
+        // cannot be told from "was there": the watch then stays off and the
+        // click reports nothing of this kind, rather than something wrong.
+        if (all.length >= 30000) return window.__cmaAppearedSeq;
+        for (let i = 0; i < all.length; i++) {
+          if (shown(all[i])) { nodesAtStart.add(all[i]); textAtStart.add(clean(all[i].data)); }
+          if ((i & 127) === 127 && performance.now() - began > 250) return window.__cmaAppearedSeq;
+        }
+        watchUntil = Date.now() + 6000;
+      } catch (e) {}
+      return window.__cmaAppearedSeq;
+    };
   } catch (e) {}
 })();`;
 
