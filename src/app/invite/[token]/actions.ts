@@ -10,6 +10,7 @@
 
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { refuseSelfCheck } from "@/lib/self-check-action";
 import { decideAccept, hashInviteToken } from "@/lib/invites";
 import { personalTeamId } from "@/lib/teams";
 import { syncTeamSeats } from "@/lib/billing-sync";
@@ -18,6 +19,7 @@ import { getStripeEnv } from "@/lib/stripe";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 export async function acceptInviteAction(token: string): Promise<void> {
+  await refuseSelfCheck(`/invite/${token}`);
   const { user, db } = await requireUser();
 
   const invite = await db.teamInvite.findUnique({
