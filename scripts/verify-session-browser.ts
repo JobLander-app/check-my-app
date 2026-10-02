@@ -23,9 +23,14 @@ import { join } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
 import type { Browser } from "@cloudflare/playwright";
 import type { AgentEnv } from "@/agent/env";
+import type { Page } from "@cloudflare/playwright";
+import type { ToolEnv } from "@/agent/tools";
 import {
   askForSession,
+  inSignedInSession,
   isSessionTarget,
+  isSignOutAddress,
+  isSignOutText,
   releaseSession,
   SESSION_WAIT_MAX_SECONDS,
   SESSION_WAIT_MIN_SECONDS,
@@ -117,9 +122,29 @@ async function main() {
   check("kind: only \"session\" is a session target", isSessionTarget({ targetKind: "session" }) && !isSessionTarget({ targetKind: "website" }) && !isSessionTarget({ targetKind: "extension" }) && !isSessionTarget({}));
 
   // ── the product, the person's browser, the host's server ──
+  // Every request that would end the sign-in, however it was made.
+  const signOuts: string[] = [];
   const site = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://site");
-    if (url.pathname === "/signin") {
+    if (["/logout", "/auth/sign_out", "/session/logout", "/account/switch"].includes(url.pathname)) {
+      signOuts.push(`${req.method} ${url.pathname}`);
+      res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": "session=; Path=/; Max-Age=0" });
+      res.end("<!doctype html><title>Signed out</title><h1>Signed out</h1>");
+    } else if (url.pathname === "/admin/menu") {
+      // The ways a product offers to end a sign-in: by its words, by a name
+      // only a screen reader hears, by where a link leads, by the form a
+      // button sends — and one control that does none of it.
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><title>Menu</title><nav>
+        <a href="/logout">Log out</a>
+        <button id="icon" aria-label="Sign out" onclick="location.href='/logout'">⎋</button>
+        <a id="leave" href="/auth/sign_out">Leave</a>
+        <form action="/session/logout" method="post"><button id="bye">Goodbye</button></form>
+        <a href="/account/switch"><span id="inner">Switch account</span></a>
+        <a id="docs" href="/admin?logout-guide">How signing out works</a>
+        <a href="/admin?next">Next</a>
+      </nav>`);
+    } else if (url.pathname === "/signin") {
       res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": `session=${COOKIE}; Path=/; HttpOnly` });
       res.end("<!doctype html><title>Signed in</title><h1>Signed in</h1>");
     } else if (url.pathname === "/admin") {
@@ -246,6 +271,40 @@ async function main() {
     await closeAgentBrowser(again.browser);
     check("closeAgentBrowser: disconnected; the person's tab alone remains", !again.browser.isConnected() && (await until(onlyThePersonsTab)));
 
+    // ── the person's sign-in is not ours to end ──
+    // The real tools (src/agent/tools.ts), on a tab of the run's inside the
+    // session, against a menu that offers every way out.
+    const { executeTool, prepareAgentPage } = await import("@/agent/tools");
+    const guarded = await SessionBrowser.open(host, RUN_A, connect, fetchImpl);
+    const menuPage = await guarded.newPage();
+    const toolEnv = { page: menuPage, targetOrigin: SITE, credentials: { rejected: false }, networkLog: [], consoleLog: [], actionTrail: [], undrivenControls: [] } as unknown as ToolEnv;
+    await prepareAgentPage(toolEnv);
+    const opened = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/menu` });
+    check("the tools work in a tab inside the session", opened.startsWith("Navigated") && inSignedInSession(menuPage) && !inSignedInSession(personTab as unknown as Page), opened.slice(0, 80));
+    const refusedAt = async (name: string, how: string, input: Record<string, unknown>) => {
+      const result = await executeTool(toolEnv, how, input);
+      check(`signing out is refused: ${name}`, result.startsWith("Refused:") && result.includes("not_applicable") && menuPage.url() === `${SITE}/admin/menu`, result.slice(0, 110));
+    };
+    await refusedAt("a sign-out address, typed", "navigate", { url: `${SITE}/logout` });
+    await refusedAt("a sign-out address in the query", "navigate", { url: `${SITE}/admin?action=logout` });
+    await refusedAt("\"Log out\" by its name", "click", { role: "link", name: "Log out" });
+    await refusedAt("an icon button whose accessible name is \"Sign out\", clicked by selector", "click", { selector: "#icon" });
+    await refusedAt("a link called \"Leave\" that leads to a sign-out address", "click", { selector: "#leave" });
+    await refusedAt("a button called \"Goodbye\" whose form posts to a sign-out address", "click", { selector: "#bye" });
+    await refusedAt("\"Switch account\", clicked on the text inside the link", "click", { selector: "#inner" });
+    check("…and none of it reached the product", signOuts.length === 0, signOuts.join(", "));
+    const walkedOn = await executeTool(toolEnv, "click", { role: "link", name: "Next" });
+    check("an ordinary link in the same menu is still pressed", walkedOn.startsWith("Clicked") && menuPage.url() === `${SITE}/admin?next`, walkedOn.slice(0, 80));
+    check("…and the run's tab is still signed in", (await menuPage.locator("#who").innerText()) === "signed in");
+    // The rules themselves: words, and addresses — never a word inside a longer one.
+    check("words: the ways a product says it",
+      ["Log out", "Logout", "Sign out", "log-out", "Sign off", "Switch accounts", "Use another account", "Remove this account", 'a[href="/logout"]'].every(isSignOutText) &&
+        !["Sign in", "Log in", "Checkout", "Blog outline", "Design options", "Next", "Lockout policy"].some(isSignOutText));
+    check("addresses: a path segment or a query value",
+      ["/logout", "/auth/sign_out", "/users/sign-out", "/account/logout?next=/", "/admin?action=logout", "https://x.test/session/logoff"].every((a) => isSignOutAddress(a, SITE)) &&
+        !["/blog/outline", "/catalog/outdoor", "/design-office", "/admin?next", "/checkout", "/dialogout"].some((a) => isSignOutAddress(a, SITE)));
+    await guarded.close();
+
     // ── the end of the run ──
     check("releaseSession: the host is given back", (await releaseSession(host, RUN_A, fetchImpl)) === true && (await state()).lease === null);
     check("releaseSession: nothing held is not an error", (await releaseSession(host, RUN_A, fetchImpl)) === false);
@@ -368,7 +427,20 @@ async function main() {
     }
     check("a refused lease is an internal error", refused.startsWith("internal:") && refused.includes("401"), refused);
 
-    check("after all of it: the person's tab, signed in, and nothing else", (await onlyThePersonsTab()) && !personTab.isClosed());
+    check("after all of it: the person's tab, signed in, and nothing else",
+      (await onlyThePersonsTab()) && !personTab.isClosed() && (await person.cookies(SITE)).some((c) => c.name === "session" && c.value === COOKIE));
+
+    // Last, because it ends the sign-in: the refusal belongs to a signed-in
+    // session only. In an ordinary check — a browser of our own, a test account
+    // — "Log out" is part of the product and is pressed like anything else.
+    const ordinary = await person.newPage();
+    const ordinaryEnv = { page: ordinary, targetOrigin: SITE, credentials: { rejected: false }, networkLog: [], consoleLog: [], actionTrail: [], undrivenControls: [] } as unknown as ToolEnv;
+    await prepareAgentPage(ordinaryEnv);
+    await executeTool(ordinaryEnv, "navigate", { url: `${SITE}/admin/menu` });
+    const pressed = await executeTool(ordinaryEnv, "click", { selector: "#leave" });
+    check("outside a signed-in session the same control is pressed: signing out is the product's to offer",
+      pressed.startsWith("Clicked") && signOuts.join() === "GET /auth/sign_out", `${pressed.slice(0, 60)} | ${signOuts.join(", ")}`);
+    await ordinary.close();
   } finally {
     const within = (work: () => Promise<unknown>) => Promise.race([work().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5_000))]);
     await within(() => server.close());

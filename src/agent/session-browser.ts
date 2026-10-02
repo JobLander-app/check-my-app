@@ -16,7 +16,7 @@
 // The context is the person's; the only pages a run may touch are the ones
 // `newPage` handed out.
 
-import type { Browser, BrowserContext, Page } from "@cloudflare/playwright";
+import type { Browser, BrowserContext, Locator, Page } from "@cloudflare/playwright";
 import type { AgentBindings } from "./env";
 
 export const SESSION_KIND = "session";
@@ -70,6 +70,12 @@ const VIEWPORT = { width: 1366, height: 900 };
 
 const sessions = new WeakMap<Browser, SessionBrowser>();
 export const sessionBrowserFor = (browser: Browser) => sessions.get(browser);
+// Is this page a tab inside a person's signed-in session? Asked of the page
+// itself — the browser it belongs to — so no caller has to remember to say so.
+export function inSignedInSession(page: Page): boolean {
+  const browser = page.context().browser();
+  return Boolean(browser && sessions.has(browser));
+}
 
 function headers(host: SessionHost, extra?: HeadersInit): Headers {
   const out = new Headers(extra);
@@ -224,6 +230,102 @@ export class SessionBrowser {
     await this.closePages();
     await this.browser.close().catch(() => {});
   }
+}
+
+// ── the person's sign-in is not ours to end ──
+//
+// A run in this browser stands inside a sign-in a person made by hand, past a
+// captcha we never solve. One click on "Log out" — or one visit to a sign-out
+// address — clears it for every later phase and every later run, until that
+// person comes back. So a session run never signs out, never switches the
+// account, and never opens an address that does: refused in the tools, by what
+// the control IS (its text, its accessible name, where it leads, the form it
+// submits), not by what the model called it (Codex on #248).
+//
+// Known limit, said so it is not mistaken for coverage: a control whose text
+// and address say nothing of signing out, and whose script signs out anyway,
+// is not seen here.
+const SIGN_OUT_WORDS =
+  /\b(log\s?-?out|sign\s?-?out|log\s?-?off|sign\s?-?off|switch (accounts?|users?)|change accounts?|use (a different|another) account|(remove|forget) (this |the )?account|sign in (as|with) (a different|another))\b/i;
+// "/logout", "/auth/sign_out", "/users/sign-out", "?action=logout" — a path
+// segment or a query value, never a word inside a longer one ("/blog/outline").
+const SIGN_OUT_ADDRESS = /(^|[/._=?&-])(log[-_]?out|sign[-_]?out|log[-_]?off|sign[-_]?off)([/._=?&#-]|$)/i;
+
+export function isSignOutText(text: string | null | undefined): boolean {
+  return Boolean(text && SIGN_OUT_WORDS.test(text));
+}
+
+export function isSignOutAddress(url: string | null | undefined, base?: string): boolean {
+  if (!url) return false;
+  let address = url;
+  try {
+    const parsed = new URL(url, base);
+    address = `${parsed.pathname}${parsed.search}`;
+  } catch {
+    /* not an address we can resolve — judged as written */
+  }
+  return SIGN_OUT_ADDRESS.test(address);
+}
+
+export interface ControlSeen {
+  texts: string[];
+  addresses: string[];
+  base?: string;
+}
+
+// → what about the control says "this signs out", or null.
+export function signOutIn(control: ControlSeen): string | null {
+  const text = control.texts.find((t) => isSignOutText(t));
+  if (text) return text.trim().replace(/\s+/g, " ").slice(0, 80);
+  const address = control.addresses.find((a) => isSignOutAddress(a, control.base));
+  return address ? address.slice(0, 120) : null;
+}
+
+// What a control is, read off the page: its own text and name, those of the
+// link / button / menu item it sits in, where it leads, and — for a submit —
+// the form it sends. Null when it could not be read (the click that follows
+// then fails or not on its own account).
+export async function controlSeen(locator: Locator): Promise<ControlSeen | null> {
+  return locator
+    .evaluate(
+      (el) => {
+        const texts: string[] = [];
+        const addresses: string[] = [];
+        let node: Element | null = el;
+        for (let depth = 0; node && depth < 5; depth++) {
+          if (depth === 0 || node.matches("a, button, summary, [role=button], [role=menuitem], [role=link], [role=option]")) {
+            texts.push(
+              (node as HTMLElement).innerText ?? node.textContent ?? "",
+              node.getAttribute("aria-label") ?? "",
+              node.getAttribute("title") ?? "",
+              node.getAttribute("value") ?? "",
+            );
+            addresses.push(node.getAttribute("href") ?? "", node.getAttribute("formaction") ?? "", node.getAttribute("data-href") ?? "", node.getAttribute("data-url") ?? "");
+          }
+          node = node.parentElement;
+        }
+        const form = el.closest("form");
+        if (form && el.closest("button, input[type=submit], input[type=image]")) addresses.push(form.getAttribute("action") ?? "");
+        return {
+          texts: texts.map((t) => t.trim().slice(0, 200)).filter(Boolean),
+          addresses: addresses.filter(Boolean),
+          base: document.baseURI,
+        };
+      },
+      undefined,
+      { timeout: 3_000 },
+    )
+    .catch(() => null);
+}
+
+// What the walk is told. It names the product's control and nothing of ours.
+export function signOutRefusal(what: string): string {
+  return (
+    `Refused: "${what}" would sign this account out, and every check of this app runs inside that ` +
+    `sign-in. Signing out, switching the account and opening a sign-out address are never done. ` +
+    `Confirm the control is present and reachable, report the step "skipped" with unverifiedReason ` +
+    `"not_applicable", and go on with what can be checked while signed in.`
+  );
 }
 
 // End of the run: give the host back. Safe to call when nothing is held.
