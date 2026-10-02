@@ -27,10 +27,14 @@ import { startSessionServer } from "../spikes/shopify-session/session-server.mjs
 
 let failures = 0;
 async function check(name, fn) {
+  let timer;
   try {
-    await fn();
+    // A check that waits for a close that never comes must fail, not hang CI.
+    await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("did not finish in 30 s")), 30_000); })]);
+    clearTimeout(timer);
     console.log(`ok   ${name}`);
   } catch (error) {
+    clearTimeout(timer);
     failures++;
     console.log(`FAIL ${name}\n     ${String(error?.message ?? error).split("\n").join("\n     ")}`);
   }
