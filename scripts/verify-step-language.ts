@@ -456,6 +456,11 @@ async function main() {
     "The checker could not locate the checkout button.",
     "The screenshot did not show the modal after Save was clicked.",
     "The screenshot failed to capture the open menu.",
+    // round 2 of Codex on #246
+    "The model could not click the Save button.",
+    "The model was unable to interact with the checkout form.",
+    "Screenshot shows the checkout page after Save was clicked.",
+    "Screenshots show the menu stayed closed.",
   ]);
   for (const s of WALK_VOICE_ANYWAY) {
     check(`the product uses the word, the walk still speaks: ${JSON.stringify(s)}`, productProse(s, 20, ALL) === null && namesOurSide(s, ALL), productProse(s, 20, ALL) ?? "(null)");

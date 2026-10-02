@@ -923,8 +923,8 @@ const OUR_SIDE_OF_A_PRODUCT_NOUN = new RegExp(
       "this\\s+(?:environment|browser)\\s+(?:blocked|blocks|timed\\s+out|lacks|has\\s+no|prevent(?:s|ed))",
       "(?:artifact|artefact|limitation|quirk)\\s+of\\s+(?:the\\s+|our\\s+)?automation",
       // the walk driving the page
-      `the\\s+${WALKER_NOUN}\\s+${TRIED}\\s+(?:\\w+\\s+)?${DRIVE}`,
-      `the\\s+${WALKER_NOUN}\\s+${DROVE}`,
+      `the\\s+(?:${WALKER_NOUN}|model)\\s+${TRIED}\\s+(?:\\w+\\s+)?${DRIVE}`,
+      `the\\s+(?:${WALKER_NOUN}|model)\\s+${DROVE}`,
       `the\\s+${WALKER_NOUN}\\s+(?:${TRIED}\\s+)?(?:find|locate|see|reach|open|load|complete|use|operate)\\s+(?:the|a|an|any)\\s+(?:[\\w'"“”‘’-]+\\s+){0,4}${PAGE_PART}`,
       `the\\s+${WALKER_NOUN}\\s+never\\s+(?:reached|got|made\\s+it|saw|found)`,
       `the\\s+${WALKER_NOUN}\\s+(?:was|got)\\s+(?:blocked|stuck|stopped)`,
