@@ -741,14 +741,15 @@ try {
     }
   });
 } finally {
-  await started.close();
-  await person.close().catch(() => {});
-  await new Promise((resolve) => site.close(resolve));
-  await rm(profile, { recursive: true, force: true }).catch(() => {});
+  // A failed check can leave a tab that never loads or a socket that never
+  // closes; the verdict must still be printed. Each step gets five seconds.
+  const within = (work) => Promise.race([Promise.resolve().then(work).catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  await within(() => started.close());
+  await within(() => person.close());
+  site.closeAllConnections();
+  await within(() => new Promise((resolve) => site.close(resolve)));
+  await within(() => rm(profile, { recursive: true, force: true }));
 }
 
-if (failures > 0) {
-  console.log(`\nverify-session-server: ${failures} failed`);
-  process.exit(1);
-}
-console.log("\nverify-session-server: all passed");
+console.log(failures > 0 ? `\nverify-session-server: ${failures} failed` : "\nverify-session-server: all passed");
+process.exit(failures > 0 ? 1 : 0);
