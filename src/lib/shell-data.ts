@@ -25,7 +25,7 @@ import { cache } from "react";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { utcDayStart } from "@/lib/plans";
-import { teamOwned } from "@/lib/tenant-db";
+import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 export type ShellApp = { id: string; label: string; verdict: string | null };
 
@@ -94,7 +94,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
       orderBy: { createdAt: "asc" },
       select: { id: true, appSlug: true, targetKind: true, targetUrl: true },
     }),
-    db.$queryRaw<{ appId: string; verdict: string; open: number | bigint }[]>(LATEST_WITH_OPEN(teamId)),
+    db.$queryRaw<{ appId: string; verdict: string; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId))),
     db.run.findMany({
       where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: new Date(until.getTime() - 1) } },
       select: { priceUsd: true, createdAt: true },
