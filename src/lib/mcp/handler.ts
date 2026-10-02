@@ -25,6 +25,7 @@ import type { UserPlan } from "@/lib/enums";
 import { latestResults } from "@/lib/latest-results";
 import { loadPlanStatus } from "@/lib/plan-status";
 import { can, type TeamScope } from "@/lib/scopes";
+import { mcpDoor } from "@/lib/started-via";
 import { activeTeamContext } from "@/lib/teams";
 import { buildInstructions } from "./instructions";
 import { createRemoteTools, registerRemoteTools, type McpCaller, type McpDeps } from "./tools";
@@ -58,6 +59,8 @@ const noElicitation: jsonSchemaValidator = {
 async function callerFor(deps: McpDeps, req: Request): Promise<McpCaller | null> {
   const grant = await resolveApiKeyGrant(deps.db, req);
   if (!grant) return null;
+  // CHE-383: the client decides nothing but which of our labels a run gets.
+  const door = mcpDoor(req.headers.get("user-agent"));
   // A key minted before keys carried a team (CHE-263) acts for its minter's
   // personal team — the same fallback requireScope (src/lib/team-auth.ts) uses.
   if (grant.team) {
@@ -65,6 +68,7 @@ async function callerFor(deps: McpDeps, req: Request): Promise<McpCaller | null>
       user: { id: grant.user.id, email: grant.user.email, name: grant.user.name },
       team: { id: grant.team.id, name: grant.team.name, plan: grant.team.plan },
       scope: grant.scope as TeamScope,
+      door,
     };
   }
   const { team, scope } = await activeTeamContext(deps.db, grant.user, null);
@@ -72,6 +76,7 @@ async function callerFor(deps: McpDeps, req: Request): Promise<McpCaller | null>
     user: { id: grant.user.id, email: grant.user.email, name: grant.user.name },
     team: { id: team.id, name: team.name, plan: team.plan },
     scope,
+    door,
   };
 }
 

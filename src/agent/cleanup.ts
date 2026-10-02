@@ -15,6 +15,7 @@
 //      handling failed, whatever the product did.
 
 import type { AgentEnv } from "./env";
+import { findingSignature, OUR_LEFTOVERS_WHERE } from "@/lib/finding-signature";
 
 export interface CleanupNote {
   icon: "ok" | "warn";
@@ -82,23 +83,28 @@ export async function auditCreatedResources(env: AgentEnv, runId: string): Promi
       select: { number: true },
     })) ?? { number: 0 }).number + 1;
 
+  const finding = {
+    title: `Test records we created are still in your ${run?.appSlug ?? "app"}`,
+    category: "risky",
+    severity: "medium",
+    detail: JSON.stringify({
+      where: OUR_LEFTOVERS_WHERE,
+      whatWeTried: orphans.lines.slice(0, 10),
+      whatHappened:
+        `${total} record${total === 1 ? "" : "s"} created for this check ${total === 1 ? "was" : "were"} ` +
+        `not removed again. Everything we create carries a "CheckMyApp test" marker, so they are easy to spot.`,
+      whyItMatters:
+        "We clean up after every check — these slipped through, and we are fixing that on our side. " +
+        "Until then you can delete them safely: nothing carrying our marker is real data of yours.",
+    }),
+  };
   await env.db.finding.create({
     data: {
       runId,
       number: nextNumber,
-      title: `Test records we created are still in your ${run?.appSlug ?? "app"}`,
-      category: "risky",
-      severity: "medium",
-      detail: JSON.stringify({
-        where: "Records created during this check",
-        whatWeTried: orphans.lines.slice(0, 10),
-        whatHappened:
-          `${total} record${total === 1 ? "" : "s"} created for this check ${total === 1 ? "was" : "were"} ` +
-          `not removed again. Everything we create carries a "CheckMyApp test" marker, so they are easy to spot.`,
-        whyItMatters:
-          "We clean up after every check — these slipped through, and we are fixing that on our side. " +
-          "Until then you can delete them safely: nothing carrying our marker is real data of yours.",
-      }),
+      ...finding,
+      // CHE-354: the identity recurrence is counted by (src/lib/recurring.ts).
+      signature: run ? findingSignature({ appSlug: run.appSlug, ...finding }) : null,
     },
   });
 
