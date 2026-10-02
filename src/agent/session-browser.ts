@@ -84,6 +84,84 @@ async function call(host: SessionHost, fetchImpl: SessionFetch, method: string, 
   return fetchImpl(`${host.url}${path}`, { method, headers: h, body: JSON.stringify(body) });
 }
 
+// Take the lease, or renew it: the same call. → the lease's session id.
+async function lease(host: SessionHost, runId: string, fetchImpl: SessionFetch): Promise<string> {
+  const leased = await call(host, fetchImpl, "POST", "/lease", { ownerRunId: runId, maxDurationSeconds: SESSION_LEASE_SECONDS });
+  if (leased.status === 409) {
+    const held = (await leased.json().catch(() => null)) as { heldUntil?: string } | null;
+    throw new SessionBusyError(held?.heldUntil ?? null);
+  }
+  if (!leased.ok) throw new Error(`internal: the session host refused the lease (HTTP ${leased.status})`);
+  return ((await leased.json()) as { sessionId: string }).sessionId;
+}
+
+// ── waiting for the host ──
+//
+// The host is one browser, leased to one run for the whole of that run — and
+// runs overlap: the scheduler starts several per tick, and a person starts one
+// whenever they like. A run that finds the host held is not a failed run. It
+// waits its turn BEFORE its first phase, asking again until the lease is its
+// own, and only then starts. (Left to a step's ordinary retries, the second
+// run gave up after a few minutes while the first could hold the host for the
+// length of a whole check — Codex on #248.)
+//
+// How long between asks: until the holder's lease would lapse, but never long
+// — the holder gives the host back the moment it finishes, usually well before
+// that, and renews at every phase while it has not.
+export const SESSION_WAIT_MIN_SECONDS = 30;
+export const SESSION_WAIT_MAX_SECONDS = 180;
+// Past this the host is not busy, it is stuck — ours to look at (rule 4: the
+// run fails with an internal reason and publishes nothing).
+export const SESSION_WAIT_LIMIT_SECONDS = 2 * 60 * 60;
+
+export function sessionWaitSeconds(heldUntil: string | null, now: number): number {
+  const left = heldUntil ? Math.ceil((Date.parse(heldUntil) - now) / 1000) + 5 : NaN;
+  if (!Number.isFinite(left)) return SESSION_WAIT_MIN_SECONDS;
+  return Math.min(SESSION_WAIT_MAX_SECONDS, Math.max(SESSION_WAIT_MIN_SECONDS, left));
+}
+
+export type SessionTurn = { taken: true } | { taken: false; waitSeconds: number };
+
+// One ask. The wait is worked out here, next to the clock, so that a Workflow
+// can keep the answer as a step's result and replay it unchanged.
+export async function askForSession(
+  host: SessionHost,
+  runId: string,
+  fetchImpl: SessionFetch = (input, init) => fetch(input, init),
+  now: () => number = Date.now,
+): Promise<SessionTurn> {
+  try {
+    await lease(host, runId, fetchImpl);
+    return { taken: true };
+  } catch (error) {
+    if (error instanceof SessionBusyError) return { taken: false, waitSeconds: sessionWaitSeconds(error.heldUntil, now()) };
+    throw error;
+  }
+}
+
+// The three durable steps of the wait, each under a name of its own — a
+// Workflow's step.do / step.sleep in the Worker, the guard's own in Node, so
+// that this same loop is driven against the real server.
+export interface SessionSteps {
+  ask(name: string): Promise<SessionTurn>;
+  // Once, the first time the host turns out to be held.
+  waiting(name: string): Promise<void>;
+  sleep(name: string, seconds: number): Promise<void>;
+}
+
+// → how long the run waited. Throws SessionBusyError once the limit is spent.
+export async function waitForSession(steps: SessionSteps, limitSeconds = SESSION_WAIT_LIMIT_SECONDS): Promise<number> {
+  let waited = 0;
+  for (let attempt = 1; ; attempt++) {
+    const turn = await steps.ask(`session-turn-${attempt}`);
+    if (turn.taken) return waited;
+    if (waited >= limitSeconds) throw new SessionBusyError(null);
+    if (attempt === 1) await steps.waiting("session-waiting");
+    await steps.sleep(`session-wait-${attempt}`, turn.waitSeconds);
+    waited += turn.waitSeconds;
+  }
+}
+
 export class SessionBrowser {
   // The tabs this run opened in this phase. Nothing else in the context is ours.
   private readonly pages = new Set<Page>();
@@ -99,13 +177,7 @@ export class SessionBrowser {
     connect: SessionConnect,
     fetchImpl: SessionFetch = (input, init) => fetch(input, init),
   ): Promise<SessionBrowser> {
-    const leased = await call(host, fetchImpl, "POST", "/lease", { ownerRunId: runId, maxDurationSeconds: SESSION_LEASE_SECONDS });
-    if (leased.status === 409) {
-      const held = (await leased.json().catch(() => null)) as { heldUntil?: string } | null;
-      throw new SessionBusyError(held?.heldUntil ?? null);
-    }
-    if (!leased.ok) throw new Error(`internal: the session host refused the lease (HTTP ${leased.status})`);
-    const { sessionId } = (await leased.json()) as { sessionId: string };
+    const sessionId = await lease(host, runId, fetchImpl);
 
     // The client asks a placeholder host for /v1/devtools/browser/<id>; the
     // request goes to the session host instead, with the three credentials.

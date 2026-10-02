@@ -39,7 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
-import { isSessionTarget, releaseSession, sessionHost } from "./session-browser";
+import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -516,6 +516,21 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       await step.do("connecting", async () => {
         await transition(env, runId, "connecting", { icon: "info", text: "Spinning up agent" });
       });
+
+      // CHE-389: the session host is one browser, held by one run for the
+      // whole of that run. A run that finds it held waits its turn here —
+      // asleep, not retrying — and starts once the lease is its own. A host
+      // held past the limit fails the run with an internal reason (rule 4).
+      if (isSession) {
+        await waitForSession({
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          waiting: (name) =>
+            step.do(name, async () => {
+              await appendEvent(env, runId, "connecting", { icon: "info", text: "Another check is still running — this one starts when it finishes" });
+            }),
+          sleep: (name, seconds) => step.sleep(name, seconds * 1000),
+        });
+      }
 
       // Phase 2 — Surface scan (deterministic).
       const scan = await step.do("surface_scan", extensionStepConfig(isExtension), async () => {

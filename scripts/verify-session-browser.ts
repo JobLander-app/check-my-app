@@ -17,22 +17,28 @@
 import http from "node:http";
 import net from "node:net";
 import Module from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
 import type { Browser } from "@cloudflare/playwright";
 import type { AgentEnv } from "@/agent/env";
 import {
+  askForSession,
   isSessionTarget,
   releaseSession,
+  SESSION_WAIT_MAX_SECONDS,
+  SESSION_WAIT_MIN_SECONDS,
   SessionBrowser,
   sessionBrowserFor,
   SessionBusyError,
   sessionHost,
+  sessionWaitSeconds,
+  waitForSession,
   type SessionConnect,
   type SessionFetch,
   type SessionHost,
+  type SessionSteps,
 } from "@/agent/session-browser";
 
 // src/agent/browser.ts reaches @cloudflare/playwright, which requires the
@@ -247,6 +253,97 @@ async function main() {
     check("…and the next run gets it", (await state()).lease?.ownerRunId === RUN_B);
     await other.close();
     await releaseSession(host, RUN_B, fetchImpl);
+
+    // ── two runs at once: the second waits its turn, it does not fail ──
+    // The loop is the Worker's own (waitForSession); the steps are ours — what
+    // step.do and step.sleep are in the Workflow — against the real server.
+    const stepsFor = (runId: string, onSleep: (nth: number) => Promise<void> = async () => {}) => {
+      const log: string[] = [];
+      const slept: number[] = [];
+      const steps: SessionSteps = {
+        ask: async (name) => {
+          const turn = await askForSession(host, runId, fetchImpl);
+          log.push(`${name}:${turn.taken ? "taken" : "held"}`);
+          return turn;
+        },
+        waiting: async (name) => {
+          log.push(name);
+        },
+        sleep: async (name, seconds) => {
+          log.push(name);
+          slept.push(seconds);
+          await onSleep(slept.length);
+        },
+      };
+      return { steps, log, slept };
+    };
+
+    const free = stepsFor(RUN_A);
+    check("a free host: the run takes it at the first ask and waits for nothing",
+      (await waitForSession(free.steps)) === 0 && free.log.join(" ") === "session-turn-1:taken" && (await state()).lease?.ownerRunId === RUN_A,
+      free.log.join(" "));
+
+    const turn = await askForSession(host, RUN_B, fetchImpl);
+    check("a held host: one ask says 'not yet' and how long to wait — it throws nothing and takes nothing",
+      turn.taken === false && turn.waitSeconds >= SESSION_WAIT_MIN_SECONDS && turn.waitSeconds <= SESSION_WAIT_MAX_SECONDS && (await state()).lease?.ownerRunId === RUN_A,
+      JSON.stringify(turn));
+
+    // The holder finishes while the second run is in its second sleep.
+    const queued = stepsFor(RUN_B, async (nth) => {
+      if (nth === 2) await releaseSession(host, RUN_A, fetchImpl);
+    });
+    const waited = await waitForSession(queued.steps);
+    check("a held host: the second run asks, sleeps, asks again — and starts once the first has finished",
+      queued.log.join(" ") === "session-turn-1:held session-waiting session-wait-1 session-turn-2:held session-wait-2 session-turn-3:taken" &&
+        (await state()).lease?.ownerRunId === RUN_B,
+      queued.log.join(" "));
+    check("…it says so once, and every step has a name of its own",
+      queued.log.filter((name) => name === "session-waiting").length === 1 && new Set(queued.log.map((entry) => entry.split(":")[0])).size === queued.log.length);
+    check("…and what it reports having waited is what it slept",
+      waited === queued.slept.reduce((sum, seconds) => sum + seconds, 0) && queued.slept.every((s) => s >= SESSION_WAIT_MIN_SECONDS && s <= SESSION_WAIT_MAX_SECONDS),
+      `${waited}s in ${JSON.stringify(queued.slept)}`);
+
+    // A holder that never lets go: the wait has an end, and the end is ours.
+    const stuck = stepsFor(RUN_A);
+    let gaveUp: unknown = null;
+    try {
+      await waitForSession(stuck.steps, 400);
+    } catch (error) {
+      gaveUp = error;
+    }
+    const sleptStuck = stuck.slept.reduce((sum, seconds) => sum + seconds, 0);
+    check("a host held past the limit: an internal error after the limit is spent, never before",
+      gaveUp instanceof SessionBusyError && gaveUp.message.startsWith("internal:") && sleptStuck >= 400 && sleptStuck - stuck.slept[stuck.slept.length - 1] < 400,
+      `${String(gaveUp)} after ${sleptStuck}s`);
+    check("…and the holder still holds", (await state()).lease?.ownerRunId === RUN_B);
+    await releaseSession(host, RUN_B, fetchImpl);
+
+    let notBusy = "";
+    try {
+      await waitForSession({ ...stepsFor(RUN_A).steps, ask: () => askForSession({ ...host, token: "w".repeat(40) }, RUN_A, fetchImpl) });
+    } catch (error) {
+      notBusy = error instanceof SessionBusyError ? "SessionBusyError" : (error as Error).message;
+    }
+    check("a host that refuses is not 'busy': the wait ends at once with the refusal", notBusy.startsWith("internal:") && notBusy.includes("401"), notBusy);
+
+    // How long between asks.
+    const NOW = Date.parse("2026-10-02T06:00:00.000Z");
+    const inSeconds = (s: number) => new Date(NOW + s * 1000).toISOString();
+    check("the wait: until the holder's lease would lapse, a little over",
+      sessionWaitSeconds(inSeconds(100), NOW) === 105, String(sessionWaitSeconds(inSeconds(100), NOW)));
+    check("the wait: never longer than the cap — the holder gives the host back as soon as it finishes",
+      sessionWaitSeconds(inSeconds(1500), NOW) === SESSION_WAIT_MAX_SECONDS);
+    check("the wait: never a busy loop — a lapsed, missing or unreadable time still waits",
+      [inSeconds(1), inSeconds(-60), null, "soon"].every((heldUntil) => sessionWaitSeconds(heldUntil, NOW) === SESSION_WAIT_MIN_SECONDS));
+
+    // The run waits BEFORE its first phase: a wait inside a phase would be a
+    // step failing and being retried — the very thing this replaces.
+    const workflow = await readFile(join(process.cwd(), "src/agent/workflow.ts"), "utf8");
+    const waitAt = workflow.indexOf("await waitForSession(");
+    const scanAt = workflow.indexOf('step.do("surface_scan"');
+    check("the workflow: a session run waits for the host before its first phase, in steps that sleep",
+      waitAt > 0 && scanAt > waitAt && /if \(isSession\) \{\s*await waitForSession\(/.test(workflow) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(workflow),
+      `wait at ${waitAt}, scan at ${scanAt}`);
 
     // ── the host is not there ──
     let down = "";
