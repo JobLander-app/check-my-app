@@ -356,9 +356,12 @@ export async function controlSeen(locator: Locator): Promise<ControlSeen | null>
         if (labels) for (let i = 0; i < labels.length; i++) texts.push(labels[i].innerText ?? "");
         const form = el.closest("form");
         if (form && el.closest("button, input[type=submit], input[type=image]")) addresses.push(form.getAttribute("action") ?? "");
-        const nearest = el.closest(
-          "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=option], [role=checkbox], [role=switch], [role=tab], [role=radio]",
-        );
+        // A click on a label is a click on the control it labels.
+        const labelled = (el.closest("label") as HTMLLabelElement | null)?.control ?? null;
+        const nearest =
+          el.closest(
+            "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], [role=option], [role=checkbox], [role=switch], [role=tab], [role=radio]",
+          ) ?? labelled;
         const tag = nearest ? nearest.tagName.toLowerCase() : "";
         return {
           kind: nearest ? nearest.getAttribute("role") || (tag === "input" ? `input:${(nearest.getAttribute("type") || "text").toLowerCase()}` : tag) : "",

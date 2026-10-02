@@ -209,6 +209,9 @@ async function main() {
         <button id="b12" onclick="${write("both")}">Save and continue</button>
         <a id="b13" href="/admin/write/cancel">Details</a>
         <a id="b14" href="/admin?products-new">Add product</a>
+        <label id="b15l"><input id="b15" type="checkbox" onchange="${write("checkbox")}"> <span id="b15t">Email alerts</span></label>
+        <div id="b16" role="checkbox" aria-checked="false" tabindex="0" onclick="${write("rolecheckbox")}">Weekly digest</div>
+        <label><input id="b17" type="radio" name="mode" onchange="${write("radio")}"> Strict mode</label>
         <button id="view" onclick="document.title = 'Details'">View details</button>
         <section id="card" onclick="document.title = 'Card'"><p>Rules you save here apply to every visitor. You can add, update or delete a rule at any time, and block or unblock a country from the list below this card.</p></section>`);
     } else if (url.pathname === "/signin") {
@@ -426,6 +429,11 @@ async function main() {
     await heldAt("a button with no name at all", { selector: "#b11" });
     await heldAt("\"Save and continue\" — a word that only reads does not cancel the one that saves", { selector: "#b12" });
     await heldAt("a link called \"Details\" that leads to an address naming an action (/admin/write/cancel)", { selector: "#b13" });
+    // Codex on #261, round 2: a checkbox saves on the spot as readily as a switch.
+    await heldAt("a checkbox called \"Email alerts\"", { selector: "#b15" });
+    await heldAt("…pressed through the text of its label", { selector: "#b15t" });
+    await heldAt("a role=checkbox called \"Weekly digest\"", { selector: "#b16" });
+    await heldAt("a radio button called \"Strict mode\"", { selector: "#b17" });
     const typed = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/write/delete` });
     check("…and such an address is not opened when the walk types it either", typed.startsWith("Refused:") && typed.includes("not_applicable") && menuPage.url() === `${SITE}/admin/app`, typed.slice(0, 110));
     check("…and none of it reached the product", writes.length === 0, writes.join(", "));

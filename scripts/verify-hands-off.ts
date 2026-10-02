@@ -160,7 +160,18 @@ async function main() {
   check("a tab is reading", held(control("Order protection", { kind: "tab" }), session) === null && held(control("Order protection", { kind: "button" }), session) === "create");
   check("a field is not a press: its placeholder and its label are not judged",
     ["input:text", "input:search", "input:email", "textarea", "select"].every((kind) => held(control("Add a note…", { kind }), session) === null) &&
-      ["input:submit", "input:button", "input:checkbox"].every((kind) => held(control("Add a note", { kind }), session) === "create"));
+      ["input:submit", "input:button"].every((kind) => held(control("Add a note", { kind }), session) === "create"));
+  // Codex on #261, round 2.
+  const sessionMayWrite: HandsOffPlace = { session: true, ownHost: false, writeAllowed: true };
+  const ON_OFF_KINDS = ["switch", "checkbox", "radio", "input:checkbox", "input:radio", "menuitemcheckbox"];
+  check("a checkbox and a radio button are settings too: pressed, they change what was set — whatever they are called",
+    ON_OFF_KINDS.every((kind) => held(control("Email alerts", { kind }), session) === "switch") && ON_OFF_KINDS.every((kind) => held(control("Email alerts", { kind }), ordinary) === null),
+    ON_OFF_KINDS.filter((kind) => held(control("Email alerts", { kind }), session) !== "switch").join(" | "));
+  check("permission to create a test record is not permission to flip a setting or press a nameless button in a person's account",
+    held(control("Email alerts", { kind: "switch" }), sessionMayWrite) === "switch" && held(control("Email alerts", { kind: "input:checkbox" }), sessionMayWrite) === "switch" &&
+      held({ texts: [], addresses: [], kind: "button" }, sessionMayWrite) === "unnamed" && held(control("Pause protection"), sessionMayWrite) === "toggle" &&
+      held(control("Save"), sessionMayWrite) === null,
+    [held(control("Email alerts", { kind: "switch" }), sessionMayWrite), held({ texts: [], addresses: [], kind: "button" }, sessionMayWrite), held(control("Save"), sessionMayWrite)].join(" | "));
   const paragraph = "Rules you save here apply to every visitor. You can add, update or delete a rule at any time, and block or unblock a country from the list.";
   check("text longer than a label is a container's, and names no control", held({ texts: [paragraph], addresses: [], kind: "" }, session) === null && held({ texts: [paragraph, "Delete"], addresses: [], kind: "button" }, session) === "remove");
   check("words: a word inside a longer one is not the verb",

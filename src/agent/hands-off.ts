@@ -156,6 +156,7 @@ export function isActionAddress(url: string | null | undefined, base?: string): 
 }
 
 const PRESSED = /^(button|menuitem|input:(submit|button|image))$/;
+const ON_OFF = /^(switch|checkbox|radio|menuitemcheckbox|menuitemradio|input:(checkbox|radio))$/;
 
 // → the rule this control falls under in this place, or null. Null in an
 // ordinary run on a customer's app, whatever the control: there the name the
@@ -177,20 +178,23 @@ export function handsOffIn(control: ControlSeen, place: HandsOffPlace): HandsOff
   };
   const always = (place.ownHost ? held("own_host", SELF_HOST_GUARDED_VERBS) : null) ?? held("toggle", STATE_TOGGLE_VERBS);
   if (always) return always;
+  // In a person's account, whatever the run may create (Codex on #261, round
+  // 2): permission to add a test record was never permission to flip a
+  // setting that was already there.
+  if (place.session && !link) {
+    // A switch, a checkbox, a radio button: an on/off setting takes effect
+    // when it is pressed — many pages save it on the spot — and its name
+    // ("Email alerts") says nothing of that.
+    if (ON_OFF.test(kind)) return { rule: "switch", what: texts[0]?.replace(/\s+/g, " ").trim().slice(0, 80) || "the setting" };
+    // A button with no name at all — no text, no accessible name, no title —
+    // cannot be told from "Delete". It is not pressed.
+    if (PRESSED.test(kind) && control.texts.length === 0) return { rule: "unnamed", what: "a button with no name" };
+  }
   if (place.writeAllowed) return null;
 
   // A link that opens a form is reading; a button that says "Add" adds.
   const created = link ? null : held("create", CREATE_VERBS);
-  const changed = created ?? held("remove", REMOVE_VERBS) ?? held("commit", COMMIT_VERBS);
-  if (changed) return changed;
-  if (place.session && !link) {
-    // An on/off setting takes effect when it is pressed, and says so nowhere.
-    if (kind === "switch") return { rule: "switch", what: texts[0]?.replace(/\s+/g, " ").trim().slice(0, 80) || "the switch" };
-    // A button with no name at all — no text, no accessible name, no title —
-    // cannot be told from "Delete". In a person's account it is not pressed.
-    if (PRESSED.test(kind) && control.texts.length === 0) return { rule: "unnamed", what: "a button with no name" };
-  }
-  return null;
+  return created ?? held("remove", REMOVE_VERBS) ?? held("commit", COMMIT_VERBS);
 }
 
 // The same judgement for an address the walk types (tools.ts navigate).
@@ -243,7 +247,7 @@ export function handsOffRefusal(held: HandsOff): string {
     case "switch":
       return (
         `Refused: "${held.what}" is an on/off setting of this product, and pressing it changes the ` +
-        `setting. This run only reads. ${THEN}`
+        `setting. That is never ours to touch. ${THEN}`
       );
     case "unnamed":
       return (
