@@ -1,79 +1,233 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { can } from "@/lib/scopes";
-import { TOPUP_AMOUNTS_USD, spendByApp, teamBalance, usd } from "@/lib/plans";
+import { TOPUP_AMOUNTS_USD, teamBalance, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
+import { appHealth } from "@/lib/app-health";
+import { shellData } from "@/lib/shell-data";
+import { appPath } from "@/lib/app-shell";
+import { appsCostLine, balanceLine, countLine, outsideApps, pace, sharePercent } from "@/lib/billing-page";
 import { TopUpCta } from "@/components/topup-cta";
 import { ManageBillingButton } from "@/components/manage-billing-button";
 
-// Billing (CHE-351 shell): the balance card that was /dashboard#balance, and
-// the Stripe portal that was on the team's settings. What each app costs a
-// month and a day, with the last check's price and why, is CHE-355.
+const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-[18px] last:pr-[18px]";
+const TD = "border-b border-ink-800 px-3 py-3.5 align-middle first:pl-[18px] last:pr-[18px]";
+
+const Tile = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div className="card flex flex-col gap-1.5 p-5">
+    <span className="text-[13px] text-fg-muted">{label}</span>
+    {children}
+  </div>
+);
+
+// Billing (CHE-355, direction C): what the apps cost a month, the balance, and
+// how the two relate; then each app — its 30 days, a day, who started the
+// checks, its share — and its last check's price, which opens into what that
+// check did for it (?check=<appId>, rendered on the server: a link, no script).
+// Top-ups, invoices and the plan are below. Prices only (CLAUDE.md §10).
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ topped_up?: string }>;
+  searchParams: Promise<{ topped_up?: string; check?: string }>;
 }) {
-  const { topped_up: toppedUp } = await searchParams;
+  const { topped_up: toppedUp, check } = await searchParams;
   const { db, team, scope } = await requireUser();
   const plan = team.plan as UserPlan;
-  // CHE-327: the balance is the plan. Headline = what is left and what this
-  // period's checks came to, with where it went; each check's own price lives
-  // on its verdict, next to the work it paid for.
-  const balance = await teamBalance(db, { id: team.id, plan });
-  const spend = await spendByApp(db, { id: team.id, plan });
+  const [balance, health, shell] = await Promise.all([
+    teamBalance(db, { id: team.id, plan }),
+    appHealth(db, team.id),
+    shellData(db, team.id),
+  ]);
   const mayBill = can(scope, "billing.manage");
+  const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
+  const apps = [...health.apps].sort((a, b) => b.spendUsd - a.spendUsd);
+  // What was paid for outside the apps (a PR preview, an address never saved):
+  // in the total, in no app — so it gets its own row.
+  const outside = outsideApps({ usd: health.totalSpendUsd, checks: health.totalChecks }, apps);
+  const withCheck = apps.filter((a) => a.latest);
+  // The opened check: the one the address names, else the first app's.
+  const opened = withCheck.find((a) => a.appId === check) ?? withCheck[0];
+  const atThisPace = pace({
+    creditUsd: balance.creditUsd,
+    renews: balance.renewsOn !== null,
+    monthlyUsd: health.monthlyRunRateUsd,
+    balanceUsd: balance.balanceUsd,
+  });
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-10">
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight">Billing</h1>
-
-      <section id="balance" className="card mb-6 space-y-3 p-5">
-        {toppedUp && (
-          <p className="text-sm text-status-ok">
-            ✓ Payment received — your balance goes up by ${toppedUp} as soon as the payment settles.
-          </p>
-        )}
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <div>
-            <p className="text-sm text-fg-muted">Balance</p>
-            <p className="text-2xl font-semibold tracking-tight text-fg">
-              {balance.balanceUsd === null ? "Unlimited" : usd(balance.balanceUsd)}
-            </p>
-            <p className="text-xs text-fg-muted">
-              {usd(balance.spentUsd)} spent {balance.window === "month" ? "this month" : "so far"}
-              {balance.renewsOn && balance.creditUsd !== null
-                ? ` · your plan adds ${usd(balance.creditUsd)} on ${balance.renewsOn}`
-                : ""}
-              {balance.topupUsd > 0 ? ` · ${usd(balance.topupUsd)} of it topped up` : ""}
-            </p>
-          </div>
-          <Link href="/pricing" className="text-xs text-accent hover:underline">
-            Upgrade →
-          </Link>
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="mb-1 text-[13px] text-fg-muted">Settings</p>
+          <h1 className="text-[30px] font-semibold leading-tight tracking-tight">Billing</h1>
         </div>
-        {spend.length > 0 && (
-          <ul className="space-y-0.5 text-xs text-fg-muted">
-            {spend.slice(0, 5).map((s) => (
-              <li key={s.appSlug} className="flex justify-between gap-4 font-mono">
-                <span className="truncate">
-                  {s.appSlug} · {s.checks} check{s.checks === 1 ? "" : "s"}
-                </span>
-                <span>{usd(s.spentUsd)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {balance.balanceUsd !== null &&
-          (mayBill ? (
+        <Link href="/pricing" className="inline-flex h-9 items-center rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800">
+          Change plan
+        </Link>
+      </header>
+
+      {toppedUp && (
+        <p className="card p-4 text-sm text-status-ok">
+          ✓ Payment received — your balance goes up by ${toppedUp} as soon as the payment settles.
+        </p>
+      )}
+
+      <section id="balance" className="grid gap-4 md:grid-cols-3">
+        <Tile label="Your apps cost">
+          <span className="flex items-baseline gap-2">
+            <span className="font-mono text-[32px] leading-none">{usd(health.monthlyRunRateUsd)}</span>
+            <span className="text-fg-muted">a month</span>
+          </span>
+          <span className="text-[13px] text-fg-muted">
+            {appsCostLine({ windowDays: health.windowDays, apps: apps.length, checks: health.totalChecks, perDayUsd: health.perDayUsd, usd })}
+          </span>
+        </Tile>
+        <Tile label="Balance">
+          <span className="font-mono text-[32px] leading-none">{balance.balanceUsd === null ? "Unlimited" : usd(balance.balanceUsd)}</span>
+          <span className="text-[13px] text-fg-muted">
+            {balanceLine({ plan: team.plan, creditUsd: balance.creditUsd, renewsOn: balance.renewsOn, topupUsd: balance.topupUsd, usd })}
+          </span>
+        </Tile>
+        <Tile label="At this pace">
+          <span className="text-[22px] font-semibold leading-tight">{atThisPace.headline}</span>
+          <span className="text-[13px] text-fg-muted">{atThisPace.detail}</span>
+        </Tile>
+      </section>
+
+      {(apps.length > 0 || outside) && (
+        // The table scrolls inside its card; the page never scrolls sideways.
+        // A team with no saved app but paid checks (previews, one-off
+        // addresses) still gets its one row.
+        <section className="card overflow-x-auto">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 px-[18px] pb-3 pt-[18px]">
+            <h2 className="text-[17px] font-semibold">What each app costs</h2>
+            <span className="text-[13px] text-fg-muted">Click a price to see what the check did for it</span>
+          </div>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>App</th>
+                <th className={`${TH} text-right`}>Last {health.windowDays} days</th>
+                <th className={`${TH} text-right`}>A day</th>
+                <th className={`${TH} text-right`}>Scheduled</th>
+                <th className={`${TH} text-right`}>On request</th>
+                <th className={TH}>Share</th>
+                <th className={`${TH} text-right`}>Last check</th>
+              </tr>
+            </thead>
+            <tbody>
+              {apps.map((app) => (
+                <tr key={app.appId}>
+                  <td className={`${TD} font-mono`}>
+                    <Link href={appPath.page(app.appId)} className="whitespace-nowrap text-fg hover:underline">
+                      {nameOf.get(app.appId) ?? app.appSlug}
+                    </Link>
+                  </td>
+                  <td className={`${TD} text-right font-mono text-[15px]`}>{usd(app.spendUsd)}</td>
+                  <td className={`${TD} text-right font-mono text-fg-muted`}>{usd(app.perDayUsd)}</td>
+                  <td className={`${TD} whitespace-nowrap text-right`}>
+                    <span className="font-mono">{usd(app.scheduled.usd)}</span>
+                    <span className="block text-xs text-fg-muted">{countLine(app.scheduled.count, "not scheduled")}</span>
+                  </td>
+                  <td className={`${TD} whitespace-nowrap text-right`}>
+                    <span className="font-mono">{usd(app.onRequest.usd)}</span>
+                    <span className="block text-xs text-fg-muted">{countLine(app.onRequest.count, "none")}</span>
+                  </td>
+                  <td className={`${TD} w-40`}>
+                    <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
+                      <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(app.spendUsd, health.totalSpendUsd)}%` }} />
+                    </span>
+                  </td>
+                  <td className={`${TD} whitespace-nowrap text-right`}>
+                    {app.latest ? (
+                      <>
+                        <Link
+                          href={`/settings/billing?check=${app.appId}#check`}
+                          aria-current={opened?.appId === app.appId ? "true" : undefined}
+                          className={`font-mono underline decoration-dotted underline-offset-2 ${opened?.appId === app.appId ? "text-accent" : "text-fg hover:text-accent"}`}
+                        >
+                          {usd(app.latest.priceUsd)}
+                        </Link>
+                        <span className="mt-0.5 block font-mono text-xs text-fg-muted">#{app.latest.runNumber}</span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-fg-faint">no check yet</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {outside && (
+                <tr>
+                  <td className={`${TD} text-fg-muted`}>Outside your apps</td>
+                  <td className={`${TD} text-right font-mono text-[15px]`}>{usd(outside.usd)}</td>
+                  <td className={TD} />
+                  <td className={TD} />
+                  <td className={`${TD} whitespace-nowrap text-right`}>
+                    <span className="font-mono">{usd(outside.usd)}</span>
+                    <span className="block text-xs text-fg-muted">{countLine(outside.checks, "none")}</span>
+                  </td>
+                  <td className={`${TD} w-40`}>
+                    <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
+                      <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
+                    </span>
+                  </td>
+                  <td className={`${TD} text-right text-xs text-fg-faint`}>previews and one-off addresses</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {opened?.latest && (
+        <section id="check" className="card flex scroll-mt-6 flex-col gap-3.5 p-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <h2 className="text-[17px] font-semibold">
+              {nameOf.get(opened.appId) ?? opened.appSlug}, check #{opened.latest.runNumber}:{" "}
+              <span className="font-mono">{usd(opened.latest.priceUsd)}</span>
+            </h2>
+            <Link href={`/verdict/${opened.latest.publicId}`} className="text-sm text-accent hover:underline">
+              Open review
+            </Link>
+          </div>
+          <p className="text-[15px]">
+            {opened.latest.price.work}.{" "}
+            {opened.latest.price.comparison && <span className="text-fg-muted">{opened.latest.price.comparison}</span>}
+          </p>
+          {opened.latest.price.parts.length > 0 && (
+            <ul className="flex flex-col">
+              {opened.latest.price.parts.map((p) => (
+                <li key={p.label} className="flex justify-between gap-4 border-b border-ink-800 py-2 text-sm last:border-b-0">
+                  <span className="min-w-0">
+                    {p.label}
+                    {p.steps !== undefined && <span className="text-[13px] text-fg-muted"> {p.steps} step{p.steps === 1 ? "" : "s"}</span>}
+                  </span>
+                  <span className="font-mono">{usd(p.price_usd)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {balance.balanceUsd !== null && (
+        <section className="card flex flex-wrap items-center justify-between gap-4 p-5">
+          <div>
+            <div className="text-base font-semibold">Add to the balance</div>
+            <div className="text-[13px] text-fg-muted">
+              {balance.renewsOn ? "Used only after the plan's monthly amount runs out." : "Added to what is left of the plan's amount."}
+            </div>
+          </div>
+          {mayBill ? (
             <TopUpCta amounts={TOPUP_AMOUNTS_USD} />
           ) : (
             <p className="text-xs text-fg-faint">Top-ups are made by this team&apos;s admins.</p>
-          ))}
-      </section>
+          )}
+        </section>
+      )}
 
       <section className="card p-5">
-        <h2 className="text-lg font-medium">Plan</h2>
+        <h2 className="text-[17px] font-semibold">Invoices and card</h2>
         <p className="mt-1 text-sm text-fg-muted">
           {team.name} is on <strong className="text-fg">{team.plan}</strong>.
         </p>

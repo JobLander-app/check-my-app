@@ -77,6 +77,10 @@ export interface AppHealth {
 
 export interface AppHealthReport {
   windowDays: number;
+  // Every check of the team in the window, including the ones that belong to
+  // no app (a PR preview, a host the team never saved) — what totalSpendUsd
+  // was spent on. The apps' own counts can add up to less.
+  totalChecks: number;
   totalSpendUsd: number;
   perDayUsd: number;
   monthlyRunRateUsd: number;
@@ -159,10 +163,12 @@ export async function appHealth(
     apps.map((a) => [a.id, { cents: 0, scheduled: { count: 0, cents: 0 }, onRequest: { count: 0, cents: 0 }, daily: new Map() }]),
   );
   let totalCents = 0;
+  let totalChecks = 0;
   for (const r of runs) {
     if (!inWindow(r.createdAt)) continue;
     const c = toCents(r.priceUsd);
     totalCents += c;
+    totalChecks++;
     const app = ownerOf(r);
     if (!app) continue;
     const t = tallies.get(app.id)!;
@@ -253,6 +259,7 @@ export async function appHealth(
 
   return {
     windowDays: days,
+    totalChecks,
     totalSpendUsd: fromCents(totalCents),
     perDayUsd: fromCents(Math.round(totalCents / days)),
     monthlyRunRateUsd: fromCents(monthlyCents),

@@ -368,24 +368,6 @@ export async function teamBalance(
   return balanceFrom(team.plan, { spentUsd, planSpentUsd: spentUsd - fromTopup, topupUsd: row?.topupUsd ?? 0 }, now);
 }
 
-// Where the window's spending went, per app — the dashboard's breakdown under
-// the balance. Priced checks only; biggest first.
-export async function spendByApp(
-  db: PrismaClient,
-  team: { id: string; plan: UserPlan },
-  now: Date = new Date(),
-): Promise<{ appSlug: string; spentUsd: number; checks: number }[]> {
-  const rows = await db.run.groupBy({
-    by: ["appSlug"],
-    where: { ...teamOwned(team.id), ...windowWhere(team.plan, now), priceUsd: { gt: 0 } },
-    _sum: { priceUsd: true },
-    _count: { _all: true },
-  });
-  return rows
-    .map((r) => ({ appSlug: r.appSlug, spentUsd: cents(r._sum.priceUsd ?? 0), checks: r._count._all }))
-    .sort((a, b) => b.spentUsd - a.spentUsd);
-}
-
 // A check that walked something: anything above the smoke price. A smoke pass
 // is a few cents and says nothing about what a real check of the app costs.
 const WALKED = { costUsd: { gt: SMOKE_COST_USD * 1.1 } };
