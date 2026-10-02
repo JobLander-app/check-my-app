@@ -29,7 +29,7 @@ import { OUR_LEFTOVERS_WHERE } from "@/lib/finding-signature";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 // `latestRunNumber`: the check the dot's colour and the open count come from.
-export type ShellApp = { id: string; label: string; verdict: string | null; latestRunNumber: number | null };
+export type ShellApp = { id: string; appSlug: string; label: string; verdict: string | null; latestRunNumber: number | null };
 
 export type ShellData = {
   apps: ShellApp[];
@@ -62,13 +62,19 @@ const WINDOW_DAYS = 30;
 // Open findings are the app's own. The one finding that is about US — test
 // records our check left behind (finding-signature.ts, OUR_LEFTOVERS_WHERE) —
 // is on the check's page for the owner to act on, and is not counted as a
-// problem of their product here or on Issues (CHE-360).
+// problem of their product here or on Issues (CHE-360). Nor is a finding the
+// check only restated: one anchored to a journey it carried forward and did
+// not walk. Recurrence does not count that as seeing the problem again
+// (src/lib/recurring.ts), so Issues does not list it under the latest checks,
+// and the number beside Issues must not either (Codex on #249).
 const OUR_LEFTOVERS = `%"where":"${OUR_LEFTOVERS_WHERE}"%`;
 const LATEST_WITH_OPEN = (teamId: string) => Prisma.sql`
   SELECT appId, verdict, runNumber, open FROM (
     SELECT a.id AS appId, r.verdict AS verdict, r.runNumber AS runNumber,
       (SELECT COUNT(*) FROM "Finding" f WHERE f.runId = r.id AND f.mark IN ('none', 'watch')
-        AND (f.detail IS NULL OR f.detail NOT LIKE ${OUR_LEFTOVERS})) AS open,
+        AND (f.detail IS NULL OR f.detail NOT LIKE ${OUR_LEFTOVERS})
+        AND NOT EXISTS (SELECT 1 FROM "Journey" cj WHERE cj.runId = r.id AND cj.carriedFromRunId IS NOT NULL
+          AND cj."order" = json_extract(f.anchor, '$.stepRef.journeyIndex'))) AS open,
       ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY replace(r.completedAt, ' ', 'T') DESC) AS rn
     FROM "App" a
     JOIN "Run" r ON r.id IN (
@@ -127,6 +133,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
   return {
     apps: apps.map((a) => ({
       id: a.id,
+      appSlug: a.appSlug,
       label: a.targetKind === "extension" ? extensionDisplayName(a.targetUrl) : a.appSlug,
       verdict: verdictOf.get(a.id) ?? null,
       latestRunNumber: latestRunOf.get(a.id) ?? null,

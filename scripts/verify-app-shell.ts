@@ -32,7 +32,7 @@ import { MOVED_ROUTES } from "../src/lib/moved-routes.mjs";
 import { BALANCE_PATH } from "../src/lib/balance-links";
 import robots from "../src/app/robots";
 import { loadShellData } from "../src/lib/shell-data";
-import { appHealth } from "../src/lib/app-health";
+import { appHealth, teamSpend } from "../src/lib/app-health";
 import { OUR_LEFTOVERS_WHERE } from "../src/lib/finding-signature";
 import type { PrismaClient } from "../src/generated/prisma/client";
 
@@ -270,6 +270,13 @@ async function shellChecks() {
   const health = await appHealth(stubDb(3, runs).db, "team_x", { now });
   check("…the same number appHealth reports as what the apps cost", health.appsMonthlyUsd === three.monthlyCostUsd, `${health.appsMonthlyUsd} vs ${three.monthlyCostUsd}`);
   check("…while the run rate the plan is measured against is everything the balance paid for", health.monthlyRunRateUsd === 2.26, String(health.monthlyRunRateUsd));
+  // The totals alone (Health → Checks) are the report's totals: one pass, the
+  // same edges, and one query instead of several per app.
+  const lean = stubDb(3, runs);
+  const totals = await teamSpend(lean.db, "team_x", { now });
+  check("teamSpend is appHealth's totals", totals.totalSpendUsd === health.totalSpendUsd && totals.totalChecks === health.totalChecks && totals.windowDays === health.windowDays,
+    `${totals.totalChecks} checks, $${totals.totalSpendUsd} vs ${health.totalChecks}, $${health.totalSpendUsd}`);
+  check("…in one query", lean.calls.length === 1 && lean.calls[0].op === "run.findMany", lean.calls.map((c) => c.op).join(", "));
 }
 
 // ── 7. The statement itself, in a real D1 ───────────────────────────────────
@@ -349,6 +356,26 @@ async function realChecks() {
     const lateLoose = await run(null, "mixedloose.test", "2026-09-14T23:30:00Z", "broken", { marks: ["none"] });
     await real.exec(`UPDATE Run SET completedAt = '2026-09-14 23:30:00' WHERE id = ?`, lateLoose);
 
+    // carry: its latest check walked journey 0 and carried journey 1 forward.
+    // A finding on the walked one is open; the one it only restated on the
+    // carried journey is not counted — recurrence does not call that seeing
+    // the problem again, so Issues does not list it under the latest checks
+    // (Codex on #249).
+    await app("carry");
+    const carried = await run("carry", "carry.test", "2026-09-27T10:00:00Z", "mostly_ok");
+    await real.db.journey.createMany({
+      data: [
+        { id: "cj0", runId: carried, order: 0, title: "Walked", status: "ok" },
+        { id: "cj1", runId: carried, order: 1, title: "Carried", status: "ok", carriedFromRunId: "r1" },
+      ],
+    });
+    await real.db.finding.createMany({
+      data: [
+        { runId: carried, number: 1, title: "seen in this check", category: "bug", severity: "high", mark: "none", anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 0 } }) },
+        { runId: carried, number: 2, title: "restated from an earlier check", category: "bug", severity: "high", mark: "none", anchor: JSON.stringify({ stepRef: { journeyIndex: 1, stepIndex: 0 } }) },
+      ],
+    });
+
     const shell = await loadShellData(real.db, T, new Date("2026-10-01T12:00:00.000Z"));
     const verdict = (id: string) => shell.apps.find((a) => a.id === id)?.verdict;
     check("real D1: an app's latest attached check gives its verdict", verdict("own") === "all_good", String(verdict("own")));
@@ -359,7 +386,8 @@ async function realChecks() {
     check("real D1: an app never checked has no verdict", verdict("none") === null, String(verdict("none")));
     check("real D1: of two same-day checks in two spellings, the later by time is the latest", verdict("mixed") === "broken", String(verdict("mixed")));
     check("real D1: …also when one of the two is attached and the other is not", verdict("mixedloose") === "broken", String(verdict("mixedloose")));
-    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1 + 1 + 1 — our own leftovers are not one of them", shell.openIssues === 6, String(shell.openIssues));
+    check("real D1: open findings are the latest checks' unanswered ones: 2 + 1 + 1 + 1 + 1 + 1 — not our own leftovers, not a finding restated on a carried journey",
+      shell.openIssues === 7, String(shell.openIssues));
     const latestRun = (id: string) => shell.apps.find((a) => a.id === id)?.latestRunNumber;
     check("real D1: each app carries the number of the check its dot and its count come from (Issues reads it)",
       latestRun("own") === 2 && latestRun("loose") === 3 && latestRun("both") === 6 && latestRun("none") === null,
