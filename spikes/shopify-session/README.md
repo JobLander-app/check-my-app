@@ -140,7 +140,12 @@ profile):
   a self-written response carrying `Set-Cookie`.
 - **The session's cookies never leave the host as values.** The `Cookie` and
   `Set-Cookie` headers and the cookie lists DevTools reports beside each request
-  are replaced with `[redacted]` before they reach the check.
+  are replaced with `[redacted]` before they reach the check — in events and in
+  the answers to `Network.*` / `Fetch.*` commands alike.
+- **The server watches tabs come and go itself.** Target discovery is switched
+  on by the server on every connection and is not the check's to switch off
+  (its own `Target.setDiscoverTargets` only decides what it is told): that
+  watch is how a tab opened by a check's tab is known to be the check's.
 - **A check leaves nothing behind.** Its tabs — the tabs those opened, and any
   browser context it made — are closed when it disconnects, when its connection
   dies or goes silent (two missed 20 s beats), when its lease runs out, and when
