@@ -147,8 +147,11 @@ export function checkedWhen(at: Date, now: Date = new Date()): string {
   if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`;
   const days = Math.floor(min / (24 * 60));
   if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
-  // Spelled here, not by the runtime's locale data: Node and the Workers
-  // runtime do not agree on "Sep" / "Sept".
+  return dayMonth(at);
+}
+
+/** "12 Sep" (UTC). Spelled here, not by the runtime's locale data: Node and the Workers runtime do not agree on "Sep" / "Sept". */
+export function dayMonth(at: Date): string {
   return `${at.getUTCDate()} ${MONTHS[at.getUTCMonth()]}`;
 }
 

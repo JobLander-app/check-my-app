@@ -62,6 +62,12 @@ export function splitByCost(price: number, parts: { label: string; steps?: numbe
   return shares.map((p) => ({ label: p.label, ...(p.steps !== undefined ? { steps: p.steps } : {}), price_usd: p.cents / 100 }));
 }
 
+// What a quick check did, in the words the price explanation uses — exported so
+// a list of checks (the App page's timeline, CHE-358) says the same thing about
+// one, and a place that already shows this line can leave the comparison out.
+export const quickCheckWork = (pages: number) => `Quick check — nothing had changed, ${plural(pages, "page")} opened`;
+export const QUICK_COMPARISON = "Nothing had changed since the last check, so this was only a quick pass.";
+
 // Pure: the comparison line.
 export function comparePrice(input: {
   kind: "quick" | "walk";
@@ -72,7 +78,7 @@ export function comparePrice(input: {
   usualJourneys: number | null;
   usualSteps: number | null;
 }): string | null {
-  if (input.kind === "quick") return "Nothing had changed since the last check, so this was only a quick pass.";
+  if (input.kind === "quick") return QUICK_COMPARISON;
   const { usual } = input;
   if (!usual) return null;
   const range = `${usd(usual.low)}–${usd(usual.high)}`;
@@ -137,7 +143,7 @@ export async function explainPrice(
   const kind: "quick" | "walk" = journeys.length === 0 && run.quickPagesOpened !== null ? "quick" : "walk";
   const work =
     kind === "quick"
-      ? `Quick check — nothing had changed, ${plural(run.quickPagesOpened ?? 0, "page")} opened`
+      ? quickCheckWork(run.quickPagesOpened ?? 0)
       : walked > 0
         ? `Walked ${plural(walked, "journey")}, ${plural(steps, "step")}`
         : null;
