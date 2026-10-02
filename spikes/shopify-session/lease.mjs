@@ -1,16 +1,30 @@
-// CHE-389: the rules of the session server, as pure functions and one small
-// class — no socket, no clock of their own. session-server.mjs is the wiring;
+// CHE-389: the rules of the session server, as pure functions and two small
+// classes — no socket, no clock of their own. session-server.mjs is the wiring;
 // scripts/verify-session-server.mjs drives both.
 //
 // The browser on this host is the one a person signed in to. A check is a
-// visitor in it, exactly like the hourly probe: it opens its own tabs, works in
-// them, and leaves. Two things follow, and both are enforced here rather than
-// trusted to the caller:
+// visitor in it: it opens its own tabs, works in them, and leaves. Three things
+// follow, and each is enforced here rather than trusted to the caller:
 //
 //   1. One check at a time. Two checks in one profile would read each other's
 //      tabs and report each other's state as the product's.
-//   2. A check can end nothing it did not start: not the browser, not the
-//      person's tab, not the cookies that are the session.
+//   2. A check has its own tabs and nothing else. It is never told that the
+//      person's tab exists, cannot attach to it, and at the level of the
+//      browser may say only the few things opening and closing its own tabs
+//      takes. Inside its own tab it can do what a page can do — and a page can
+//      sign itself out by walking to the logout address. That last one is not
+//      this layer's to stop: it is the tool-level guard's rule for a run of
+//      this kind.
+//   3. The session's cookies never leave the host as values. A check that can
+//      open the admin sees what the admin shows; it does not get the HttpOnly
+//      cookie that would let anyone else open it too — not by asking for it,
+//      and not in the request headers DevTools reports.
+//
+// The first version of rule 2 was a list of forbidden method names checked
+// against every message. Two reviews of #240 broke it the same way: the list
+// looked at the method and never at whose tab the message was addressed to, so
+// Target.attachToTarget on the person's tab followed by Page.close on that
+// session went straight through. Hence scopes, and an allow-list at the top.
 
 export const LEASE_MIN_SECONDS = 60;
 export const LEASE_MAX_SECONDS = 1800;
@@ -69,74 +83,327 @@ export class LeaseBook {
   }
 }
 
-// What a check may never do to the profile, whatever its code believes: these
-// end the person's session or rewrite it. Reading is not on the list — a check
-// that can open the admin can see what the admin shows.
-const SESSION_ENDING = new Set([
-  "Browser.crash",
-  "Browser.crashGpuProcess",
-  "Network.clearBrowserCookies",
-  "Network.deleteCookies",
-  "Network.setCookie",
-  "Network.setCookies",
-  "Storage.clearCookies",
-  "Storage.setCookies",
-  "Storage.clearDataForOrigin",
-  "Storage.clearDataForStorageKey",
-]);
+// Ids at or below this belong to the server's own questions to the browser
+// (closing a check's tabs, letting go of a tab that is not the check's). A
+// check may not use them, and never sees their answers.
+export const PRIVATE_ID_BASE = -1_000_000;
 
-// Everything one connection opened: its tabs (and the tabs those tabs opened)
-// and its browser contexts. Closing is allowed inside this set and refused
-// outside it; when the connection goes, the tabs in it are closed for it.
-export class Owned {
+export const REDACTED = "[redacted]";
+
+// At the level of the browser a check may say these and nothing else. Target.*
+// has its own rules below, the same in every scope.
+const BROWSER_SCOPE = new Set(["Browser.getVersion"]);
+
+// Said by Playwright on every connection, about the profile's own context:
+// where downloads go. Answered "done" and not passed on — the profile keeps the
+// person's setting, and the client keeps working.
+const BROWSER_SCOPE_ANSWERED = new Set(["Browser.setDownloadBehavior"]);
+
+// Inside its own tab a check may do what a page can do. These reach past the
+// page: the cookie jar (HttpOnly values a page's own script cannot read or
+// write), storage of any origin by name, the browser itself. Patterns, not a
+// list of today's method names — Page.setCookie and Page.deleteCookie are
+// deprecated aliases that still act, and the next alias must not be a hole.
+const COOKIE_METHOD = /^[A-Za-z]+\..*cookie/i;
+const OTHER_ORIGIN_WRITE = /^(IndexedDB|DOMStorage|CacheStorage)\.(clear|delete|remove|set)/;
+const PAGE_MAY_ASK_BROWSER = new Set(["Browser.getVersion", "Browser.getWindowForTarget"]);
+
+function beyondAPage(method) {
+  if (COOKIE_METHOD.test(method)) return true;
+  if (method.startsWith("Storage.")) return true;
+  if (method.startsWith("Browser.")) return !PAGE_MAY_ASK_BROWSER.has(method);
+  if (OTHER_ORIGIN_WRITE.test(method)) return true;
+  return method === "Network.clearBrowserCache";
+}
+
+// A response the check writes itself can carry Set-Cookie, and the browser
+// stores it: a cookie writer by another name.
+function forgesCookie(method, params) {
+  if (method !== "Fetch.fulfillRequest" && method !== "Fetch.continueResponse") return false;
+  const headers = params?.responseHeaders;
+  if (Array.isArray(headers) && headers.some((h) => /^set-cookie$/i.test(String(h?.name ?? "")))) return true;
+  // binaryResponseHeaders: base64 of "name: value\0name: value".
+  if (typeof params?.binaryResponseHeaders === "string") {
+    try {
+      return /(^|\0)set-cookie\s*:/i.test(atob(params.binaryResponseHeaders));
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+const isCookieHeader = (name) => /^(set-)?cookie$/i.test(name);
+
+// Cookie values out of one DevTools event's params, in place on a copy. Walks
+// the shapes Network.* and Fetch.* events use: header maps, header lists, the
+// raw header text, and the cookies DevTools lists beside a request.
+function scrubCookies(value, depth = 0) {
+  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((item) => {
+      if (item && typeof item === "object" && typeof item.name === "string" && typeof item.value === "string" && isCookieHeader(item.name)) {
+        changed = true;
+        return { ...item, value: REDACTED };
+      }
+      const scrubbed = scrubCookies(item, depth + 1);
+      if (scrubbed !== item) changed = true;
+      return scrubbed;
+    });
+    return changed ? next : value;
+  }
+  let copy = null;
+  const set = (key, next) => {
+    copy ??= { ...value };
+    copy[key] = next;
+  };
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      if (isCookieHeader(key)) set(key, REDACTED);
+      else if (/headersText$/i.test(key) && /^(set-)?cookie:/im.test(item)) set(key, item.replace(/^((?:set-)?cookie:).*$/gim, `$1 ${REDACTED}`));
+      else if (key === "cookieLine") set(key, REDACTED);
+      continue;
+    }
+    // {cookie: {name, value, …}} beside a request, and bare cookie objects.
+    if (key === "cookie" && item && typeof item === "object" && typeof item.value === "string") {
+      set(key, { ...item, value: REDACTED });
+      continue;
+    }
+    const scrubbed = scrubCookies(item, depth + 1);
+    if (scrubbed !== item) set(key, scrubbed);
+  }
+  return copy ?? value;
+}
+
+// One connection's view of the browser: which tabs and contexts are the
+// check's, which DevTools sessions it may speak on, and what to do with every
+// message in either direction.
+//
+//   outgoing(message) → "forward" | "refuse" | "disconnect" | "acknowledge"
+//   incoming(message) → { client: [messages for the check, in order],
+//                         browser: [the server's own commands] }
+//
+// A message in `client` that is the very object passed in was not changed.
+export class Gate {
   constructor() {
-    this.targets = new Set();
-    this.contexts = new Set();
-    this.pending = new Map(); // "<sessionId>:<id>" → "target" | "context"
+    this.targets = new Set(); // the check's tabs
+    this.contexts = new Set(); // browser contexts the check made
+    this.sessions = new Map(); // DevTools session id → "browser" | "target"
+    this.pending = new Map(); // "<sessionId>:<id>" → what the answer will teach us
+    this.creating = 0; // Target.createTarget commands not yet answered
+    this.attachingToBrowser = 0; // Target.attachToBrowserTarget, likewise
+    this.held = []; // tabs that attached while one of those was open
+    this.privateId = PRIVATE_ID_BASE;
   }
 
   static key(message) {
     return `${message.sessionId ?? ""}:${message.id}`;
   }
 
-  // A message from the check → "forward" | "disconnect" | "refuse".
+  nextPrivateId() {
+    return this.privateId--;
+  }
+
+  owns(targetId) {
+    return typeof targetId === "string" && this.targets.has(targetId);
+  }
+
+  scope(sessionId) {
+    return sessionId === undefined ? "browser" : this.sessions.get(sessionId);
+  }
+
   outgoing(message) {
     const { method, params } = message;
-    if (method === "Browser.close") return "disconnect";
-    if (SESSION_ENDING.has(method)) return "refuse";
-    if (method === "Target.closeTarget") return this.targets.has(params?.targetId) ? "forward" : "refuse";
-    if (method === "Target.disposeBrowserContext") return this.contexts.has(params?.browserContextId) ? "forward" : "refuse";
-    if (method === "Target.createTarget") this.pending.set(Owned.key(message), "target");
-    if (method === "Target.createBrowserContext") this.pending.set(Owned.key(message), "context");
+    if (typeof method !== "string") return "refuse";
+    if (typeof message.id === "number" && message.id <= PRIVATE_ID_BASE) return "refuse";
+    const scope = this.scope(message.sessionId);
+    // A session the check was never given: there is nothing behind it for it.
+    if (!scope) return "refuse";
+    if (method.startsWith("Target.")) return this.targetMethod(message);
+    if (scope === "browser") {
+      if (method === "Browser.close") return "disconnect";
+      if (BROWSER_SCOPE.has(method)) return "forward";
+      // Only about the profile's own context. For a context the check made it
+      // is the check's business.
+      if (BROWSER_SCOPE_ANSWERED.has(method)) return this.contexts.has(params?.browserContextId) ? "forward" : "acknowledge";
+      return "refuse";
+    }
+    if (beyondAPage(method) || forgesCookie(method, params)) return "refuse";
     return "forward";
   }
 
-  // A message from the browser: learn what the check has just opened.
+  targetMethod(message) {
+    const { method, params } = message;
+    const expect = (what) => this.pending.set(Gate.key(message), what);
+    switch (method) {
+      case "Target.setAutoAttach":
+      case "Target.setDiscoverTargets":
+      case "Target.getBrowserContexts":
+        return "forward";
+      case "Target.getTargets":
+        expect("targets");
+        return "forward";
+      case "Target.createTarget":
+        expect("target");
+        this.creating++;
+        return "forward";
+      case "Target.createBrowserContext":
+        expect("context");
+        return "forward";
+      case "Target.attachToBrowserTarget":
+        expect("browserSession");
+        this.attachingToBrowser++;
+        return "forward";
+      case "Target.getTargetInfo":
+        // Without a target it describes the session's own — the browser, or
+        // the check's tab.
+        return params?.targetId === undefined || this.owns(params.targetId) ? "forward" : "refuse";
+      case "Target.attachToTarget":
+      case "Target.closeTarget":
+      case "Target.activateTarget":
+        return this.owns(params?.targetId) ? "forward" : "refuse";
+      case "Target.disposeBrowserContext":
+        return this.contexts.has(params?.browserContextId) ? "forward" : "refuse";
+      case "Target.detachFromTarget":
+        return this.sessions.has(params?.sessionId) ? "forward" : "refuse";
+      default:
+        return "refuse";
+    }
+  }
+
   incoming(message) {
-    if (message.id !== undefined) {
-      const kind = this.pending.get(Owned.key(message));
-      if (!kind) return;
-      this.pending.delete(Owned.key(message));
-      if (kind === "target" && message.result?.targetId) this.targets.add(message.result.targetId);
-      if (kind === "context" && message.result?.browserContextId) this.contexts.add(message.result.browserContextId);
-      return;
-    }
-    if (message.method === "Target.targetCreated" || message.method === "Target.attachedToTarget") {
-      const info = message.params?.targetInfo;
-      // A tab one of the check's tabs opened (a link in a new tab, a popup) is
-      // the check's too — otherwise every run would leave one behind — and so
-      // is any tab in a context the check made.
-      if (info?.type === "page" && (this.targets.has(info.openerId) || this.contexts.has(info.browserContextId))) {
-        this.targets.add(info.targetId);
+    const out = { client: [], browser: [] };
+    if (typeof message.id === "number" && message.id <= PRIVATE_ID_BASE) return out;
+    if (message.id !== undefined) return this.answer(message, out);
+    const scope = this.scope(message.sessionId);
+    if (!scope) return out; // an event from a tab that is not the check's
+    const { method, params } = message;
+    switch (method) {
+      case "Target.attachedToTarget":
+        return this.attached(message, scope, out);
+      case "Target.detachedFromTarget":
+        if (this.sessions.delete(params?.sessionId)) out.client.push(message);
+        return out;
+      case "Target.targetCreated":
+      case "Target.targetInfoChanged":
+        this.learn(params?.targetInfo);
+        if (this.owns(params?.targetInfo?.targetId)) out.client.push(message);
+        return out;
+      case "Target.targetDestroyed":
+      case "Target.targetCrashed":
+        if (this.owns(params?.targetId)) {
+          out.client.push(message);
+          if (method === "Target.targetDestroyed") this.targets.delete(params.targetId);
+        }
+        return out;
+      default: {
+        if (typeof method === "string" && (method.startsWith("Network.") || method.startsWith("Fetch."))) {
+          const scrubbed = scrubCookies(params);
+          out.client.push(scrubbed === params ? message : { ...message, params: scrubbed });
+        } else {
+          out.client.push(message);
+        }
+        return out;
       }
-      return;
     }
-    if (message.method === "Target.targetDestroyed") this.targets.delete(message.params?.targetId);
+  }
+
+  answer(message, out) {
+    const key = Gate.key(message);
+    const expected = this.pending.get(key);
+    this.pending.delete(key);
+    let reply = message;
+    if (expected === "target") {
+      this.creating--;
+      if (message.result?.targetId) this.targets.add(message.result.targetId);
+      // The tab's own "attached" must reach the check before this answer:
+      // Playwright looks the new page up by the id in the answer.
+      this.release(out);
+    } else if (expected === "context" && message.result?.browserContextId) {
+      this.contexts.add(message.result.browserContextId);
+    } else if (expected === "browserSession") {
+      this.attachingToBrowser--;
+      if (message.result?.sessionId) this.sessions.set(message.result.sessionId, "browser");
+    } else if (expected === "targets" && Array.isArray(message.result?.targetInfos)) {
+      reply = { ...message, result: { ...message.result, targetInfos: message.result.targetInfos.filter((info) => this.owns(info?.targetId)) } };
+    }
+    out.client.push(reply);
+    return out;
+  }
+
+  // A tab is the check's if the check opened it, if one of the check's tabs
+  // opened it (a link in a new tab, a popup — otherwise every run would leave
+  // one behind), or if it lives in a context the check made.
+  learn(info) {
+    if (info?.type === "page" && (this.owns(info.openerId) || this.contexts.has(info.browserContextId))) {
+      this.targets.add(info.targetId);
+    }
+  }
+
+  attached(message, scope, out) {
+    const { targetInfo: info, sessionId: child } = message.params ?? {};
+    if (scope === "target") {
+      // Something inside one of the check's tabs: a frame from another origin,
+      // a worker.
+      this.sessions.set(child, "target");
+      out.client.push(message);
+      return out;
+    }
+    // A second session on the browser itself, which the check has just asked
+    // for (Playwright's newBrowserCDPSession): the browser reports it here
+    // before it answers. The same rules apply on it as with no session at all.
+    if (info?.type === "browser" && this.attachingToBrowser > 0) {
+      this.sessions.set(child, "browser");
+      out.client.push(message);
+      return out;
+    }
+    this.learn(info);
+    if (this.owns(info?.targetId)) {
+      this.sessions.set(child, "target");
+      out.client.push(message);
+      return out;
+    }
+    // The browser reports a new tab before it answers the command that
+    // created it. While such a command is open, a tab nobody owns yet may be
+    // the check's own.
+    if (info?.type === "page" && this.creating > 0) {
+      this.held.push(message);
+      return out;
+    }
+    this.letGo(message, out);
+    return out;
+  }
+
+  release(out) {
+    const still = [];
+    for (const held of this.held) {
+      if (this.owns(held.params.targetInfo.targetId)) {
+        this.sessions.set(held.params.sessionId, "target");
+        out.client.push(held);
+      } else if (this.creating > 0) {
+        still.push(held);
+      } else {
+        this.letGo(held, out);
+      }
+    }
+    this.held = still;
+  }
+
+  // Not the check's: the person's tab, the hourly probe's, a service worker.
+  // The check is not told. The browser attached this connection to it because
+  // the check asked to be attached to whatever opens; a tab attached that way
+  // may be standing still waiting for a debugger, so it is started and let go.
+  letGo(message, out) {
+    const { sessionId: child, waitingForDebugger } = message.params ?? {};
+    const via = message.sessionId === undefined ? {} : { sessionId: message.sessionId };
+    if (waitingForDebugger) out.browser.push({ id: this.nextPrivateId(), sessionId: child, method: "Runtime.runIfWaitingForDebugger" });
+    out.browser.push({ id: this.nextPrivateId(), ...via, method: "Target.detachFromTarget", params: { sessionId: child } });
   }
 }
 
 export function refusal(message) {
-  const reply = { id: message.id, error: { code: -32000, message: "Not allowed in a signed-in session: this check did not open it" } };
+  const reply = { id: message.id, error: { code: -32000, message: "Not allowed in a signed-in session: outside this check's own tabs" } };
   if (message.sessionId) reply.sessionId = message.sessionId;
   return reply;
 }

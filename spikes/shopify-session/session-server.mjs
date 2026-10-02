@@ -31,11 +31,10 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
-import { LeaseBook, Owned, acknowledged, refusal, sessionIdFromPath } from "./lease.mjs";
+import { Gate, LeaseBook, acknowledged, refusal, sessionIdFromPath } from "./lease.mjs";
 import { parseLog } from "./classify.mjs";
 
 const MAX_MESSAGE = 64 * 1024 * 1024;
-const PRIVATE_ID_BASE = -1_000_000;
 
 export async function startSessionServer({
   token,
@@ -47,6 +46,9 @@ export async function startSessionServer({
   heartbeatMs = 20_000,
   sweepMs = 5_000,
   closeWaitMs = 2_000,
+  // Told every method the gate refused or answered itself, and in which scope:
+  // the first thing to read when a client that used to work stops working.
+  onGate = (action, method, scope) => console.log(`[session-server] ${action} ${method} (${scope ?? "unknown session"})`),
 } = {}) {
   if (typeof token !== "string" || token.length < 32) throw new Error("A bearer token of at least 32 characters is required");
   const book = new LeaseBook(now);
@@ -133,39 +135,49 @@ export async function startSessionServer({
     }
   });
 
-  server.on("upgrade", async (req, socket, head) => {
+  // One at a time, in the order they arrived. Two connections for one session
+  // id that raced each other both saw "nobody is connected", both attached, and
+  // the first was left running where neither a release nor the lease's end
+  // could reach it (both reviews of #240).
+  let upgrades = Promise.resolve();
+  server.on("upgrade", (req, socket, head) => {
     const sessionId = sessionIdFromPath(new URL(req.url, "http://session").pathname);
     if (!authorized(req) || !book.admits(sessionId)) {
       socket.destroy();
       return;
     }
     socket.on("error", () => {});
-    try {
-      // The same run connecting again (its next phase, or a retry of a step
-      // whose Worker died) takes over: the old connection's tabs are closed
-      // first, so the new one starts in a profile with nothing of ours in it.
-      if (connection) await connection.end();
-      const upstream = new WebSocket((await chrome()).ws, { maxPayload: MAX_MESSAGE });
-      await new Promise((resolve, reject) => {
-        upstream.once("open", resolve);
-        upstream.once("error", reject);
-      });
-      if (!book.admits(sessionId)) {
-        upstream.close();
+    upgrades = upgrades.then(async () => {
+      try {
+        // The same run connecting again (its next phase, or a retry of a step
+        // whose Worker died) takes over: the old connection's tabs are closed
+        // first, so the new one starts in a profile with nothing of ours in it.
+        if (connection) await connection.end();
+        const upstream = new WebSocket((await chrome()).ws, { maxPayload: MAX_MESSAGE });
+        await new Promise((resolve, reject) => {
+          upstream.once("open", resolve);
+          upstream.once("error", reject);
+        });
+        if (!book.admits(sessionId) || socket.destroyed) {
+          upstream.close();
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (client) => attach(client, upstream, sessionId));
+      } catch {
         socket.destroy();
-        return;
       }
-      wss.handleUpgrade(req, socket, head, (client) => attach(client, upstream, sessionId));
-    } catch {
-      socket.destroy();
-    }
+    });
   });
 
   function attach(client, upstream, sessionId) {
-    const owned = new Owned();
+    const gate = new Gate();
     let allGone = null; // set while the connection's tabs are being closed
     let ending = null;
     let alive = true;
+    const ask = (command) => {
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify(command));
+    };
 
     // Close what this check opened, then let go of the browser. Runs once, for
     // every way a connection can end.
@@ -173,15 +185,16 @@ export async function startSessionServer({
       ending ??= (async () => {
         if (connection === self) connection = null;
         clearInterval(heartbeat);
-        if (upstream.readyState === WebSocket.OPEN && owned.targets.size > 0) {
+        if (upstream.readyState === WebSocket.OPEN && (gate.targets.size > 0 || gate.contexts.size > 0)) {
           // "Closed" is the tab being gone, not Chrome agreeing to close it:
           // the answer to closeTarget comes first, and the next check must not
           // connect in between. Target discovery is what reports the tab gone.
-          let id = PRIVATE_ID_BASE;
-          const ask = (method, params) => upstream.send(JSON.stringify({ id: id--, method, params }));
           const gone = new Promise((resolve) => { allGone = resolve; });
-          ask("Target.setDiscoverTargets", { discover: true });
-          for (const targetId of owned.targets) ask("Target.closeTarget", { targetId });
+          ask({ id: gate.nextPrivateId(), method: "Target.setDiscoverTargets", params: { discover: true } });
+          for (const targetId of gate.targets) ask({ id: gate.nextPrivateId(), method: "Target.closeTarget", params: { targetId } });
+          // A context the check made goes with it, and takes its tabs along.
+          for (const browserContextId of gate.contexts) ask({ id: gate.nextPrivateId(), method: "Target.disposeBrowserContext", params: { browserContextId } });
+          if (gate.targets.size === 0) allGone();
           await Promise.race([gone, new Promise((resolve) => setTimeout(resolve, closeWaitMs))]);
         }
         upstream.close();
@@ -200,17 +213,14 @@ export async function startSessionServer({
       } catch {
         return;
       }
-      const action = owned.outgoing(message);
-      if (action === "disconnect") {
-        client.send(JSON.stringify(acknowledged(message)));
-        void end();
+      const action = gate.outgoing(message);
+      if (action === "forward") {
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary });
         return;
       }
-      if (action === "refuse") {
-        client.send(JSON.stringify(refusal(message)));
-        return;
-      }
-      if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary });
+      if (action !== "disconnect") onGate(action, String(message.method), gate.scope(message.sessionId));
+      client.send(JSON.stringify(action === "refuse" ? refusal(message) : acknowledged(message)));
+      if (action === "disconnect") void end();
     });
 
     upstream.on("message", (data, binary) => {
@@ -220,19 +230,23 @@ export async function startSessionServer({
       } catch {
         return;
       }
-      // Answers to the server's own closing questions are nobody else's.
-      if (typeof message.id === "number" && message.id <= PRIVATE_ID_BASE) return;
-      const known = new Set(owned.targets);
-      owned.incoming(message);
+      const known = new Set(gate.targets);
+      const { client: forClient, browser: forBrowser } = gate.incoming(message);
+      for (const command of forBrowser) ask(command);
       if (allGone) {
         // Discovery, switched on to see the tabs go, can also reveal one of
         // ours nobody had reported yet (a tab opened by the check's tab).
-        for (const targetId of owned.targets) {
-          if (!known.has(targetId)) upstream.send(JSON.stringify({ id: PRIVATE_ID_BASE - 1_000, method: "Target.closeTarget", params: { targetId } }));
+        for (const targetId of gate.targets) {
+          if (!known.has(targetId)) ask({ id: gate.nextPrivateId(), method: "Target.closeTarget", params: { targetId } });
         }
-        if (owned.targets.size === 0) allGone();
+        if (gate.targets.size === 0) allGone();
       }
-      if (!ending && client.readyState === WebSocket.OPEN) client.send(data, { binary });
+      if (ending || client.readyState !== WebSocket.OPEN) return;
+      for (const item of forClient) {
+        // Unchanged messages go out as the bytes they came in as.
+        if (item === message) client.send(data, { binary });
+        else client.send(JSON.stringify(item));
+      }
     });
 
     client.on("pong", () => { alive = true; });
