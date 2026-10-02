@@ -3,8 +3,11 @@ import { teamOwned } from "@/lib/tenant-db";
 import { ApiKeys } from "@/components/api-keys";
 import { ConnectAgent } from "@/components/connect-agent";
 
-// Agent and API keys (CHE-351 shell): the agent panel and the team's keys,
-// which sat at the top and the bottom of the old dashboard. CHE-356 redraws it.
+// Agent and API keys (CHE-351 shell, CHE-356): the agent panel and the team's
+// keys, which sat at the top and the bottom of the old dashboard. The CHE-317
+// rule holds here as on Today: the panel is prominent until one of the team's
+// keys has been used, one line after that (ConnectAgent decides, from
+// lastUsedAt).
 export default async function ApiKeysPage() {
   const { db, team } = await requireUser();
   const apiKeys = await db.apiKey.findMany({

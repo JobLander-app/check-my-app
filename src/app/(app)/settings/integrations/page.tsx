@@ -7,6 +7,7 @@ import { AnalyticsConnection } from "@/components/analytics-connection";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
 import { extensionDisplayName } from "@/lib/extension-target";
+import { integrationsLabel } from "@/lib/app-page";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -40,9 +41,11 @@ async function analyticsConnection(
   };
 }
 
-// Integrations (CHE-351 shell): the connections the whole team shares. The
-// PostHog flow comes back here with ?integration=…; which tracker board an app
-// files into is set on that app. CHE-356 redraws it.
+// Integrations (CHE-351 shell, CHE-356): the connections the whole team
+// shares. The PostHog flow comes back here with ?integration=…. What is set
+// per app — the tracker and its board, the analytics project, webhooks — is on
+// that app's Integrations section, and every app is one click away from here,
+// connected or not.
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -55,7 +58,11 @@ export default async function IntegrationsPage({
     db.app.findMany({
       where: { ...teamOwned(team.id) },
       orderBy: { createdAt: "desc" },
-      select: { id: true, appSlug: true, targetKind: true, targetUrl: true, tracker: { select: { externalOrg: true } } },
+      select: {
+        id: true, appSlug: true, targetKind: true, targetUrl: true, posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
+        tracker: { select: { externalOrg: true } },
+        repo: { select: { id: true } },
+      },
     }),
   ]);
   const notice = integrationNotice(integration);
@@ -81,20 +88,32 @@ export default async function IntegrationsPage({
 
       {apps.length > 0 && (
         <section className="card mt-6 p-5">
-          <h2 className="text-lg font-medium">Issue tracker, per app</h2>
+          <h2 className="text-lg font-medium">Per app</h2>
+          <p className="mt-1 text-sm text-fg-muted">
+            The tracker, the analytics project, the repository and webhooks are each app&apos;s own. Open an app to
+            connect or change them.
+          </p>
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
               <li key={app.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
                 <span className="min-w-0 truncate font-mono text-sm">
                   {app.targetKind === "extension" ? extensionDisplayName(app.targetUrl) : app.appSlug}
                 </span>
-                {app.tracker ? (
-                  <span className="text-xs text-status-ok">✓ Linear · {app.tracker.externalOrg ?? "connected"}</span>
-                ) : (
-                  <Link href={appPath.settings(app.id)} className="text-xs text-accent hover:underline">
-                    Connect on its settings →
+                <span className="flex items-center gap-3">
+                  {/* The app page's own words for the same facts (src/lib/app-page.ts). */}
+                  <span className="text-xs text-fg-muted">
+                    {integrationsLabel({
+                      tracker: app.tracker !== null,
+                      analyticsProject: app.posthogProjectName,
+                      repo: app.repo !== null,
+                      webhook: Boolean(app.webhookUrl),
+                      slack: Boolean(app.slackWebhookUrl),
+                    })}
+                  </span>
+                  <Link href={appPath.section(app.id, "integrations")} className="whitespace-nowrap text-xs text-accent hover:underline">
+                    {app.tracker ? "Open →" : "Connect →"}
                   </Link>
-                )}
+                </span>
               </li>
             ))}
           </ul>

@@ -6,9 +6,11 @@ import { inviteState } from "@/lib/invites";
 import { describeEvent } from "@/lib/team-events";
 import { seatSummary } from "@/lib/seats";
 import type { UserPlan } from "@/lib/enums";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { teamBalance, usd } from "@/lib/plans";
+import { balanceLine } from "@/lib/billing-page";
 import {
   changeScopeAction,
   inviteMemberAction,
@@ -56,6 +58,7 @@ export default async function TeamPage() {
     take: 25,
     select: { id: true, action: true, subject: true, summary: true, actorUserId: true, createdAt: true },
   });
+  const balance = await teamBalance(db, { id: team.id, plan: team.plan as UserPlan });
   const mayManage = can(scope, "member.scope.change");
   const mayInvite = can(scope, "member.invite");
   const canLeave = decideLeave(
@@ -81,6 +84,21 @@ export default async function TeamPage() {
           .
         </p>
       </header>
+
+      {/* CHE-356: the plan in one line, in Billing's own sentence; the money
+          itself — what the apps cost, top-ups, invoices — is on Billing. */}
+      <section className="card mb-6 flex flex-wrap items-center justify-between gap-4 p-6">
+        <div className="min-w-0">
+          <h2 className="text-lg font-medium">Plan</h2>
+          <p className="mt-1 text-sm text-fg-muted">
+            {balanceLine({ plan: team.plan, creditUsd: balance.creditUsd, renewsOn: balance.renewsOn, topupUsd: balance.topupUsd, usd })}
+            {balance.balanceUsd !== null && ` ${usd(balance.balanceUsd)} is left for checks.`}
+          </p>
+        </div>
+        <Link href="/settings/billing" className={buttonClass("outline")}>
+          Billing
+        </Link>
+      </section>
 
       <section className="card p-6">
         <h2 className="text-lg font-medium">People</h2>
