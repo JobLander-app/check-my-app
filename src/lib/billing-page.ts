@@ -50,7 +50,11 @@ export function pace(i: {
 }): { headline: string; detail: string } {
   if (i.monthlyUsd <= 0) return { headline: "Nothing spent yet", detail: "A month of checks shows here once your apps have been checked." };
   if (i.creditUsd === null || i.balanceUsd === null) return { headline: "No limit on this plan", detail: `Your apps come to about ${round(i.monthlyUsd)} of checks a month.` };
-  const against = `${round(i.creditUsd)} a month against ${round(i.monthlyUsd)} of checks.`;
+  // Whole dollars, unless that makes two different amounts look the same:
+  // "$29 a month against $29 of checks. The rest comes from top-ups." explains nothing.
+  const collapsed = i.creditUsd !== i.monthlyUsd && Math.round(i.creditUsd) === Math.round(i.monthlyUsd);
+  const amount = (n: number) => (collapsed ? `$${n.toFixed(2)}` : round(n));
+  const against = `${amount(i.creditUsd)} a month against ${amount(i.monthlyUsd)} of checks.`;
   // From the amounts themselves, not from a ratio rounded for display: $29 of
   // plan against $29.30 of checks rounds to "1.0 times" and is still short.
   const covers = i.creditUsd / i.monthlyUsd;
@@ -80,8 +84,13 @@ export function sharePercent(appUsd: number, totalUsd: number): number {
 
 /**
  * What the team paid for outside its apps — a PR preview, an address it never
- * saved. appHealth counts it in the total and in no app, so without this row
- * the table adds up to less than the tile above it. Null when there is none.
+ * saved, an app it has since removed. appHealth counts it in the total and in
+ * no app, so without this row the table adds up to less than the tile above
+ * it. Null when there is none.
+ *
+ * A total only, never split into scheduled and on request: removing an app
+ * detaches its checks from their schedule too (deleteApp), so what started
+ * them is no longer known.
  */
 export function outsideApps(
   total: { usd: number; checks: number },

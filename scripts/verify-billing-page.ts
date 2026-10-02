@@ -50,6 +50,12 @@ eq("pace: …and where the rest comes from", short.detail, "$29 a month against 
 // rounded for display, and is still short.
 const barely = pace({ creditUsd: 29, renews: true, monthlyUsd: 29.3, balanceUsd: 2 });
 check("pace: thirty cents short is short — decided on the amounts, not on a rounded ratio", !/covers/.test(barely.headline), barely.headline);
+// Codex P2 r3 on #243: "$29 a month against $29 of checks. The rest comes from
+// top-ups." — two amounts that round alike are shown to the cent.
+eq("pace: …and the sentence shows why (cents, when whole dollars would look equal)", barely.detail, "$29.00 a month against $29.30 of checks. The rest comes from top-ups.");
+eq("pace: the same the other way round, thirty cents to spare",
+  pace({ creditUsd: 29, renews: true, monthlyUsd: 28.7, balanceUsd: 20 }).detail, "$29.00 a month against $28.70 of checks. Top-ups are only needed beyond that.");
+eq("pace: equal amounts stay whole", pace({ creditUsd: 29, renews: true, monthlyUsd: 29, balanceUsd: 20 }).detail, "$29 a month against $29 of checks. Top-ups are only needed beyond that.");
 const free = pace({ creditUsd: 5, renews: false, monthlyUsd: 8.4, balanceUsd: 4.72 });
 eq("pace: Free — the balance in days, never 'covers' ($4.72 at $8.40 a month)", free.headline, "The balance lasts about 16 days");
 check("pace: Free says the amount does not renew", /does not renew/.test(free.detail), free.detail);
@@ -99,6 +105,14 @@ check("top-ups and the Stripe portal are offered only to those who may bill",
   /mayBill \? \(\s*<TopUpCta/.test(page) && /mayBill \? \(\s*<>\s*<ManageBillingButton \/>/.test(page));
 check("the tile counts every check the total was spent on, and the table has a row for what was outside the apps",
   /checks: health\.totalChecks/.test(page) && /outsideApps\(\{ usd: health\.totalSpendUsd, checks: health\.totalChecks \}, apps\)/.test(page) && /Outside your apps/.test(page));
+// Codex P2 r3 on #243: removing an app detaches its checks and their schedule
+// (deleteApp: appId and watchId go null), so the row cannot say "on request".
+const outsideRow = page.slice(page.indexOf("Outside your apps"), page.indexOf("</tr>", page.indexOf("Outside your apps")));
+check("the outside row is a total with its count, not split into scheduled and on request",
+  /usd\(outside\.usd\)/.test(outsideRow) && (outsideRow.match(/usd\(outside\.usd\)/g) ?? []).length === 1 && /countLine\(outside\.checks, "none"\)/.test(outsideRow) && /removed apps/.test(outsideRow),
+  `${(outsideRow.match(/usd\(outside\.usd\)/g) ?? []).length} amount(s)`);
+check("…and removing an app is what makes that so (the action still clears both)",
+  /data: \{ appId: null, watchId: null \}/.test(read("src/app/dashboard/actions.ts")));
 check("the table is drawn for a team with no saved app when something was paid for outside the apps", /\{\(apps\.length > 0 \|\| outside\) && \(/.test(page));
 check("the old #balance anchor still lands on the balance", /id="balance"/.test(page));
 check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
