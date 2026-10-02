@@ -137,7 +137,7 @@ check("…and takes the app's latest check from the sidebar's own data, so 'in t
   /latestOf = new Map\(shell\.apps\.map\(\(a\) => \[a\.id, a\.latestRunNumber\]\)\)/.test(issues));
 check("the findings and tickets read by id are read among the team's rows only",
   /where: \{ id: \{ in: ids \}, run: \{ teamId: team\.id \} \}/.test(issues) && /where: \{ id: \{ in: ids \}, app: \{ teamId: team\.id \} \}/.test(issues));
-check("an app from the address that is not the team's is no filter", /appParam && nameOf\.has\(appParam\) \? appParam : null/.test(issues) && /sp\.app && nameOf\.has\(sp\.app\) \? sp\.app : null/.test(checks));
+check("an app from the address that is not the team's is no filter", /appParam && nameOf\.has\(appParam\) \? appParam : null/.test(issues) && /const app = shell\.apps\.find\(\(a\) => a\.id === sp\.app\) \?\? null;/.test(checks));
 check("a problem opens the check that last saw it, inside the app", /appPath\.check\(i\.appId, i\.lastSeenRunNumber\)/.test(issues));
 check("a mark is offered to whom the route would let set it", /finding\.run\.ownerId === null \|\| finding\.run\.ownerId === user\.id/.test(issues));
 check("a mark is written the way the check's page writes it: PATCH /api/findings/{id}",
@@ -151,7 +151,10 @@ check("Checks reads the team's rows, newest first by number, a page and one more
 check("its scheduled / on request filter is the label's rule, and appHealth's split is the same one",
   /started === "scheduled" \? BY_SCHEDULE : started === "request" \? ON_REQUEST : \{\}/.test(checks) &&
     /const side = startedBySchedule\(r\) \? t\.scheduled : t\.onRequest;/.test(read("src/lib/app-health.ts")) && !/r\.watchId \? t\.scheduled/.test(read("src/lib/app-health.ts")));
-check("its header's numbers are appHealth's — the ones All apps and Billing show", /appHealth\(db, team\.id, app \? \{ only: app\.id \} : \{\}\)/.test(checks) && /checks: health\.totalChecks, usd: usd\(health\.totalSpendUsd\)/.test(checks));
+check("its header's numbers are appHealth's — the ones All apps and Billing show: one app's entry, or the team's totals alone",
+  /app \? null : teamSpend\(db, team\.id\)/.test(checks) && /app \? appHealth\(db, team\.id, \{ only: app\.id \}\) : null/.test(checks) && !/appHealth\(db, team\.id\)[,)]/.test(checks));
+check("the sidebar's count leaves out a finding the latest check only restated on a carried journey",
+  /cj\.carriedFromRunId IS NOT NULL\s+AND cj\."order" = json_extract\(f\.anchor, '\$\.stepRef\.journeyIndex'\)/.test(read("src/lib/shell-data.ts")));
 check("one price's reason is loaded, for a check on the page — not one per row", (checks.match(/explainPrice\(/g) ?? []).length === 1 && /runs\.find\(\(r\) => r\.runNumber === why\)/.test(checks));
 check("a finished check opens inside the app, one that is running or did not finish on its own page",
   /result\.kind === "verdict" \? checkHref\(\{ appId: ownApp, runNumber: run\.runNumber, publicId: run\.publicId \}\) : `\/run\/\$\{run\.publicId\}`/.test(checks));

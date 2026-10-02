@@ -6,7 +6,7 @@ import { usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { appPath, checkHref } from "@/lib/app-shell";
-import { appHealth } from "@/lib/app-health";
+import { appHealth, teamSpend } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { explainPrice } from "@/lib/check-price";
 import { BY_SCHEDULE, ON_REQUEST } from "@/lib/started-via";
@@ -43,19 +43,26 @@ export default async function ChecksPage({
   const { db, team } = await requireUser();
   const shell = await shellData(db, team.id);
   const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
-  // An app that is not the team's is no filter at all.
-  const appId = sp.app && nameOf.has(sp.app) ? sp.app : null;
-  const app = appId ? await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { id: true, appSlug: true } }) : null;
+  // The team's apps are the sidebar's (already read for this request). An app
+  // from the address that is not among them is no filter at all.
+  const app = shell.apps.find((a) => a.id === sp.app) ?? null;
+  const appId = app?.id ?? null;
   // Which checks are an app's is appHealth's rule, as on the app's own page:
   // attached to it, or — for the team's only app of that address — made with
-  // no app.
-  const onlyOneWithSlug = app ? (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1 : false;
-  const ofApp = app ? { OR: [{ appId: app.id }, ...(onlyOneWithSlug ? [{ appId: null, appSlug: app.appSlug }] : [])] } : {};
+  // no app. The same rule names a row's app and links it.
+  const slugCount = new Map<string, number>();
+  for (const a of shell.apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
+  const onlyAppOf = new Map(shell.apps.filter((a) => slugCount.get(a.appSlug) === 1).map((a) => [a.appSlug, a.id]));
+  const ofApp = app ? { OR: [{ appId: app.id }, ...(onlyAppOf.get(app.appSlug) === app.id ? [{ appId: null, appSlug: app.appSlug }] : [])] } : {};
   // The filter is the label's own rule (src/lib/started-via.ts), in the database.
   const byStart = started === "scheduled" ? BY_SCHEDULE : started === "request" ? ON_REQUEST : {};
 
-  const [health, found] = await Promise.all([
-    appHealth(db, team.id, app ? { only: app.id } : {}),
+  // The header's numbers are appHealth's. For every app together that is the
+  // team's totals alone (teamSpend — the same pass, without each app's history
+  // and price explanation); for one app, that app's entry.
+  const [totals, health, found] = await Promise.all([
+    app ? null : teamSpend(db, team.id),
+    app ? appHealth(db, team.id, { only: app.id }) : null,
     db.run.findMany({
       // Each of the two filters is an OR of its own, so they are joined by AND.
       where: { ...teamOwned(team.id), AND: [ofApp, byStart], ...(before ? { runNumber: { lt: before } } : {}) },
@@ -74,13 +81,8 @@ export default async function ChecksPage({
   const opened = why ? runs.find((r) => r.runNumber === why) : undefined;
   const reason = opened ? await explainPrice(db, opened, team.plan as UserPlan) : null;
 
-  // A check with no app is its app's when that app is the team's only one of
-  // the address (the same rule, for the row's name and its link). Asked for one
-  // app, the rows are already that app's by this rule.
-  const slugCount = new Map<string, number>();
-  for (const a of health.apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
-  const onlyAppOf = new Map(health.apps.filter((a) => slugCount.get(a.appSlug) === 1).map((a) => [a.appSlug, a.appId]));
-  const mine = app ? health.apps.find((a) => a.appId === app.id) : undefined;
+  const mine = app ? health?.apps.find((a) => a.appId === app.id) : undefined;
+  const windowDays = health?.windowDays ?? totals?.windowDays ?? 30;
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
@@ -89,13 +91,13 @@ export default async function ChecksPage({
         <p className="mt-1.5 text-sm text-fg-muted">
           {app
             ? checksLine({
-                windowDays: health.windowDays,
+                windowDays,
                 checks: mine?.checks ?? 0,
                 usd: usd(mine?.spendUsd ?? 0),
                 scheduled: mine?.scheduled.count ?? 0,
                 onRequest: mine?.onRequest.count ?? 0,
               })
-            : checksLine({ windowDays: health.windowDays, checks: health.totalChecks, usd: usd(health.totalSpendUsd) })}{" "}
+            : checksLine({ windowDays, checks: totals?.totalChecks ?? 0, usd: usd(totals?.totalSpendUsd ?? 0) })}{" "}
           Times are in UTC.
         </p>
       </header>
