@@ -9,7 +9,7 @@ import { ExtensionRuntimeError, extensionOperation } from "./extension-error";
 import type { ExtensionFinalEvidence } from "./extension-evidence";
 import { extensionReplaySpec, type ExtensionReplayAction, type NativeReplayControl } from "./extension-replay";
 import type { RecordedAction } from "./tools";
-import { humanCheckRefusal, isChallengeAnswerField, isHumanCheckText } from "./human-check";
+import { humanCheckRefusal, isChallengeAnswerField, isHumanCheckText, noteHumanCheck } from "./human-check";
 
 const sessions = new WeakMap<Browser, ExtensionBrowser>();
 export const extensionBrowserFor = (browser: Browser) => sessions.get(browser);
@@ -134,10 +134,15 @@ export class ExtensionBrowser {
         if (!node || !this.popup) throw new Error("Read the native popup to obtain a current control reference");
         // CHE-401: a human-verification challenge is never pressed or typed
         // into, in an extension's own popup as anywhere else. A native control
-        // is known by its accessible name; that is what is judged (Codex on #252).
-        if (name === "extension_click" ? isHumanCheckText(node.name) : isChallengeAnswerField(node.name)) {
-          console.warn(`[${name}] refused a human-verification control: ${node.name}`);
-          return humanCheckRefusal(node.name.slice(0, 80));
+        // is known by its accessible name and, when it has none, by its
+        // placeholder — both are what the walk was shown (read(), below), and
+        // both are judged (Codex on #252, twice).
+        const shown = [node.name, node.placeholder].filter((text): text is string => Boolean(text));
+        const challenge = shown.find((text) => (name === "extension_click" ? isHumanCheckText(text) : isChallengeAnswerField(text)));
+        if (challenge) {
+          console.warn(`[${name}] refused a human-verification control: ${challenge}`);
+          noteHumanCheck(env, challenge);
+          return humanCheckRefusal(challenge.slice(0, 80));
         }
         // A request for the known Start control has an available owned action.
         // Routing it there is not a failed product interaction: carrying that

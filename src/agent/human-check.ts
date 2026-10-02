@@ -140,6 +140,51 @@ export function isChallengeAnswerField(text: string | null | undefined): boolean
   return Boolean(text && (CHALLENGE_ANSWER.test(text) || HUMAN_CHECK_PHRASE.test(text)));
 }
 
+// ── what becomes of the step ──
+//
+// The refusal below is a request to a model, and a request is not a mechanism:
+// a walk that was refused and then reports the step "broken" would publish the
+// challenge as the customer's defect. So every refusal is remembered, and the
+// step reported next is settled in code (Codex on #252): whatever the model
+// called it, a step that met a challenge and did not pass is skipped, a gap of
+// ours, in the class our board already keeps for it. Unlike a control we could
+// not drive, no "hard evidence" exempts it — a challenge page answers 403 as a
+// matter of course, and that 403 is the challenge's, not the product's.
+
+/** What a step may carry about a challenge it met. Structural, so tools.ts and the extension share it. */
+export interface HumanCheckSeen {
+  humanChecks?: string[];
+}
+export interface HumanCheckStep {
+  label?: string;
+  status: string;
+  observed?: string;
+  unverifiedReason?: string;
+  gapClass?: string;
+}
+
+/** A challenge control was refused: remembered until the next step is reported. */
+export function noteHumanCheck(env: HumanCheckSeen, what: string): void {
+  (env.humanChecks ??= []).push(what.trim().replace(/\s+/g, " ").slice(0, 80));
+}
+
+// Customer-facing: what their page did, and that nothing behind it was checked.
+// Nothing about how we check, and nothing for them to do.
+export const HUMAN_CHECK_OBSERVED = "The page asked for human verification before going any further. Nothing behind it was checked this run.";
+
+/** Report time: a step that met a challenge is a gap of ours, never the product's failure. Drains what was noted. */
+export function coerceHumanCheck(step: HumanCheckStep, env: HumanCheckSeen): void {
+  const met = env.humanChecks?.splice(0) ?? [];
+  if (met.length === 0) return;
+  // A step that says the page works is not a claim against anyone.
+  if (step.status === "ok") return;
+  console.warn(`[report_step] "${step.label ?? ""}": ${step.status} after a human-verification challenge (${met[0]}) → skipped/our_capability/captcha`);
+  step.status = "skipped";
+  step.unverifiedReason = "our_capability";
+  step.gapClass = "captcha";
+  step.observed = HUMAN_CHECK_OBSERVED;
+}
+
 // What the walk is told. The step it then reports is a gap of ours (rule 2),
 // in the class the board already has for it — never a finding about the product.
 export function humanCheckRefusal(what: string): string {

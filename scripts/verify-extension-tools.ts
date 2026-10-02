@@ -54,14 +54,23 @@ assert.equal(reported.status, "ok", "Routing to the available Start action does 
       { ref: "n-human", role: "check box", name: "Verify you are human", editable: false, protected: false },
       { ref: "n-robot", role: "push button", name: "I'm not a robot", editable: false, protected: false },
       { ref: "n-captcha", role: "text", name: "Enter the characters you see in the image", editable: true, protected: false },
+      // A field with no name of its own: the walk was shown its placeholder.
+      { ref: "n-placeholder", role: "text", name: "", placeholder: "Captcha", editable: true, protected: false },
       { ref: "n-settings", role: "push button", name: "reCAPTCHA settings", editable: false, protected: false },
     ] });
-  for (const [tool, ref] of [["extension_click", "n-human"], ["extension_click", "n-robot"], ["extension_fill", "n-captcha"]] as const) {
+  for (const [tool, ref] of [["extension_click", "n-human"], ["extension_click", "n-robot"], ["extension_fill", "n-captcha"], ["extension_fill", "n-placeholder"]] as const) {
     const answer = await executeTool(env, tool, { ref, value: "x7Kp2" });
     assert.match(answer, /^Refused: .*human-verification challenge/, `${tool} ${ref}: ${answer}`);
     assert.match(answer, /our_capability/);
   }
   assert.equal(dispatched, 0, "A refused challenge control never reaches the runner");
+  // And the step reported next is settled in code, whatever the model calls it.
+  assert.equal((env as ToolEnv).humanChecks?.length, 4, "Every refusal is remembered until the step is reported");
+  const blamed = { label: "Sign in", status: "broken", attempted: "Ticked the verification box", observed: "The popup rejects the verification — sign-in is broken." };
+  await executeTool(env, "report_step", blamed);
+  assert.deepEqual([blamed.status, (blamed as Record<string, unknown>).unverifiedReason, (blamed as Record<string, unknown>).gapClass], ["skipped", "our_capability", "captcha"],
+    "A step reported broken after a refused challenge is our gap, not the extension's defect");
+  assert.equal((env as ToolEnv).humanChecks?.length, 0, "…and the note is spent on that step");
   await executeTool(env, "extension_click", { ref: "n-settings" });
   assert.equal(dispatched, 1, "A product's own control about captchas is still pressed");
   Object.assign(extension, before);

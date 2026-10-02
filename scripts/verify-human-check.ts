@@ -21,7 +21,8 @@
 
 import { chromium, type Browser, type Page } from "playwright";
 import { executeTool, prepareAgentPage, type ToolEnv } from "@/agent/tools";
-import { challengeAnswerIn, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText } from "@/agent/human-check";
+import { challengeAnswerIn, HUMAN_CHECK_OBSERVED, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText } from "@/agent/human-check";
+import { hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
 import { classifyGap } from "@/agent/gap-classes";
 
 let failures = 0;
@@ -186,6 +187,34 @@ async function main() {
     check("nothing on the challenge page was pressed", (await pressedOn(env.page)) === "", await pressedOn(env.page));
     check("nothing was typed into it",
       (await env.page.evaluate(() => ["ans", "resp", "cap", "captcha", "answer"].map((id) => (document.getElementById(id) as HTMLInputElement).value).join("|"))) === "||||");
+    // ── 4b — what becomes of the step, whatever the model calls it ────────
+    // The refusal is a request to a model. A walk that was refused and then
+    // reports "broken" — with the challenge page's own 403 as its evidence —
+    // must not publish that as the product's defect.
+    const written: Record<string, unknown>[] = [];
+    env.onReportStep = async (step) => {
+      written.push({ ...step });
+    };
+    await executeTool(env, "report_step", { label: "Sign in", status: "broken", attempted: "Pressed Verify you are human and waited", observed: "The verification never completes and the page answers HTTP 403 — sign-in is broken." });
+    check("a step reported broken after a refused challenge is settled in code: skipped, our gap, class captcha — the challenge's own 403 is not evidence against the product",
+      written[0]?.status === "skipped" && written[0]?.unverifiedReason === "our_capability" && written[0]?.gapClass === "captcha" && written[0]?.observed === HUMAN_CHECK_OBSERVED,
+      JSON.stringify(written[0]));
+    check("…what the customer reads is what their page did — no machinery, no homework",
+      !hasHomework(HUMAN_CHECK_OBSERVED) && !hasNarration(HUMAN_CHECK_OBSERVED) && !hasEnvironmentLeak(HUMAN_CHECK_OBSERVED) && !/broken|fail/i.test(HUMAN_CHECK_OBSERVED), HUMAN_CHECK_OBSERVED);
+    await executeTool(env, "report_step", { label: "Read the footer", status: "confusing", attempted: "Read the footer links", observed: "Two links have the same name." });
+    check("…and it is spent on that step: the next one is the model's own again", written[1]?.status === "confusing" && written[1]?.observed === "Two links have the same name.", JSON.stringify(written[1]));
+    await executeTool(env, "click", { selector: "#robot" });
+    await executeTool(env, "report_step", { label: "Open the sign-in page", status: "ok", attempted: "Opened the page", observed: "The page loads and shows a verification step." });
+    check("a step that says the page works is left as it is — and still spends the note", written[2]?.status === "ok" && !written[2]?.gapClass, JSON.stringify(written[2]));
+    await executeTool(env, "report_step", { label: "Later", status: "broken", attempted: "Something else", observed: "The total is wrong: 2 + 2 shows 5." });
+    check("…so a later, unrelated defect is not swallowed", written[3]?.status === "broken", JSON.stringify(written[3]));
+    await executeTool(env, "fill", { selector: "#captcha", value: "x" });
+    await executeTool(env, "report_step", { label: "Type the code", status: "skipped", unverifiedReason: "missing_access", attempted: "Typed the code", observed: "A code is needed." });
+    check("a refused field does the same, and a step skipped for another reason is still ours, not an ask for access",
+      written[4]?.status === "skipped" && written[4]?.unverifiedReason === "our_capability" && written[4]?.gapClass === "captcha", JSON.stringify(written[4]));
+    const pressedBefore = await pressedOn(env.page);
+    check("…and through all of it nothing was pressed", pressedBefore === "", pressedBefore);
+
     const plain = await executeTool(env, "click", { selector: "#plain" });
     check("an ordinary control on the same page is still pressed — the refusal is the challenge's, not the page's",
       plain.startsWith("Clicked") && (await pressedOn(env.page)) === "plain", plain.slice(0, 80));
