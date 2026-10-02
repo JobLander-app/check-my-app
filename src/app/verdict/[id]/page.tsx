@@ -362,7 +362,8 @@ export default async function VerdictPage({
               )}
               {run.bottomLine && (
                 <p
-                  className={`mt-2.5 rounded-r-md border-l-2 border-current/50 bg-ink-800/40 py-2 pl-3 pr-3 text-sm ${verdictMeta?.textClassName ?? "text-fg-muted"}`}
+                  className={`mt-2.5 rounded-r-md border-l-2 bg-ink-800/40 py-2 pl-3 pr-3 text-sm ${verdictMeta?.textClassName ?? "text-fg-muted"}`}
+                  style={{ borderColor: "color-mix(in srgb, currentColor 50%, transparent)" }}
                 >
                   <span className="font-medium">Bottom line:</span>{" "}
                   <span className="text-fg-muted">{run.bottomLine}</span>
