@@ -411,7 +411,12 @@ export interface ReleaseRow {
 // with scripts/report-releases.ts so the read-only prod report runs the same
 // rules as the product.
 export function releaseInputs(runs: ReleaseRow[], apps: Array<{ id: string; appSlug: string }>): ReleaseRunInput[] {
-  const appBySlug = new Map(apps.map((a) => [a.appSlug, a.id]));
+  // A check with no App row is the app's only when that app is the team's only
+  // one of the address — the rule every page that lists an app's checks uses
+  // (appHealth). With two apps of one address it is neither's.
+  const slugCount = new Map<string, number>();
+  for (const a of apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
+  const appBySlug = new Map(apps.filter((a) => slugCount.get(a.appSlug) === 1).map((a) => [a.appSlug, a.id]));
   const inputs: ReleaseRunInput[] = [];
   for (const r of runs) {
     if (!isRelease(r) || !extensionReportPublished(r)) continue;

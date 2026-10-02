@@ -86,7 +86,19 @@ async function loader() {
         run("r3", 3, "a", "t", "3333333cccc", 12),
         run("r4", 4, "a", "t", "4444444dddd", 13, { status: "failed", verdict: null, priceUsd: null }), // did not finish: says nothing
         run("y1", 5, "x", "o", "9999999ffff", 12), // another team's release
+        // A release with no App row (Codex on #255): the team's only app of that
+        // address owns it — the rule the app's page counts by too.
+        { ...run("r6", 6, "a", "t", "6666666eeee", 14), appId: null },
+        // …and one of an address two of the team's apps share: neither's.
+        { ...run("w1", 7, "tw", "t", "7777777ffff", 14), appId: null },
       ] as never,
+    });
+    await db.user.create({ data: { id: "u2", clerkUserId: "ck_u2", email: "rel2@example.test" } });
+    await db.app.createMany({
+      data: [
+        { id: "tw1", teamId: "t", ownerId: "u", appSlug: "tw.test", targetUrl: "https://tw.test", targetKind: "website" },
+        { id: "tw2", teamId: "t", ownerId: "u2", appSlug: "tw.test", targetUrl: "https://tw.test", targetKind: "website" },
+      ],
     });
     const journeys = ["r1", "r2", "r3", "y1"].flatMap((r) => [0, 1].map((k) => ({ id: `${r}_j${k}`, runId: r, order: k, title: `Journey ${k}`, status: "ok", journeyKey: `journey-${k}` })));
     await db.journey.createMany({ data: journeys });
@@ -106,8 +118,11 @@ async function loader() {
     });
 
     const releases = await releasesByTeam(db, "t", { days: 30, now: at(20) });
-    eq("real D1: the team's finished checks that carry a commit, newest first — not the plain check, the failed one, or another team's", releases.map((r) => r.runNumber).join(","), "3,1");
-    const [latest, first] = releases;
+    eq("real D1: the team's finished checks that carry a commit, newest first — not the plain check, the failed one, another team's, or one of an address two apps share",
+      releases.map((r) => r.runNumber).join(","), "6,3,1");
+    const [loose, latest, first] = releases;
+    eq("real D1: a release with no App row is its address's only app's", loose.appId, "a");
+    eq("real D1: …and what it did not look at is not compared, not 'fixed'", releaseDeltaLine(loose), "Broke 0, fixed 0, unchanged 0, 2 not compared — against 3333333.");
     check("real D1: the first one says so", first.firstRelease && first.delta === null);
     eq("real D1: the delta is computed over what was stored (journeys, steps, findings stitched back to their check)",
       releaseDeltaLine(latest), "Broke 1, fixed 1, unchanged 1 — against 1111111.");
@@ -139,6 +154,9 @@ check("a flag is asked once a request, however many places ask", /const flagOnce
 check("…and nobody signed in is still answered without a request", /user \? flagOnce\(key, user\.clerkUserId, user\.email, user\.isTestAccount\) : evaluateFlag\(key, null\)/.test(flags));
 
 const appPage = read("src/app/(app)/health/apps/[appId]/page.tsx");
+check("the app's page counts its releases by the rule its timeline and the feed use (attached, or the only app of the address)",
+  /OR: \[\{ appId: app\.id \}, \.\.\.\(onlyOneWithSlug \? \[\{ appId: null, appSlug: app\.appSlug \}\] : \[\]\)\],\s*deploySha: \{ not: null \}, status: \{ in: FINISHED \},/.test(appPage) &&
+    /appBySlug = new Map\(apps\.filter\(\(a\) => slugCount\.get\(a\.appSlug\) === 1\)/.test(lib));
 check("the app's page offers its releases only with the lens", /\{releaseLens && \(\s*<Row href=\{releasesHref\(app\.id\)\} label="Releases"/.test(appPage) && /releaseLensFor\(user\),/.test(appPage));
 const checkPage = read("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx");
 check("a check that is a release says what it broke or fixed — read only for such a check, and only with the lens",

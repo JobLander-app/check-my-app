@@ -80,8 +80,16 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     // CHE-367: the Release lens is the owner's until it is proven; the layout
     // has already asked, so this is the same answer, not a second request.
     releaseLensFor(user),
-    // A release is a check CI told us is a build (src/lib/releases.ts).
-    db.run.count({ where: { ...teamOwned(team.id), appId: app.id, deploySha: { not: null }, status: { in: FINISHED } } }),
+    // A release is a check CI told us is a build (src/lib/releases.ts) — of
+    // this app by the same rule as the timeline above and as the Release feed
+    // this row opens, so the count and the feed cannot disagree.
+    db.run.count({
+      where: {
+        ...teamOwned(team.id),
+        OR: [{ appId: app.id }, ...(onlyOneWithSlug ? [{ appId: null, appSlug: app.appSlug }] : [])],
+        deploySha: { not: null }, status: { in: FINISHED },
+      },
+    }),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
