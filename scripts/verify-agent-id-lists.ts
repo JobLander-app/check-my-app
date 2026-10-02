@@ -33,14 +33,97 @@ export interface IdListQuery {
   selected: string[] | null;
 }
 
-// The argument object of a call, from its opening brace to the matching one.
-function braces(text: string, open: number): string {
+// Where a string or a comment that starts at `i` ends; `i` itself when neither
+// starts there. Braces, colons and commas inside either are not code: a filter
+// value of "}" must not close the query's argument, and a column named in a
+// comment is not selected (Codex on #258, twice).
+function pastNonCode(source: string, i: number): number {
+  const ch = source[i];
+  if (ch === '"' || ch === "'" || ch === "`") {
+    let j = i + 1;
+    for (; j < source.length && source[j] !== ch; j++) if (source[j] === "\\") j++;
+    return j + 1;
+  }
+  if (ch === "/" && source[i + 1] === "/") {
+    const end = source.indexOf("\n", i);
+    return end < 0 ? source.length : end;
+  }
+  if (ch === "/" && source[i + 1] === "*") {
+    const end = source.indexOf("*/", i + 2);
+    return end < 0 ? source.length : end + 2;
+  }
+  return i;
+}
+
+// The same source with its comments taken out and its strings left whole.
+function withoutComments(source: string): string {
+  let out = "";
+  for (let i = 0; i < source.length; i++) {
+    const next = pastNonCode(source, i);
+    if (next === i) out += source[i];
+    else {
+      if (source[i] !== "/") out += source.slice(i, next);
+      i = next - 1;
+    }
+  }
+  return out;
+}
+
+// From an opening bracket to the one that matches it, strings and comments skipped.
+function matched(text: string, open: number): string {
+  const opening = text[open];
+  const closing = opening === "{" ? "}" : opening === "[" ? "]" : ")";
   let depth = 0;
   for (let i = open; i < text.length; i++) {
-    if (text[i] === "{") depth++;
-    else if (text[i] === "}" && --depth === 0) return text.slice(open, i + 1);
+    const next = pastNonCode(text, i);
+    if (next !== i) {
+      i = next - 1;
+      continue;
+    }
+    if (text[i] === opening) depth++;
+    else if (text[i] === closing && --depth === 0) return text.slice(open, i + 1);
   }
   return text.slice(open);
+}
+
+// The lists a `where` filters by that can be of any length: `in:` / `notIn:`
+// with anything but an array written out in full. `[...ids]` is written with
+// brackets and is as long as `ids` (Codex on #258) — fixed means every element
+// is a literal.
+const LITERAL = /^(?:"[^"]*"|'[^']*'|`[^`$]*`|-?\d+(?:\.\d+)?|true|false|null)$/;
+export function variableLists(whereSource: string): string[] {
+  const where = withoutComments(whereSource);
+  const lists: string[] = [];
+  for (const filter of where.matchAll(/(\w+):\s*\{\s*(?:notIn|in):\s*/g)) {
+    const at = filter.index + filter[0].length;
+    if (where[at] === "[") {
+      const literal = matched(where, at);
+      const elements = [...ownEntries(`{ list: ${literal} }`).values()][0].slice(1, -1);
+      // Split on the list's own commas: the elements of an object { 0: a, 1: b }.
+      const parts: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i <= elements.length; i++) {
+        const next = pastNonCode(elements, i);
+        if (next !== i) {
+          i = next - 1;
+          continue;
+        }
+        const ch = elements[i];
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        else if (ch === "}" || ch === "]" || ch === ")") depth--;
+        else if ((ch === "," && depth === 0) || i === elements.length) {
+          if (elements.slice(start, i).trim()) parts.push(elements.slice(start, i).trim());
+          start = i + 1;
+        }
+      }
+      if (parts.every((part) => LITERAL.test(part))) continue;
+      lists.push(`${filter[1]} in ${literal.replace(/\s+/g, " ").slice(0, 60)}`);
+    } else {
+      lists.push(`${filter[1]} in ${(where.slice(at).match(/^[^,}\n]+/)?.[0] ?? "?").trim()}`);
+    }
+  }
+  return lists;
 }
 
 // The entries of an object literal at its OWN level: key → the source of its
@@ -50,7 +133,7 @@ function braces(text: string, open: number): string {
 // reader looked for the word anywhere in the call).
 export function ownEntries(objectSource: string): Map<string, string> {
   // Comments out first: "// CHE-403: …" inside a query would read as a key.
-  const source = objectSource.replace(/(^|\s)\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
+  const source = withoutComments(objectSource);
   const out = new Map<string, string>();
   let depth = 0;
   let key: string | null = null;
@@ -101,6 +184,11 @@ export function sortedColumns(orderSource: string): string[] {
   let depth = 0;
   let start = -1;
   for (let i = 1; i < order.length - 1; i++) {
+    const next = pastNonCode(order, i);
+    if (next !== i) {
+      i = next - 1;
+      continue;
+    }
     if (order[i] === "{" && depth++ === 0) start = i;
     else if (order[i] === "}" && --depth === 0) columns.push(...ownEntries(order.slice(start, i + 1)).keys());
   }
@@ -111,9 +199,8 @@ export function sortedColumns(orderSource: string): string[] {
 export function idListQueries(text: string, where: string): IdListQuery[] {
   const found: IdListQuery[] = [];
   for (const call of text.matchAll(/\.(?:findMany|findFirst)\(\s*\{/g)) {
-    const top = ownEntries(braces(text, call.index + call[0].length - 1));
-    // `in: [...]` written out is a fixed list; anything else can be any length.
-    const lists = [...(top.get("where") ?? "").matchAll(/(\w+):\s*\{\s*(?:not)?[iI]n:\s*(?![\s[])([^,}\n]+)/g)].map((m) => `${m[1]} in ${m[2].trim()}`);
+    const top = ownEntries(matched(text, call.index + call[0].length - 1));
+    const lists = variableLists(top.get("where") ?? "");
     const order = top.get("orderBy");
     if (lists.length === 0 || !order) continue;
     const sortedBy = sortedColumns(order);
@@ -179,6 +266,33 @@ function main() {
     const query = `db.run.findMany({ where: { id: { in: ids } }, orderBy: ${order}, select: { id: true, order: true } })`;
     check(`reader: a direction written with ${how} still names its column`, unsafe(idListQueries(query, "x")[0]).join() === "createdAt", JSON.stringify(idListQueries(query, "x")));
   }
+  // A list written with brackets is fixed only when every element is written out.
+  for (const [how, list, variable] of [
+    ["a spread", "[...ids]", true],
+    ["a spread beside a literal", '["a", ...more]', true],
+    ["identifiers", "[first, second]", true],
+    ["a call", "[idOf(run)]", true],
+    ["literals in single quotes", "['known', 'false_positive']", false],
+    ["numbers", "[1, 2, 3]", false],
+    ["literals with a comma and a bracket inside", '["a, b", "]"]', false],
+  ] as const) {
+    const query = `db.run.findMany({ where: { id: { in: ${list} } }, orderBy: { startedAt: "desc" }, select: { id: true } })`;
+    const read = idListQueries(query, "x");
+    check(`reader: a list of ${how} is ${variable ? "as long as what it spreads or names — a hazard" : "fixed"}`,
+      variable ? read.length === 1 && unsafe(read[0]).join() === "startedAt" : read.length === 0, JSON.stringify(read));
+  }
+  // Braces, colons and commas inside a string or a comment are not code.
+  const braceInString = `db.note.findMany({ where: { text: "}", id: { in: ids } }, orderBy: { createdAt: "desc" }, select: { id: true } })`;
+  const braceInComment = `db.note.findMany({
+      where: { id: { in: ids } }, // } closes nothing here
+      /* orderBy: { id: "asc" }, */
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    })`;
+  check("reader: a filter value of \"}\" does not close the query's argument",
+    idListQueries(braceInString, "x").length === 1 && unsafe(idListQueries(braceInString, "x")[0]).join() === "createdAt", JSON.stringify(idListQueries(braceInString, "x")));
+  check("reader: a brace or an orderBy inside a comment is not the query's",
+    idListQueries(braceInComment, "x").length === 1 && unsafe(idListQueries(braceInComment, "x")[0]).join() === "createdAt", JSON.stringify(idListQueries(braceInComment, "x")));
   const variableOrder = `db.run.findMany({ where: { id: { in: ids } }, orderBy: sortFor(view), select: { id: true } })`;
   check("reader: an orderBy that is not written out cannot be read — reported, not passed",
     unsafe(idListQueries(variableOrder, "x")[0]).join() === UNREADABLE_ORDER, JSON.stringify(idListQueries(variableOrder, "x")));
