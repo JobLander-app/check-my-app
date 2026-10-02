@@ -18,13 +18,14 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-model-ampersand.ts
 //        MODEL_AMPERSAND_CHANNEL=chrome … to run it on the system Chrome, as CI does
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { chromium, type Browser, type Page } from "playwright";
-import { createWithRetry, inOwnWords } from "@/agent/core";
+import { createWithRetry } from "@/agent/core";
+import { createOnRoutes } from "@/agent/llm";
 import { executeTool, prepareAgentPage, type ReportedStep, type ToolEnv } from "@/agent/tools";
-import { ownWords, ownWordsDeep, ownWordsInAnswer } from "@/lib/model-text";
+import { inOwnWords, ownWords, ownWordsDeep, ownWordsInAnswer } from "@/lib/model-text";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -116,11 +117,37 @@ async function main() {
   const through = await createWithRetry(async () => message);
   check("createWithRetry hands back the answer in the model's own words",
     ((through.content as unknown as Record<string, unknown>[])[2].input as { name: string }).name === "Add login & notes (optional)");
-  // …and nothing in the agent calls a model any other way.
-  const callers = ["src/agent/core.ts", "src/agent/judge.ts"].map((file) => readFileSync(join(process.cwd(), file), "utf8"));
-  const direct = callers.flatMap((text) => text.match(/messages\.create\(/g) ?? []).length;
-  const wrapped = callers.flatMap((text) => text.match(/createWithRetry\(\s*(?:\(\)|async \(\))\s*=>/g) ?? []).length;
-  check("every model call in the agent goes through createWithRetry", direct > 0 && direct === wrapped, `${direct} calls, ${wrapped} wrapped`);
+  // The verdict's model answers by another road (createOnRoutes — synthesis
+  // and the bottom line's rewrite), which the first version of this change
+  // missed (Codex on #257): its findings and bottom lines kept the escaping.
+  const verdict = answer([{ type: "text", text: '{"bottomLine":"Sign-up &amp; billing work.","findings":[{"title":"Terms &amp; Conditions link is dead","quote":"R&D shows &amp;"}]}' }]);
+  const routed = await createOnRoutes([{ model: "m", client: { messages: { create: async () => verdict } } } as never], { max_tokens: 1, messages: [] });
+  check("createOnRoutes hands back the verdict model's answer in its own words too",
+    (routed.message.content as unknown as { text: string }[])[0].text === '{"bottomLine":"Sign-up & billing work.","findings":[{"title":"Terms & Conditions link is dead","quote":"R&D shows &amp;"}]}',
+    (routed.message.content as unknown as { text: string }[])[0].text);
+  // One level means once: an answer that somehow meets both boundaries keeps
+  // a page's literal "&amp;".
+  const quoted = inOwnWords(answer([{ type: "text", text: "The heading reads A &amp;amp; B" }]));
+  const twice = inOwnWords(await createWithRetry(async () => quoted));
+  check("an answer passed through twice loses one level, not two", (twice.content as unknown as { text: string }[])[0].text === "The heading reads A &amp; B",
+    (twice.content as unknown as { text: string }[])[0].text);
+  // …and nothing calls a model any other way: every messages.create in the
+  // codebase is inside one of the two. Searched in every source file, not in
+  // the two I happened to think of.
+  const sources = (readdirSync(join(process.cwd(), "src"), { recursive: true }) as string[]).filter((file) => /\.tsx?$/.test(file));
+  const loose: string[] = [];
+  let calls = 0;
+  for (const file of sources) {
+    const text = readFileSync(join(process.cwd(), "src", file), "utf8");
+    for (const match of text.matchAll(/\.messages\.create\(/g)) {
+      calls++;
+      const before = text.slice(Math.max(0, match.index - 160), match.index);
+      const viaRetry = /createWithRetry\(\s*(?:async\s*)?\(\)\s*=>\s*[\w.]*$/.test(before);
+      const viaRoutes = /inOwnWords\(await route\.client$/.test(before);
+      if (!viaRetry && !viaRoutes) loose.push(`${file}:${text.slice(0, match.index).split("\n").length}`);
+    }
+  }
+  check("every model call in the codebase answers through one of the two boundaries", calls >= 5 && loose.length === 0, `${calls} calls; outside: ${loose.join(", ") || "none"}`);
 
   // ── 5 — the click that failed, and the step that was stored ──────────────
   const browser = await launch();

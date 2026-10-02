@@ -17,7 +17,7 @@ import {
   type UsageTotals,
 } from "./llm";
 import { productName } from "@/lib/verdict-language";
-import { ownWordsDeep, ownWordsInAnswer } from "@/lib/model-text";
+import { inOwnWords } from "@/lib/model-text";
 import { browserToolsFor, executeTool, type ToolEnv } from "./tools";
 
 export interface AgentLoopArgs {
@@ -468,9 +468,10 @@ export async function createWithRetry(
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      // CHE-402: every answer of every model comes back through here, so this
-      // is where the model's own "&amp;" comes off — before a tool acts on the
-      // words and before any of them is stored.
+      // CHE-402: an answer comes back through here (or through createOnRoutes,
+      // llm.ts — the two between them are every model call the agent makes),
+      // so this is where the model's own "&amp;" comes off: before a tool acts
+      // on the words and before any of them is stored.
       return inOwnWords(await fn());
     } catch (err) {
       lastErr = err;
@@ -487,32 +488,6 @@ export async function createWithRetry(
     }
   }
   throw lastErr;
-}
-
-/**
- * A model's answer with its own escaping taken off (src/lib/model-text.ts): the
- * input of each tool call and each text block. Thinking blocks are left exactly
- * as they came — they are signed, and they are sent back.
- */
-export function inOwnWords(message: Anthropic.Message): Anthropic.Message {
-  if (!Array.isArray(message?.content)) return message;
-  let changed = false;
-  const content = message.content.map((block) => {
-    if (block.type === "tool_use") {
-      const input = ownWordsDeep(block.input);
-      if (JSON.stringify(input) === JSON.stringify(block.input)) return block;
-      changed = true;
-      return { ...block, input };
-    }
-    if (block.type === "text") {
-      const text = ownWordsInAnswer(block.text);
-      if (text === block.text) return block;
-      changed = true;
-      return { ...block, text };
-    }
-    return block;
-  });
-  return changed ? { ...message, content } : message;
 }
 
 function headerSeconds(err: unknown): number | null {

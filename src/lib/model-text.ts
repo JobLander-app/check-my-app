@@ -51,6 +51,53 @@ export function ownWordsDeep<T>(value: T): T {
   return value;
 }
 
+// A model's answer, by shape: what the two places that receive one hand over
+// (the Anthropic SDK's Message) without this module depending on the SDK.
+interface AnswerBlock {
+  type: string;
+  text?: string;
+  input?: unknown;
+}
+interface Answer {
+  content: AnswerBlock[];
+}
+
+// One level means once. An answer that has been through here is remembered, so
+// that a second pass — one boundary wrapping another, some day — cannot take a
+// second level off a page's literal "&amp;amp;".
+const inOwnWordsAlready = new WeakSet<object>();
+
+/**
+ * A model's whole answer with its own escaping taken off: the input of each
+ * tool call and each text block. Thinking blocks are left exactly as they came
+ * — they are signed, and they are sent back. Called where an answer arrives:
+ * createWithRetry (src/agent/core.ts) and createOnRoutes (src/agent/llm.ts) —
+ * between them, every model call the agent makes.
+ */
+export function inOwnWords<T extends Answer>(message: T): T {
+  if (!message || typeof message !== "object" || !Array.isArray(message.content)) return message;
+  if (inOwnWordsAlready.has(message)) return message;
+  let changed = false;
+  const content = message.content.map((block) => {
+    if (block.type === "tool_use") {
+      const input = ownWordsDeep(block.input);
+      if (JSON.stringify(input) === JSON.stringify(block.input)) return block;
+      changed = true;
+      return { ...block, input };
+    }
+    if (block.type === "text" && typeof block.text === "string") {
+      const text = ownWordsInAnswer(block.text);
+      if (text === block.text) return block;
+      changed = true;
+      return { ...block, text };
+    }
+    return block;
+  });
+  const out = changed ? ({ ...message, content } as T) : message;
+  inOwnWordsAlready.add(out);
+  return out;
+}
+
 /**
  * A text block a model answered with. When it is JSON (a structured answer),
  * each string inside is judged on its own — one field's bare "&" says nothing
