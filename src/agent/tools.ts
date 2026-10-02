@@ -32,6 +32,7 @@ import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
 import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
+import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
 
 export interface ToolEnv {
@@ -127,6 +128,12 @@ export interface ToolEnv {
   // not_applicable and stops counting toward its journey. Optional so a bare
   // ToolEnv still builds.
   selfCheckRefusals?: string[];
+  // CHE-401: human-verification challenges the tools refused since the last
+  // report_step. Written by the tools (click, fill, the extension's native
+  // ones), never by the model; drained by report_step, where the step that met
+  // one becomes skipped / our_capability / captcha whatever the model called
+  // it (human-check.ts). Optional so a bare ToolEnv still builds.
+  humanChecks?: string[];
   // CHE-372: a password-protected store's storefront password (decrypted in
   // memory like testPassword), the run's state for it and the hook that
   // records it. Never a placeholder the model can type: the tools enter it on
@@ -787,6 +794,11 @@ async function executeToolUnscrubbed(
         coerceUnpublished404(step, env);
         // CHE-193: on our own hosts a refused create/mark is not a defect.
         coerceSelfCheck403(step, env);
+        // CHE-401: a step that met a human-verification challenge is our gap,
+        // whatever the model called it — before the undriven and unverified
+        // rules, which would let "hard evidence" (the challenge's own 403)
+        // keep it as the product's defect.
+        coerceHumanCheck(step, env);
         // CHE-214: a defect reported after a control our own hands could not
         // drive is our gap. Before classifyUnverified, which leaves an
         // already-reasoned skipped step alone.
@@ -1284,6 +1296,14 @@ export const SELF_HOST_GUARDED_VERBS =
 
 async function click(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
   const label = [input.name, input.selector].filter(Boolean).map(String).join(" ");
+  // CHE-401: a human-verification challenge is never pressed, in any kind of
+  // run — first by what the walk called the control, then (below) by what the
+  // control is. Before every other gate: nothing else about the control matters.
+  if (isHumanCheckText(label) || isChallengeMarkup(input.selector ? String(input.selector) : null)) {
+    console.warn(`[click] refused a human-verification control: ${label}`);
+    noteHumanCheck(env, label);
+    return humanCheckRefusal(label.slice(0, 80));
+  }
   // CHE-389: inside a person's signed-in session nothing signs out — first by
   // what the walk called the control, then (below) by what the control is.
   const signedIn = inSignedInSession(env.page);
@@ -1348,10 +1368,19 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   const where = located.label ? ` inside ${located.label}` : "";
   const sessionRefusal = await env.extension?.guardClick(target);
   if (sessionRefusal) return sessionRefusal;
-  // CHE-389: the control itself — its text, its name, where it leads, the form
-  // it submits — whatever it was called ("the last item in the menu").
+  // The control itself — its text, its name, how it is marked up, where it
+  // leads, the form it submits — whatever it was called ("the checkbox",
+  // "the last item in the menu").
+  const seen = await controlSeen(target);
+  // CHE-401: a challenge, in every kind of run.
+  const challenge = seen ? humanCheckIn(seen) : null;
+  if (challenge) {
+    console.warn(`[click] refused a human-verification control: ${label} (${challenge})`);
+    noteHumanCheck(env, challenge);
+    return humanCheckRefusal(challenge);
+  }
+  // CHE-389: a sign-out, inside a person's signed-in session.
   if (signedIn) {
-    const seen = await controlSeen(target);
     const signsOut = seen ? signOutIn(seen) : null;
     if (signsOut) {
       console.warn(`[click] refused a sign-out control in a signed-in session: ${label} (${signsOut})`);
@@ -1568,6 +1597,14 @@ export function normalizeFillValue(raw: string): string {
 }
 
 async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
+  // CHE-401: a field that asks for a challenge's answer is never typed into —
+  // first by what the walk called it, then (below) by what the field is.
+  const fieldCalled = [input.label, input.selector].filter(Boolean).map(String).join(" ");
+  if (isChallengeAnswerField(input.label ? String(input.label) : null) || isChallengeMarkup(input.selector ? String(input.selector) : null)) {
+    console.warn(`[fill] refused a human-verification field: ${fieldCalled}`);
+    noteHumanCheck(env, fieldCalled);
+    return humanCheckRefusal(fieldCalled.slice(0, 80));
+  }
   // CHE-372: the store's password form is filled by code, with the store
   // password, and by nothing else — password held or not. Not a guess, and
   // never a placeholder: {{TEST_PASSWORD}} typed here would hand the test
@@ -1678,6 +1715,15 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   const field = located.locator.first();
   const fixtureRefusal = await env.extension?.guardFixtureControl(field);
   if (fixtureRefusal) return fixtureRefusal;
+  // CHE-401: the field itself — how it and the widget it sits in are marked up
+  // ("g-recaptcha-response", a .h-captcha container) — whatever it was called.
+  const fieldSeen = await controlSeen(field);
+  const answerTo = fieldSeen ? challengeAnswerIn(fieldSeen) : null;
+  if (answerTo) {
+    console.warn(`[fill] refused a human-verification field: ${fieldCalled} (${answerTo})`);
+    noteHumanCheck(env, answerTo);
+    return humanCheckRefusal(answerTo.slice(0, 80));
+  }
   // Same hydration gate as click: values typed before listeners attach are
   // silently dropped by controlled inputs.
   await waitForHydration(located.frame ?? env.page, 1_000);

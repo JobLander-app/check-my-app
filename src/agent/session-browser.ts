@@ -280,6 +280,13 @@ export function isSignOutAddress(url: string | null | undefined, base?: string):
 export interface ControlSeen {
   texts: string[];
   addresses: string[];
+  // CHE-401: how the control and what it sits in are marked up — ids, classes,
+  // names — where a challenge widget says what it is when its text does not.
+  marks?: string[];
+  // …and the control's own id, name and class, apart from what it sits in: a
+  // field called "captcha" is one thing, a field inside a form called that is
+  // another.
+  own?: string[];
   base?: string;
 }
 
@@ -296,14 +303,20 @@ export function signOutIn(control: ControlSeen): string | null {
 // the form it sends. Null when it could not be read (the click that follows
 // then fails or not on its own account).
 export async function controlSeen(locator: Locator): Promise<ControlSeen | null> {
+  // Every click and fill of every run asks this now (CHE-401), so it must not
+  // be what breaks one: a locator that cannot be asked (the hand-made ones our
+  // own guards use) is one that could not be read.
+  if (typeof locator?.evaluate !== "function") return null;
   return locator
     .evaluate(
       (el) => {
         const texts: string[] = [];
         const addresses: string[] = [];
+        const marks: string[] = [];
         let node: Element | null = el;
         for (let depth = 0; node && depth < 5; depth++) {
-          if (depth === 0 || node.matches("a, button, summary, [role=button], [role=menuitem], [role=link], [role=option]")) {
+          marks.push(node.id, typeof node.className === "string" ? node.className : "", node.getAttribute("name") ?? "", node.hasAttribute("data-sitekey") ? "data-sitekey" : "");
+          if (depth === 0 || node.matches("a, button, summary, label, [role=button], [role=menuitem], [role=link], [role=option], [role=checkbox]")) {
             texts.push(
               (node as HTMLElement).innerText ?? node.textContent ?? "",
               node.getAttribute("aria-label") ?? "",
@@ -314,11 +327,17 @@ export async function controlSeen(locator: Locator): Promise<ControlSeen | null>
           }
           node = node.parentElement;
         }
+        // CHE-401: a field is named by its label and its placeholder.
+        texts.push(el.getAttribute("placeholder") ?? "");
+        const labels = (el as HTMLInputElement).labels;
+        if (labels) for (let i = 0; i < labels.length; i++) texts.push(labels[i].innerText ?? "");
         const form = el.closest("form");
         if (form && el.closest("button, input[type=submit], input[type=image]")) addresses.push(form.getAttribute("action") ?? "");
         return {
           texts: texts.map((t) => t.trim().slice(0, 200)).filter(Boolean),
           addresses: addresses.filter(Boolean),
+          marks: marks.map((m) => m.trim().slice(0, 200)).filter(Boolean),
+          own: [el.id, typeof el.className === "string" ? el.className : "", el.getAttribute("name") ?? ""].map((m) => m.trim().slice(0, 200)).filter(Boolean),
           base: document.baseURI,
         };
       },
