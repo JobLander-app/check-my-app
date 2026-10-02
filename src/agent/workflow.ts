@@ -39,6 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
+import { completeSignedOut, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
@@ -551,7 +552,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (extension) {
             await env.db.run.update({ where: { id: runId }, data: { extensionEvidence: JSON.stringify({ identity: extension.identity }) } });
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
-            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, door: null, extensionIdentity: extension.identity };
+            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, door: null, signedOut: null, extensionIdentity: extension.identity };
           }
           // CHE-390: what earlier looks at this app found, so a closed first
           // page is not taken for a closed app.
@@ -559,6 +560,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
+          // CHE-389: what loaded was the sign-in page, not the app — its status,
+          // stack and links are not the app's, and are not reported as such.
+          if (r.signedOut) return { ...r, extensionIdentity: null };
           await appendEvent(env, runId, "surface_scan", {
             icon: "ok",
             text: `Loaded homepage (HTTP ${r.status ?? "?"})`,
@@ -578,6 +582,40 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await closeAgentBrowser(browser, { env, runId, phase: "scan" }).catch(rethrowBudgetNonRetryable);
         }
       });
+
+      // CHE-389: a check that runs inside a signed-in session met the product's
+      // sign-in page instead of the app — the sign-in has ended (signed-out.ts).
+      // Mapping and walking a sign-in page would produce a report about it as
+      // if it were the app. The run ends here: Not verified, nothing spent,
+      // access named as what is missing, and the person who signs in told —
+      // once per ended sign-in, however many runs meet it.
+      if (scan.signedOut) {
+        const host = scan.signedOut;
+        await step.do("signed-out", async () => {
+          await appendEvent(env, runId, "surface_scan", { icon: "warn", text: SIGNED_OUT_FEED });
+          await completeSignedOut(env, { id: runId, targetUrl: run.targetUrl }, host);
+        });
+        await step.do("price-signed-out", async () => {
+          await priceRun(env.db, runId);
+        });
+        // Its own step, so a retry of anything around it cannot send twice; the
+        // send itself is refused a second time by its id. Never fails the run.
+        await step.do("tell-signed-out", async () => {
+          const told = await tellOwnerSignedOut(env, { id: runId, appId: run.appId, appSlug: run.appSlug }, host);
+          console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
+          return told.told;
+        });
+        if (run.notifyEmail) {
+          await step.do("notify-signed-out", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
+        }
+        await step.do("cleanup-signed-out", async () => {
+          if (!run.watchId) {
+            await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
+          }
+        });
+        await releaseSessionHost("release-session-signed-out");
+        return;
+      }
 
       // CHE-390: the app's own first page turned us away, twice, and showed
       // nothing of the product (closed-door.ts). There is nothing to map or

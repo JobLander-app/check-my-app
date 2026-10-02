@@ -411,10 +411,20 @@ async function main() {
       JSON.stringify(kept.map((x) => [x.label, x.email])) === JSON.stringify([["admin", "chief@shop.test"], ["free user", "free@shop.test"]]));
     const workflow = readFileSync(fileURLToPath(new URL("../src/agent/workflow.ts", import.meta.url)), "utf8");
     const uses = workflow.match(/clearedCredentials\(run\)/g)?.length ?? 0;
-    // Three ways a run ends: the success cleanup, the failure path, and the
-    // closed-door exit after the surface scan (CHE-390).
+    // The ways a run ends: the success cleanup, the failure path, and every
+    // early exit (`return;` at the run's own level) — the closed door after the
+    // surface scan (CHE-390), the ended sign-in (CHE-389), whatever comes
+    // next. Not a count of today's exits: the count was 3 and went red the day
+    // a fourth exit was added that did clear, and would have stayed green for
+    // one that did not if another use had moved. Each early exit must clear, or
+    // be the one that says why it does not (a watch keeps them for its next run).
+    const exits = workflow.split(/\n {8}return;\n/).slice(0, -1).map((before) => before.slice(-1600));
+    const clearing = exits.filter((before) => /clearedCredentials\(run\)/.test(before));
+    const keeping = exits.filter((before) => !/clearedCredentials\(run\)/.test(before));
     check("workflow: every way a run ends clears through clearedCredentials",
-      uses === 3 && !/testPasswordEnc:\s*null/.test(workflow), `${uses} uses`);
+      exits.length >= 3 && keeping.every((before) => /Watch retains its credentials/.test(before)) && keeping.length <= 1 &&
+        uses === clearing.length + 2 && !/testPasswordEnc:\s*null/.test(workflow),
+      `${uses} uses; ${exits.length} early exits, ${clearing.length} clear, ${keeping.length} keep for a watch`);
   }
 
   // ── the janitor's sweep of a test-account app takes its credentials along ──

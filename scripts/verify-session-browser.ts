@@ -122,10 +122,30 @@ async function main() {
   check("kind: only \"session\" is a session target", isSessionTarget({ targetKind: "session" }) && !isSessionTarget({ targetKind: "website" }) && !isSessionTarget({ targetKind: "extension" }) && !isSessionTarget({}));
 
   // ── the product, the person's browser, the host's server ──
+  // The product's sign-in lives on a host of its own, as Shopify's does: where
+  // the app's address leads once a sign-in has ended.
+  const signIn = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end('<!doctype html><title>Log in</title><form><input type="email" name="email"><button>Continue</button></form>');
+  });
+  await new Promise<void>((resolve) => signIn.listen(0, "127.0.0.1", resolve));
+  const SIGN_IN = `http://127.0.0.1:${(signIn.address() as net.AddressInfo).port}`;
+
   // Every request that would end the sign-in, however it was made.
   const signOuts: string[] = [];
   const site = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://site");
+    // An app whose sign-in has ended: the server sends the visitor away, or
+    // the page does it from a script a moment after it loads.
+    if (url.pathname === "/expired") {
+      res.writeHead(302, { Location: `${SIGN_IN}/login?return_to=expired` }).end();
+      return;
+    }
+    if (url.pathname === "/expired-late") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!doctype html><title>Loading</title><p>Loading…</p><script>setTimeout(() => { location.href = "${SIGN_IN}/login?return_to=late"; }, 300);</script>`);
+      return;
+    }
     if (["/logout", "/auth/sign_out", "/session/logout", "/account/switch"].includes(url.pathname)) {
       signOuts.push(`${req.method} ${url.pathname}`);
       res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": "session=; Path=/; Max-Age=0" });
@@ -268,6 +288,28 @@ async function main() {
     check("surfaceScan: scans in a tab of its own inside the session, and leaves none behind",
       scan.status === 200 && scan.internalLinkCount === 1 && scan.door === null && (await until(onlyThePersonsTab)),
       JSON.stringify({ status: scan.status, links: scan.internalLinkCount, door: scan.door }));
+    // The sign-in has ended (signed-out.ts): the app's address leads to the
+    // product's sign-in on another host. The scan says so, in code, before a
+    // model sees anything — and says nothing of the kind when it reached the app.
+    const signInHost = new URL(SIGN_IN).host;
+    check("surfaceScan: an app that was reached is not a sign-in that ended", scan.signedOut === null, String(scan.signedOut));
+    const expired = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, again.browser, { targetUrl: `${SITE}/expired`, id: RUN_A, storePasswordEnc: null });
+    check("surfaceScan: the app's address answered by sending the visitor to the sign-in host → the sign-in has ended, and that is not a closed door",
+      expired.signedOut === signInHost && expired.door === null && (await until(onlyThePersonsTab)), JSON.stringify({ signedOut: expired.signedOut, door: expired.door }));
+    const late = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, again.browser, { targetUrl: `${SITE}/expired-late`, id: RUN_A, storePasswordEnc: null });
+    check("surfaceScan: the same when the page sends the visitor away from a script, after it loaded",
+      late.signedOut === signInHost && (await until(onlyThePersonsTab)), String(late.signedOut));
+    // Outside a session nothing of this applies: an ordinary check that is
+    // redirected to another host is read the way it always was.
+    {
+      const own = await chromium.launch(process.env.SESSION_BROWSER_CHANNEL ? { channel: process.env.SESSION_BROWSER_CHANNEL } : {}).catch(() => chromium.launch({ channel: "chrome" }));
+      try {
+        const ordinaryScan = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, own as unknown as Browser, { targetUrl: `${SITE}/expired`, id: RUN_B, storePasswordEnc: null });
+        check("surfaceScan: outside a signed-in session a redirect to another host is not 'signed out'", ordinaryScan.signedOut === null && ordinaryScan.status === 200, JSON.stringify({ signedOut: ordinaryScan.signedOut, status: ordinaryScan.status }));
+      } finally {
+        await own.close();
+      }
+    }
     await closeAgentBrowser(again.browser);
     check("closeAgentBrowser: disconnected; the person's tab alone remains", !again.browser.isConnected() && (await until(onlyThePersonsTab)));
 
@@ -476,6 +518,8 @@ async function main() {
     await within(() => person.close());
     site.closeAllConnections();
     await within(() => new Promise((resolve) => site.close(resolve)));
+    signIn.closeAllConnections();
+    await within(() => new Promise((resolve) => signIn.close(resolve)));
     await within(() => rm(profile, { recursive: true, force: true }));
   }
 
