@@ -49,6 +49,7 @@ const PAGES: Record<string, string> = {
     <textarea id="resp" name="g-recaptcha-response"></textarea>
     <input id="cap" placeholder="Captcha">
     <input id="captcha" name="captcha">
+    <label for="answer">CAPTCHA *</label><input id="answer">
     <div id="challenge-stage" data-sitekey="0x4AAAAAAA"><span id="go" onclick="${pressed}">Go on</span></div>
     <button id="plain" onclick="${pressed}">Privacy</button>`,
   // A product that is ABOUT bot protection: its pages are the product.
@@ -61,6 +62,7 @@ const PAGES: Record<string, string> = {
     <label for="key">reCAPTCHA site key</label><input id="key">
     <input id="recaptcha_site_key" name="recaptcha_site_key">
     <label for="code">Verification code</label><input id="code">
+    <section id="hcaptcha-settings" class="g-recaptcha-config"><button id="apply" type="button" onclick="${pressed}">Apply</button></section>
     <form id="challenge-form" class="challenge-stage" onsubmit="return false">
       <h2>Coding challenge 3 of 10</h2>
       <input id="quiz-answer" aria-label="Your answer">
@@ -119,10 +121,13 @@ async function main() {
   const WIDGET_MARKUP = [".cf-turnstile [role=checkbox]", "#g-recaptcha", "div.h-captcha > iframe", ".recaptcha-checkbox-border", "#px-captcha", "[class*='cf-chl-widget']", "#cf-chl-widget-abc12_response"];
   // Ordinary words a quiz or a coding-challenge product uses for its own pages
   // are among the product's (Codex on #252).
-  const PRODUCT_MARKUP = ["#settings", "a[href='/product/recaptcha']", ".captcha-settings-link", "#turnstile-docs", "button.verify", "#human-resources", ".challenges-list", "#challenge-stage input", "#challenge-form button", ".challenge-running"];
+  // …and so are the names of its pages ABOUT a provider's widget (round 2).
+  const PRODUCT_MARKUP = ["#settings", "a[href='/product/recaptcha']", ".captcha-settings-link", "#turnstile-docs", "button.verify", "#human-resources", ".challenges-list", "#challenge-stage input", "#challenge-form button", ".challenge-running",
+    "#hcaptcha-settings", ".h-captcha-config button", "#g-recaptcha-settings", "#hcaptcha-site-key", ".cf-turnstile-options"];
   check("markup: a challenge widget's selectors, ids and classes", WIDGET_MARKUP.every(isChallengeMarkup), WIDGET_MARKUP.filter((m) => !isChallengeMarkup(m)).join(" | "));
   check("markup: a product page's own selectors are not a widget", !PRODUCT_MARKUP.some(isChallengeMarkup), PRODUCT_MARKUP.filter(isChallengeMarkup).join(" | "));
-  const ANSWER_FIELDS = ["Enter the characters you see in the image", "Type the text shown above", "Captcha", "CAPTCHA code", "Enter captcha", "reCAPTCHA response"];
+  const ANSWER_FIELDS = ["Enter the characters you see in the image", "Type the text shown above", "Captcha", "CAPTCHA code", "Enter captcha", "reCAPTCHA response",
+    "CAPTCHA *", "Captcha:", "Captcha (required)", "Captcha code *:"];
   const PRODUCT_FIELDS = ["reCAPTCHA site key", "Verification code", "Email", "hCaptcha secret key", "Enter the code we sent you", "Captcha provider name (optional)"];
   check("fields: the ways a field asks for a challenge's answer", ANSWER_FIELDS.every(isChallengeAnswerField), ANSWER_FIELDS.filter((f) => !isChallengeAnswerField(f)).join(" | "));
   check("fields: a product's settings and an ordinary code field are not one", !PRODUCT_FIELDS.some(isChallengeAnswerField), PRODUCT_FIELDS.filter(isChallengeAnswerField).join(" | "));
@@ -134,6 +139,12 @@ async function main() {
     humanCheckIn({ texts: ["Next question"], addresses: [], marks: ["quiz", "challenge-form", "challenge-stage"] }) === null &&
       humanCheckIn({ texts: ["Go on"], addresses: [], marks: ["go", "challenge-stage", "data-sitekey"] }) === "challenge-stage" &&
       humanCheckIn({ texts: [""], addresses: [], marks: ["challenge-form", "cf-chl-widget-ab12"] }) === "cf-chl-widget-ab12");
+  check("markup is judged one name at a time: a widget among a page's names is a widget, a page about one is not",
+    humanCheckIn({ texts: ["Apply"], addresses: [], marks: ["save-hc", "hcaptcha-settings"] }) === null &&
+      humanCheckIn({ texts: ["Apply"], addresses: [], marks: ["save", "g-recaptcha-config panel"] }) === null &&
+      humanCheckIn({ texts: ["Continue"], addresses: [], marks: ["btn", "panel h-captcha", "hcaptcha-settings"] }) === "h-captcha" &&
+      humanCheckIn({ texts: ["Next question"], addresses: [], marks: ["quiz", "challenge-form", "captcha-settings"] }) === null &&
+      isChallengeMarkup("#hcaptcha-settings .h-captcha iframe") && !isChallengeMarkup("#hcaptcha-settings button"));
   check("a field is also judged by its own id, name and class — not by a container's, and not when they name a setting",
     challengeAnswerIn({ texts: [], addresses: [], marks: ["captcha"], own: ["captcha"] }) === "captcha" &&
       challengeAnswerIn({ texts: [], addresses: [], marks: ["txtCaptchaCode", "form-control"], own: ["txtCaptchaCode", "form-control"] }) === "txtCaptchaCode" &&
@@ -168,11 +179,13 @@ async function main() {
     await refusedFill("a response field named g-recaptcha-response", { selector: "#resp" });
     await refusedFill("a field whose placeholder is \"Captcha\", by selector", { selector: "#cap" });
     await refusedFill("a field with no label at all, whose id and name are \"captcha\"", { selector: "#captcha" });
+    await refusedFill("a field labelled \"CAPTCHA *\" with an ordinary id, by its label", { label: "CAPTCHA *" });
+    await refusedFill("…and by selector", { selector: "#answer" });
 
     // ── 4 — nothing happened ───────────────────────────────────────────────
     check("nothing on the challenge page was pressed", (await pressedOn(env.page)) === "", await pressedOn(env.page));
     check("nothing was typed into it",
-      (await env.page.evaluate(() => ["ans", "resp", "cap", "captcha"].map((id) => (document.getElementById(id) as HTMLInputElement).value).join("|"))) === "|||");
+      (await env.page.evaluate(() => ["ans", "resp", "cap", "captcha", "answer"].map((id) => (document.getElementById(id) as HTMLInputElement).value).join("|"))) === "||||");
     const plain = await executeTool(env, "click", { selector: "#plain" });
     check("an ordinary control on the same page is still pressed — the refusal is the challenge's, not the page's",
       plain.startsWith("Clicked") && (await pressedOn(env.page)) === "plain", plain.slice(0, 80));
@@ -196,6 +209,9 @@ async function main() {
     }
     const setting = await executeTool(product, "fill", { selector: "#recaptcha_site_key", value: "6Lc-test" });
     check("a setting field with no label, whose id is recaptcha_site_key, is typed into", setting.startsWith("Filled"), setting.slice(0, 90));
+    const applied = await executeTool(product, "click", { selector: "#hcaptcha-settings button" });
+    check("a control on the product's own captcha-settings page (#hcaptcha-settings.g-recaptcha-config) is pressed",
+      applied.startsWith("Clicked") && (await pressedOn(product.page)).endsWith(",apply"), applied.slice(0, 90));
     // A quiz product whose own form is #challenge-form.challenge-stage.
     const quizField = await executeTool(product, "fill", { selector: "#quiz-answer", value: "42" });
     const quizButton = await executeTool(product, "click", { role: "button", name: "Next question" });

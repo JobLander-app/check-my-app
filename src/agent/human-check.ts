@@ -63,15 +63,29 @@ const PROVIDER_MARK = /(?:^|[^a-z0-9])(?:data-sitekey|cf-[a-z0-9_-]+|ray-id|turn
 // a field called captcha is answering one, while a link whose id is
 // "captcha-settings" is a page of the product (Codex on #252).
 const ANSWER_FIELD_MARK = /captcha/i;
-const SETTING_MARK = /(?:site|secret|public|private|api)[-_ ]?key|settings?|config|provider|enabled?|threshold|score/i;
+// A name that says "this is about configuring one": the product's own page,
+// whatever provider it names — #hcaptcha-settings, .g-recaptcha-config,
+// recaptcha_site_key (Codex on #252, twice).
+const SETTING_MARK = /(?:site|secret|public|private|api)[-_ ]?key|settings?|config|options?|preferences|provider|enabled?|threshold|score|docs?|help/i;
+
+// Markup is judged one name at a time: a class list or a selector holds
+// several, and among them "h-captcha" is the widget while "hcaptcha-settings"
+// is a page about it.
+const namesIn = (markup: string): string[] => markup.split(/[\s>+~,]+/).filter(Boolean);
+const widgetName = (name: string): boolean => CHALLENGE_WIDGET.test(name) && !SETTING_MARK.test(name);
+// (data-sitekey is the provider's own attribute, not a setting's name.)
+const providerName = (name: string): boolean => name === "data-sitekey" || (PROVIDER_MARK.test(name) && !SETTING_MARK.test(name));
+const widgetIn = (markup: string): string | null => namesIn(markup).find(widgetName) ?? null;
 
 // A field that asks for a challenge's answer.
 const CHALLENGE_ANSWER = new RegExp(
   [
     String.raw`\b(?:enter|type|write)\b[^.]{0,40}\b(?:characters?|letters?|text|code|words?|numbers?)\b[^.]{0,40}\b(?:image|picture|see|shown|displayed|above|below)\b`,
     // "Captcha", "CAPTCHA code", "Enter captcha" — the field's whole point; not
-    // "reCAPTCHA site key", which is a product's setting.
-    String.raw`\b(?:re|h)?captcha\s*(?:code|answer|text|response|solution)?\s*$`,
+    // "reCAPTCHA site key", which is a product's setting. A label's own
+    // decoration does not change what it asks for: "CAPTCHA *", "Captcha:",
+    // "Captcha (required)".
+    String.raw`\b(?:re|h)?captcha\s*(?:code|answer|text|response|solution)?(?:[\s*:：.]|\((?:required|mandatory|obligatory)\))*$`,
     String.raw`\b(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response)\b`,
   ].join("|"),
   "i",
@@ -88,7 +102,7 @@ export function isHumanCheckText(text: string | null | undefined): boolean {
  * a page of the product, `.h-captcha` is the widget.
  */
 export function isChallengeMarkup(markup: string | null | undefined): boolean {
-  return Boolean(markup && CHALLENGE_WIDGET.test(markup));
+  return Boolean(markup && widgetIn(markup));
 }
 
 const said = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -97,12 +111,12 @@ const said = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 80);
 export function humanCheckIn(control: ControlSeen): string | null {
   const text = control.texts.find((t) => HUMAN_CHECK_PHRASE.test(t));
   if (text) return said(text);
-  const marks = control.marks ?? [];
-  const mark = marks.find((m) => CHALLENGE_WIDGET.test(m));
-  if (mark) return said(mark);
+  const marks = (control.marks ?? []).flatMap(namesIn);
+  const widget = marks.find(widgetName);
+  if (widget) return said(widget);
   // An ordinary word for a container counts only beside a provider's own mark.
   const generic = marks.find((m) => GENERIC_CHALLENGE.test(m));
-  return generic && marks.some((m) => PROVIDER_MARK.test(m)) ? said(generic) : null;
+  return generic && marks.some(providerName) ? said(generic) : null;
 }
 
 /**
@@ -117,7 +131,7 @@ export function challengeAnswerIn(field: ControlSeen): string | null {
   const text = field.texts.find((t) => isChallengeAnswerField(t));
   if (text) return said(text);
   // The field's OWN id, name and class — a container's class is not the field's name.
-  const own = (field.own ?? []).find((m) => ANSWER_FIELD_MARK.test(m) && !SETTING_MARK.test(m));
+  const own = (field.own ?? []).flatMap(namesIn).find((m) => ANSWER_FIELD_MARK.test(m) && !SETTING_MARK.test(m));
   return own ? said(own) : null;
 }
 
