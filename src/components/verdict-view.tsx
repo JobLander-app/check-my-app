@@ -376,8 +376,11 @@ export async function VerdictView({
           carriedRunDays={carriedRunDays}
           emptyNote={
             smokePass
-              ? "Not re-walked this run — the smoke check confirmed your known pages still load, " +
-                "so we carried the previous verdict forward. The next full check walks them again."
+              ? // The price explanation's own words for this kind of check
+                // ("Quick check — nothing had changed"); "smoke check" was our
+                // name for it, on a page the customer reads (CLAUDE.md §1).
+                "Quick check — your known pages still load and nothing had changed, so the journeys were not walked " +
+                "again and the previous verdict stands. The next full check walks them."
               : undefined
           }
         />

@@ -76,6 +76,12 @@ check("inside the app, a newer check opens inside the app", /inApp \? inApp\.che
 check("'watched' is the check's own watch or the viewer's app's — never an offer to enable what is on",
   /watch: \{ select: \{ active: true \} \} \},\s*\}\)\s*: null;/.test(view) && /const hasWatch = Boolean\(run\.watch\?\.active \|\| viewerApp\?\.watch\?\.active\);/.test(view));
 
+// The page's own sentences (not the verdict's stored text) name no machinery
+// of ours: the quick check's note used to say "the smoke check confirmed…".
+const ownSentences = [...view.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").matchAll(/"([^"\n]{25,})"/g)].map((m) => m[1]).filter((s) => !/^[a-z0-9:\/\[\]. -]+$/.test(s) || / [a-z]+ [a-z]+ [a-z]+ /.test(s));
+const leaking = ownSentences.filter((s) => /\b(smoke|replay|headless|playwright|harness)\b/i.test(s));
+check("the verdict page's own sentences name none of our machinery", ownSentences.length > 3 && leaking.length === 0, leaking.join(" | ") || `${ownSentences.length} sentences read`);
+
 // ── 3. The in-app page ──────────────────────────────────────────────────────
 const runQueries = inApp.match(/db\.run\.findFirst\(\{\s*where: \{[^\n]*/g) ?? [];
 check("every read of a check is the team's, and this app's", runQueries.length === 3 && runQueries.every((q) => /\.\.\.teamOwned\(team\.id\), \.\.\.ofThisApp/.test(q)), `${runQueries.length} queries`);
