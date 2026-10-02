@@ -19,8 +19,17 @@ const FINISHED = ["completed", "partial"];
 // The address names the check by its number within the team, never by a row
 // id: every query below is the team's, so a number from another team reads
 // nothing.
-export default async function CheckPage({ params }: { params: Promise<{ appId: string; runNumber: string }> }) {
+export default async function CheckPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ appId: string; runNumber: string }>;
+  // What the verdict's actions bounce back as text (a refused re-check, a
+  // gated watch) — read here, on the page whose button was pressed.
+  searchParams: Promise<{ watch_error?: string; recheck?: string; balance?: string }>;
+}) {
   const { appId, runNumber: raw } = await params;
+  const { watch_error: watchError, recheck, balance } = await searchParams;
   const runNumber = /^\d{1,9}$/.test(raw) ? Number(raw) : 0;
   if (runNumber < 1) notFound();
   const { db, team } = await requireUser();
@@ -104,7 +113,13 @@ export default async function CheckPage({ params }: { params: Promise<{ appId: s
         </div>
       </div>
 
-      <VerdictView id={run.publicId} inApp={{ checkHref: (r) => appPath.check(app.id, r.runNumber) }} />
+      <VerdictView
+        id={run.publicId}
+        watchError={watchError}
+        recheck={recheck}
+        balance={balance}
+        inApp={{ checkHref: (r) => appPath.check(app.id, r.runNumber), back: appPath.check(app.id, run.runNumber) }}
+      />
     </main>
   );
 }

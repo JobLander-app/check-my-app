@@ -66,7 +66,35 @@ const inApp = read("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.ts
 const view = read("src/components/verdict-view.tsx");
 check("the permalink renders VerdictView", /<VerdictView id=\{\(await params\)\.id\} watchError=\{watchError\} recheck=\{recheck\} balance=\{balance\} \/>/.test(permalink));
 check("…and loads nothing of the run for its body (metadata alone)", (permalink.match(/prisma\.run\./g) ?? []).length === 1 && !/journeys:|findings: \{|bottomLine/.test(permalink));
-check("the in-app page renders the same component, by the check's public id", /<VerdictView id=\{run\.publicId\} inApp=/.test(inApp));
+check("the in-app page renders the same component, by the check's public id", /<VerdictView\s+id=\{run\.publicId\}/.test(inApp) && /inApp=\{\{ checkHref: /.test(inApp));
+
+// A refused re-check or a gated watch is read where the button was pressed
+// (Codex P2 on #247): the in-app page sends its own address with the action,
+// and the action takes it only if it is the app's check address — a bound
+// argument travels through the browser.
+const actions = read("src/app/verdict/actions.ts");
+const backPattern = actions.match(/const IN_APP_CHECK = \/(.+)\/;/)?.[1];
+const inAppCheck = backPattern ? new RegExp(backPattern) : null;
+check("the way back is the app's own check address, or the permalink",
+  /return typeof back === "string" && IN_APP_CHECK\.test\(back\) \? back : `\/verdict\/\$\{publicId\}`;/.test(actions) && inAppCheck !== null);
+for (const [path, ok] of [
+  ["/health/apps/cms0dumln00037z1tmlv80ijk/checks/290", true],
+  ["https://evil.example/health/apps/a/checks/1", false],
+  ["//evil.example/health/apps/a/checks/1", false],
+  ["/health/apps/a/checks/1?next=https://evil.example", false],
+  ["/health/apps/a/checks/1/../../../settings/billing", false],
+  ["/health/apps/a/checks/1\n/evil", false],
+  ["/sign-in", false],
+] as const) {
+  check(`way back ${JSON.stringify(path)} is ${ok ? "taken" : "refused"}`, inAppCheck?.test(path) === ok);
+}
+check("every refusal of the three actions goes to the way back — none is hard-wired to the permalink",
+  (actions.match(/redirect\(`\/verdict\/\$\{publicId\}/g) ?? []).length === 0 && /doRecheck\(publicId, false, wayBack\(publicId, back\)\)/.test(actions) &&
+    /doRecheck\(publicId, true, wayBack\(publicId, back\)\)/.test(actions) && /const here = wayBack\(publicId, back\);/.test(actions));
+check("the in-app page sends its address and renders what comes back",
+  /back: appPath\.check\(app\.id, run\.runNumber\)/.test(inApp) && /watchError=\{watchError\}\s+recheck=\{recheck\}\s+balance=\{balance\}/.test(inApp) &&
+    (view.match(/back=\{inApp\?\.back\}/g) ?? []).length === 4);
+check("the permalink sends none, so it behaves as before", !/back=/.test(permalink));
 check("who may see and press what is decided in the body, for both routes", /viewerCapabilities\(\{/.test(view) && !/viewerCapabilities|caps\./.test(inApp));
 check("the price explanation stays the paying team's alone", /viewerTeam\.team\.id === run\.teamId/.test(view));
 check("inside the app, a newer check opens inside the app", /inApp \? inApp\.checkHref\(newerRun\) : `\/verdict\/\$\{newerRun\.publicId\}`/.test(view));

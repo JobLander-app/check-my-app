@@ -59,7 +59,9 @@ export async function VerdictView({
   balance?: string;
   // Inside the app: where another check of this app opens (the "newer run"
   // notice), so the reader stays in the workspace. Absent on the public page.
-  inApp?: { checkHref: (run: { publicId: string; runNumber: number }) => string };
+  // `back` is this check's own address there: the actions bounce a refusal to
+  // it, so it is read where the button was pressed.
+  inApp?: { checkHref: (run: { publicId: string; runNumber: number }) => string; back: string };
 }) {
   const balanceRefused = balance === "1" && typeof recheck === "string";
   const recheckNotice =
@@ -286,14 +288,15 @@ export async function VerdictView({
             </div>
             {(caps.recheck || caps.fullRecheck || caps.enableWatch || caps.watchSettings) && (
               <div className="flex flex-wrap items-center gap-2.5 sm:shrink-0">
-                {caps.recheck && <RecheckButton runId={run.publicId} appSlug={run.appSlug} />}
-                {caps.fullRecheck && <FullRecheckButton runId={run.publicId} appSlug={run.appSlug} />}
+                {caps.recheck && <RecheckButton runId={run.publicId} appSlug={run.appSlug} back={inApp?.back} />}
+                {caps.fullRecheck && <FullRecheckButton runId={run.publicId} appSlug={run.appSlug} back={inApp?.back} />}
                 {(caps.enableWatch || caps.watchSettings) && (
                   <EnableWatchButton
                     runId={run.publicId}
                     hasWatch={hasWatch}
                     appSlug={run.appSlug}
                     variant="outline"
+                    back={inApp?.back}
                   />
                 )}
               </div>
@@ -396,7 +399,7 @@ export async function VerdictView({
                 Daily Watch — we re-run this every 24h, alert on regressions.
               </p>
             </div>
-            <EnableWatchButton runId={run.publicId} hasWatch={hasWatch} appSlug={run.appSlug} />
+            <EnableWatchButton runId={run.publicId} hasWatch={hasWatch} appSlug={run.appSlug} back={inApp?.back} />
           </footer>
         )}
 

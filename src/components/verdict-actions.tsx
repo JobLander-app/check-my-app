@@ -18,11 +18,14 @@ export function EnableWatchButton({
   hasWatch,
   appSlug,
   variant = "primary",
+  back,
 }: {
   runId: string;
   hasWatch: boolean;
   appSlug: string;
   variant?: "primary" | "outline";
+  // CHE-371: inside the app, the check's own address — where a refusal is read.
+  back?: string;
 }) {
   if (hasWatch) {
     return (
@@ -38,7 +41,7 @@ export function EnableWatchButton({
   return (
     // Recorded on the submit: the action redirects away, so the click is the
     // last moment this page can speak.
-    <form action={enableWatchAction.bind(null, runId)} onSubmit={() => track("watch_enabled", { appSlug })}>
+    <form action={back ? enableWatchAction.bind(null, runId, back) : enableWatchAction.bind(null, runId)} onSubmit={() => track("watch_enabled", { appSlug })}>
       <EnableWatchSubmit variant={variant} />
     </form>
   );
@@ -62,10 +65,10 @@ function EnableWatchSubmit({ variant }: { variant: "primary" | "outline" }) {
 // deploy" — it re-walks what changed since the last check, and (CHE-327)
 // spends the team's balance like any check. The click is recorded on submit:
 // the action redirects away.
-export function RecheckButton({ runId, appSlug }: { runId: string; appSlug: string }) {
+export function RecheckButton({ runId, appSlug, back }: { runId: string; appSlug: string; back?: string }) {
   return (
     <form
-      action={recheckRunAction.bind(null, runId)}
+      action={back ? recheckRunAction.bind(null, runId, back) : recheckRunAction.bind(null, runId)}
       onSubmit={() => track("recheck_clicked", { kind: "regular", appSlug })}
     >
       <RecheckSubmit label="Re-check after a deploy" title="Re-walks what changed since the last check" />
@@ -77,10 +80,10 @@ export function RecheckButton({ runId, appSlug }: { runId: string; appSlug: stri
 // instead of riding the partial-run carry forever. CHE-327: no separate
 // allowance any more; a full walk spends the balance like any check, and
 // costs more because it walks more — the tooltip says so up front.
-export function FullRecheckButton({ runId, appSlug }: { runId: string; appSlug: string }) {
+export function FullRecheckButton({ runId, appSlug, back }: { runId: string; appSlug: string; back?: string }) {
   return (
     <form
-      action={fullRecheckRunAction.bind(null, runId)}
+      action={back ? fullRecheckRunAction.bind(null, runId, back) : fullRecheckRunAction.bind(null, runId)}
       onSubmit={() => track("recheck_clicked", { kind: "full", appSlug })}
     >
       <RecheckSubmit

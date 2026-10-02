@@ -372,7 +372,7 @@ async function main() {
   check(
     "…and both the permalink and the in-app check page render that component and nothing of their own from the run",
     /<VerdictView id=/.test(source("src/app/verdict/[id]/page.tsx")) &&
-      /<VerdictView id=\{run\.publicId\}/.test(source("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")) &&
+      /<VerdictView\s+id=\{run\.publicId\}/.test(source("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")) &&
       !/bottomLine|findings|journeys/.test(source("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")),
   );
 
