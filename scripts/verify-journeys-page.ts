@@ -70,7 +70,7 @@ eq("last walked: a check with no finish time still reads", lastWalkedLabel(null,
 eq("count: once", sentences[9], "walked once");
 eq("count: many", sentences[10], "walked 5 times");
 eq("count: none says nothing", walkCountLabel(0), "");
-eq("no walk in a published check", sentences[11], "Not walked yet.");
+eq("no walk in a published check", sentences[11], "Not walked yet");
 eq("in trouble: a check with no finish time still reads", sentences[12], "In trouble — 3 walks in a row.");
 eq("in trouble: since a date, in a row", sentences[13], "In trouble since 28 September — 3 walks in a row.");
 eq("in trouble: one walk", sentences[14], "In trouble since yesterday.");

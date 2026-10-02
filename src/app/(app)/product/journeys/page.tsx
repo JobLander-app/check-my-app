@@ -97,12 +97,12 @@ export default async function JourneysPage({ searchParams }: { searchParams: Pro
                 </span>
               ) : (
                 <span className="inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-full border border-ink-600 px-2.5 font-mono text-xs text-fg-faint">
-                  Not walked
+                  {NOT_WALKED}
                 </span>
               )}
             </div>
 
-            {j.walk ? (
+            {j.walk && (
               <>
                 <p className="text-[13px] text-fg-muted">
                   {lastWalkedLabel(j.walk.at, now)} in check{" "}
@@ -116,8 +116,6 @@ export default async function JourneysPage({ searchParams }: { searchParams: Pro
                 {j.walk.summary && <p className="text-sm text-fg-muted">{j.walk.summary}</p>}
                 {journeyNumbers && <JourneyNumbersBlock {...journeyNumbers} title={j.title} />}
               </>
-            ) : (
-              <p className="text-[13px] text-fg-muted">{NOT_WALKED}</p>
             )}
           </article>
         );

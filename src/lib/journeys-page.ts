@@ -42,12 +42,12 @@ export function walkCountLabel(walkCount: number): string {
 }
 
 /**
- * A journey with no walk in a published check. A check that did not finish
- * publishes nothing (CLAUDE.md §4), so a journey only such checks went through
- * is, on this page, not walked. No promise about when it will be: which
- * journeys a check walks is the rotation's call (CHE-232), not this page's.
+ * The mark of a journey with no walk in a published check. A check that did
+ * not finish publishes nothing (CLAUDE.md §4), so a journey only such checks
+ * went through is, on this page, not walked. No promise about when it will be:
+ * which journeys a check walks is the rotation's call (CHE-232), not this page's.
  */
-export const NOT_WALKED = "Not walked yet.";
+export const NOT_WALKED = "Not walked yet";
 
 /**
  * "In trouble since 28 September — 3 walks in a row." The last `inARow` walks
