@@ -194,7 +194,13 @@ export class Gate {
     this.creating = 0; // Target.createTarget commands not yet answered
     this.attachingToBrowser = 0; // Target.attachToBrowserTarget, likewise
     this.held = []; // tabs that attached while one of those was open
+    this.discovers = false; // whether the check asked to be told of its tabs coming and going
     this.privateId = PRIVATE_ID_BASE;
+  }
+
+  // The server's first message to the browser on every connection.
+  discover() {
+    return { id: this.nextPrivateId(), method: "Target.setDiscoverTargets", params: { discover: true } };
   }
 
   static key(message) {
@@ -230,6 +236,9 @@ export class Gate {
       return "refuse";
     }
     if (beyondAPage(method) || forgesCookie(method, params)) return "refuse";
+    // An answer can carry response headers as well as an event can
+    // (Network.loadNetworkResource returns them): scrubbed on the way back.
+    if (method.startsWith("Network.") || method.startsWith("Fetch.")) this.pending.set(Gate.key(message), "scrub");
     return "forward";
   }
 
@@ -237,8 +246,15 @@ export class Gate {
     const { method, params } = message;
     const expect = (what) => this.pending.set(Gate.key(message), what);
     switch (method) {
-      case "Target.setAutoAttach":
       case "Target.setDiscoverTargets":
+        // The server keeps discovery on for its own bookkeeping from the first
+        // message to the last (DISCOVER, sent by session-server.mjs): it is
+        // how a tab opened by a check's tab is known to be the check's. A
+        // check that switched it off could leave such a tab behind in the
+        // person's profile. So the check's wish only decides what it is told.
+        this.discovers = params?.discover === true;
+        return "acknowledge";
+      case "Target.setAutoAttach":
       case "Target.getBrowserContexts":
         return "forward";
       case "Target.getTargets":
@@ -288,12 +304,12 @@ export class Gate {
       case "Target.targetCreated":
       case "Target.targetInfoChanged":
         this.learn(params?.targetInfo);
-        if (this.owns(params?.targetInfo?.targetId)) out.client.push(message);
+        if (this.discovers && this.owns(params?.targetInfo?.targetId)) out.client.push(message);
         return out;
       case "Target.targetDestroyed":
       case "Target.targetCrashed":
         if (this.owns(params?.targetId)) {
-          out.client.push(message);
+          if (this.discovers) out.client.push(message);
           if (method === "Target.targetDestroyed") this.targets.delete(params.targetId);
         }
         return out;
@@ -327,6 +343,9 @@ export class Gate {
       if (message.result?.sessionId) this.sessions.set(message.result.sessionId, "browser");
     } else if (expected === "targets" && Array.isArray(message.result?.targetInfos)) {
       reply = { ...message, result: { ...message.result, targetInfos: message.result.targetInfos.filter((info) => this.owns(info?.targetId)) } };
+    } else if (expected === "scrub" && message.result) {
+      const scrubbed = scrubCookies(message.result);
+      if (scrubbed !== message.result) reply = { ...message, result: scrubbed };
     }
     out.client.push(reply);
     return out;

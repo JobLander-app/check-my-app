@@ -189,9 +189,9 @@ export async function startSessionServer({
         if (upstream.readyState === WebSocket.OPEN && (gate.targets.size > 0 || gate.contexts.size > 0)) {
           // "Closed" is the tab being gone, not Chrome agreeing to close it:
           // the answer to closeTarget comes first, and the next check must not
-          // connect in between. Target discovery is what reports the tab gone.
+          // connect in between. Target discovery — on since the connection
+          // began — is what reports the tab gone.
           const gone = new Promise((resolve) => { allGone = resolve; });
-          ask({ id: gate.nextPrivateId(), method: "Target.setDiscoverTargets", params: { discover: true } });
           for (const targetId of gate.targets) ask({ id: gate.nextPrivateId(), method: "Target.closeTarget", params: { targetId } });
           // A context the check made goes with it, and takes its tabs along.
           for (const browserContextId of gate.contexts) ask({ id: gate.nextPrivateId(), method: "Target.disposeBrowserContext", params: { browserContextId } });
@@ -205,6 +205,9 @@ export async function startSessionServer({
     };
     const self = { sessionId, end };
     connection = self;
+    // Before anything the check says: the server's own watch on tabs coming
+    // and going, which the check cannot switch off (lease.mjs).
+    ask(gate.discover());
 
     client.on("message", (data, binary) => {
       if (ending) return;
@@ -235,8 +238,8 @@ export async function startSessionServer({
       const { client: forClient, browser: forBrowser } = gate.incoming(message);
       for (const command of forBrowser) ask(command);
       if (allGone) {
-        // Discovery, switched on to see the tabs go, can also reveal one of
-        // ours nobody had reported yet (a tab opened by the check's tab).
+        // A tab one of the check's tabs opens while they are being closed is
+        // the check's too, and goes the same way.
         for (const targetId of gate.targets) {
           if (!known.has(targetId)) ask({ id: gate.nextPrivateId(), method: "Target.closeTarget", params: { targetId } });
         }

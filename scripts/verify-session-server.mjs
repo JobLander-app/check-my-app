@@ -196,12 +196,44 @@ await check("a tab opened by one of the check's tabs is the check's; frames and 
   assert.equal(gate.outgoing({ id: 7, sessionId: "S3", method: "Runtime.evaluate" }), "forward");
   const theirPopup = { method: "Target.attachedToTarget", params: { sessionId: "P9", targetInfo: { targetId: "THEIR-POPUP", type: "page", openerId: "THEIRS" }, waitingForDebugger: false } };
   assert.deepEqual(gate.incoming(theirPopup).client, []);
+  assert.equal(gate.outgoing({ id: 6, method: "Target.setDiscoverTargets", params: { discover: true } }), "acknowledge");
   const gone = { method: "Target.targetDestroyed", params: { targetId: "POPUP" } };
   assert.deepEqual(gate.incoming(gone).client, [gone]);
   assert.equal(gate.owns("POPUP"), false);
   const detached = { method: "Target.detachedFromTarget", params: { sessionId: "S2" } };
   assert.deepEqual(gate.incoming(detached).client, [detached]);
   assert.equal(gate.outgoing({ id: 8, sessionId: "S2", method: "Page.enable" }), "refuse", "a session that ended is no longer the check's");
+});
+
+await check("the server's own watch on tabs is not the check's to switch off: a tab its tab opens is known either way", () => {
+  const gate = gateWithATab();
+  assert.deepEqual(gate.discover(), { id: PRIVATE_ID_BASE, method: "Target.setDiscoverTargets", params: { discover: true } });
+  // Answered, never passed on — in either direction of the switch.
+  assert.equal(gate.outgoing({ id: 2, method: "Target.setDiscoverTargets", params: { discover: false } }), "acknowledge");
+  const popup = { method: "Target.targetCreated", params: { targetInfo: { targetId: "POPUP", type: "page", openerId: "MINE" } } };
+  assert.deepEqual(gate.incoming(popup).client, [], "a check that did not ask is not told");
+  assert.equal(gate.owns("POPUP"), true, "…but the tab is known to be its own, and will be closed with it");
+  // And a popup of that popup, in the order the browser reports them.
+  gate.incoming({ method: "Target.targetCreated", params: { targetInfo: { targetId: "POPUP-2", type: "page", openerId: "POPUP" } } });
+  assert.equal(gate.owns("POPUP-2"), true);
+  assert.equal(gate.outgoing({ id: 3, method: "Target.setDiscoverTargets", params: { discover: true } }), "acknowledge");
+  const changed = { method: "Target.targetInfoChanged", params: { targetInfo: { targetId: "POPUP", type: "page", openerId: "MINE", url: "https://a/" } } };
+  assert.deepEqual(gate.incoming(changed).client, [changed], "a check that asked is told of its own tabs");
+  const destroyed = { method: "Target.targetDestroyed", params: { targetId: "POPUP-2" } };
+  gate.outgoing({ id: 4, method: "Target.setDiscoverTargets", params: { discover: false } });
+  assert.deepEqual(gate.incoming(destroyed).client, []);
+  assert.equal(gate.owns("POPUP-2"), false, "a tab that is gone is forgotten whether or not the check was told");
+});
+
+await check("an answer is scrubbed like an event: headers a command returns do not carry the cookie", () => {
+  const gate = gateWithATab();
+  assert.equal(gate.outgoing({ id: 9, sessionId: "S1", method: "Network.loadNetworkResource", params: { url: "https://a/" } }), "forward");
+  const [answer] = gate.incoming({ id: 9, sessionId: "S1", result: { resource: { success: true, httpStatusCode: 200, headers: { "Set-Cookie": `session=${COOKIE}; HttpOnly`, "content-type": "text/html" } } } }).client;
+  assert.equal(JSON.stringify(answer).includes(COOKIE), false);
+  assert.deepEqual(answer.result.resource.headers, { "Set-Cookie": REDACTED, "content-type": "text/html" });
+  gate.outgoing({ id: 10, sessionId: "S1", method: "Network.getResponseBody", params: { requestId: "1" } });
+  const plain = { id: 10, sessionId: "S1", result: { body: "<html>", base64Encoded: false } };
+  assert.equal(gate.incoming(plain).client[0], plain, "an answer with nothing to take out is passed on as the object it was");
 });
 
 await check("the list of tabs a check asks for holds only its own", () => {
@@ -594,6 +626,14 @@ try {
     // is sent with the request for /admin and set again by /signin.
     await client.send("Page.navigate", { url: `${SITE}/signin` }, tab.sessionId);
     await client.send("Page.navigate", { url: `${SITE}/admin?after` }, tab.sessionId);
+    // And a command whose answer, not an event, carries the response headers.
+    const { result: tree } = await client.send("Page.getFrameTree", {}, tab.sessionId);
+    const loaded = await client.send("Network.loadNetworkResource", { frameId: tree.frameTree.frame.id, url: `${SITE}/signin`, options: { disableCache: true, includeCredentials: true } }, tab.sessionId);
+    // Observed 2026-10-02: Chrome itself leaves Set-Cookie out of this answer's
+    // headers. The gate scrubs answers regardless (the pure check above), and
+    // the every-frame assertion below is what would catch a Chrome that starts
+    // to include it.
+    assert.equal(loaded.result?.resource?.success, true, `the resource did not load — the fixture proved nothing: ${JSON.stringify(loaded).slice(0, 200)}`);
     await until("the navigations were reported", async () => client.frames.filter((f) => f.includes("Network.responseReceivedExtraInfo")).length >= 2);
     assert.equal(client.frames.some((f) => f.includes(REDACTED)), true, "no request with a cookie was reported at all — the fixture proved nothing");
     assert.equal(client.frames.filter((f) => f.includes(COOKIE)).length, 0, "a frame delivered to the check holds the session cookie's value");
@@ -632,11 +672,13 @@ try {
     await until("the abandoned tab is closed", onlyThePersonsTab);
   });
 
-  await check("a second tab the check's tab opened, which nobody had reported, is closed with it", async () => {
+  await check("a second tab the check's tab opened is closed with it, though the check switched every report of tabs off", async () => {
     const client = raw(await lease());
     await client.opened;
-    // No target discovery and no auto-attach on this connection: the server
-    // first hears of the second tab while it is already closing the first.
+    // Round 2 of Codex on #240: a check that turns tracking off must not be
+    // able to leave a tab running in the person's profile.
+    await client.send("Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
+    assert.deepEqual((await client.send("Target.setDiscoverTargets", { discover: false })).result, {});
     const tab = await client.openTab(`${SITE}/admin`);
     await client.send("Runtime.evaluate", { expression: "window.open('/admin?tab=2') && true", userGesture: true }, tab.sessionId);
     await until("the second tab is open", async () => (await tabs()).length === 3);
