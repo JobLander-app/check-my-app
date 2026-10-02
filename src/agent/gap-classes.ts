@@ -191,12 +191,12 @@ const EGRESS =
 const CITED_HOST = /\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b/gi;
 const NOT_A_HOST = /\.(?:php|html?|x?html|js|mjs|ts|tsx|css|json|xml|png|jpe?g|gif|svg|webp|ico|txt|pdf|aspx?|jsp|map|woff2?)$/i;
 
-function foreignHosts(text: string, targetOrigin: string | undefined): string[] {
+function foreignHosts(text: string, targetOrigin: string | undefined, allowedOrigins: readonly string[] = []): string[] {
   if (!targetOrigin) return [];
   const out: string[] = [];
   for (const m of text.matchAll(CITED_HOST)) {
     const host = m[1].toLowerCase();
-    if (NOT_A_HOST.test(host) || out.includes(host) || isTargetHost(host, targetOrigin)) continue;
+    if (NOT_A_HOST.test(host) || out.includes(host) || isTargetHost(host, targetOrigin, allowedOrigins)) continue;
     out.push(host);
   }
   return out;
@@ -237,6 +237,8 @@ export interface GapEvidence {
   actions?: RecordedAction[] | null;
   /** The product's origin, so a host named in the text can be told from a third party's. */
   targetOrigin?: string;
+  /** CHE-373: origins the owner allowed for the app — the product's too, never a third party's. */
+  allowedOrigins?: readonly string[];
   /** The run's target URL, path included: a store's /admin as the target is the admin itself. */
   targetUrl?: string;
 }
@@ -352,13 +354,26 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   // A challenge or gate status naming a host other than the target is that
   // host's door, whatever else the words say — checked before the captcha
   // rule above would claim it for the target.
-  if ((CHALLENGE.test(text) || GATE_STATUS.test(text)) && foreignHosts(text, evidence.targetOrigin).length > 0) {
+  if ((CHALLENGE.test(text) || GATE_STATUS.test(text)) && foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0) {
     return "third_party_block";
   }
   if (textHit) return textHit;
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
   return trailClass(evidence.actions ?? []) ?? "unclassified";
+}
+
+// CHE-373: the evidence a walked step is classified on, built from the walk's
+// own tool env so the origins the tools act on are the origins the classifier
+// counts as the product. Built in one place: the call in execution.ts that
+// spelled the fields by hand could drop allowedOrigins with every guard green,
+// and an allowed origin's challenge then filed as a third party's block.
+export function walkGapEvidence(
+  env: { targetOrigin: string; allowedOrigins?: readonly string[] },
+  text: string,
+  actions: RecordedAction[],
+): GapEvidence {
+  return { text, actions, targetOrigin: env.targetOrigin, allowedOrigins: env.allowedOrigins ?? [] };
 }
 
 // Report time (execution.ts): the capability is named on the model's own words
@@ -376,7 +391,8 @@ export function settleStepGap(input: {
   machineClass: GapClass | undefined;
   /** The live trail of the step; emptied here. */
   actionTrail: RecordedAction[];
-  targetOrigin?: string;
+  /** The walk's own tool env: the origins its tools act on (CHE-373). */
+  env: { targetOrigin: string; allowedOrigins?: readonly string[] };
   targetUrl?: string | null;
 }): RecordedAction[] {
   const { reported, step, actionTrail } = input;
@@ -384,9 +400,11 @@ export function settleStepGap(input: {
     step.gapClass =
       input.machineClass ??
       classifyGap({
-        text: gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
-        actions: actionTrail,
-        targetOrigin: input.targetOrigin,
+        ...walkGapEvidence(
+          input.env,
+          gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed),
+          actionTrail,
+        ),
         // CHE-374: the origin drops the path, and a store's /admin as the
         // target is the Shopify admin itself.
         targetUrl: input.targetUrl ?? undefined,

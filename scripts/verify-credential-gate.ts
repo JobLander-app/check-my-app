@@ -56,6 +56,11 @@ function fillingEnv(): { env: ToolEnv; received: () => string | null } {
     fill: async (v: string) => {
       filled = v;
     },
+    // A credential is written in the page by tools.ts WRITE_SECRET (CHE-373); here it lands.
+    evaluate: async (_write: unknown, arg: { value: string }) => {
+      filled = arg.value;
+      return "ok";
+    },
     inputValue: async () => filled,
   };
   const page = {

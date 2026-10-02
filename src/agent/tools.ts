@@ -9,7 +9,7 @@
 //   model-driven, the harness owns evidence and artifacts.
 
 import type Anthropic from "@anthropic-ai/sdk";
-import type { Page } from "@cloudflare/playwright";
+import type { Frame, Locator, Page } from "@cloudflare/playwright";
 import { credentialFingerprint } from "@/lib/crypto";
 import {
   hasEnvironmentLeak,
@@ -39,6 +39,16 @@ export interface ToolEnv {
   // Origin the agent is allowed to touch. Credential substitution and
   // navigation are hard-refused off this origin (defence vs prompt injection).
   targetOrigin: string;
+  // CHE-373: further origins the owner named for this app (App.allowedOrigins,
+  // copied onto the run) — an embedded app's host page and its frame. Navigation,
+  // credential entry, reading a frame into the digest and acting in one accept
+  // them as they accept targetOrigin; the evidence rules count their hosts
+  // (exactly, no subdomains) as the product. Normalized origins
+  // (src/lib/allowed-origins.ts). Absent or empty = a single-origin run: nothing
+  // off the target's origin is opened, read into the prompt, typed into or
+  // pressed. (What did change for every run: a frame on the target's own origin
+  // is pressed and filled, where page locators used to stop at its boundary.)
+  allowedOrigins?: string[];
   testEmail?: string;
   testPassword?: string;
   // CHE-322: the app's named accounts beyond the default one above, decrypted
@@ -130,6 +140,32 @@ export interface ToolEnv {
   storeLocked?: "refused" | "missing" | "undriven";
 }
 
+// CHE-373: may this run navigate to, and type a test login on, this origin?
+// The target's own, or one the owner listed. Compared as origins (scheme, host
+// and port), never as hosts: a subdomain is not an allowed origin unless named.
+// One of OUR hosts is never allowed this way, whatever was stored: the click
+// gates that keep a self-check from spending money key on the target, so a
+// customer's run let onto our product would walk it with none of them. The
+// stored list was checked against the built-in hosts when it was saved; this
+// is where the SELF_CHECK_HOSTS binding (staging, previews) is known.
+export function isAllowedOrigin(
+  env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins" | "selfCheckHosts">,
+  origin: string,
+): boolean {
+  const o = origin.toLowerCase();
+  if (o === env.targetOrigin.toLowerCase()) return true;
+  return Boolean(env.allowedOrigins?.includes(o)) && !isSelfUrl(o, env.selfCheckHosts);
+}
+
+function urlOrigin(url: string): string | null {
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 // CHE-193: is this run checking CheckMyApp itself?
 function isSelfTarget(env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts">): boolean {
   return isSelfUrl(env.targetOrigin, env.selfCheckHosts);
@@ -208,6 +244,9 @@ export type RecordedAction =
       role?: string;
       name?: string;
       selector?: string;
+      // CHE-373: the embedded frame it acted in (frameKey), so a replay acts
+      // there too instead of searching afresh. Absent = the page.
+      frame?: string;
       surface?: { kind: "native_popup"; extensionId: string; targetId: string };
       outcome: { urlAfter: string; navigated: boolean | null; requests: number | null; mutations: number | null };
     }
@@ -215,6 +254,7 @@ export type RecordedAction =
       kind: "fill";
       label?: string;
       selector?: string;
+      frame?: string;
       value: string;
       surface?: { kind: "native_popup"; extensionId: string; targetId: string };
       outcome: { urlAfter: string };
@@ -473,32 +513,34 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "read_page",
     description:
-      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
+      "Read a structured digest of the current page: title, headings, links, buttons, form fields, landmarks. An embedded frame of the target app on another origin follows as its own section, labelled FRAME <n> with its origin; other embedded frames are listed by address only. Call after navigation or any action that changes the page. Prefer this over screenshots for deciding what to do next.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "click",
     description:
-      "Click an element. Identify it by role and accessible name (preferred) or CSS selector.",
+      "Click an element. Identify it by role and accessible name (preferred) or CSS selector. The page is searched first, then each embedded frame of the target app in order; pass frame to act inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
         role: { type: "string", description: 'ARIA role, e.g. "button", "link"' },
         name: { type: "string", description: "Accessible name (visible text/label)" },
         selector: { type: "string", description: "CSS selector fallback" },
+        frame: { type: "string", description: 'Optional: the FRAME number from read_page (e.g. "1"), or part of the frame\'s name or URL' },
       },
     },
   },
   {
     name: "fill",
     description:
-      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials.",
+      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
         label: { type: "string", description: "Field label, placeholder or accessible name" },
         selector: { type: "string", description: "CSS selector fallback" },
         value: { type: "string", description: "Text, or {{TEST_EMAIL}} / {{TEST_PASSWORD}}, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}" },
+        frame: { type: "string", description: 'Optional: the FRAME number from read_page (e.g. "1"), or part of the frame\'s name or URL' },
       },
       required: ["value"],
     },
@@ -695,7 +737,7 @@ async function executeToolUnscrubbed(
       case "get_network_log":
         return scrubSecrets(env, drainLogs(env));
       case "verify_links":
-        return await verifyLinks(input, env.targetOrigin);
+        return await verifyLinks(input, env.targetOrigin, env.allowedOrigins);
       case "record_created": {
         if (!env.onResourceCreated) return "No ledger available — do not create records in this run.";
         const marker = String(input.marker ?? "");
@@ -783,8 +825,10 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
   const target = new URL(url, env.page.url() || undefined);
   // Hard origin guard: the system prompt says "stay on origin", but a malicious
   // page could instruct the model to navigate off-site and exfiltrate creds.
-  if (target.origin !== env.targetOrigin) {
-    return `Refused: ${target.origin} is outside the target app (${env.targetOrigin}). Stay on the target.`;
+  // CHE-373: the origins the owner listed for this app are part of the target.
+  if (!isAllowedOrigin(env, target.origin)) {
+    const others = env.allowedOrigins?.length ? ` or the origins allowed for it (${env.allowedOrigins.join(", ")})` : "";
+    return `Refused: ${target.origin} is outside the target app (${env.targetOrigin})${others}. Stay on the target.`;
   }
   const logBefore = env.networkLog.length;
   let res = await env.page.goto(target.toString(), {
@@ -973,7 +1017,7 @@ async function attachLook(env: ToolEnv, reason: string): Promise<string> {
 // anywhere (CLAUDE.md rule 3: our own volume, and the recovery UX is what the
 // model must judge by eye), or a 4xx/5xx from the target itself. The CHE-100
 // credential rejection is excluded — it has its own path and its own text.
-export function errorResponseIn(entries: string[], targetOrigin: string): string | null {
+export function errorResponseIn(entries: string[], targetOrigin: string, allowedOrigins: readonly string[] = []): string | null {
   for (const line of entries) {
     const m = line.match(/^([A-Z]+)\s+(\S+)\s+→\s+(\d{3})$/);
     if (!m) continue;
@@ -988,7 +1032,7 @@ export function errorResponseIn(entries: string[], targetOrigin: string): string
     } catch {
       continue;
     }
-    if (origin === targetOrigin) return line;
+    if (origin === targetOrigin || allowedOrigins.includes(origin)) return line;
   }
   return null;
 }
@@ -1022,7 +1066,7 @@ async function lookIfJudgmentMoment(
 ): Promise<string> {
   if (!env.visionTriggers) return "";
   const err =
-    errorResponseIn(action.requests, env.targetOrigin) ??
+    errorResponseIn(action.requests, env.targetOrigin, env.allowedOrigins) ??
     (action.status != null && action.status >= 400 ? `HTTP ${action.status} on navigate` : null);
   if (err) return attachLook(env, `error response (${err})`);
   if (await mediaSignals(env)) return attachLook(env, "media/WebRTC signals on the page");
@@ -1033,7 +1077,9 @@ async function lookIfJudgmentMoment(
 // the framework flush the effects that attach event listeners), then a capped
 // network-idle wait (hydration chunks still in flight). Every wait is
 // best-effort — a chatty page must not stall the walk.
-async function waitForHydration(page: Page, networkIdleMs: number): Promise<void> {
+// CHE-373: a frame hydrates on its own schedule, so the gate runs in whichever
+// document the control lives in — the page, or the frame it was found in.
+async function waitForHydration(page: Pick<Page, "waitForLoadState" | "evaluate">, networkIdleMs: number): Promise<void> {
   await page.waitForLoadState("load", { timeout: 8_000 }).catch(() => {});
   await page
     .evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
@@ -1047,11 +1093,26 @@ interface ReactionSnapshot {
   net: number;
   mut: number;
   url: string;
+  // CHE-373: set when the control is inside a frame. `mut` is then the frame's
+  // counter and `hostMut` the page's.
+  frameUrl?: string;
+  hostMut?: number;
 }
 
-async function snapshotReaction(env: ToolEnv): Promise<ReactionSnapshot> {
-  const mut = await env.page.evaluate("window.__cmaMutations || 0").catch(() => 0);
-  return { net: env.networkLog.length, mut: Number(mut) || 0, url: env.page.url() };
+const mutationCount = (doc: Page | Frame) =>
+  doc.evaluate("window.__cmaMutations || 0").then((n) => Number(n) || 0, () => 0);
+
+// CHE-373: the mutation counters of every document a click can move. A click
+// inside an embedded app changes the frame's DOM — or, when the app talks to
+// its host (postMessage, a host-rendered modal), only the page's. Counted in
+// one document alone, either reads as "did not react AT ALL": our blindness,
+// written up as their dead button.
+async function snapshotReaction(env: ToolEnv, frame?: Frame | null): Promise<ReactionSnapshot> {
+  const net = env.networkLog.length;
+  const url = env.page.url();
+  if (!frame) return { net, mut: await mutationCount(env.page), url };
+  const [mut, hostMut] = await Promise.all([mutationCount(frame), mutationCount(env.page)]);
+  return { net, mut, url, frameUrl: frame.url(), hostMut };
 }
 
 interface Reaction {
@@ -1063,14 +1124,19 @@ interface Reaction {
 // Let the page settle after an interaction, then measure what it did: network
 // requests, DOM mutations, navigation. Navigation resets the mutation counter
 // (fresh document), so it is reported as its own definitive signal.
-async function settleAndMeasure(env: ToolEnv, before: ReactionSnapshot): Promise<Reaction> {
+async function settleAndMeasure(env: ToolEnv, before: ReactionSnapshot, frame?: Frame | null): Promise<Reaction> {
   await env.page.waitForLoadState("domcontentloaded").catch(() => {});
   await env.page.waitForTimeout(1_200);
-  const after = await snapshotReaction(env);
-  const navigated = after.url !== before.url;
+  const after = await snapshotReaction(env, frame);
+  const pageNavigated = after.url !== before.url;
+  const navigated = pageNavigated || after.frameUrl !== before.frameUrl;
+  // A fresh document starts its counter at zero, so after a navigation its
+  // whole count is the reaction.
+  const delta = (now: number, then: number, fresh: boolean) => (fresh ? now : Math.max(now - then, 0));
+  const hostMutations = frame ? delta(after.hostMut ?? 0, before.hostMut ?? 0, pageNavigated) : 0;
   return {
     requests: Math.max(after.net - before.net, 0),
-    mutations: navigated ? after.mut : Math.max(after.mut - before.mut, 0),
+    mutations: delta(after.mut, before.mut, navigated) + hostMutations,
     navigated,
   };
 }
@@ -1208,13 +1274,18 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       `selector instead and say why in the step.`
     );
   }
-  const target = (await resolveClickTarget(env.page, input)).first();
+  // CHE-373: the page first, then each embedded frame.
+  const located = await locateAcrossFrames(env, "click", input, (scope) => resolveClickTarget(scope, input));
+  if (typeof located === "string") return located;
+  const target = located.locator.first();
+  const inFrame = located.frame;
+  const where = located.label ? ` inside ${located.label}` : "";
   const sessionRefusal = await env.extension?.guardClick(target);
   if (sessionRefusal) return sessionRefusal;
   // Never interact before hydration: a click landing before listeners attach
   // is indistinguishable from a dead button.
-  await waitForHydration(env.page, 1_500);
-  const before = await snapshotReaction(env);
+  await waitForHydration(inFrame ?? env.page, 1_500);
+  const before = await snapshotReaction(env, inFrame);
 
   // CHE-214: a click that could not be PERFORMED is our limitation and says
   // nothing about the control. A click that was performed and produced nothing
@@ -1225,7 +1296,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     if (!isUndrivable(err)) throw err;
     return recordUndriven(env, "click", label ?? String(input.selector ?? "control"), err);
   }
-  let reaction = await settleAndMeasure(env, before);
+  let reaction = await settleAndMeasure(env, before, inFrame);
   let strategy = "trusted click";
   const tried = [strategy];
 
@@ -1253,7 +1324,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
         .catch(() => false);
       if (submitted) {
         tried.push("form.requestSubmit()");
-        reaction = await settleAndMeasure(env, before);
+        reaction = await settleAndMeasure(env, before, inFrame);
         if (!isInert(reaction)) strategy = "form.requestSubmit() fallback (trusted click was inert)";
       }
       if (isInert(reaction)) {
@@ -1280,7 +1351,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
           .catch(() => false);
         if (dispatched) {
           tried.push("synthetic event dispatch");
-          reaction = await settleAndMeasure(env, before);
+          reaction = await settleAndMeasure(env, before, inFrame);
           if (!isInert(reaction))
             strategy = "synthetic event dispatch fallback (untrusted events; trusted click was inert)";
         }
@@ -1299,6 +1370,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     ...(input.role ? { role: String(input.role) } : {}),
     ...(input.name ? { name: String(input.name) } : {}),
     ...(input.selector ? { selector: String(input.selector) } : {}),
+    ...(inFrame ? { frame: frameKey(inFrame) } : {}),
     outcome: {
       urlAfter: env.page.url(),
       navigated: reaction.navigated,
@@ -1367,7 +1439,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     // nothing at all" instead of silence, and must not translate it straight
     // into "broken" — this environment is known to be ignored by some apps.
     return (
-      `Clicked, but the page did not react AT ALL: 0 network requests and 0 DOM mutations ` +
+      `Clicked${where}, but the page did not react AT ALL: 0 network requests and 0 DOM mutations ` +
       `(strategies tried: ${tried.join(", ")}). Current URL: ${env.page.url()}. ` +
       `This is either a genuinely dead control or this test browser being ignored ` +
       `(overlay/consent layer, bot gating). Check for overlays with read_page/screenshot; ` +
@@ -1390,7 +1462,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     strategy !== "trusted click"
       ? await attachLook(env, `click needed a fallback (${strategy})`)
       : await lookIfJudgmentMoment(env, { requests: fresh });
-  return `Clicked (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${note}${ledgerNudge}${looked}`;
+  return `Clicked${where} (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${note}${ledgerNudge}${looked}`;
 }
 
 // CHE-172: a placeholder the model padded with whitespace — " {{TEST_EMAIL}}",
@@ -1423,6 +1495,18 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
       "when a page of the store leads here — navigate to the page you want instead of filling this form."
     );
   }
+  // CHE-373: the same lock met on an origin the app declared (allowed_origins).
+  // The store password is entered only on the target's own gate; no store's
+  // password form is typed into by the model, on any origin the run may act in
+  // — a placeholder resolved here would hand a test login to that form.
+  for (const origin of env.allowedOrigins ?? []) {
+    if (await onStoreGate(env.page, origin)) {
+      return (
+        "Refused: this is a store's password page. Nothing is typed into it. Report this step " +
+        '"skipped" with unverifiedReason "missing_access" and say that the store is password-protected.'
+      );
+    }
+  }
   // CHE-172: before any gate, any record, any substitution.
   let value = normalizeFillValue(String(input.value));
   // CHE-129: what gets recorded is the value as the model wrote it, placeholders
@@ -1435,9 +1519,11 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   const usedSecret = accounts.length > 0;
   // Never type real credentials into an off-origin form (prompt-injection
   // exfiltration): the substituted value would be the decrypted password.
+  // CHE-373: "off-origin" is off every origin this run may act on; the frame
+  // the field sits in is held to the same rule below, once it is found.
   if (usedSecret) {
     try {
-      if (new URL(env.page.url()).origin !== env.targetOrigin) {
+      if (!isAllowedOrigin(env, new URL(env.page.url()).origin)) {
         return `Refused: will not enter test credentials on ${env.page.url()} (outside the target app).`;
       }
     } catch {
@@ -1481,42 +1567,49 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     return "No test credentials were provided for this run, so this field cannot be filled. Do NOT click the login/submit button on an empty form — a form that refuses empty input is working correctly. Report this step as \"skipped\" (no test credentials), never \"broken\" or \"confusing\".";
   }
   value = substituted.value;
+
+  const label = input.label ? String(input.label) : undefined;
+  // CHE-373: the page first, then each embedded frame.
+  const located = await locateAcrossFrames(env, "fill", input, async (scope) =>
+    input.selector
+      ? scope.locator(String(input.selector))
+      : label
+        ? scope
+            .getByLabel(label)
+            .or(scope.getByPlaceholder(label))
+            .or(scope.getByRole("textbox", { name: label }))
+        : scope.locator("input:visible"),
+  );
+  if (typeof located === "string") return located;
   if (usedSecret) env.activeAccount = accounts[accounts.length - 1];
   // Fingerprint only (sha256 prefix + length), never the value: lets a cred
   // mismatch be localized to save vs store vs fill without exposing anything.
-  for (const label of usedSecret ? accounts : []) {
-    const password = accountFor(env, label)?.password;
-    if (password) console.log(`[fill] substituting test password for "${label}": ${credentialFingerprint(password)}`);
+  for (const account of usedSecret ? accounts : []) {
+    const password = accountFor(env, account)?.password;
+    if (password) console.log(`[fill] substituting test password for "${account}": ${credentialFingerprint(password)}`);
   }
 
-  const page = env.page;
-  const label = input.label ? String(input.label) : undefined;
-  const locator = input.selector
-    ? page.locator(String(input.selector))
-    : label
-      ? page
-          .getByLabel(label)
-          .or(page.getByPlaceholder(label))
-          .or(page.getByRole("textbox", { name: label }))
-      : page.locator("input:visible");
-
-  const field = locator.first();
+  const field = located.locator.first();
   const fixtureRefusal = await env.extension?.guardFixtureControl(field);
   if (fixtureRefusal) return fixtureRefusal;
   // Same hydration gate as click: values typed before listeners attach are
   // silently dropped by controlled inputs.
-  await waitForHydration(page, 1_000);
+  await waitForHydration(located.frame ?? env.page, 1_000);
   const named = label ?? (input.selector ? String(input.selector) : "field");
   const landed = () => {
     recordAction(env, {
       kind: "fill",
       ...(label ? { label } : {}),
       ...(input.selector ? { selector: String(input.selector) } : {}),
+      ...(located.frame ? { frame: frameKey(located.frame) } : {}),
       value: recordedValue,
       outcome: { urlAfter: env.page.url() },
     });
-    return usedSecret ? "Filled (credential substituted server-side)." : "Filled.";
+    const where = located.label ? ` inside ${located.label}` : "";
+    return usedSecret ? `Filled${where} (credential substituted server-side).` : `Filled${where}.`;
   };
+
+  if (usedSecret) return fillSecret(env, field, value, named, landed);
 
   try {
     await field.fill(value, { timeout: 8_000 });
@@ -1563,12 +1656,97 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   return landed();
 }
 
+// CHE-373: a substituted credential is written by one function running inside
+// the field's own document, which first checks that this document is on an
+// origin the run may act on. That is the ONLY place the question can be asked
+// truthfully. Asked in Node and then typed, question and write are apart in
+// time, and a locator follows its frame through a navigation: an embedded app
+// that bounces to its identity provider while we wait for hydration had the
+// provider's "Password" field receive the real test password while the tool
+// said it filled the app (4 of 14 timed runs in the cross-review of #222). The
+// address Node holds for a frame lags the document as well — it was still the
+// app's with the provider's page already in place — so there is no check in
+// Node beside this one to disagree with it. One synchronous task in the page
+// cannot be split by a navigation.
+//
+// insertText is what a keyboard does (beforeinput/input, so frameworks see
+// it); the value setter plus input/change is the fallback for a field that
+// refuses it. Returns "ok", "not-stuck", or "elsewhere <origin>" with nothing
+// written.
+//
+// location.origin, not self.origin: Location is unforgeable, while
+// window.origin is replaceable by the page's own script — a stranger's page
+// could set it to an origin we allow. The price is that a field inside a
+// srcdoc/about:blank frame of the app reads "null" and is refused too; a login
+// form living in such a frame has not been met, and refusing is the safe side.
+const WRITE_SECRET = (el: Element, arg: { value: string; origins: string[] }): string => {
+  if (!el.isConnected || !arg.origins.includes(location.origin)) return `elsewhere ${location.origin}`;
+  const text = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  (el as HTMLElement).focus();
+  if (text) text.select();
+  let inserted = false;
+  try {
+    inserted = document.execCommand("insertText", false, arg.value);
+  } catch {
+    inserted = false;
+  }
+  if (!text) return inserted && (el.textContent ?? "").includes(arg.value) ? "ok" : "not-stuck";
+  if (!inserted || text.value !== arg.value) {
+    const proto = text instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(text, arg.value);
+    else text.value = arg.value;
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    text.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  return text.value === arg.value ? "ok" : "not-stuck";
+};
+
+async function fillSecret(
+  env: ToolEnv,
+  field: Locator,
+  value: string,
+  named: string,
+  landed: () => string,
+): Promise<string> {
+  // Every origin this run may act on, as the document itself will spell its own.
+  const origins = [env.targetOrigin, ...(env.allowedOrigins ?? [])]
+    .map((o) => o.toLowerCase())
+    .filter((o) => isAllowedOrigin(env, o));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Like the plain fill's retry: a controlled input can drop a value written
+    // before it hydrated.
+    if (attempt) await env.page.waitForTimeout(600);
+    let outcome: string;
+    try {
+      outcome = await field.evaluate(WRITE_SECRET, { value, origins }, { timeout: 8_000 });
+    } catch (err) {
+      if (!isUndrivable(err)) throw err;
+      return recordUndriven(env, "fill", named, err);
+    }
+    if (outcome.startsWith("elsewhere")) {
+      // The field was found on the app and its document is another one now (a
+      // sign-in that bounced to its identity provider), or it never had an
+      // address of its own (srcdoc, about:blank, data:, sandboxed — "null",
+      // which cannot be told from a stranger's). The credential stays with us.
+      const at = outcome.slice("elsewhere ".length);
+      const where = at && at !== "null" ? at : "an embedded document with no address of its own";
+      return (
+        `Refused: will not enter test credentials on ${where} (outside the target app). Nothing was typed. ` +
+        `If the page moved, read it again before deciding what the step is.`
+      );
+    }
+    if (outcome === "ok" && (await field.inputValue().catch(() => value)) === value) return landed();
+  }
+  return recordUndriven(env, "fill", named, new Error(`the value did not stick in ${named}`));
+}
+
 // Exact accessible name first (CHE-79): getByRole's `name` matches SUBSTRINGS,
 // so clicking "Continue" on a Clerk modal picked "Continue with Google" (it
 // sits above the form in DOM order) and bounced the agent into OAuth — a false
 // broken/high on our own sign-in. When an exact-name match exists it wins;
 // the substring behavior stays as the fallback for the model's loose labels.
-async function resolveClickTarget(page: Page, input: Record<string, unknown>) {
+async function resolveClickTarget(page: LocatorScope, input: Record<string, unknown>): Promise<Locator> {
   if (input.role && input.name) {
     const exact = page.getByRole(String(input.role) as Parameters<Page["getByRole"]>[0], {
       name: String(input.name),
@@ -1577,6 +1755,188 @@ async function resolveClickTarget(page: Page, input: Record<string, unknown>) {
     if ((await exact.count().catch(() => 0)) > 0) return exact;
   }
   return resolveLocator(page, input);
+}
+
+// ─── CHE-373: embedded frames ────────────────────────────────────────────────
+//
+// A Shopify app renders inside admin.shopify.com in iframe[name=app-iframe],
+// served from the app's own origin. Playwright's page locators stop at a frame
+// boundary, same-origin or not, and read_page could open only a same-origin
+// frame's document — so the app itself was a "FRAMES: <src>" line the walk
+// could neither read nor press. Playwright reaches every frame through the
+// browser, whatever its origin; these helpers give the tools that reach.
+//
+// A frame is named by its 1-based position among the page's child frames
+// (page.frames() without the main frame), the same list for read_page and for
+// click/fill, so "FRAME 2" in a digest is the frame a following click means.
+
+// The four ways a tool finds a control, which a Page and a Frame both offer.
+type LocatorScope = Pick<Page, "getByRole" | "getByText" | "getByLabel" | "getByPlaceholder" | "locator">;
+
+// Reaching into frames is not a way past bot protection, which is out of scope
+// and prohibited (browser.ts, agentContextOptions): a challenge widget's frame
+// is never listed, so it can be neither read, searched nor picked — the walk
+// meets it exactly as it did before frames were reachable at all.
+const CHALLENGE_FRAME =
+  /^https:\/\/(?:[a-z0-9-]+\.)*(?:google\.com|recaptcha\.net)\/recaptcha\/|^https:\/\/(?:[a-z0-9-]+\.)*(?:hcaptcha\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)\/|^https:\/\/challenges\.cloudflare\.com\//i;
+
+// A bare ToolEnv in a script carries a stub page with no frames at all.
+function childFrames(page: Page): Frame[] {
+  if (typeof page.frames !== "function" || typeof page.mainFrame !== "function") return [];
+  const main = page.mainFrame();
+  return page.frames().filter((f) => f !== main && !f.isDetached() && !insideChallenge(f));
+}
+
+// The challenge's own frame, or any frame it nests.
+function insideChallenge(frame: Frame): boolean {
+  for (let f: Frame | null = frame; f; f = f.parentFrame()) {
+    if (CHALLENGE_FRAME.test(f.url())) return true;
+  }
+  return false;
+}
+
+function frameLabel(frame: Frame, index: number): string {
+  return `FRAME ${index + 1} (${urlOrigin(frame.url()) ?? frame.url()})`;
+}
+
+// "1" / "frame 1" / "FRAME 1 (…)" by number; "top" / "main" / "0" for the page
+// itself; otherwise the first frame whose name or URL contains the text.
+function pickFrame(page: Page, wanted: string): { frame: Frame | null; label: string | null } | null {
+  const text = wanted.trim();
+  if (/^(?:0|top|main|page)$/i.test(text)) return { frame: null, label: null };
+  const frames = childFrames(page);
+  const numbered = text.match(/^(?:frame\s*)?(\d+)\b/i);
+  if (numbered) {
+    const index = Number(numbered[1]) - 1;
+    return frames[index] ? { frame: frames[index], label: frameLabel(frames[index], index) } : null;
+  }
+  const needle = text.toLowerCase();
+  const index = frames.findIndex((f) => f.name().toLowerCase().includes(needle) || f.url().toLowerCase().includes(needle));
+  return index >= 0 ? { frame: frames[index], label: frameLabel(frames[index], index) } : null;
+}
+
+async function hasMatch(locator: Locator): Promise<boolean> {
+  try {
+    return (await locator.count()) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// The origin a frame acts for: its own, or — for about:blank and srcdoc, which
+// take their creator's, and data:, whose content its creator wrote — the
+// nearest ancestor's that has one. That is enough to press a button in it. A
+// credential is held to more: the secret write asks the document itself for
+// its location.origin (WRITE_SECRET), which is "null" in every one of these.
+function frameOrigin(frame: Frame): string | null {
+  for (let f: Frame | null = frame; f; f = f.parentFrame()) {
+    const origin = urlOrigin(f.url());
+    if (origin) return origin;
+  }
+  return null;
+}
+
+// Reading a frame is looking at the page; acting in one is acting on whoever
+// serves it. A payment field, a chat widget, an ad, a vendor's login: none of
+// them is the owner's to have us press, so click and fill act only in frames
+// on an origin this run may act on — the target's or one the owner allowed —
+// exactly as navigate and credential entry do.
+function mayActIn(env: ToolEnv, frame: Frame): boolean {
+  const origin = frameOrigin(frame);
+  return origin !== null && isAllowedOrigin(env, origin);
+}
+
+// Rule 2: a control we will not act in is OUR limit, never the customer's
+// homework. The answer names no setting for them to change — allowed origins
+// are theirs to set deliberately, not something a step solicits (the first
+// version of this text told the model to say the origin "would have to be
+// allowed for this app", which is an ask in every step that meets a widget).
+// And the machine half, as for any control our hands did not drive (CHE-214):
+// the refusal is recorded, so a step that blames the product after it becomes
+// skipped / our_capability at report time, whatever the model wrote.
+function outsideFrameRefusal(
+  env: ToolEnv,
+  hand: "fill" | "click",
+  input: Record<string, unknown>,
+  label: string,
+  frame: Frame,
+): string {
+  const origin = frameOrigin(frame) ?? frame.url();
+  const target = String(input.name ?? input.label ?? input.selector ?? "control");
+  env.undrivenControls?.push({ hand, target, reason: `inside an embedded frame outside the target app (${origin})` });
+  console.warn(`[${hand}] refused ${JSON.stringify(target)}: ${label} is outside the target app`);
+  return (
+    `Refused: ${label} is outside the target app (${origin}) — the checker does not act inside another ` +
+    `party's embedded frame, and that says NOTHING about the control. Do not report it broken, risky or ` +
+    `confusing. If the step needs this control, report it "skipped" with unverifiedReason ` +
+    `"our_capability". If it is a third party's widget the journey does not depend on (chat, ads, a ` +
+    `social embed), report it "skipped" with unverifiedReason "not_applicable" or leave it out.`
+  );
+}
+
+// How a recorded action names its frame for a replay (journey-replay.ts): the
+// frame's name, else its address without the query — the number is a position
+// on one page load, and an embedded app's query carries its session.
+function frameKey(frame: Frame): string {
+  if (frame.name()) return frame.name();
+  try {
+    const u = new URL(frame.url());
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return frame.url();
+  }
+}
+
+// The head of the answer when a named frame is not on the page. A replay reads
+// it as nothing having been pressed (journey-replay.ts classifyResult).
+export const NO_FRAME_MATCH = "No frame matches";
+
+interface Located {
+  locator: Locator;
+  frame: Frame | null;
+  label: string | null;
+}
+
+// Where a click or a fill acts. With `frame` named, there and nowhere else.
+// Without it: the page when the control is there — so a page with no frames
+// resolves exactly as it always did, and a page whose control is on top never
+// reaches into a frame — otherwise the first frame, in order, that has it and
+// may be acted in. A control found only in frames outside the target app is
+// refused, saying so. A control found nowhere resolves on the page, so the miss
+// reads as it always has (the click's own timeout, the fill's undriven-control
+// answer).
+async function locateAcrossFrames(
+  env: ToolEnv,
+  hand: "fill" | "click",
+  input: Record<string, unknown>,
+  build: (scope: LocatorScope) => Promise<Locator>,
+): Promise<Located | string> {
+  const wanted = input.frame === undefined || input.frame === null ? "" : String(input.frame).trim();
+  if (wanted) {
+    const picked = pickFrame(env.page, wanted);
+    if (!picked) {
+      return (
+        `${NO_FRAME_MATCH} "${wanted}" on this page. read_page lists the embedded frames as ` +
+        `FRAME <n> with their origin; pass that number, or leave frame out to search the page and every frame.`
+      );
+    }
+    if (picked.frame && !mayActIn(env, picked.frame)) {
+      return outsideFrameRefusal(env, hand, input, picked.label ?? "that frame", picked.frame);
+    }
+    return { locator: await build(picked.frame ?? env.page), ...picked };
+  }
+  const top = await build(env.page);
+  const frames = childFrames(env.page);
+  if (frames.length === 0 || (await hasMatch(top))) return { locator: top, frame: null, label: null };
+  let outside: { frame: Frame; label: string } | null = null;
+  for (let i = 0; i < frames.length; i++) {
+    const inFrame = await build(frames[i]).catch(() => null);
+    if (!inFrame || !(await hasMatch(inFrame))) continue;
+    if (mayActIn(env, frames[i])) return { locator: inFrame, frame: frames[i], label: frameLabel(frames[i], i) };
+    outside ??= { frame: frames[i], label: frameLabel(frames[i], i) };
+  }
+  if (outside) return outsideFrameRefusal(env, hand, input, outside.label, outside.frame);
+  return { locator: top, frame: null, label: null };
 }
 
 // CHE-82/83. An interaction that produced nothing for US is not a product
@@ -1751,23 +2111,35 @@ function bareHost(hostname: string): string {
 
 // The target and anything under it (api.target.test is theirs); www. is not a
 // different site.
-export function isTargetHost(hostname: string, targetOrigin: string): boolean {
-  let target: string;
-  try {
-    target = bareHost(new URL(targetOrigin).hostname);
-  } catch {
-    return false;
-  }
+// CHE-373: an origin the owner allowed for this app is the product too — the
+// embedding page an app lives in is where its users meet it. Its host EXACTLY:
+// an allowed admin.shopify.com does not make every *.shopify.com the product,
+// and a suffix that slipped past validation (allowed-origins.ts) cannot make a
+// whole namespace of strangers' sites evidence against the customer (rule 8).
+export function isTargetHost(hostname: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
   const host = bareHost(hostname);
-  return host === target || host.endsWith(`.${target}`);
+  try {
+    const own = bareHost(new URL(targetOrigin).hostname);
+    if (host === own || host.endsWith(`.${own}`)) return true;
+  } catch {
+    // A target that is not a URL owns no host; the allowed list still applies.
+  }
+  const exact = hostname.toLowerCase();
+  return allowedOrigins.some((origin) => {
+    try {
+      return new URL(origin).hostname.toLowerCase() === exact;
+    } catch {
+      return false;
+    }
+  });
 }
 
-function evidenceAgainstProduct(text: string, targetOrigin: string): boolean {
+function evidenceAgainstProduct(text: string, targetOrigin: string, allowedOrigins: readonly string[] = []): boolean {
   for (const sentence of splitSentences(text)) {
     if (CONSOLE_EVIDENCE.test(sentence)) return true;
     if (!HTTP_ERROR_STATUS.test(sentence) || /\bUNREACHABLE\b/.test(sentence)) continue;
     const hosts = citedHosts(sentence);
-    const foreign = hosts.filter((h) => !isTargetHost(h, targetOrigin));
+    const foreign = hosts.filter((h) => !isTargetHost(h, targetOrigin, allowedOrigins));
     if (foreign.length === 0) return true;
     if (foreign.length < hosts.length || BARE_PATH.test(sentence)) return true;
   }
@@ -1843,16 +2215,17 @@ export function coerceUndrivenControl(
     : UNVERIFIABLE_FALLBACK;
 }
 
-export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin">): void {
+export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
   if (step.status !== "risky" && step.status !== "confusing" && step.status !== "broken") return;
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
   if (!EGRESS_PHRASE.test(text)) return;
-  const foreign = citedHosts(text).filter((h) => !isTargetHost(h, env.targetOrigin));
+  const allowed = env.allowedOrigins ?? [];
+  const foreign = citedHosts(text).filter((h) => !isTargetHost(h, env.targetOrigin, allowed));
   // A timeout with no foreign host named is about the product itself unless
   // the tool's own word is there — verify_links names UNREACHABLE and nothing
   // else does.
   if (foreign.length === 0 && !/\bUNREACHABLE\b/.test(text)) return;
-  if (evidenceAgainstProduct(text, env.targetOrigin)) return;
+  if (evidenceAgainstProduct(text, env.targetOrigin, allowed)) return;
   console.warn(`[report_step] "${step.label}": ${step.status} on an unreachable host (${listHosts(foreign)}) → skipped`);
   step.status = "skipped";
   step.unverifiedReason = "our_capability";
@@ -2045,7 +2418,7 @@ function unreachableReason(err: unknown): string {
   return `connection failed: ${message.slice(0, 60)}`;
 }
 
-async function verifyLinks(input: Record<string, unknown>, targetOrigin: string): Promise<string> {
+async function verifyLinks(input: Record<string, unknown>, targetOrigin: string, allowedOrigins: readonly string[] = []): Promise<string> {
   const raw = Array.isArray(input.urls) ? input.urls.map(String) : [];
   const mailtos = [...new Set(raw)].filter((u) => /^mailto:/i.test(u)).slice(0, 60);
   const urls = [...new Set(raw)].filter((u) => /^https?:\/\//i.test(u)).slice(0, 60);
@@ -2078,7 +2451,7 @@ async function verifyLinks(input: Record<string, unknown>, targetOrigin: string)
       }
       const gated =
         GATING_STATUSES.has(res.status) &&
-        (res.status === 429 || !answeredBy || !isTargetHost(answeredBy, targetOrigin));
+        (res.status === 429 || !answeredBy || !isTargetHost(answeredBy, targetOrigin, allowedOrigins));
       if (gated) return `UNREACHABLE (HTTP ${res.status} from ${answeredBy || "the host"}) ${url}`;
       return `BROKEN ${res.status}${via} ${url}`;
     } catch (err) {
@@ -2099,7 +2472,7 @@ async function verifyLinks(input: Record<string, unknown>, targetOrigin: string)
   return `${summary}${note}\n${results.join("\n")}`;
 }
 
-function resolveLocator(page: Page, input: Record<string, unknown>) {
+function resolveLocator(page: LocatorScope, input: Record<string, unknown>): Locator {
   if (input.selector) return page.locator(String(input.selector));
   if (input.role) {
     return page.getByRole(String(input.role) as Parameters<Page["getByRole"]>[0], {
@@ -2131,18 +2504,41 @@ async function screenshot(env: ToolEnv, input: Record<string, unknown> = {}): Pr
 
 // Privacy §5: blur password fields before any screenshot. Covers native
 // type=password plus "show password" toggles that flip it to type=text.
-async function blurPasswordFields(page: Pick<Page, "evaluate">): Promise<void> {
-  await page
-    .evaluate(() => {
-      document
-        .querySelectorAll<HTMLInputElement>(
-          'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[name*="pass" i]',
-        )
-        .forEach((el) => {
-          el.style.filter = "blur(6px)";
-        });
-    })
-    .catch(() => {});
+// CHE-373: in every frame too — fill now types the test password into an
+// embedded frame, and the screenshot shows that frame as part of the page.
+async function blurPasswordFields(page: Pick<Page, "evaluate"> & Partial<Pick<Page, "frames" | "mainFrame">>): Promise<void> {
+  const blur = () => {
+    document
+      .querySelectorAll<HTMLInputElement>(
+        'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[name*="pass" i]',
+      )
+      .forEach((el) => {
+        el.style.filter = "blur(6px)";
+      });
+  };
+  await page.evaluate(blur).catch(() => {});
+  const frames = typeof page.frames === "function" ? childFrames(page as Page) : [];
+  await Promise.all(frames.map((frame) => withinMs(frame.evaluate(blur), FRAME_EVALUATE_MS, undefined)));
+}
+
+// CHE-373: a frame still loading has no document to evaluate in yet, and
+// Playwright waits for one. No read of a frame may hold the walk up.
+const FRAME_EVALUATE_MS = 3_000;
+
+function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
 }
 
 function drainLogs(env: ToolEnv): string {
@@ -2157,9 +2553,10 @@ function drainLogs(env: ToolEnv): string {
   ].join("\n");
 }
 
-// Structured page digest — the agent's primary "eyes".
-async function readPage(env: ToolEnv): Promise<string> {
-  const digest = await env.page.evaluate(() => {
+// Structured page digest — the agent's primary "eyes". One reader for the page
+// and for each embedded frame (CHE-373): evaluated inside whichever document it
+// is handed, so a frame from another origin is read from within, as itself.
+const PAGE_DIGEST = () => {
     const clip = (s: string | null | undefined, n = 80) =>
       (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
     const roots: Array<Document | ShadowRoot> = [document];
@@ -2225,13 +2622,15 @@ async function readPage(env: ToolEnv): Promise<string> {
       fields,
       shadowText,
       frameUrls,
+      // CHE-373: shown for a frame only (see frameSections) — an embedded app's
+      // status line or empty state is often plain text with no heading.
+      text: clip(document.body?.innerText, 1500),
     };
-  });
-  // CHE-171: the page read is published (it rendered), and so is everything
-  // it links to. Relative hrefs the stub or an old digest may carry resolve
-  // against the page itself.
-  rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+};
 
+type PageDigest = ReturnType<typeof PAGE_DIGEST>;
+
+function digestSections(digest: PageDigest): string[] {
   return [
     `URL: ${digest.url}`,
     `TITLE: ${digest.title}`,
@@ -2241,7 +2640,81 @@ async function readPage(env: ToolEnv): Promise<string> {
     `FORM FIELDS:\n${digest.fields.join("\n") || "(none)"}`,
     ...(digest.shadowText?.length ? [`SHADOW PANELS:\n${digest.shadowText.join("\n").slice(0, 8000)}`] : []),
     ...(digest.frameUrls?.length ? [`FRAMES:\n${digest.frameUrls.join("\n")}`] : []),
-  ].join("\n\n");
+  ];
+}
+
+async function readPage(env: ToolEnv): Promise<string> {
+  const digest = await env.page.evaluate(PAGE_DIGEST);
+  // CHE-171: the page read is published (it rendered), and so is everything
+  // it links to. Relative hrefs the stub or an old digest may carry resolve
+  // against the page itself.
+  rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+
+  return [...digestSections(digest), ...(await frameSections(env, digest.url))].join("\n\n");
+}
+
+// CHE-373: how much of a frame the digest carries. Three frames is more than
+// any embedded app has shown us (the app, perhaps a payment or chat widget);
+// past that it is ads and trackers, and the context is the walk's budget.
+const MAX_FRAMES_READ = 3;
+const FRAME_SECTION_CHARS = 5_000;
+// Smaller than this on either side is a pixel, a beacon or a hidden helper.
+const MIN_FRAME_SIDE_PX = 20;
+
+// A frame whose document the page reader already walked into: same origin as
+// the page all the way up (an about:blank or srcdoc frame takes its parent's
+// origin). Reading it again would print its controls twice.
+function readWithPage(frame: Frame, pageOrigin: string | null): boolean {
+  for (let f: Frame | null = frame; f && f.parentFrame(); f = f.parentFrame()) {
+    const origin = urlOrigin(f.url());
+    if (origin === null) continue;
+    if (origin !== pageOrigin) return false;
+  }
+  return true;
+}
+
+// A frame worth showing: big enough to be seen. When its size cannot be read
+// the frame is kept — losing an app costs more than printing a widget.
+async function visibleFrame(frame: Frame): Promise<boolean> {
+  const element = await withinMs(frame.frameElement(), FRAME_EVALUATE_MS, null);
+  if (!element) return true;
+  const box = await withinMs(element.boundingBox(), FRAME_EVALUATE_MS, undefined);
+  await element.dispose().catch(() => {});
+  if (box === undefined) return true;
+  return box !== null && box.width >= MIN_FRAME_SIDE_PX && box.height >= MIN_FRAME_SIDE_PX;
+}
+
+function meaningfulDigest(d: PageDigest): boolean {
+  return Boolean(
+    d.headings.length || d.links.length || d.buttons.length || d.fields.length || d.shadowText.length || (d.text ?? "").length >= 20,
+  );
+}
+
+async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
+  const frames = childFrames(env.page);
+  const pageOrigin = urlOrigin(pageUrl);
+  const sections: string[] = [];
+  for (let i = 0; i < frames.length && sections.length < MAX_FRAMES_READ; i++) {
+    const frame = frames[i];
+    if (readWithPage(frame, pageOrigin)) continue;
+    // Only the product's own documents enter the prompt: the target's origin or
+    // one the owner allowed. A chat widget, a payment field, a vendor's login
+    // stay the "FRAMES: <src>" line they always were — their words in front of
+    // the model invite findings about a third party's widget (rule 8).
+    if (!mayActIn(env, frame)) continue;
+    if (!(await visibleFrame(frame))) continue;
+    const digest = await withinMs(frame.evaluate(PAGE_DIGEST), FRAME_EVALUATE_MS, null);
+    if (!digest || !meaningfulDigest(digest)) continue;
+    // What an embedded app links to is published by it, like the page's own.
+    rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+    const name = frame.name() ? `, name ${frame.name()}` : "";
+    const header = `FRAME ${i + 1} (origin ${frameOrigin(frame) ?? frame.url()}${name}) — click/fill inside it with frame "${i + 1}":`;
+    const body = [...digestSections(digest), ...(digest.text ? [`TEXT:\n${digest.text}`] : [])].join("\n\n");
+    // The frame's TEXT is the whole visible document, which is where an app
+    // shows "signed in as …" — the test account's email never reaches the model.
+    sections.push(scrubSecrets(env, `${header}\n${body}`).slice(0, FRAME_SECTION_CHARS));
+  }
+  return sections;
 }
 
 // Counts every DOM mutation from document creation onward. Gives interactions

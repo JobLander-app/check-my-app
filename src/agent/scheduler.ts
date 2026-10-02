@@ -110,7 +110,7 @@ export async function runDueWatches(
       // Owner-configured scope/notes live on the App; watch runs must carry
       // them (run #19 self-check submitted a real paid check because the
       // "don't press the button" scope hint never reached the agent).
-      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, targetKind: true, extensionId: true, extensionConfig: true } },
+      app: { select: { scopeHints: true, userNotes: true, focusAreas: true, allowedOrigins: true, targetKind: true, extensionId: true, extensionConfig: true } },
     },
   });
 
@@ -202,14 +202,16 @@ export type DueWatch = {
     scopeHints: string | null;
     userNotes: string | null;
     focusAreas: string | null;
+    allowedOrigins: string | null;
     targetKind: string;
     extensionId: string | null;
     extensionConfig: string | null;
   } | null;
 };
 
-// Exported for scripts/verify-store-password.ts: what a scheduled run carries
-// is decided here, and only a test of this function sees a credential dropped.
+// Exported for scripts/verify-store-password.ts and verify-frame-tools.ts: what
+// a scheduled run carries from its app is decided here, and only a test of
+// this function sees a credential or an allowed origin dropped.
 export async function createWatchRun(
   env: AgentEnv,
   watch: DueWatch,
@@ -238,6 +240,8 @@ export async function createWatchRun(
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
       focusAreas: watch.app?.focusAreas ?? null,
+      // CHE-373: like scopeHints, read from the app as it is now.
+      allowedOrigins: watch.app?.allowedOrigins ?? null,
       watchId: watch.id,
       baselineRunId,
       appId: watch.appId,

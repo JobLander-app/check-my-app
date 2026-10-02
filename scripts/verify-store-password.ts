@@ -434,6 +434,22 @@ async function main() {
     check("report_step: the lock is drained with the step it belonged to", reported[1]?.status === "ok", JSON.stringify(reported[1]));
   }
   {
+    // CHE-373: a store's password page on an origin the app declared
+    // (allowed_origins). The store password is entered only on the target's
+    // own gate, and the model types into no store's password form — a
+    // placeholder resolved there would hand it the test login.
+    const OTHER = "https://other-store.myshopify.com";
+    const s = fakeStore(RIGHT);
+    await s.page.goto(`${OTHER}/password`);
+    const env = toolEnv(s.page, access(RIGHT).access, [], { allowedOrigins: [OTHER] } as Partial<ToolEnv>);
+    const refused = await executeTool(env, "fill", { label: "Enter store password", value: "{{TEST_PASSWORD}}" });
+    check("fill on a declared origin's store password page: refused, nothing typed, no secret resolved",
+      /^Refused: this is a store's password page/.test(refused) && s.fills.length === 0 && !refused.includes(TEST_PW), refused.slice(0, 120));
+    const undeclared = toolEnv(s.page, access(RIGHT).access);
+    const other = await executeTool(undeclared, "fill", { label: "Enter store password", value: "{{TEST_PASSWORD}}" });
+    check("fill on an undeclared origin: the test login is still never typed there", !s.fills.includes(TEST_PW) && /^Refused/.test(other), other.slice(0, 120));
+  }
+  {
     // Cross-review point 7: a locked store and no password at all.
     const s = fakeStore(RIGHT);
     const reported: ReportedStep[] = [];

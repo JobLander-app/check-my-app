@@ -22,6 +22,7 @@ import type { RawMetric } from "./journey-metrics";
 import { emptyUsage, mergeUsage, type LlmConfig, type UsageTotals } from "./llm";
 import { credentialToolEnv } from "./credentials";
 import { DEFAULT_ACCOUNT_LABEL } from "@/lib/test-accounts";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 export interface RunInput {
   // CHE-100: present for every real run (the workflow spreads the Run row in).
@@ -41,6 +42,9 @@ export interface RunInput {
   userNotes: string | null;
   // CHE-81: owner's priority concerns, verbatim.
   focusAreas: string | null;
+  // CHE-373: Run.allowedOrigins (JSON). Optional: a probe that builds a bare
+  // input has none, and none is the target's origin only.
+  allowedOrigins?: string | null;
   // CHE-90: CRUD lifecycle permission + the marker created records carry.
   writeAllowed?: boolean;
   testMarker?: string;
@@ -158,6 +162,8 @@ export async function discoverApp(args: {
     page,
     extension,
     targetOrigin: originOf(extension?.identity.targetUrl ?? run.targetUrl),
+    // CHE-373: the origins the owner allowed besides the target's.
+    allowedOrigins: parseAllowedOrigins(run.allowedOrigins, env.bindings.SELF_CHECK_HOSTS),
     // CHE-193: lets the click gate know which extra hosts are ours.
     selfCheckHosts: env.bindings.SELF_CHECK_HOSTS,
     visionScreenshots: mode.visionScreenshots,

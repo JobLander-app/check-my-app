@@ -41,6 +41,7 @@ import { appPriceRange, teamBalance } from "@/lib/plans";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
+import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import type { McpDoor } from "@/lib/started-via";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
@@ -116,6 +117,15 @@ const testAccounts = z
     }),
   )
   .max(MAX_EXTRA_ACCOUNTS);
+// CHE-373: shape here; what counts as an allowed origin is decided once, in
+// src/lib/allowed-origins.ts, for every caller.
+const allowedOrigins = z
+  .array(z.string().min(1).max(200))
+  .max(MAX_ALLOWED_ORIGINS)
+  .describe(
+    "Other https origins the check may open and act on besides the app's own — for an app that runs inside another " +
+      "product's page, e.g. ['https://admin.shopify.com', 'https://your-app.example.com'] for a Shopify embedded app",
+  );
 
 export const toolSchemas = {
   list_apps: {},
@@ -136,6 +146,7 @@ export const toolSchemas = {
         "More test accounts, each a different kind of user, e.g. [{label:'admin', …}, {label:'free user', …}]. " +
           "A scenario that names one ('As admin: refunds work') is checked signed in as it.",
       ),
+    allowed_origins: allowedOrigins.optional(),
     store_password: z
       .string()
       .max(500)
@@ -163,6 +174,7 @@ export const toolSchemas = {
       .optional()
       .describe("Adds each named account, or updates the one already stored under that label. Others are kept"),
     remove_test_accounts: z.array(accountLabel).max(MAX_EXTRA_ACCOUNTS).optional().describe("Labels of named accounts to delete"),
+    allowed_origins: allowedOrigins.optional().describe("Replaces the app's allowed origins; [] clears them"),
     store_password: z
       .string()
       .max(500)
@@ -350,6 +362,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           focusAreas: true,
           scopeHints: true,
           userNotes: true,
+          allowedOrigins: true,
           writeMode: true,
           testEmail: true,
           testPasswordEnc: true,
@@ -397,6 +410,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             scenarios: a.focusAreas,
             limits: a.scopeHints,
             notes: a.userNotes,
+            allowed_origins: parseAllowedOrigins(a.allowedOrigins),
             may_create_test_records: a.writeMode === "create_cleanup",
             // The password never leaves the database; whether one is stored
             // is all an agent needs to know.
@@ -443,6 +457,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       test_email?: string;
       test_password?: string;
       test_accounts?: { label: string; email: string; password: string }[];
+      allowed_origins?: string[];
       store_password?: string;
       notify_email?: string;
       frequency?: WatchFrequency;
@@ -462,6 +477,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           testEmail: accounts.email,
           testPassword: accounts.password,
           testAccounts: accounts.named,
+          allowedOrigins: args.allowed_origins,
           storePassword: args.store_password || null,
           notifyEmail: args.notify_email,
           frequency: args.frequency,
@@ -517,6 +533,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       test_password?: string;
       test_accounts?: { label: string; email?: string; password?: string }[];
       remove_test_accounts?: string[];
+      allowed_origins?: string[];
       store_password?: string;
       notify_email?: string;
     }): Promise<ToolResult> {
@@ -540,6 +557,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           set: accounts.named.map((a) => ({ match: { label: a.label }, ...a })),
           remove: args.remove_test_accounts,
         },
+        allowedOrigins: args.allowed_origins,
         // CHE-372: like test_password — "" removes it from the app and its watch.
         storePassword: args.store_password === undefined ? undefined : args.store_password || null,
         notifyEmail: args.notify_email,
@@ -831,7 +849,7 @@ export type RemoteTools = ReturnType<typeof createRemoteTools>;
 
 const DESCRIPTIONS: Record<ToolName, string> = {
   list_apps:
-    "The team's apps: id, address, scenarios (what must keep working), limits, notes, the test accounts a check " +
+    "The team's apps: id, address, scenarios (what must keep working), limits, notes, allowed origins, the test accounts a check " +
     "signs in as (label and email — never a password), whether a store password is stored (has_store_password), " +
     "recurring-check state, what a check of it usually costs " +
     "(usual_price_usd) and whether one can run now, and the last run; plus `plan`: the team's balance, what a check " +
@@ -839,7 +857,9 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
-    "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. For a " +
+    "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. An app " +
+    "that runs inside another product's page (a Shopify embedded app) needs allowed_origins: the host page's origin " +
+    "and the app's own. For a " +
     "password-protected store (Shopify's \"Enter store password\" page), pass store_password and every check enters " +
     "it. A " +
     "website gets a recurring check (daily by default) within the team's plan; each check spends the team's " +
@@ -848,7 +868,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   update_app:
-    "Change a saved app: scenarios, limits, notes, test logins, store password, verdict email. Only the fields you " +
+    "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
     "test_accounts adds or updates named accounts by label; remove_test_accounts deletes them. When a verdict says " +
     "the store password is needed or was not accepted, set it here.",

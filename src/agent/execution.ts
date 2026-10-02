@@ -35,6 +35,7 @@ import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/l
 import { summarizeWalk } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionAccountingStep, extensionProductFailureStep } from "./extension-evidence";
 
@@ -205,6 +206,8 @@ export async function walkOneJourney(args: {
       page,
       extension,
       targetOrigin: originOf(extension?.identity.targetUrl ?? run.targetUrl),
+      // CHE-373: the origins the owner allowed besides the target's.
+      allowedOrigins: parseAllowedOrigins(run.allowedOrigins, env.bindings.SELF_CHECK_HOSTS),
       // CHE-193: lets the click gate know which extra hosts are ours.
       selfCheckHosts: env.bindings.SELF_CHECK_HOSTS,
       // CHE-168 decides whether the nav model sees at all (llm.navVision);
@@ -275,13 +278,15 @@ export async function walkOneJourney(args: {
         // machine trail, before productizeStep cuts every sentence that names
         // our side. The filer (capability-gaps.ts) used to re-read the stored
         // text and could not find the words it keyed on.
-        // The trail is handed over by the same call that classifies it.
+        // The trail is handed over by the same call that classifies it, and the
+        // origins the classifier counts as the product are the ones the walk's
+        // own tools act on (toolEnv) — never spelled by hand here.
         const trail = settleStepGap({
           reported,
           step,
           machineClass,
           actionTrail,
-          targetOrigin: toolEnv.targetOrigin,
+          env: toolEnv,
           targetUrl: run.targetUrl,
         });
         // CHE-180: the customer's words, decided after the judge has seen the

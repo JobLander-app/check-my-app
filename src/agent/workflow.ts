@@ -45,6 +45,7 @@ import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from 
 import { loadKnownMap } from "./known-map";
 import { loadAppKnowledge, type AppKnowledge } from "./knowledge";
 import { walkOneJourney, type WalkRun } from "./execution";
+import { parseAllowedOrigins, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import {
   catalogIsDeduplicated,
   clearUnsupportablePrices,
@@ -162,6 +163,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
+          // CHE-373: the origins the owner allowed besides the target's.
+          allowedOrigins: true,
           notifyEmail: true,
           watchId: true,
           baselineRunId: true,
@@ -174,7 +177,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
-      return r;
+      // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
+      // here, so neither the tools, the evidence rules nor the prompt ever
+      // treat one of our hosts as the customer's product.
+      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
     });
     const isExtension = isExtensionTarget(run);
 
@@ -478,6 +484,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
+        allowedOrigins: run.allowedOrigins,
         writeAllowed,
         testMarker: `CheckMyApp test r${run.runNumber}`,
       };

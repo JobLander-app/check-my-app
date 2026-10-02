@@ -673,21 +673,21 @@ async function main() {
     {
       const live: RecordedAction[] = [nav(`${S}/admin`, signIn)];
       const step: { unverifiedReason: string; observed: string; gapClass?: GapClass } = { unverifiedReason: "our_capability", observed: "The page did not load." };
-      const handed = settleStepGap({ reported: { label: "Open the app", attempted: "Opened the app", observed: "The page did not load." }, step, machineClass: undefined, actionTrail: live, targetOrigin: S, targetUrl: `${S}/` });
+      const handed = settleStepGap({ reported: { label: "Open the app", attempted: "Opened the app", observed: "The page did not load." }, step, machineClass: undefined, actionTrail: live, env: { targetOrigin: S }, targetUrl: `${S}/` });
       check("report time: the step is classified on its own trail", step.gapClass === "shopify_admin", step.gapClass ?? "");
       check("report time: the trail is handed over and emptied for the next step", handed.length === 1 && live.length === 0, `${handed.length}/${live.length}`);
 
       const onTarget: typeof step = { unverifiedReason: "our_capability", observed: "The orders page did not load." };
-      settleStepGap({ reported: { label: "Open orders" }, step: onTarget, machineClass: undefined, actionTrail: [], targetOrigin: S, targetUrl: SA });
+      settleStepGap({ reported: { label: "Open orders" }, step: onTarget, machineClass: undefined, actionTrail: [], env: { targetOrigin: S }, targetUrl: SA });
       check("report time: the run's full target URL reaches the classifier (a store's /admin)", onTarget.gapClass === "shopify_admin", onTarget.gapClass ?? "");
 
       const machine: typeof step = { unverifiedReason: "our_capability", observed: "x" };
-      settleStepGap({ reported: {}, step: machine, machineClass: "undriven_control", actionTrail: [nav(`${S}/admin`, signIn)], targetOrigin: S, targetUrl: `${S}/` });
+      settleStepGap({ reported: {}, step: machine, machineClass: "undriven_control", actionTrail: [nav(`${S}/admin`, signIn)], env: { targetOrigin: S }, targetUrl: `${S}/` });
       check("report time: a class the tools already decided stands", machine.gapClass === "undriven_control", machine.gapClass ?? "");
 
       const access: typeof step = { unverifiedReason: "missing_access", observed: "x", gapClass: "oauth" };
       const accessTrail: RecordedAction[] = [nav(`${S}/admin`, signIn)];
-      const accessHanded = settleStepGap({ reported: {}, step: access, machineClass: undefined, actionTrail: accessTrail, targetOrigin: S, targetUrl: `${S}/` });
+      const accessHanded = settleStepGap({ reported: {}, step: access, machineClass: undefined, actionTrail: accessTrail, env: { targetOrigin: S }, targetUrl: `${S}/` });
       check("report time: a step that is not our gap carries no class, and its trail is still handed over", access.gapClass === undefined && accessHanded.length === 1 && accessTrail.length === 0);
 
       // The caller makes that one call and drains the trail nowhere else.
