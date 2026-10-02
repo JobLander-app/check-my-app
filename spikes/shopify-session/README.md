@@ -10,7 +10,7 @@ directory is the instrument that measures it.
 
 | Piece | Where | What |
 |---|---|---|
-| `checkmyapp-session-host` | GCP `meet-assistant-6d8ad`, `europe-west1-b`, e2-medium, Debian 12, static IP `checkmyapp-session-host-ip` | Xvfb `:99` → Chrome with a persistent profile → x11vnc → noVNC |
+| `checkmyapp-session-host` | GCP `meet-assistant-6d8ad`, `europe-west1-b`, e2-medium, Debian 12, static IP `checkmyapp-session-host-ip` | Xvfb `:99` → Chrome with a persistent profile (`/var/lib/session-browser/profile`) → x11vnc → noVNC. The first three run as `session-browser`, which `firewall.nft` keeps off the host's own ports; the rest as `session-host` |
 | `session.checkmyapp.dev` | Cloudflare tunnel `checkmyapp-session-host` → `http://127.0.0.1:6080` | noVNC for the owner, behind Cloudflare Access (one-time PIN, `sorokinvj@gmail.com` only) |
 | `session-api.checkmyapp.dev` | same tunnel → `http://127.0.0.1:9090` | the session server for checks (CHE-389), behind a Cloudflare Access service token — no person signs in there |
 | `probe.mjs` | on the host, `session-probe.timer`, hourly | opens the app in one new tab of that Chrome, classifies, appends to `/var/lib/session-host/probe.jsonl` |
@@ -135,8 +135,8 @@ profile):
   `Target.*` commands that open, list and close its own tabs and contexts;
   everything else there is refused. `Browser.close` only disconnects it.
 - **Inside its own tab a check does what a page can do, and no more.** Refused
-  there: the cookie jar under every name (`Network.*`, `Page.*`, `Storage.*` —
-  reading as well as writing), other origins' storage, the `Browser` domain, and
+  there: the cookie jar under every name (reading as well as writing), every
+  DevTools domain outside the page-scope list below, the `Browser` domain, and
   a self-written response carrying `Set-Cookie`.
 - **The session's cookies never leave the host as values.** The `Cookie` and
   `Set-Cookie` headers and the cookie lists DevTools reports beside each request
@@ -153,6 +153,23 @@ profile):
   connection leaves every new tab paused at `about:blank` (see the portability
   note above). A tab that is not the check's and opens while it is connected is
   started and let go at once.
+
+- **A page in this Chrome cannot reach this host.** Chrome, its display and
+  the VNC server that reads the display run as `session-browser`; `firewall.nft`
+  refuses that user every connection it opens to loopback, link-local (the
+  metadata server, except its DNS port) and private addresses. Without it any
+  page — a check's or the person's — could open `127.0.0.1:9222/json/close/<id>`
+  and close the person's tab past the gate, drive the screen through the
+  passwordless VNC, or read the VM's service-account token. The probe, the
+  session server and websockify run as `session-host` and are not restricted.
+  `provision.sh` ends by trying each of these as the browser's user and fails
+  if any is reachable (or if the public web is not).
+- **Page scope is a list of domains, not of forbidden methods**: `Page`,
+  `Runtime`, `DOM`, `DOMSnapshot`, `CSS`, `Input`, `Emulation`, `Network`,
+  `Fetch`, `Log`, `Console`, `Accessibility`, `Overlay`, `Performance`, `IO`.
+  `DOMStorage`, `IndexedDB`, `CacheStorage`, `ServiceWorker`, `Storage`,
+  `Security` and the rest take an origin by name or act on the profile, and are
+  refused.
 
 What this layer does not stop, by design: a page can sign itself out. A check
 that walks its own tab to the logout address, or clicks "Log out", ends the
@@ -215,7 +232,8 @@ gcloud compute ssh checkmyapp-session-host --tunnel-through-iap --zone europe-we
 ```
 
 `provision.sh` is idempotent: packages (Chrome, Xvfb, x11vnc, noVNC/websockify,
-Node 22, cloudflared), the `session-host` user, the noVNC index, the probe and
+Node 22, cloudflared, nftables), the `session-host` and `session-browser` users,
+the firewall rules, the noVNC index, the probe and
 its `playwright-core`, every unit in `systemd/`.
 
 **Tunnel token.** The tunnel is remotely managed (ingress

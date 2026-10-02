@@ -1,0 +1,46 @@
+# CHE-389: what the browser on this host may not reach — the host itself.
+#
+# Chrome runs as its own user, session-browser, and nothing else does except
+# the display it draws on. A page in that Chrome — the person's or a check's —
+# is otherwise one request away from everything that listens on loopback here:
+#
+#   127.0.0.1:9222  Chrome's own DevTools: /json lists every tab, /json/close/<id>
+#                   closes the person's — past the session server's gate entirely
+#   127.0.0.1:5900  VNC, no password (it is loopback-only by design)
+#   127.0.0.1:6080  noVNC's websocket onto it: the whole screen, from page script
+#   127.0.0.1:9090  the session server
+#   169.254.169.254 the cloud metadata server: this VM's service-account token
+#
+# and from the rest of the project's private network. Found by Codex on #240
+# (round 3) for the DevTools port; the others are the same hole.
+#
+# By user id, not by port: whatever listens here next is covered the day it
+# starts. DNS is the one thing the browser needs from these addresses (this
+# host's resolver is the metadata server's port 53).
+#
+# Loaded by session-firewall.service, which session-chrome.service requires:
+# Chrome does not start without it.
+
+table inet session_browser
+delete table inet session_browser
+
+table inet session_browser {
+  chain output {
+    type filter hook output priority filter; policy accept;
+
+    meta skuid != "session-browser" accept
+
+    # Answers are not refused, only openings: Chrome's DevTools port and the
+    # VNC server listen as this user, and their replies to the session server,
+    # the probe and websockify leave through this same hook. (The first version
+    # of this file had no such line and DevTools answered nobody.)
+    ct state established,related accept
+
+    meta l4proto { tcp, udp } th dport 53 ip daddr { 127.0.0.0/8, 169.254.169.254 } accept
+
+    ip daddr 127.0.0.0/8 reject with icmpx type admin-prohibited
+    ip6 daddr ::1 reject with icmpx type admin-prohibited
+    ip daddr { 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } reject with icmpx type admin-prohibited
+    ip6 daddr { fe80::/10, fc00::/7 } reject with icmpx type admin-prohibited
+  }
+}

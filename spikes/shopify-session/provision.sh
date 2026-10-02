@@ -15,7 +15,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -q
-apt-get install -y -q ca-certificates curl gnupg xvfb x11vnc novnc websockify \
+apt-get install -y -q ca-certificates curl gnupg xvfb x11vnc novnc websockify nftables \
   fonts-liberation fonts-noto-color-emoji
 
 install -d -m 0755 /etc/apt/keyrings
@@ -43,7 +43,18 @@ apt-get install -y -q google-chrome-stable cloudflared nodejs
 
 id session-host >/dev/null 2>&1 || useradd --system --home-dir /var/lib/session-host --shell /usr/sbin/nologin session-host
 install -d -o session-host -g session-host -m 0700 /var/lib/session-host
-install -d -o session-host -g session-host -m 0700 /var/lib/session-host/profile
+
+# CHE-389: the browser (and the display it draws on) has a user of its own, so
+# that firewall.nft can keep every page in it off this host's own ports.
+# session-host keeps the probe, the session server and websockify.
+id session-browser >/dev/null 2>&1 || useradd --system --home-dir /var/lib/session-browser --shell /usr/sbin/nologin session-browser
+install -d -o session-browser -g session-browser -m 0700 /var/lib/session-browser
+install -d -o session-browser -g session-browser -m 0700 /var/lib/session-browser/profile
+install -d -m 0700 /etc/session-host
+install -m 0644 "$SRC/firewall.nft" /etc/session-host/firewall.nft
+# Until 2026-10-02 Chrome ran as session-host with its profile here. Nobody had
+# signed in to it; a second profile lying around is one somebody opens by mistake.
+rm -rf /var/lib/session-host/profile
 
 # noVNC: a copy of the packaged client plus an index that opens the viewer
 # already connected, so the owner lands on the screen and not on a file list.
@@ -93,6 +104,10 @@ for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
   fi
 done
 systemctl daemon-reload
+# The firewall first, and loaded again on every run: the rules file may have
+# changed, and it replaces its own table.
+systemctl enable session-firewall
+systemctl restart session-firewall
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer
 if [ ${#changed[@]} -gt 0 ]; then
   echo "provision: unit files changed: ${changed[*]}"
@@ -120,3 +135,20 @@ else
 fi
 
 systemctl --no-pager --plain list-units 'session-*'
+
+# The isolation, observed rather than assumed — a provision that leaves the
+# browser's user able to reach the host fails here, loudly.
+as() { runuser -u "$1" -- "${@:2}"; }
+reach() { as "$1" curl -s -o /dev/null -m 5 "$2"; }
+for i in $(seq 1 30); do as session-host curl -s -o /dev/null -m 2 http://127.0.0.1:9222/json/version && break; sleep 1; done
+fail=0
+reach session-host http://127.0.0.1:9222/json/version || { echo "provision: FAIL — session-host cannot reach DevTools (the probe and the session server need it)"; fail=1; }
+for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://169.254.169.254/computeMetadata/v1/ "http://$(hostname -I | awk '{print $1}'):22/"; do
+  if reach session-browser "$url"; then echo "provision: FAIL — the browser's user can reach $url"; fail=1; fi
+done
+if as session-browser bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — the browser's user can reach VNC"; fail=1; fi
+reach session-browser https://admin.shopify.com/ || { echo "provision: FAIL — the browser's user cannot reach the public web (DNS or routing)"; fail=1; }
+chrome_uids="$(ps -o uid= -C chrome | sort -u | tr -d ' ' | tr '\n' ' ')"
+[ "$chrome_uids" = "$(id -u session-browser) " ] || { echo "provision: FAIL — Chrome is not running as session-browser alone (uids: $chrome_uids)"; fail=1; }
+if [ "$fail" = 0 ]; then echo "provision: isolation holds — the browser's user reaches the public web and nothing on this host or its private network"; fi
+exit "$fail"

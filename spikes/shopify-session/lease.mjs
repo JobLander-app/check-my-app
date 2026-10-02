@@ -99,21 +99,32 @@ const BROWSER_SCOPE = new Set(["Browser.getVersion"]);
 // person's setting, and the client keeps working.
 const BROWSER_SCOPE_ANSWERED = new Set(["Browser.setDownloadBehavior"]);
 
-// Inside its own tab a check may do what a page can do. These reach past the
-// page: the cookie jar (HttpOnly values a page's own script cannot read or
-// write), storage of any origin by name, the browser itself. Patterns, not a
-// list of today's method names — Page.setCookie and Page.deleteCookie are
-// deprecated aliases that still act, and the next alias must not be a hole.
-const COOKIE_METHOD = /^[A-Za-z]+\..*cookie/i;
-const OTHER_ORIGIN_WRITE = /^(IndexedDB|DOMStorage|CacheStorage)\.(clear|delete|remove|set)/;
+// Inside its own tab a check may do what a page can do, and DevTools can do
+// much more from a page's session than a page can: whole domains take an
+// origin by name (DOMStorage, IndexedDB, CacheStorage read and write any
+// origin's data; ServiceWorker stops or unregisters workers the person's tab
+// depends on; Storage and Security act on the profile). A list of the bad ones
+// was tried and was a list — round 3 of Codex on #240 found the next entries.
+// So the domains a walk needs are named, and the rest are refused:
+// driving and reading the page, its network, its input, its frames.
+const PAGE_SCOPE_DOMAINS = new Set([
+  "Page", "Runtime", "DOM", "DOMSnapshot", "CSS", "Input", "Emulation", "Network", "Fetch",
+  "Log", "Console", "Accessibility", "Overlay", "Performance", "IO",
+]);
 const PAGE_MAY_ASK_BROWSER = new Set(["Browser.getVersion", "Browser.getWindowForTarget"]);
 
+// And inside those domains, what still reaches past the page: the cookie jar
+// (HttpOnly values a page's own script cannot read or write) and the
+// profile's cache. A pattern, not today's method names — Page.setCookie and
+// Page.deleteCookie are deprecated aliases that still act, and the next alias
+// must not be a hole.
+const COOKIE_METHOD = /^[A-Za-z]+\..*cookie/i;
+
 function beyondAPage(method) {
-  if (COOKIE_METHOD.test(method)) return true;
-  if (method.startsWith("Storage.")) return true;
-  if (method.startsWith("Browser.")) return !PAGE_MAY_ASK_BROWSER.has(method);
-  if (OTHER_ORIGIN_WRITE.test(method)) return true;
-  return method === "Network.clearBrowserCache";
+  const domain = method.slice(0, method.indexOf("."));
+  if (domain === "Browser") return !PAGE_MAY_ASK_BROWSER.has(method);
+  if (!PAGE_SCOPE_DOMAINS.has(domain)) return true;
+  return COOKIE_METHOD.test(method) || method === "Network.clearBrowserCache";
 }
 
 // A response the check writes itself can carry Set-Cookie, and the browser

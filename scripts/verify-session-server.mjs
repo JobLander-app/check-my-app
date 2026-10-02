@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -261,9 +261,15 @@ await check("a check disposes only a browser context it made, and a tab in that 
 await check("inside its own tab a check does what a page can do, and nothing that reaches past the page", () => {
   const gate = gateWithATab();
   const on = (method, params) => gate.outgoing({ id: 5, sessionId: "S1", method, params });
-  for (const method of ["Page.navigate", "Page.close", "Runtime.evaluate", "Input.dispatchMouseEvent", "Network.enable", "Emulation.setDeviceMetricsOverride", "Page.captureScreenshot", "Fetch.enable", "DOMStorage.getDOMStorageItems", "Browser.getVersion", "Browser.getWindowForTarget"]) {
+  for (const method of ["Page.navigate", "Page.close", "Runtime.evaluate", "Input.dispatchMouseEvent", "Network.enable", "Emulation.setDeviceMetricsOverride", "Page.captureScreenshot", "Fetch.enable", "DOM.getDocument", "CSS.getComputedStyleForNode", "Accessibility.getFullAXTree", "Log.enable", "IO.read", "Browser.getVersion", "Browser.getWindowForTarget"]) {
     assert.equal(on(method), "forward", method);
   }
+  // Domains that take an origin by name, or act on the profile: not a page's.
+  for (const method of [
+    "DOMStorage.getDOMStorageItems", "IndexedDB.requestData", "CacheStorage.requestEntries", "ServiceWorker.unregister", "ServiceWorker.stopAllWorkers",
+    "Security.setIgnoreCertificateErrors", "SystemInfo.getInfo", "Tracing.start", "Memory.forciblyPurgeJavaScriptMemory", "WebAuthn.enable",
+    "BackgroundService.clearEvents", "Some.futureMethod", "NoDomain",
+  ]) assert.equal(on(method), "refuse", method);
   for (const method of [
     // the cookie jar, read or written, under every name it has
     "Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.setCookies", "Network.deleteCookies", "Network.clearBrowserCookies",
@@ -315,6 +321,38 @@ await check("only /v1/devtools/browser/<id> names a session", () => {
   assert.equal(sessionIdFromPath("/v1/devtools/browser/"), null);
   assert.equal(sessionIdFromPath("/v1/devtools/browser/abc/extra"), null);
   assert.equal(sessionIdFromPath("/devtools/browser/abc"), null);
+});
+
+// What keeps a page in the host's Chrome off the host's own ports (DevTools'
+// /json/close, the passwordless VNC, the metadata server) is on the host: the
+// browser's own user and firewall.nft. Whether it works is observed there —
+// provision.sh fails if the browser's user can reach any of them, and cannot
+// reach the public web. What can be held here is the wiring that test rests on:
+// who runs as the browser's user, and that Chrome cannot start without the rules.
+await check("on the host, the browser has a user of its own and does not start without the firewall", async () => {
+  const dir = new URL("../spikes/shopify-session/", import.meta.url);
+  const unit = async (name) => readFile(new URL(`systemd/${name}`, dir), "utf8");
+  const userOf = (text) => /^User=(.+)$/m.exec(text)?.[1] ?? null;
+  const names = (await readdir(new URL("systemd/", dir))).filter((n) => n.endsWith(".service"));
+  const asBrowser = [];
+  for (const name of names) if (userOf(await unit(name)) === "session-browser") asBrowser.push(name);
+  // The display, the browser, and the VNC server that only listens. Anything
+  // that CONNECTS to a loopback port must not be here — it would be refused.
+  assert.deepEqual(asBrowser.sort(), ["session-chrome.service", "session-x11vnc.service", "session-xvfb.service"]);
+  const chrome = await unit("session-chrome.service");
+  assert.match(chrome, /^Requires=.*\bsession-firewall\.service\b/m);
+  assert.match(chrome, /^After=.*\bsession-firewall\.service\b/m);
+  assert.match(chrome, /--remote-debugging-address=127\.0\.0\.1/);
+  const rules = await readFile(new URL("firewall.nft", dir), "utf8");
+  assert.match(rules, /meta skuid != "session-browser" accept/);
+  // Without this line the browser's own listening ports answer nobody (seen on
+  // the host, 2026-10-02): replies leave through the same hook.
+  assert.match(rules, /ct state established,related accept/);
+  for (const range of ["127.0.0.0/8", "::1", "169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]) {
+    assert.ok(rules.split("\n").some((line) => line.includes(range) && line.includes("reject")), `${range} is not refused`);
+  }
+  const provision = await readFile(new URL("provision.sh", dir), "utf8");
+  assert.match(provision, /exit "\$fail"/, "the provision no longer fails when the isolation does not hold");
 });
 
 await check("the server refuses to start without a real token", async () => {
