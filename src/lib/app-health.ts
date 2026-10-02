@@ -80,6 +80,12 @@ export interface AppHealthReport {
   totalSpendUsd: number;
   perDayUsd: number;
   monthlyRunRateUsd: number;
+  // What the saved apps cost a month: the run rate of the checks that belong
+  // to an app. `monthlyRunRateUsd` is everything the balance paid for — a PR
+  // preview, an address never saved, an app since removed included — and is
+  // what the plan is measured against. "Your apps cost" is this one: a one-off
+  // check is not what an app costs.
+  appsMonthlyUsd: number;
   planCoversTimes: number | null;
   apps: AppHealth[];
 }
@@ -253,6 +259,7 @@ export async function appHealth(
     totalSpendUsd: fromCents(totalCents),
     perDayUsd: fromCents(Math.round(totalCents / days)),
     monthlyRunRateUsd: fromCents(monthlyCents),
+    appsMonthlyUsd: fromCents(Math.round(([...tallies.values()].reduce((s, t) => s + t.cents, 0) / days) * 30)),
     planCoversTimes,
     apps: health.sort((a, b) => b.spendUsd - a.spendUsd || a.appSlug.localeCompare(b.appSlug)),
   };
