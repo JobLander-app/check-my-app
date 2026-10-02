@@ -2792,7 +2792,13 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
           if (r.type === 'characterData') { if (shown(r.target)) note(r.target.data); }
           else if (r.type === 'childList') {
             for (const node of r.addedNodes) {
-              if ((node.nodeType === 1 || node.nodeType === 3) && shown(node)) note(node.textContent);
+              if (node.nodeType === 3) { if (shown(node)) note(node.data); }
+              // innerText, not textContent: a visible block can hold a hidden
+              // error beside its "Saved", and only what is rendered appeared.
+              // (Asked only of small blocks — it costs a layout.)
+              else if (node.nodeType === 1 && shown(node) && (node.textContent || '').length <= 2000) {
+                note(typeof node.innerText === 'string' ? node.innerText : node.textContent);
+              }
             }
           } else if (r.attributeName === 'aria-label' || r.attributeName === 'title') {
             if (shown(r.target)) note(r.target.getAttribute(r.attributeName));

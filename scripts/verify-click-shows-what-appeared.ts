@@ -50,6 +50,10 @@ const PAGES: Record<string, string> = {
       const s=document.createElement('script');s.type='application/json';s.textContent='script-words';document.body.append(s);
       const v=document.createElement('div');v.style.visibility='hidden';v.textContent='invisible-words';document.body.append(v);
       const o=document.createElement('p');o.textContent='Shown words';document.body.append(o)">Show details</button>`,
+  // A visible block that holds hidden text beside its visible text: the hidden
+  // part did not appear to anyone (Codex on #242).
+  [`${TOP}/nested`]: `<!doctype html><title>Form</title>
+    <button onclick="const d=document.createElement('div');d.innerHTML='<span hidden>hidden-error</span><span style=&quot;display:none&quot;>gone-words</span><span style=&quot;visibility:hidden&quot;>unseen-words</span><span>Saved fine</span>';document.body.append(d)">Show result</button>`,
   // A whole region re-rendering is not a message.
   [`${TOP}/long`]: `<!doctype html><title>List</title>
     <button onclick="const r=document.createElement('section');r.textContent=${JSON.stringify(LONG).replace(/"/g, "&quot;")};document.body.append(r);const k=document.createElement('p');k.textContent='List refreshed';document.body.append(k)">Refresh list</button>`,
@@ -177,6 +181,16 @@ async function main() {
       check(
         "text nobody could see is not: display:none, visibility:hidden, a script's text",
         !result.includes("hidden-words") && !result.includes("invisible-words") && !result.includes("script-words"),
+        result,
+      );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/nested");
+      const result = await executeTool(env, "click", { role: "button", name: "Show result" });
+      check(
+        "of a block that appeared, only its visible text is named — not the hidden error inside it",
+        result.includes('"Saved fine"') && !result.includes("hidden-error") && !result.includes("gone-words") && !result.includes("unseen-words"),
         result,
       );
       await env.page.context().close();
