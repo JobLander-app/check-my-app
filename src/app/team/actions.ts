@@ -24,7 +24,7 @@ import {
   inviteState,
 } from "@/lib/invites";
 import { sendInviteMail } from "@/lib/invite-mail";
-import { recordTeamEvent } from "@/lib/team-events";
+import { memberEmailForLog, recordTeamEvent } from "@/lib/team-events";
 import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
@@ -120,6 +120,9 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
   const members = await membersOf(db, team.id);
   const decision = decideScopeChange(members, userId, scope as TeamScope);
   if (!decision.ok) throw new Error(decision.reason);
+  // Named before the change, and never throws: the log line is not allowed to
+  // fail a change that has already happened.
+  const email = await memberEmailForLog(db, userId);
   await db.membership.updateMany({
     where: { teamId: team.id, userId },
     data: { scope },
@@ -132,8 +135,8 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
     teamId: team.id,
     actorUserId: user.id,
     action: "member.scope_changed",
-    subject: userId,
-    summary: `changed someone's access to ${scope}`,
+    subject: email,
+    summary: `changed ${email}'s access to ${scope}`,
   });
   revalidatePath("/settings/team");
 }
@@ -143,6 +146,7 @@ export async function removeMemberAction(userId: string): Promise<void> {
   const members = await membersOf(db, team.id);
   const decision = decideRemoval(members, userId, user.id);
   if (!decision.ok) throw new Error(decision.reason);
+  const email = await memberEmailForLog(db, userId);
   // Only the membership goes. Their apps, checks and tickets belong to the
   // team, and ownerId on those rows is attribution — the record of who did it.
   await db.membership.deleteMany({ where: { teamId: team.id, userId } });
@@ -151,8 +155,8 @@ export async function removeMemberAction(userId: string): Promise<void> {
     teamId: team.id,
     actorUserId: user.id,
     action: "member.removed",
-    subject: userId,
-    summary: "removed someone from the team — their apps, checks and tickets stayed",
+    subject: email,
+    summary: `removed ${email} from the team — their apps, checks and tickets stayed`,
   });
   revalidatePath("/settings/team");
 }

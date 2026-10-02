@@ -12,18 +12,20 @@ const variants: Record<Variant, string> = {
     "border border-status-broken/40 bg-status-broken/10 text-status-broken hover:bg-status-broken/20",
 };
 
+// The classes a Button renders with, for a link that has to look like one
+// (`<Link className={buttonClass("outline")}>`) — one definition, not a copy.
+export function buttonClass(variant: Variant = "primary", className?: string) {
+  return cn(
+    "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm transition-colors disabled:cursor-not-allowed",
+    variants[variant],
+    className,
+  );
+}
+
 export const Button = React.forwardRef<
   HTMLButtonElement,
   React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }
 >(({ className, variant = "primary", ...props }, ref) => (
-  <button
-    ref={ref}
-    className={cn(
-      "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm transition-colors disabled:cursor-not-allowed",
-      variants[variant],
-      className,
-    )}
-    {...props}
-  />
+  <button ref={ref} className={buttonClass(variant, className)} {...props} />
 ));
 Button.displayName = "Button";

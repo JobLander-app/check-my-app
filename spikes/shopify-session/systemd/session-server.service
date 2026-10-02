@@ -1,0 +1,19 @@
+[Unit]
+Description=Session server: one check at a time inside the signed-in Chrome (CHE-389)
+After=session-chrome.service
+Wants=session-chrome.service
+
+[Service]
+User=session-host
+Group=session-host
+WorkingDirectory=/opt/session-host/probe
+# SESSION_SERVER_TOKEN=… (root, 0600). systemd reads it before dropping to
+# session-host, so the file itself is not readable by the service's user.
+EnvironmentFile=/etc/session-host/server.env
+# Loopback only. The way in from outside is the tunnel's second hostname.
+ExecStart=/usr/bin/node /opt/session-host/probe/session-server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
