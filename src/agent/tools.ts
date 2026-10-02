@@ -1494,11 +1494,12 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     strategy !== "trusted click"
       ? await attachLook(env, `click needed a fallback (${strategy})`)
       : await lookIfJudgmentMoment(env, { requests: fresh });
-  // CHE-392: a document that navigated is a new page, not something that
-  // "appeared" — its log restarted, and read_page is how a page is read.
-  const appeared = reaction.navigated
-    ? ""
-    : appearedSentence((await Promise.all(watched.map((doc, i) => appearedAfter(doc, marks[i])))).flat());
+  // CHE-392: no special case for "navigated". A click that loads a new
+  // document leaves nothing to report — the new document's log is empty and
+  // nobody started a watch in it — while a client-side route change (the URL
+  // moves, the document stays) keeps what it showed, which is the common case
+  // of a confirmation shown on the way to the next screen.
+  const appeared = appearedSentence((await Promise.all(watched.map((doc, i) => appearedAfter(doc, marks[i])))).flat());
   return `Clicked${where} (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${appeared}${note}${ledgerNudge}${looked}`;
 }
 
@@ -2793,7 +2794,7 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
     let timer = 0;
     const visible = (el) => !!el && el.isConnected && !el.closest('script,style,noscript,template') &&
       (typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-    const shown = (textNode) => visible(textNode.parentElement);
+    const shown = (textNode) => visible(textNode.parentElement || (textNode.parentNode && textNode.parentNode.host));
     const note = (raw) => {
       const text = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
       if (!text || text.length > ${APPEARED_MAX_CHARS}) return;
@@ -2802,14 +2803,31 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
       log.push({ n: ++window.__cmaAppearedSeq, t: text });
       if (log.length > 40) log.splice(0, log.length - 40);
     };
+    // Mutations do not cross a shadow boundary, and neither does a tree walk:
+    // a copy button inside a web component would change its label unseen and
+    // uncounted. Every open shadow root met on a walk is walked too, and
+    // watched from then on. (A closed one is closed to us as to any script.)
+    const OPTIONS = { subtree: true, childList: true, attributes: true, characterData: true };
+    const watched = new WeakSet();
+    const enter = (shadow, limit, found) => {
+      if (!watched.has(shadow)) { watched.add(shadow); observer.observe(shadow, OPTIONS); }
+      walk(shadow, limit, found);
+    };
+    const walk = (root, limit, found) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      let steps = 0;
+      while (found.length < limit && steps++ < limit * 20 && walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.nodeType === 3) { if (node.data.trim()) found.push(node); }
+        else if (node.shadowRoot) enter(node.shadowRoot, limit, found);
+      }
+    };
     const textNodes = (root, limit) => {
       if (root.nodeType === 3) return root.data.trim() ? [root] : [];
       if (root.nodeType !== 1) return [];
       const found = [];
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      while (found.length < limit && walker.nextNode()) {
-        if (walker.currentNode.data.trim()) found.push(walker.currentNode);
-      }
+      if (root.shadowRoot) enter(root.shadowRoot, limit, found);
+      walk(root, limit, found);
       return found;
     };
     const say = (nodes) => {
@@ -2844,13 +2862,14 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
       }
       if (later.length && !timer) timer = setTimeout(lookAgain, 120);
     });
-    observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    observer.observe(document, OPTIONS);
     window.__cmaMutationObserver = observer;
     window.__cmaWatch = () => {
       watchUntil = Date.now() + 6000;
       later = [];
       baseline = null;
       try {
+        // This walk is also what finds the shadow roots there are now.
         const all = textNodes(document.documentElement, 30000);
         // A page too large to list is one where "revealed" cannot be told from
         // "was there": reveals are then not reported at all, rather than wrongly.

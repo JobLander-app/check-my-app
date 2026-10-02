@@ -63,6 +63,19 @@ const PAGES: Record<string, string> = {
   // A toast that arrives transparent and fades in, as most do.
   [`${TOP}/fade`]: `<!doctype html><title>Fade</title><style>.toast{opacity:0;transition:opacity 150ms}.toast.in{opacity:1}</style>
     <button onclick="const t=document.createElement('div');t.className='toast';t.textContent='Changes refreshed';document.body.append(t);requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('in')));setTimeout(()=>t.remove(),700)">Refresh changes</button>`,
+  // A web component: the button and its label live in an open shadow root,
+  // where neither a document-level observer nor a tree walk reaches by itself
+  // (round 3 of Codex on #242). One whose label flips, one that only changes
+  // its own class, and a toast that brings its own shadow root with it.
+  [`${TOP}/shadow`]: `<!doctype html><title>Component</title><p>Always here</p><div id="host"></div>
+    <script>const r=document.getElementById('host').attachShadow({mode:'open'});r.innerHTML='<button id="c">copy</button><button id="k">Show panel</button>';
+      const b=r.getElementById('c');b.onclick=()=>{b.textContent='copied ✓';setTimeout(()=>{b.textContent='copy'},300)};
+      const k=r.getElementById('k');k.onclick=()=>k.classList.toggle('active');</script>
+    <button onclick="const h=document.createElement('div');document.body.append(h);h.attachShadow({mode:'open'}).innerHTML='<p>Stored in a component</p>';setTimeout(()=>h.remove(),300)">Show stored</button>`,
+  // A client-side route change: the URL moves, the document stays, and the
+  // confirmation is shown on the way (round 3 of Codex on #242).
+  [`${TOP}/route`]: `<!doctype html><title>Wizard</title>
+    <button onclick="history.pushState({},'','/route/next');const t=document.createElement('div');t.textContent='Step stored';document.body.append(t);setTimeout(()=>t.remove(),300)">Continue to next</button>`,
   // A control whose own class changes says nothing new: its label was there.
   [`${TOP}/active`]: `<!doctype html><title>Tabs</title><p>Always here</p><button onclick="this.classList.toggle('active');this.style.fontWeight='bold'">Show overview</button>`,
   // A whole region re-rendering is not a message.
@@ -229,6 +242,26 @@ async function main() {
       check("a toast that arrives transparent and fades in is named", result.includes('"Changes refreshed"'), result);
       const after = await executeTool(env, "read_page", {});
       check("…and it too is gone by the next read", !after.includes("Changes refreshed"), after.slice(0, 160));
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/shadow");
+      const flipped = await executeTool(env, "click", { role: "button", name: "copy" });
+      check("a label that flips inside an open shadow root is named — and counted as a reaction at all", flipped.includes('"copied ✓"') && !flipped.includes("did not react"), flipped);
+      const toggled = await executeTool(env, "click", { role: "button", name: "Show panel" });
+      check("a shadow control whose own class changes has not said anything new", toggled.startsWith("Clicked") && !toggled.includes(APPEARED) && !toggled.includes("did not react"), toggled);
+      const stored = await executeTool(env, "click", { role: "button", name: "Show stored" });
+      check("a toast that arrives with its own shadow root is named", stored.includes('"Stored in a component"'), stored);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/route");
+      const result = await executeTool(env, "click", { role: "button", name: "Continue to next" });
+      check(
+        "a click that changes the route without leaving the document keeps what it showed",
+        result.includes("/route/next") && result.includes("navigated") && result.includes('"Step stored"'),
+        result,
+      );
       await env.page.context().close();
     }
     {
