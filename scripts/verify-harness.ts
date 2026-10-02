@@ -538,9 +538,7 @@ async function main() {
   check("productProse: 'model' and 'harness' are dropped too", productProse("The page loaded with the pricing table visible to a visitor. The model in the harness could not click.") === "The page loaded with the pricing table visible to a visitor.");
   check("productProse: nothing product-facing → null", productProse("Our headless browser environment failed.") === null);
   check("productProse: empty → null", productProse("") === null && productProse(null) === null);
-  // CHE-396: "browser" and "model" alone are the product's words now; these
-  // two sentences are ours because they say so.
-  const fallbackNd = applyJudgeAnswer(brokenStep, { verdict: "not_defect", reason: "Our browser did it.", userImpact: "The model decided it was fine." });
+  const fallbackNd = applyJudgeAnswer(brokenStep, { verdict: "not_defect", reason: "The browser did it.", userImpact: "The model says fine." });
   check("applyJudgeAnswer: not_defect with nothing left → fixed product sentence", fallbackNd.status === "ok" && fallbackNd.observed === NOT_DEFECT_FALLBACK && !MACHINERY.test(fallbackNd.observed));
   const fallbackUv = applyJudgeAnswer(archiveStep, { verdict: "unverifiable", reason: "headless", userImpact: "" });
   check("applyJudgeAnswer: unverifiable with nothing left → coverage sentence, our_capability", fallbackUv.status === "skipped" && fallbackUv.observed === UNVERIFIABLE_FALLBACK && fallbackUv.unverifiedReason === "our_capability");

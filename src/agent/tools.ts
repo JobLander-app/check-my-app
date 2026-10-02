@@ -13,11 +13,13 @@ import type { Frame, Locator, Page } from "@cloudflare/playwright";
 import { credentialFingerprint } from "@/lib/crypto";
 import {
   hasEnvironmentLeak,
-  MACHINERY_TERMS,
+  namesOurSide,
   NOT_DEFECT_FALLBACK,
   PROBLEM_FALLBACK,
   productProse,
   productStepLabel,
+  productVocabulary,
+  type ProductVocabulary,
   SELF_CHECK_REFUSED_OBSERVED,
   cutSelfCheckRefusalClaims,
   splitSentences,
@@ -115,6 +117,13 @@ export interface ToolEnv {
   // are knownUrlKey() strings. Optional so scripts still build a bare ToolEnv;
   // absent = the gate is off.
   knownUrls?: Set<string>;
+  // CHE-396: which nouns of our machinery word list (agent, model, browser,
+  // environment, screenshot, automation, checker, tooling) the product's OWN
+  // pages use — collected by read_page from what the page shows and where it
+  // lives, never from the model's words. An app whose pages say "agent" has
+  // agents, and a step about them is not about us (verdict-language.ts).
+  // Absent = the list is as strict as it always was.
+  productWords?: Set<string>;
   // CHE-193: the SELF_CHECK_HOSTS binding — extra hosts that count as ours
   // beside checkmyapp.dev (self-hosts.ts). Whether the target is ours is
   // decided from targetOrigin against that list; this only carries the list.
@@ -2054,22 +2063,26 @@ export function classifyUnverified(step: ReportedStep): void {
 // a problem is not thrown away together with the excuse. The label has no
 // product-facing substitute, so a label made only of machinery words (never
 // seen in a run) stays as written.
-export function productizeStep(step: ReportedStep): void {
+//
+// `vocabulary` (CHE-396): the nouns of our word list that the product's own
+// pages use — `env.productWords`. The label is a name and never loses a word
+// to that list; the prose does unless the product uses the word itself.
+export function productizeStep(step: ReportedStep, vocabulary?: ProductVocabulary): void {
   step.label = productStepLabel(step.label);
-  step.attempted = productProse(step.attempted) ?? step.label;
-  step.observed = productProse(step.observed) ?? observedFallback(step);
+  step.attempted = productProse(step.attempted, 20, vocabulary) ?? step.label;
+  step.observed = productProse(step.observed, 20, vocabulary) ?? observedFallback(step, vocabulary);
 }
 
 const CLAUSE_BREAK = /\s+[—–]+\s+|\s+-\s+|;\s+|,\s+(?=(?:it|which|because|since|as|so|but|and|though|although|while)\b)/i;
 
-function observedFallback(step: ReportedStep): string {
+function observedFallback(step: ReportedStep, vocabulary?: ProductVocabulary): string {
   if (step.status === "skipped") return UNVERIFIABLE_FALLBACK;
   if (step.status === "ok") return NOT_DEFECT_FALLBACK;
   const first = splitSentences((step.observed ?? "").trim())[0] ?? "";
   const clauses = first
     .split(CLAUSE_BREAK)
     .map((c) => c.trim())
-    .filter((c) => c && !hasEnvironmentLeak(c) && !MACHINERY_TERMS.test(c));
+    .filter((c) => c && !hasEnvironmentLeak(c) && !namesOurSide(c, vocabulary));
   if (clauses.length === 0) return PROBLEM_FALLBACK;
   const out = clauses.join(", ").replace(/[,;:\s]+$/, "");
   return /[.!?]$/.test(out) ? out : `${out}.`;
@@ -2711,8 +2724,19 @@ async function readPage(env: ToolEnv): Promise<string> {
   // it links to. Relative hrefs the stub or an old digest may carry resolve
   // against the page itself.
   rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+  noteProductWords(env, digest);
 
   return [...digestSections(digest), ...(await frameSections(env, digest.url))].join("\n\n");
+}
+
+// CHE-396: the product's own words, from a document the walk may act in — the
+// page, or a frame of the target's or an allowed origin (never a third
+// party's widget).
+function noteProductWords(env: ToolEnv, digest: PageDigest): void {
+  env.productWords = productVocabulary(
+    [digest.url, digest.title, ...digest.headings, ...digest.links, ...digest.buttons, ...digest.fields, ...(digest.shadowText ?? []), digest.text],
+    env.productWords ?? new Set(),
+  );
 }
 
 // CHE-373: how much of a frame the digest carries. Three frames is more than
@@ -2769,6 +2793,7 @@ async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
     if (!digest || !meaningfulDigest(digest)) continue;
     // What an embedded app links to is published by it, like the page's own.
     rememberUrls(env, [digest.url, ...(digest.hrefs ?? [])], digest.url);
+    noteProductWords(env, digest);
     const name = frame.name() ? `, name ${frame.name()}` : "";
     const header = `FRAME ${i + 1} (origin ${frameOrigin(frame) ?? frame.url()}${name}) — click/fill inside it with frame "${i + 1}":`;
     const body = [...digestSections(digest), ...(digest.text ? [`TEXT:\n${digest.text}`] : [])].join("\n\n");

@@ -36,9 +36,13 @@ import { executeTool, productizeStep, type ReportedStep, type ToolEnv } from "@/
 import {
   hasEnvironmentLeak,
   MACHINERY_TERMS,
+  namesOurSide,
   NOT_DEFECT_FALLBACK,
   PROBLEM_FALLBACK,
+  productName,
   productProse,
+  productStepLabel,
+  productVocabulary,
   UNVERIFIABLE_FALLBACK,
 } from "@/lib/verdict-language";
 
@@ -122,7 +126,7 @@ function stubEnv() {
         scrub: (s) => s,
         usage: emptyUsage(),
       });
-      productizeStep(step);
+      productizeStep(step, env.productWords);
       written.push({ ...step });
     },
   } as unknown as ToolEnv;
@@ -315,90 +319,176 @@ async function main() {
       "The pricing page lists three plans with prices.");
 
   // ── CHE-396: the product's own vocabulary ──
-  // The word list was bare nouns — browser, environment, model, agent,
-  // screenshot, automation, checker — and any sentence holding one was dropped.
-  // Run cmuqfizeu… (our own guide page, 2026-10-02) showed five steps named
-  // "Check this part of the product" and a journey called "A journey": the
-  // product is about connecting an agent. The nouns are the product's in a
-  // large share of apps; they are ours only when the sentence says so.
-  const PRODUCT_VOCABULARY = [
-    // the six from the ticket
+  // Run cmuqfizeu… (our own guide page, 2026-10-02): five steps named "Check
+  // this part of the product" and the journey "Connect a coding agent for
+  // automated checks" listed as "A journey" — every sentence and every NAME
+  // holding agent / model / browser / environment / screenshot / automation /
+  // checker / tooling had been dropped. Those are what products are made of.
+  //
+  // (1) A name is not prose: it keeps the phrase gate, loses the noun list.
+  const NAMES = [
     "Connect a coding agent for automated checks",
     "Open the Connect-your-agent guide",
     "Follow the Connect-Your-Agent guide and copy the integration snippets",
     "Choose a model for the assistant",
     "Install the browser extension",
     "Switch the environment to staging",
-    // a store-protection app (CHE-333): its features are named in these words
     "Block visitors by browser and device",
-    "Bot and automation protection is enabled for the storefront.",
-    "The Blocked browsers list shows Chrome 90 and older.",
-    // an AI product: its agent and its models are the product
-    "The agent replied with a tracking link and offered a human handoff.",
-    "The agent could not answer the billing question and showed 'Something went wrong'.",
-    "The Models page lists 12 models with their context sizes.",
-    "The model failed to load and the page showed 'Out of memory'.",
-    // screenshots, environments, checkers and automation as features
     "Upload a screenshot of the receipt",
-    "The Screenshots tab shows three uploaded screenshots.",
-    "The environment switcher shows Production and Staging.",
-    "The Environments page lists two environments with their variables.",
-    "The spell checker underlined two words in the draft.",
-    "The Automation rules page lists four rules, all enabled.",
-    "Developer tooling is listed under Integrations.",
-    // the counterparts of round 1's our-side cases (Codex on #246): the same
-    // words, the product's
-    "The page says \"This browser is not supported\" on the sign-in screen.",
-    "Promote this environment to production from the Deployments page.",
-    "The agent could not find your order and suggested contacting support.",
-    "The screenshot did not upload and the form showed 'File too large'.",
+    "Extract text from the screenshot",
+    // a product with a test mode
+    "Open the test environment settings",
+    "Switch the workspace to the test environment",
+    "Create the test agent",
   ];
-  for (const s of PRODUCT_VOCABULARY) {
-    check(`product vocabulary survives: ${JSON.stringify(s)}`, productProse(s, 0) === s && !MACHINERY_TERMS.test(s), productProse(s, 0) ?? "(null)");
+  for (const s of NAMES) {
+    check(`a name keeps its words: ${JSON.stringify(s)}`, productStepLabel(s) === s && productName(s) === s, productStepLabel(s));
   }
-  // …and the sentences the list was written for still go, whole.
-  const OUR_SIDE = [
+  check("a name still loses our side: the phrase gate", productStepLabel("Upload a file. Done in our test browser.") === "Upload a file.", productStepLabel("Upload a file. Done in our test browser."));
+  check("a name still loses our side: headless, harness, a tool's name",
+    productName("Checked in the headless harness") === null && productName("Ran read_page on the pricing page") === null);
+  check("a name that was only ours gets the placeholder", productStepLabel("Our headless browser.") === "Check this part of the product");
+  {
+    const s: ReportedStep = { label: "Connect a coding agent for automated checks", status: "ok", attempted: "Clicked Sign in.", observed: "The dashboard opened." };
+    productizeStep(s);
+    check("report_step: a label with the product's noun is written as reported, with no vocabulary at all", s.label === "Connect a coding agent for automated checks", s.label);
+  }
+
+  // (2) Prose with no evidence that the noun is the product's: as strict as it
+  // was. The cross-review of the first attempt at this ticket (#246) listed
+  // seventeen of the walk's own sentences that a grammar-only gate let
+  // through; every one must still go.
+  const WALK_VOICE = [
+    "The agent tried to sign in but the form never submitted.",
+    "The agent attempted to click Save and nothing happened.",
+    "The agent was blocked by a CAPTCHA on the sign-up page.",
+    "The agent got stuck on the login form.",
+    "The agent never reached the dashboard.",
+    "The agent ran out of steps before checkout.",
+    "The automated browser could not play the video.",
+    "This may be an artifact of automation rather than a real defect.",
+    "Automated browsers are often blocked by this kind of protection.",
+    "This could not be confirmed in an automated environment.",
+    "Playback is unavailable in the testing environment.",
+    "In the current environment, microphone access is denied.",
+    "The final screenshot shows an empty cart.",
+    "Screenshots show the page blank after submit.",
+    "A later screenshot showed the spinner still running.",
+    "The Save button could not be clicked by the agent.",
+    "The checker saw a blank page.",
+    // the corpus the list was written for (CHE-169, CHE-180)
     "It requires camera/mic access unavailable in our test environment.",
     "The button did nothing in our test browser.",
     "Our headless browser filled the name field and clicked Save.",
     "The harness saw the page update.",
-    "Our browser got a 500 from the report endpoint.",
     "The agent could not click the Save button.",
+    "The model decided to skip the optional fields.",
+    "The screenshot shows the dashboard with three charts.",
+    "The camera is unavailable in this environment.",
+    "The checker could not reach the settings page.",
+    "The browser could not play the embedded video.",
+  ];
+  for (const s of WALK_VOICE) {
+    check(`no evidence, strict as before: ${JSON.stringify(s)}`, productProse(s) === null, productProse(s) ?? "(null)");
+  }
+
+  // (3) The evidence: the nouns the product's own pages use.
+  const guide = productVocabulary(["Connect your agent", "Guides", "claude mcp add checkmyapp", "https://checkmyapp.dev/guides/connect-your-agent"]);
+  check("vocabulary: read from what the product shows and where it lives", [...guide].join() === "agent", [...guide].join());
+  check("vocabulary: plural and case", [...productVocabulary(["Supported Browsers", "AI Models", "ENVIRONMENTS"])].sort().join() === "browser,environment,model");
+  check("vocabulary: nothing from a page that uses none of the words", productVocabulary(["Pricing", "Sign in", "Paste a link."]).size === 0);
+  check("vocabulary: accumulates across pages", (() => {
+    const v = productVocabulary(["Agents"]);
+    productVocabulary(["Take a screenshot"], v);
+    return [...v].sort().join() === "agent,screenshot";
+  })());
+
+  const ALL = productVocabulary(["agents models browsers environments screenshots checkers tooling automation"]);
+  // …with it, the product's own sentences come through as written,
+  const PRODUCT_PROSE = [
+    "The agent replied with a tracking link and offered a human handoff.",
+    "The agent could not answer the billing question and showed 'Something went wrong'.",
+    "The agent failed to complete the booking and showed no error.",
+    "The agent failed to load after sign-in.",
+    "The agent could not find your order and suggested contacting support.",
+    "The support agent could not access the order history.",
+    "The Models page lists 12 models with their context sizes.",
+    "The model failed to load and the page showed 'Out of memory'.",
+    "The model chose the wrong language for the reply.",
+    "Bot and automation protection is enabled for the storefront.",
+    "The Blocked browsers list shows Chrome 90 and older.",
+    "The browser failed to display the saved bookmarks.",
+    "The Screenshots tab shows three uploaded screenshots.",
+    "The screenshot does not display after capture.",
+    "After upload, the screenshot shows in the gallery.",
+    "The screenshot did not upload and the form showed 'File too large'.",
+    "The environment switcher shows Production and Staging.",
+    "Promote this environment to production from the Deployments page.",
+    "The Environments page lists two environments with their variables.",
+    "The spell checker underlined two words in the draft.",
+    "The Automation rules page lists four rules, all enabled.",
+    "Developer tooling is listed under Integrations.",
+    "The page says \"This browser is not supported\" on the sign-in screen.",
+  ];
+  for (const s of PRODUCT_PROSE) {
+    check(`the product uses the word → its sentence stays: ${JSON.stringify(s)}`, productProse(s, 0, ALL) === s, productProse(s, 0, ALL) ?? "(null)");
+  }
+  // …only for the nouns it uses,
+  check("a noun the product does not use is still ours",
+    productProse("The Models page lists 12 models with their context sizes.", 0, guide) === null &&
+      productProse("The agent replied with a tracking link and offered a human handoff.", 0, guide) !== null);
+  check("another machinery word in the same sentence still decides it",
+    productProse("The agent replied, as the headless harness recorded.", 0, ALL) === null);
+  // …and the walk's own sentences still go, even about a product full of
+  // agents and screenshots — in the shapes where the walk is the one driving.
+  const WALK_VOICE_ANYWAY = WALK_VOICE.filter((s) => !/could not play the (embedded )?video/.test(s)).concat([
     "The agent was unable to interact with the date picker.",
     "The agent clicked Continue and waited.",
     "Our agent signed in with the test account.",
-    "The model decided to skip the optional fields.",
     "The navigation model chose the first result.",
-    "The screenshot shows the dashboard with three charts.",
     "As seen in the screenshot, the banner overlaps the menu.",
     "A screenshot was taken after the click.",
-    "The camera is unavailable in this environment.",
     "Clicking did nothing in this browser.",
-    "The checker could not reach the settings page.",
     "The automation could not complete the card form.",
-    "The browser could not play the embedded video.",
-    "The browser did not grant camera access.",
-    // round 1 of Codex on #246: each of these walked through the first version
     "This environment blocked camera access.",
     "This browser timed out before the page finished loading.",
     "The agent could not find the Save button.",
     "The checker could not locate the checkout button.",
     "The screenshot did not show the modal after Save was clicked.",
     "The screenshot failed to capture the open menu.",
-    "Verified with Playwright against the live site.",
-    "The first reader flagged the price as inconsistent.",
-  ];
-  for (const s of OUR_SIDE) {
-    check(`our side still goes: ${JSON.stringify(s)}`, productProse(s) === null, productProse(s) ?? "(null)");
+  ]);
+  for (const s of WALK_VOICE_ANYWAY) {
+    check(`the product uses the word, the walk still speaks: ${JSON.stringify(s)}`, productProse(s, 20, ALL) === null && namesOurSide(s, ALL), productProse(s, 20, ALL) ?? "(null)");
   }
-  check(
-    "a product label survives report_step as written",
-    (() => {
-      const s: ReportedStep = { label: "Connect a coding agent for automated checks", status: "ok", attempted: "Opened the Connect-your-agent guide.", observed: "The guide lists three steps and two code snippets." };
-      productizeStep(s);
-      return s.label === "Connect a coding agent for automated checks" && s.attempted === "Opened the Connect-your-agent guide.";
-    })(),
-  );
+
+  // (4) Through the real tools: read_page collects the vocabulary from the
+  // page, report_step is written with it — and without a page that says so,
+  // the same step is written as strictly as before.
+  {
+    const run = async (headings: string[]) => {
+      const stub = stubEnv();
+      (stub.env.page as unknown as { evaluate: () => Promise<unknown> }).evaluate = async () => ({
+        url: "https://target.test/guides/connect", title: "Guide", headings, links: [], buttons: [], fields: [], shadowText: [], hrefs: [], frameUrls: [], text: "",
+      });
+      await executeTool(stub.env, "read_page", {});
+      await executeTool(stub.env, "report_step", {
+        label: "Ask the agent a billing question",
+        status: "ok",
+        attempted: "Typed a billing question into the chat.",
+        observed: "The agent replied with a link to the invoices page.",
+      });
+      return { step: stub.written[0], words: [...(stub.env.productWords ?? [])] };
+    };
+    const withWord = await run(["h1: Talk to our support agent"]);
+    check("read_page collects the product's nouns", withWord.words.join() === "agent", withWord.words.join());
+    check("report_step: the product's sentence about its agent is written as reported",
+      withWord.step.observed === "The agent replied with a link to the invoices page." && withWord.step.label === "Ask the agent a billing question",
+      `${withWord.step.label} / ${withWord.step.observed}`);
+    const without = await run(["h1: Pricing"]);
+    check("report_step: without the page saying so, the sentence is dropped as before — and the label still stands",
+      without.step.observed === NOT_DEFECT_FALLBACK && without.step.label === "Ask the agent a billing question",
+      `${without.step.label} / ${without.step.observed}`);
+  }
 
   // The live progress note carries the stripped label.
   {

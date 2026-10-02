@@ -28,7 +28,7 @@ import { normalizeAnatomy } from "@/lib/anatomy";
 import { unreachedPages } from "@/lib/coverage";
 import { parseJson } from "@/lib/json";
 import type { FindingDetail } from "@/lib/types";
-import { productProse, splitSentences } from "@/lib/verdict-language";
+import { productName, productProse, splitSentences } from "@/lib/verdict-language";
 import { publicRow } from "@/lib/tenant-db";
 
 // ─── Shape ───────────────────────────────────────────────────────────────────
@@ -326,8 +326,10 @@ export function buildReview(run: ReviewSource, origin: string): Review {
     j.steps
       .filter((s) => s.status === "skipped")
       .map((s) => ({
-        journey: gated(j.title, "A journey"),
-        step: gated(s.label, "A step"),
+        // Names, not prose (CHE-396): "Connect a coding agent…" is what the
+        // journey is called, and came out as "A journey" through the word list.
+        journey: productName(j.title) ?? "A journey",
+        step: productName(s.label) ?? "A step",
         reason: s.unverifiedReason,
       })),
   );

@@ -15,7 +15,7 @@
 // forced spec uses — so the verify script drives this exact function with a
 // scripted model.
 
-import { productProse, splitSentences, stripNarration, summaryFallback } from "@/lib/verdict-language";
+import { productProse, splitSentences, stripNarration, summaryFallback, type ProductVocabulary } from "@/lib/verdict-language";
 import { finalizeJson, type AgentLoopResult } from "./core";
 import type { LlmConfig, UsageTotals } from "./llm";
 
@@ -106,6 +106,8 @@ export async function summarizeWalk(
   result: Pick<AgentLoopResult, "finalText" | "messages" | "endedBy">,
   usage: UsageTotals,
   status?: string,
+  // CHE-396: the nouns of our word list that this product's own pages use.
+  vocabulary?: ProductVocabulary,
 ): Promise<string | null> {
   let raw = cleanSummary(result.finalText) ?? "";
   let text = stripNarration(raw, "");
@@ -122,5 +124,5 @@ export async function summarizeWalk(
     }
     text = stripNarration(raw, "");
   }
-  return productProse(text) ?? summaryFallback(status);
+  return productProse(text, 20, vocabulary) ?? summaryFallback(status);
 }
