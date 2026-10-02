@@ -877,14 +877,22 @@ export const MACHINERY_TERMS = new RegExp(
       // ours by determiner, with at most one word between ("our headless browser")
       `${OURS}\\s+(?:[a-z-]+\\s+)?${OUR_NOUN}`,
       "(?:in|within|under|for)\\s+this\\s+(?:environment|browser)",
+      // "This environment blocked camera access", "This browser timed out" —
+      // the place speaking for itself. Not "this browser is not supported",
+      // which is a product's own message.
+      `this\\s+(?:environment|browser)\\s+(?:blocked|blocks|timed\\s+out|lacks|has\\s+no|prevent(?:s|ed)|${UNABLE})`,
       // the walk acting, named as an agent, a checker, an automation, a browser
       `(?:the|an)\\s+(?:(?:nav|navigation|walking|ai)\\s+)?(?:agent|checker|automation|browser)\\s+(?:${UNABLE}\\s+(?:\\w+\\s+)?${WALK_VERB}|(?:clicked|tapped|pressed|navigated|scrolled|typed|filled|submitted|signed\\s+in|logged\\s+in))`,
+      // "could not find / locate" is the walk's only when what it looked for is
+      // a piece of the page; a product's agent that "could not find your
+      // order" is the product.
+      `(?:the|an)\\s+(?:(?:nav|navigation|walking|ai)\\s+)?(?:agent|checker|automation|browser)\\s+${UNABLE}\\s+(?:find|locate|see)\\s+(?:the|a|an|any)\\s+(?:[\\w'"“”‘’-]+\\s+){0,4}(?:button|link|field|form|element|control|selector|menu|checkbox|input|dropdown|toggle|modal|dialog|tab|page)`,
       // a browser that "could not play / render" is ours: a real visitor's did
       `the\\s+browser\\s+${UNABLE}\\s+(?:\\w+\\s+)?(?:render|play|display|run|grant|allow)`,
       "the\\s+(?:(?:nav|navigation|walking|ai)\\s+)?model\\s+(?:decided|chose|assumed|inferred|guessed|hallucinated|misread|was\\s+(?:instructed|told|asked))",
       "the\\s+(?:nav|navigation|walking)\\s+(?:agent|model)",
       // our evidence
-      "(?:the|a|this|each|every)\\s+screenshots?\\s+(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?|(?:was|were|is|are)\\s+taken)",
+      `(?:the|a|this|each|every)\\s+screenshots?\\s+(?:${UNABLE}\\s+|does\\s+not\\s+|doesn['’]t\\s+|do\\s+not\\s+|don['’]t\\s+)?(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?|display(?:s|ed)?|include(?:s|d)?|contain(?:s|ed)?|(?:was|were|is|are)\\s+taken)`,
       "(?:in|from|per|on|by|according\\s+to|(?:as\\s+)?seen\\s+in)\\s+the\\s+screenshots?",
     ].join("|") +
     ")\\b",

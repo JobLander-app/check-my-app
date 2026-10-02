@@ -346,6 +346,12 @@ async function main() {
     "The spell checker underlined two words in the draft.",
     "The Automation rules page lists four rules, all enabled.",
     "Developer tooling is listed under Integrations.",
+    // the counterparts of round 1's our-side cases (Codex on #246): the same
+    // words, the product's
+    "The page says \"This browser is not supported\" on the sign-in screen.",
+    "Promote this environment to production from the Deployments page.",
+    "The agent could not find your order and suggested contacting support.",
+    "The screenshot did not upload and the form showed 'File too large'.",
   ];
   for (const s of PRODUCT_VOCABULARY) {
     check(`product vocabulary survives: ${JSON.stringify(s)}`, productProse(s, 0) === s && !MACHINERY_TERMS.test(s), productProse(s, 0) ?? "(null)");
@@ -372,6 +378,13 @@ async function main() {
     "The automation could not complete the card form.",
     "The browser could not play the embedded video.",
     "The browser did not grant camera access.",
+    // round 1 of Codex on #246: each of these walked through the first version
+    "This environment blocked camera access.",
+    "This browser timed out before the page finished loading.",
+    "The agent could not find the Save button.",
+    "The checker could not locate the checkout button.",
+    "The screenshot did not show the modal after Save was clicked.",
+    "The screenshot failed to capture the open menu.",
     "Verified with Playwright against the live site.",
     "The first reader flagged the price as inconsistent.",
   ];
