@@ -160,7 +160,17 @@ function handsOverAHostFile(method, params) {
 // 3. Where downloads are written: any path the browser's user can write, the
 //    profile's own Preferences included. The page-level twin of
 //    Browser.setDownloadBehavior — answered, like it, and not passed on.
-const PAGE_SCOPE_ANSWERED = new Set(["Page.setDownloadBehavior"]);
+//
+// And the window. A check's tab opens in the person's window, and the Worker's
+// client (@cloudflare/playwright) sizes the window to its viewport as part of
+// opening any page — Browser.setWindowBounds, from the page's own session.
+// Refused, that failed newPage() itself: the first live run (#299) could not
+// open a tab at all. Passed on, it would resize the window the person is
+// looking at. So it is answered "done" and not passed on: the check's viewport
+// is the page's own (Emulation.setDeviceMetricsOverride), the window stays the
+// person's. Upstream Playwright over CDP never sends it, which is why the
+// guard on a real Chrome did not meet it.
+const PAGE_SCOPE_ANSWERED = new Set(["Page.setDownloadBehavior", "Browser.setWindowBounds"]);
 
 function leavesThePage(method, params) {
   if (typeof params?.url === "string" && !webAddress(params.url)) return true;
@@ -286,8 +296,9 @@ export class Gate {
       if (BROWSER_SCOPE_ANSWERED.has(method)) return this.contexts.has(params?.browserContextId) ? "forward" : "acknowledge";
       return "refuse";
     }
-    if (beyondAPage(method) || forgesCookie(method, params) || leavesThePage(method, params)) return "refuse";
+    // Before the refusals: what is answered is never passed on, whatever it asks.
     if (PAGE_SCOPE_ANSWERED.has(method)) return "acknowledge";
+    if (beyondAPage(method) || forgesCookie(method, params) || leavesThePage(method, params)) return "refuse";
     // An answer can carry response headers as well as an event can
     // (Network.loadNetworkResource returns them): scrubbed on the way back.
     if (method.startsWith("Network.") || method.startsWith("Fetch.")) this.pending.set(Gate.key(message), "scrub");
