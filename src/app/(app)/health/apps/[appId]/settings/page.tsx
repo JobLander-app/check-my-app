@@ -20,6 +20,9 @@ import { projectChoicesFor } from "@/lib/posthog/choices";
 import { listTestAccounts } from "@/lib/app-settings";
 import { MAX_EXTRA_ACCOUNTS } from "@/lib/test-accounts";
 import { appPath } from "@/lib/app-shell";
+import { fetchTeams } from "@/lib/tracker/linear-oauth";
+import { freshLinearToken } from "@/lib/tracker/token";
+import { TeamSelect } from "@/components/team-select";
 
 // Per-app settings (CHE-64, redesigned CHE-81). Three meaning-first sections —
 // the page will keep growing, so hierarchy comes from sections, not from a pile
@@ -115,6 +118,16 @@ export default async function AppSettingsPage({
       : tracker.tokenExpiresAt && tracker.tokenExpiresAt <= new Date()
         ? { tone: "bad" as const, text: "token expired — reconnect to restore ticket filing" }
         : { tone: "warn" as const, text: "reconnect to enable token auto-renew" };
+
+  // Which of the workspace's teams the tickets land in (moved here from the old
+  // dashboard with CHE-361: it is this app's setting). Best-effort — a
+  // transient Linear error hides the picker and shows the stored name.
+  const cfEnv = getCloudflareContext().env as Record<string, string | undefined>;
+  const linearTeams = tracker
+    ? await freshLinearToken(db, tracker, { clientId: cfEnv.LINEAR_CLIENT_ID, clientSecret: cfEnv.LINEAR_CLIENT_SECRET })
+        .then(fetchTeams)
+        .catch(() => [] as { id: string; name: string }[])
+    : [];
 
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists, which is the common case
@@ -362,12 +375,18 @@ export default async function AppSettingsPage({
                   }`}
                 >
                   {trackerHealth.tone === "ok" ? "✓" : "⚠"} {trackerHealth.text}
-                  {tracker?.externalOrg && ` · team: ${tracker.externalOrg}`}
+                  {linearTeams.length === 0 && tracker?.externalOrg && ` · team: ${tracker.externalOrg}`}
                 </p>
               ) : (
                 <p className="text-xs text-fg-faint">
                   Not connected — regressions stay on the verdict page instead of becoming
                   tickets.
+                </p>
+              )}
+              {tracker && linearTeams.length > 0 && (
+                <p className="flex items-center gap-2 text-xs text-fg-muted">
+                  Tickets go to team
+                  <TeamSelect appId={app.id} teams={linearTeams} current={tracker.teamId} />
                 </p>
               )}
             </div>

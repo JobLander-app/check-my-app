@@ -103,8 +103,8 @@ check("…from the team's keys", /db\.apiKey\.findMany\(\{ where: \{ \.\.\.teamO
 check("?path=app is still today's wizard", /<OnboardingWizard prefillUrl=\{url \?\? ""\}/.test(page));
 check("CHE-320: the extension flag is still read", /await extensionCheckFor\(user\)/.test(page) && /extensionCheck && type === "extension"/.test(page));
 const dashboard = source("src/app/(app)/home/page.tsx");
-check("the dashboard's '+ Add app' goes to the form", /href="\/onboarding\?path=app"[\s\S]{0,200}\+ Add app/.test(dashboard));
-check("the dashboard still links the extension form behind the flag", /\{extensionCheck && <Link href="\/onboarding\?type=extension"/.test(dashboard));
+check("the dashboard's 'Add app' goes to the form", /href="\/onboarding\?path=app"[\s\S]{0,200}Add app/.test(dashboard));
+check("the dashboard still links the extension form behind the flag", /\{extensionCheck && \(\s*<Link href="\/onboarding\?type=extension"/.test(dashboard));
 
 // ─── 4. Done without an app: nothing bounces ────────────────────────────────
 
@@ -119,7 +119,7 @@ const bouncers = sources(join(process.cwd(), "src")).filter((f) =>
   /redirect\([^)]*["'`]\/onboarding|NextResponse\.redirect\([^)]*onboarding|router\.(push|replace)\([^)]*["'`]\/onboarding/.test(readFileSync(f, "utf8")),
 );
 check("nothing in the product redirects to /onboarding (no 'onboarded' gate to fail)", bouncers.length === 0, bouncers.join(", "));
-check("the dashboard renders a team with no apps", /apps\.length === 0 \?/.test(dashboard) && !/redirect\(/.test(dashboard));
+check("the dashboard renders a team with no apps", /const empty = shell\.apps\.length === 0/.test(dashboard) && /\{empty \? \(/.test(dashboard) && !/redirect\(/.test(dashboard));
 
 // ─── 5. The home page links to the guide ────────────────────────────────────
 

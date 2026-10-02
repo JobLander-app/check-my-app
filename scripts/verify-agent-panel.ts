@@ -135,7 +135,8 @@ check(
 const dashboard = readFileSync(join(process.cwd(), "src/app/(app)/home/page.tsx"), "utf8");
 const panelAt = dashboard.indexOf("<ConnectAgent");
 check("Today renders the panel", panelAt !== -1);
-check("…above the apps", panelAt !== -1 && panelAt < dashboard.indexOf("{apps.length === 0 ?"));
+// CHE-361: Today is the briefing; the panel stays above it and above the empty team's card.
+check("…above the briefing", panelAt !== -1 && panelAt < dashboard.indexOf("{empty ? ("));
 check("…from the team's keys' lastUsedAt", /<ConnectAgent keys=\{apiKeys\.map\(\(k\) => \(\{ lastUsedAt:/.test(dashboard));
 const keysPage = readFileSync(join(process.cwd(), "src/app/(app)/settings/api-keys/page.tsx"), "utf8");
 check("Agent and API keys renders it too, from the same field", /<ConnectAgent keys=\{apiKeys\.map\(\(k\) => \(\{ lastUsedAt:/.test(keysPage));

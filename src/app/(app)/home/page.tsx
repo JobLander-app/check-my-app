@@ -1,18 +1,7 @@
 import Link from "next/link";
-import { RunSavedApp } from "@/components/run-saved-app";
-import { extensionDisplayName } from "@/lib/extension-target";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
-import { fetchTeams } from "@/lib/tracker/linear-oauth";
-import { freshLinearToken } from "@/lib/tracker/token";
-import { TeamSelect } from "@/components/team-select";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { setIntegrationEndpoints } from "@/app/dashboard/actions";
 import { ConnectAgent } from "@/components/connect-agent";
-import { AppPostHogProject } from "@/components/app-posthog-project";
-import { teamProjects } from "@/lib/posthog/choices";
-import { teamBalance, watchTrialState } from "@/lib/plans";
+import { teamBalance, usd, watchTrialState } from "@/lib/plans";
 import { appCanRun } from "@/lib/plan-status";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
@@ -20,11 +9,24 @@ import { extensionCheckFor } from "@/lib/viewer-flags";
 import { integrationNotice } from "@/lib/integration-notice";
 import { BALANCE_PATH } from "@/lib/balance-links";
 import { appPath } from "@/lib/app-shell";
+import { VERDICT_META } from "@/lib/status";
+import { appHealth } from "@/lib/app-health";
+import { recurringByApp } from "@/lib/recurring";
+import { shellData } from "@/lib/shell-data";
+import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
+import { firstSentence, splitBottomLine } from "@/lib/app-page";
+import { balanceLine, pace, sharePercent } from "@/lib/billing-page";
+import { briefing, dayLabel, daysAgo, hhmm, latestPerApp, longDate } from "@/lib/today";
 
-// Today (CHE-351). Until direction C's Today lands (CHE-361) this is what the
-// old /dashboard was, inside the shell: the agent panel and the team's apps.
-// The balance moved to Billing, the analytics connection to Integrations and
-// the API keys to Agent and API keys — each one item in the sidebar.
+const FINISHED = ["completed", "partial"];
+const FEED_DAYS = 2; // today and yesterday; the rest is on Checks
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Today (CHE-361, direction C — the briefing): one sentence on whether
+// everything is alive, the checks of today and yesterday with what each said
+// and cost, and on the side what the apps cost, the balance, and what keeps
+// coming back. The per-app controls the old dashboard carried here (tracker
+// team, analytics project, webhooks) are the app's settings now.
 export default async function HomePage({
   searchParams,
 }: {
@@ -32,67 +34,86 @@ export default async function HomePage({
 }) {
   const { integration, added, extensionAdded } = await searchParams;
   const { user, db, team } = await requireUser();
-  // CHE-261: the TEAM's apps. Filtering by ownerId here would show each member
-  // a different dashboard of the same team — the exact thing teams remove.
-  const apps = await db.app.findMany({
-    where: { ...teamOwned(team.id) },
-    include: {
-      watch: true,
-      policy: true,
-      tracker: true,
-      runs: { orderBy: { createdAt: "desc" }, take: 1 },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-  const apiKeys = await db.apiKey.findMany({
-    where: { ...teamOwned(team.id) },
-    orderBy: { createdAt: "desc" },
-    select: { lastUsedAt: true },
-  });
-  const extensionCheck = await extensionCheckFor(user);
-
-  // For connected apps, pull the workspace teams so the owner can pick which one
-  // tickets land in (best-effort — a transient Linear error just hides the picker).
-  const teamsByApp: Record<string, { id: string; name: string }[]> = {};
-  const cfEnv = getCloudflareContext().env as Record<string, string | undefined>;
-  const oauthCreds = { clientId: cfEnv.LINEAR_CLIENT_ID, clientSecret: cfEnv.LINEAR_CLIENT_SECRET };
-  await Promise.all(
-    apps.map(async (app) => {
-      if (!app.tracker) return;
-      try {
-        teamsByApp[app.id] = await fetchTeams(await freshLinearToken(db, app.tracker, oauthCreds));
-      } catch {
-        teamsByApp[app.id] = [];
-      }
-    }),
-  );
-
-  // CHE-327: per watched app, whether its next tick can run (the scheduler's
-  // own gate) — the balance itself is on Billing.
   const plan = team.plan as UserPlan;
-  const balance = await teamBalance(db, { id: team.id, plan });
-  const canRun = new Map(
+  const now = new Date();
+  // Checks placed by createdAt on the [teamId, createdAt] index, a day of
+  // slack for the old spelling of dates; the day a check belongs to is the day
+  // it finished.
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - FEED_DAYS * DAY_MS);
+
+  const [shell, health, recurring, balance, apiKeys, extensionCheck, watches, runs] = await Promise.all([
+    shellData(db, team.id),
+    appHealth(db, team.id),
+    recurringByApp(db, team.id),
+    teamBalance(db, { id: team.id, plan }),
+    db.apiKey.findMany({ where: { ...teamOwned(team.id) }, orderBy: { createdAt: "desc" }, select: { lastUsedAt: true } }),
+    extensionCheckFor(user),
+    db.watch.findMany({ where: { ...teamOwned(team.id) }, select: { appId: true, appSlug: true, active: true, trialEndsAt: true } }),
+    db.run.findMany({
+      where: { ...teamOwned(team.id), status: { in: FINISHED }, verdict: { not: null }, priceUsd: { not: null }, createdAt: { gte: since } },
+      orderBy: { runNumber: "desc" },
+      take: 40,
+      select: {
+        publicId: true, runNumber: true, appId: true, appSlug: true, verdict: true, bottomLine: true,
+        priceUsd: true, completedAt: true, quickPagesOpened: true,
+      },
+    }),
+  ]);
+  const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
+  // Whose check it is, by appHealth's rule: the app it is attached to, or —
+  // for a check with no app — the team's only app with that address. Anything
+  // else (a preview, an address never saved) is in the feed under its own
+  // address and is not one of "your apps" in the sentence above it.
+  const slugCount = new Map<string, number>();
+  for (const a of health.apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
+  const onlyAppOf = new Map(health.apps.filter((a) => slugCount.get(a.appSlug) === 1).map((a) => [a.appSlug, a.appId]));
+  const feed = runs
+    .filter((r) => r.completedAt !== null && daysAgo(r.completedAt, now) < FEED_DAYS)
+    .map((r) => {
+      const appId = r.appId ?? onlyAppOf.get(r.appSlug) ?? null;
+      // What the check said: a quick check in the price explanation's words, a
+      // partial check without its fixed coverage opening (src/lib/app-page.ts).
+      const said = r.quickPagesOpened !== null ? `${quickCheckWork(r.quickPagesOpened)}.` : firstSentence(splitBottomLine(r.bottomLine).said);
+      return { ...r, appId, completedAt: r.completedAt!, verdict: r.verdict!, appKey: appId ?? "", name: (appId && nameOf.get(appId)) || r.appSlug, said };
+    })
+    // By the moment it finished, not by its number: a long check started
+    // earlier can finish after a quick one, and the days below follow this order.
+    .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
+  const days = [...new Set(feed.map((r) => dayLabel(r.completedAt, now)))];
+  const brief = briefing(latestPerApp(feed.filter((r) => r.appId !== null), now), shell.apps.length);
+
+  // The scheduler's own gate, per watched app: a watch the balance cannot pay
+  // for, or one past its trial, is not running — said here, with the way out.
+  const paused = (
     await Promise.all(
-      apps
-        .filter((a) => a.watch?.active)
-        .map(async (a) => [a.id, (await appCanRun(db, { id: team.id, plan }, balance, a.appSlug)).ok] as const),
-    ),
+      watches
+        .filter((w) => w.active && w.appId)
+        .map(async (w) => {
+          const trial = watchTrialState(w, plan);
+          if (trial.kind === "ended") return { id: w.appId!, why: "trial" as const };
+          return (await appCanRun(db, { id: team.id, plan }, balance, w.appSlug)).ok ? null : { id: w.appId!, why: "balance" as const };
+        }),
+    )
+  ).filter((p) => p !== null);
+
+  const again = shell.apps.flatMap((a) =>
+    (recurring.get(a.id) ?? []).filter((i) => i.state === "recurring").map((i) => ({ ...i, appName: a.label })),
   );
-
-  // CHE-237: the projects this team's connection can see, listed ONCE for the
-  // whole page. Every app row picks from the same list — one request, however
-  // many apps. Null means there is no connection, or we could not list them;
-  // either way no picker is offered, because a dropdown with nothing in it is
-  // an invitation to wonder what went wrong.
-  const posthogProjects = await teamProjects(db, {
-    teamId: team.id,
-    clientId: `${(cfEnv.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
+  const costly = [...health.apps].sort((a, b) => b.spendUsd - a.spendUsd);
+  // The same order as the feed: the check that finished last.
+  const finishedAt = (a: (typeof health.apps)[number]) => a.latest?.completedAt?.getTime() ?? 0;
+  const last = [...health.apps].filter((a) => a.latest).sort((a, b) => finishedAt(b) - finishedAt(a))[0];
+  const atThisPace = pace({
+    creditUsd: balance.creditUsd,
+    renews: balance.renewsOn !== null,
+    monthlyUsd: health.monthlyRunRateUsd,
+    balanceUsd: balance.balanceUsd,
   });
-
   const notice = integrationNotice(integration);
+  const empty = shell.apps.length === 0 && feed.length === 0;
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-10">
+    <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       {/* CHE-351: /dashboard#balance is in old e-mails and agents' notes. The
           redirect brings it here, and the fragment — which never reaches a
           server — says where it meant: the balance, which lives on Billing. */}
@@ -102,226 +123,220 @@ export default async function HomePage({
         }}
       />
 
-      {/* CHE-92: a successful onboarding used to land here with no word about
-          what happened — the agent (and any first-time owner) could not tell a
-          silent success from a silent failure. */}
-      {added && (
-        <div className="card mb-6 border-status-ok/40 bg-status-ok/5 p-4">
-          <p className="text-sm text-status-ok">
-            ✓ {added} is added and its first check is on the way — you&apos;ll get an email when
-            the verdict is ready.
-          </p>
-        </div>
-      )}
+      <div className="flex min-w-0 flex-col gap-6">
+        {/* CHE-92: a successful onboarding lands here and is told so. */}
+        {added && (
+          <div className="card border-status-ok/40 bg-status-ok/5 p-4">
+            <p className="text-sm text-status-ok">
+              ✓ {added} is added and its first check is on the way — you&apos;ll get an email when
+              the verdict is ready.
+            </p>
+          </div>
+        )}
+        {extensionAdded && (
+          <div className="card border-status-ok/40 bg-status-ok/5 p-4">
+            <p className="text-sm text-status-ok">✓ Extension added. Start its first check from its page.</p>
+          </div>
+        )}
+        {notice && (
+          <div className="card flex items-start justify-between gap-4 p-4">
+            <p className={notice.ok ? "text-sm text-status-ok" : "text-sm text-status-confusing"}>{notice.text}</p>
+            <Link href="/home" className="text-xs text-fg-muted hover:text-fg" aria-label="Dismiss">
+              Dismiss ✕
+            </Link>
+          </div>
+        )}
 
-      {extensionAdded && <div className="card mb-6 border-status-ok/40 bg-status-ok/5 p-4"><p className="text-sm text-status-ok">✓ Extension added. Start its first check below.</p></div>}
+        {/* CHE-317: the agent is the interface. Big until one of the team's
+            keys has been used, one line after that. */}
+        <ConnectAgent keys={apiKeys.map((k) => ({ lastUsedAt: k.lastUsedAt?.toISOString() ?? null }))} />
 
-      {notice && (
-        <div className="card mb-6 flex items-start justify-between gap-4 p-4">
-          <p className={notice.ok ? "text-sm text-status-ok" : "text-sm text-status-confusing"}>{notice.text}</p>
-          <Link href="/home" className="text-xs text-fg-muted hover:text-fg" aria-label="Dismiss">
-            Dismiss ✕
-          </Link>
-        </div>
-      )}
+        {empty ? (
+          <section className="card p-8 text-center">
+            <h1 className="text-2xl font-semibold tracking-tight">Nothing is being checked yet</h1>
+            <p className="mt-2 text-sm text-fg-muted">
+              Connect your agent above and ask it to add your app, or add the first one here.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-4">
+              <Link
+                href="/onboarding?path=app"
+                className="inline-flex h-9 items-center rounded-lg bg-accent px-3.5 text-sm font-medium text-ink-950 transition-opacity hover:opacity-90"
+              >
+                Add your first app
+              </Link>
+              {extensionCheck && (
+                <Link href="/onboarding?type=extension" className="text-sm text-accent hover:underline">
+                  Add an extension
+                </Link>
+              )}
+            </div>
+          </section>
+        ) : (
+          <>
+            <section className="flex flex-col gap-4">
+              <p className="text-sm text-fg-muted">{longDate(now)}</p>
+              <h1 className="max-w-3xl text-[28px] font-medium leading-tight tracking-tight sm:text-[34px]">
+                {brief.lead}
+                {brief.attention && (
+                  <>
+                    {" "}
+                    <span className="text-status-risky">{brief.attention.label}</span>
+                    {brief.attention.text && ` ${brief.attention.text}`}
+                  </>
+                )}
+              </h1>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {brief.attention && (
+                  <Link
+                    href={`/verdict/${brief.attention.publicId}`}
+                    className="inline-flex h-9 items-center rounded-lg bg-accent px-3.5 text-sm font-medium text-ink-950 transition-opacity hover:opacity-90"
+                  >
+                    Open the review
+                  </Link>
+                )}
+                <Link href="/health/apps" className="inline-flex h-9 items-center rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800">
+                  All apps
+                </Link>
+                <Link href="/onboarding?path=app" className="text-sm text-accent hover:underline">
+                  Add app
+                </Link>
+                {extensionCheck && (
+                  <Link href="/onboarding?type=extension" className="text-sm text-accent hover:underline">
+                    Add extension
+                  </Link>
+                )}
+              </div>
+              {paused.length > 0 && (
+                <ul className="flex flex-col gap-1 text-xs text-status-confusing">
+                  {paused.map((p) => (
+                    <li key={p.id}>
+                      <Link href={appPath.page(p.id)} className="font-mono hover:underline">{nameOf.get(p.id) ?? "An app"}</Link>
+                      {p.why === "trial" ? (
+                        <>
+                          : trial ended — daily watch paused ·{" "}
+                          <Link href="/pricing" className="text-accent hover:underline">Upgrade to resume →</Link>
+                        </>
+                      ) : (
+                        <>
+                          : paused, the balance is used —{" "}
+                          <Link href={BALANCE_PATH} className="text-accent hover:underline">top up</Link> or{" "}
+                          <Link href="/pricing" className="text-accent hover:underline">upgrade</Link>; it resumes on its own
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
 
-      {/* CHE-317: the agent is the interface. Onboarding ends on this screen,
-          so this is also the last thing onboarding says. */}
-      <ConnectAgent keys={apiKeys.map((k) => ({ lastUsedAt: k.lastUsedAt?.toISOString() ?? null }))} />
-
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Today</h1>
-          <p className="mt-1 text-sm text-fg-muted">Your team&apos;s apps and their latest check.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-4">
-          {/* CHE-320: behind the same flag as the home page's extension option. */}
-          {extensionCheck && <Link href="/onboarding?type=extension" className="text-xs text-accent hover:underline">+ Add extension</Link>}
-          {/* CHE-324: the agent panel is already at the top of this page, so
-              "+ Add app" here means the form — not the onboarding chooser. */}
-          <Link
-            href="/onboarding?path=app"
-            className="rounded-md bg-accent px-4 py-2 font-mono text-[13px] font-semibold text-ink-950 transition-opacity hover:opacity-90"
-          >
-            + Add app
-          </Link>
-        </div>
+            <section aria-label="Checks of today and yesterday">
+              {days.length === 0 && <p className="text-sm text-fg-muted">No checks today or yesterday.</p>}
+              {days.map((day) => (
+                <div key={day}>
+                  <div className="border-b border-ink-700 pb-2 pt-4 text-xs text-fg-muted">
+                    {day} <span className="text-fg-faint">· times in UTC</span>
+                  </div>
+                  {feed
+                    .filter((r) => dayLabel(r.completedAt, now) === day)
+                    .map((r) => {
+                      const v = VERDICT_META[r.verdict];
+                      return (
+                        <div key={r.publicId} className="grid grid-cols-[44px_10px_minmax(0,1fr)_56px] items-start gap-3 border-b border-ink-800 py-4">
+                          <span className="font-mono text-[13px] text-fg-muted">{hhmm(r.completedAt)}</span>
+                          <span aria-hidden className={`mt-1.5 h-2 w-2 rounded-full ${v?.dotClassName ?? "bg-ink-600"}`} />
+                          <div className="flex min-w-0 flex-col gap-1">
+                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                              {r.appId ? (
+                                <Link href={appPath.page(r.appId)} className="truncate font-mono text-sm text-fg hover:underline">{r.name}</Link>
+                              ) : (
+                                <span className="truncate font-mono text-sm">{r.name}</span>
+                              )}
+                              <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${v?.pillClassName ?? "border-ink-600 text-fg-faint"}`}>
+                                {v?.label ?? r.verdict}
+                              </span>
+                              <Link href={`/verdict/${r.publicId}`} className="font-mono text-[13px] text-accent hover:underline">
+                                #{r.runNumber}
+                              </Link>
+                            </div>
+                            {r.said && <span className="text-sm">{r.said}</span>}
+                          </div>
+                          <span className="text-right font-mono text-sm">{usd(r.priceUsd!)}</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              ))}
+              <Link href="/health/checks" className="mt-4 inline-block text-sm text-accent hover:underline">
+                Earlier checks
+              </Link>
+            </section>
+          </>
+        )}
       </div>
 
-      {apps.length === 0 ? (
-        <div className="card p-8 text-center">
-          <p className="text-fg-muted">No apps yet.</p>
-          <Link href="/onboarding?path=app" className="mt-2 inline-block text-accent hover:underline">
-            Add your first app →
-          </Link>
-        </div>
-      ) : (
-        <ul className="space-y-3">
-          {apps.map((app) => {
-            const latest = app.runs[0];
-            const isExtension = app.targetKind === "extension";
-            const displayName = isExtension ? extensionDisplayName(app.targetUrl, latest?.extensionEvidence) : app.appSlug;
-            const labels = (JSON.parse(app.policy?.pickupLabels ?? "[]") as string[]).join(", ");
-            // CHE-54: a free-plan watch runs on a 7-day trial. The scheduler
-            // stops running an expired one, so the card must not keep claiming
-            // it's watching.
-            const trial = watchTrialState(app.watch, team.plan as UserPlan);
-            return (
-              <li key={app.id} className="card flex flex-wrap items-start justify-between gap-4 p-5">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Link
-                      href={appPath.page(app.id)}
-                      className="break-all font-mono text-sm text-fg hover:underline"
-                    >
-                      {displayName}
-                    </Link>
-                    <Link
-                      href={appPath.settings(app.id)}
-                      className="text-xs text-fg-faint hover:underline"
-                    >
-                      Settings
-                    </Link>
-                  </div>
-                  <p className="text-xs text-fg-faint">
-                    {isExtension ? "Chrome extension · on demand" : !app.watch?.active
-                      ? "paused"
-                      : trial.kind === "ended" || canRun.get(app.id) === false
-                        ? "paused"
-                        : `watching · ${app.watch.frequency}`}
-                    {labels && ` · labels: ${labels}`}
-                  </p>
-                  {/* CHE-327: the scheduler skips this app's ticks while the
-                      balance cannot cover a check; say so, with both doors. */}
-                  {app.watch?.active && trial.kind !== "ended" && canRun.get(app.id) === false && (
-                    <p className="text-xs text-status-confusing">
-                      paused: the balance is used —{" "}
-                      <Link href="/settings/billing" className="text-accent hover:underline">
-                        top up
-                      </Link>{" "}
-                      or{" "}
-                      <Link href="/pricing" className="text-accent hover:underline">
-                        upgrade
-                      </Link>
-                      ; it resumes on its own
-                    </p>
-                  )}
-                  {trial.kind === "ended" ? (
-                    <p className="text-xs text-status-confusing">
-                      trial ended — daily watch paused ·{" "}
-                      <Link href="/pricing" className="text-accent hover:underline">
-                        Upgrade to resume →
-                      </Link>
-                    </p>
-                  ) : trial.kind === "active" ? (
-                    <p className="text-xs text-fg-faint">
-                      free trial · {trial.daysLeft} day{trial.daysLeft === 1 ? "" : "s"} left ·{" "}
-                      <Link href="/pricing" className="text-accent hover:underline">
-                        Upgrade
-                      </Link>
-                    </p>
-                  ) : null}
-                  {app.tracker ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-status-ok">✓ Linear · team:</span>
-                      {teamsByApp[app.id]?.length ? (
-                        <TeamSelect
-                          appId={app.id}
-                          teams={teamsByApp[app.id]}
-                          current={app.tracker.teamId}
-                        />
-                      ) : (
-                        <span className="text-xs text-fg-faint">
-                          {app.tracker.externalOrg ?? "—"}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <a
-                      href={`/api/integrations/linear/start?appId=${app.id}`}
-                      className="text-xs text-accent hover:underline"
-                    >
-                      Connect Linear →
-                    </a>
-                  )}
-                  {/* CHE-237: which PostHog project feeds THIS app. The
-                      connection is the team's; the project is the app's, and
-                      until this row existed there was no way to tell which fed
-                      which. A setting nobody can find is a setting nobody sets. */}
-                  {posthogProjects !== null && (
-                    <AppPostHogProject
-                      appId={app.id}
-                      chosen={
-                        app.posthogProjectId
-                          ? { id: app.posthogProjectId, name: app.posthogProjectName }
-                          : null
-                      }
-                      projects={posthogProjects}
-                    />
-                  )}
-                  {/* Outbound webhooks (CHE-53): generic endpoint + Slack preset,
-                      POSTed after every completed watch run. */}
-                  <details className="pt-1">
-                    <summary className="cursor-pointer text-xs text-fg-faint hover:text-fg-muted">
-                      {app.webhookUrl || app.slackWebhookUrl ? "✓ Webhooks" : "Webhooks"} — plug
-                      into your monitoring
-                    </summary>
-                    <form
-                      action={setIntegrationEndpoints.bind(null, app.id)}
-                      className="mt-2 max-w-md space-y-2"
-                    >
-                      <label className="block space-y-1">
-                        <span className="text-xs text-fg-muted">Webhook URL</span>
-                        <Input
-                          name="webhookUrl"
-                          type="url"
-                          placeholder="https://your-stack.example.com/hooks/checkmyapp"
-                          defaultValue={app.webhookUrl ?? ""}
-                        />
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="text-xs text-fg-muted">
-                          Signing secret (optional, write-only — blank keeps the current one)
-                        </span>
-                        <Input
-                          name="webhookSecret"
-                          type="password"
-                          placeholder="••••••••"
-                          autoComplete="new-password"
-                        />
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="text-xs text-fg-muted">Slack incoming webhook URL</span>
-                        <Input
-                          name="slackWebhookUrl"
-                          type="url"
-                          placeholder="https://hooks.slack.com/services/…"
-                          defaultValue={app.slackWebhookUrl ?? ""}
-                        />
-                      </label>
-                      <Button type="submit" variant="outline" className="px-3 py-1.5 text-xs">
-                        Save webhooks
-                      </Button>
-                    </form>
-                  </details>
+      {!empty && (
+        <aside className="flex min-w-0 flex-col gap-[18px]">
+          <section className="card flex flex-col gap-3 p-[18px]">
+            <div className="text-[13px] text-fg-muted">Your apps cost</div>
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-[30px] leading-none">{usd(health.monthlyRunRateUsd)}</span>
+              <span className="text-fg-muted">a month</span>
+            </div>
+            {costly.map((a) => (
+              <div key={a.appId} className="flex flex-col gap-1">
+                <div className="flex justify-between gap-3 text-[13px]">
+                  <Link href={appPath.page(a.appId)} className="truncate font-mono hover:underline">{nameOf.get(a.appId) ?? a.appSlug}</Link>
+                  <span className="font-mono">{usd(a.spendUsd)}</span>
                 </div>
-                <div className="flex shrink-0 flex-col items-end gap-3">
-                {isExtension && <RunSavedApp appId={app.id} />}
-                {latest ? (
-                  <Link
-                    href={`/${latest.status === "completed" ? "verdict" : "run"}/${latest.publicId}`}
-                    className="font-mono text-[13px] text-accent hover:underline"
-                  >
-                    latest run →
-                  </Link>
-                ) : (
-                  <span className="font-mono text-[13px] text-fg-faint">no runs yet</span>
-                )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                <span className="block h-[5px] rounded-full bg-ink-700">
+                  <span className="block h-[5px] rounded-full bg-accent" style={{ width: `${sharePercent(a.spendUsd, health.totalSpendUsd)}%` }} />
+                </span>
+              </div>
+            ))}
+            {last?.latest && (
+              <div className="flex flex-col gap-1 border-t border-ink-800 pt-3 text-[13px]">
+                <span className="flex justify-between gap-3">
+                  <span className="truncate">Last check, {nameOf.get(last.appId) ?? last.appSlug}</span>
+                  <span className="font-mono">{usd(last.latest.priceUsd)}</span>
+                </span>
+                <span className="text-fg-muted">
+                  {last.latest.price.work}.
+                  {last.latest.price.comparison && last.latest.price.comparison !== QUICK_COMPARISON ? ` ${last.latest.price.comparison}` : ""}
+                </span>
+              </div>
+            )}
+            <Link href={BALANCE_PATH} className="text-[13px] text-accent hover:underline">What each app costs</Link>
+          </section>
+
+          <section className="card flex flex-col gap-1.5 p-[18px]">
+            <div className="text-[13px] text-fg-muted">Balance</div>
+            <div className="font-mono text-2xl">{balance.balanceUsd === null ? "Unlimited" : usd(balance.balanceUsd)}</div>
+            <div className="text-[13px] text-fg-muted">
+              {balanceLine({ plan: team.plan, creditUsd: balance.creditUsd, renewsOn: balance.renewsOn, topupUsd: balance.topupUsd, usd })}{" "}
+              {atThisPace.headline}.
+            </div>
+          </section>
+
+          <section className="card flex flex-col gap-2 p-[18px]">
+            <div className="text-[13px] text-fg-muted">Keeps coming back</div>
+            {again.length === 0 ? (
+              <div className="text-[15px]">Nothing right now.</div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {again.slice(0, 3).map((i) => (
+                  <li key={`${i.appId}:${i.signature}`} className="text-[13px]">
+                    <span className="text-status-risky">{i.title}</span>
+                    <span className="block text-fg-muted">
+                      <Link href={appPath.page(i.appId)} className="font-mono hover:underline">{i.appName}</Link>
+                      {" · "}seen in {i.timesSeen} checks in a row, #{i.firstSeenRunNumber} to #{i.lastSeenRunNumber}
+                    </span>
+                  </li>
+                ))}
+                {again.length > 3 && <li className="text-[13px] text-fg-muted">and {again.length - 3} more</li>}
+              </ul>
+            )}
+          </section>
+        </aside>
       )}
     </main>
   );

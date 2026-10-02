@@ -149,7 +149,10 @@ function wiringChecks(): void {
   check("saving a Web Store link from onboarding asks the flag too", /isExtension && !\(await extensionCheckFor\(user\)\)/.test(actions));
 
   const dashboard = source("src/app/(app)/home/page.tsx");
-  check("the dashboard's '+ Add extension' link is behind the flag", /\{extensionCheck && <Link href="\/onboarding\?type=extension"/.test(dashboard));
+  // Every link to the extension form on the page, not just one of them.
+  const extensionLinks = dashboard.match(/href="\/onboarding\?type=extension"/g)?.length ?? 0;
+  const flaggedLinks = dashboard.match(/\{extensionCheck && \(\s*<Link href="\/onboarding\?type=extension"/g)?.length ?? 0;
+  check("the dashboard's 'Add extension' links are behind the flag", extensionLinks > 0 && extensionLinks === flaggedLinks, `${flaggedLinks} of ${extensionLinks}`);
 
   const declared = source("scripts/posthog-flags.ts");
   check("posthog:setup declares the flag under the key the app reads", /key: HOME_EXTENSION_CHECK_FLAG,\s*audience: "owner"/.test(declared));
