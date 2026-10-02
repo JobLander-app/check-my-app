@@ -8,7 +8,10 @@ import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { shellData } from "@/lib/shell-data";
+import { recurringByApp } from "@/lib/recurring";
 import {
+  recurringCount,
+  recurringLine,
   APPS_FILTERS,
   APPS_VIEW_COOKIE,
   allAppsHref,
@@ -28,7 +31,11 @@ import { CheckPrice } from "@/components/check-price";
 // a check is shown with its price, and the price is written a step after the
 // verdict (appHealth). "Need attention" follows the newest verdict, so the
 // filter never leaves out an app whose strip already ends in red.
-type Row = AppHealth & { name: string; watch: WatchState; newestVerdict: string | null };
+//
+// `recurring` is how many problems of the app were seen in two or more checks in
+// a row and are still there (CHE-354, src/lib/recurring.ts) — the owner's
+// "what keeps coming back because nobody fixes it".
+type Row = AppHealth & { name: string; watch: WatchState; newestVerdict: string | null; recurring: number };
 
 function Latest({ app }: { app: Row }) {
   const meta = app.latest?.verdict ? VERDICT_META[app.latest.verdict] : null;
@@ -58,7 +65,7 @@ const Figure = ({ label, value, children }: { label: string; value: string; chil
 
 function Card({ app, days }: { app: Row; days: number }) {
   return (
-    <article className="card grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-[18px] lg:grid-cols-[220px_minmax(0,1fr)_130px_200px_auto] lg:items-center">
+    <article className="card grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-[18px] lg:grid-cols-[220px_minmax(0,1fr)_110px_190px_120px_auto] lg:items-center">
       <div className="col-span-2 flex min-w-0 flex-col gap-1.5 lg:col-span-1">
         <Link href={appPath.page(app.appId)} className="truncate font-mono text-[15px] text-fg hover:underline">
           {app.name}
@@ -80,7 +87,12 @@ function Card({ app, days }: { app: Row; days: number }) {
         </div>
         <div className="text-xs text-fg-muted">{scheduleLabel(app.watch)}</div>
       </Figure>
-      <Link href={appPath.settings(app.appId)} className="col-span-2 text-[13px] text-accent hover:underline lg:col-span-1 lg:text-right">
+      <div className="min-w-0">
+        <div className="text-xs text-fg-muted">Recurring</div>
+        <div className={`font-mono text-[17px] ${app.recurring > 0 ? "text-status-risky" : "text-fg-muted"}`}>{app.recurring}</div>
+        <div className="text-xs text-fg-muted">{recurringLine(app.recurring)}</div>
+      </div>
+      <Link href={appPath.settings(app.appId)} className="self-end text-right text-[13px] text-accent hover:underline lg:self-auto">
         Settings
       </Link>
     </article>
@@ -105,6 +117,7 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
             <th className={`${TH} text-right`}>Last check</th>
             <th className={`${TH} text-right`}>Checks</th>
             <th className={`${TH} text-right`}>Scheduled · on request</th>
+            <th className={`${TH} text-right`}>Recurring</th>
             <th className={TH}>Schedule</th>
             <th className={TH} />
           </tr>
@@ -132,6 +145,12 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
               <td className={`${TD} text-right font-mono`}>{app.checks}</td>
               <td className={`${TD} whitespace-nowrap text-right font-mono`}>
                 {app.scheduled.count} · {app.onRequest.count}
+              </td>
+              <td
+                className={`${TD} text-right font-mono ${app.recurring > 0 ? "text-status-risky" : "text-fg-muted"}`}
+                title={recurringLine(app.recurring)}
+              >
+                {app.recurring}
               </td>
               <td className={`${TD} whitespace-nowrap`}>{scheduleLabel(app.watch)}</td>
               <td className={`${TD} text-right`}>
@@ -164,9 +183,10 @@ export default async function AllAppsPage({
   const { db, team } = await requireUser();
   // The names are the sidebar's (an extension is called by its name, not its
   // slug); the layout has already asked, so this costs nothing.
-  const [health, shell, watches] = await Promise.all([
+  const [health, shell, recurring, watches] = await Promise.all([
     appHealth(db, team.id),
     shellData(db, team.id),
+    recurringByApp(db, team.id),
     db.watch.findMany({
       where: { ...teamOwned(team.id) },
       select: { appId: true, active: true, frequency: true, trialEndsAt: true },
@@ -183,6 +203,7 @@ export default async function AllAppsPage({
     name: nameOf.get(a.appId) ?? a.appSlug,
     watch: watchOf.get(a.appId),
     newestVerdict: a.verdicts.at(-1)?.verdict ?? null,
+    recurring: recurringCount(recurring.get(a.appId) ?? []),
   }));
   const apps = all.filter((a) => inFilter(filter, { latestVerdict: a.newestVerdict, watch: a.watch }));
 

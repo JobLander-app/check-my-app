@@ -66,6 +66,20 @@ export function allAppsHref(view: AppsView, filter: AppsFilter): string {
   return `/health/apps?${q}`;
 }
 
+/**
+ * How many of an app's problems are recurring: seen in two or more checks in a
+ * row and still there. Not the ones seen once, not the ones that are gone, and
+ * not the ones somebody answered ("that's fine", a disputed one).
+ */
+export function recurringCount(issues: { state: string }[]): number {
+  return issues.filter((i) => i.state === "recurring").length;
+}
+
+export function recurringLine(n: number): string {
+  if (n === 0) return "nothing keeps coming back";
+  return n === 1 ? "problem seen check after check" : "problems seen check after check";
+}
+
 const checks = (n: number) => `${n} check${n === 1 ? "" : "s"}`;
 
 /**

@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  allAppsHref, appsFilter, appsView, checkedWhen, inFilter, isScheduled, scheduleLabel, stripStory,
+  allAppsHref, appsFilter, appsView, checkedWhen, inFilter, isScheduled, recurringCount, recurringLine, scheduleLabel, stripStory,
 } from "../src/lib/all-apps";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -97,6 +97,13 @@ eq("when: minutes", checkedWhen(new Date("2026-10-02T11:48:00Z"), now), "12 min 
 eq("when: hours", checkedWhen(new Date("2026-10-02T08:10:00Z"), now), "3 h ago");
 eq("when: days", checkedWhen(new Date("2026-09-29T12:00:00Z"), now), "3 days ago");
 eq("when: a date after a week", checkedWhen(new Date("2026-09-12T23:30:00Z"), now), "12 Sep");
+
+// ── 3b. Recurring ───────────────────────────────────────────────────────────
+eq("recurring: only problems seen check after check and still there are counted",
+  recurringCount([{ state: "recurring" }, { state: "new" }, { state: "gone" }, { state: "known" }, { state: "not_a_bug" }, { state: "recurring" }]), 2);
+eq("recurring: none", recurringLine(0), "nothing keeps coming back");
+eq("recurring: one", recurringLine(1), "problem seen check after check");
+eq("recurring: several", recurringLine(3), "problems seen check after check");
 
 // ── 4. The page ─────────────────────────────────────────────────────────────
 const page = read("src/app/(app)/health/apps/page.tsx");
