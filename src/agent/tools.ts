@@ -1108,8 +1108,9 @@ const mutationCount = (doc: Page | Frame) =>
 const APPEARED_MAX_CHARS = 200;
 const APPEARED_MAX_ITEMS = 6;
 
+// Starts the watch in one document and returns where its log stands.
 const appearedMark = (doc: Page | Frame) =>
-  doc.evaluate("window.__cmaAppearedSeq || 0").then((n) => Number(n) || 0, () => 0);
+  doc.evaluate("window.__cmaWatch ? window.__cmaWatch() : 0").then((n) => Number(n) || 0, () => 0);
 
 const appearedAfter = (doc: Page | Frame, mark: number): Promise<string[]> =>
   doc
@@ -2766,17 +2767,33 @@ async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
 // the next read_page it is gone: run #294 reported "no Copied confirmation" on
 // a button that had shown one, because nothing we had could see it. Each entry
 // carries a running number so a click can ask for what came after it.
+//
+// Text is recorded only while a click is watching (__cmaWatch, a few seconds),
+// and "appeared" means: a text node a person could see now that they could not
+// see when the watch began. The unit is the text node, asked one by one —
+// a visible block can hold a hidden or transparent error beside its "Saved",
+// and a container's own text would name both. Four ways text gets there, all
+// common, each one a way to report a confirmation as missing if left out:
+//   - a node is added, or its text changes;
+//   - a node that was in the page all along is revealed (hidden removed, a
+//     class or style changed) — hence the list of what was visible at the start;
+//   - a node arrives transparent and fades in — hence the second look;
+//   - an accessible name changes on an icon button.
+// What appeared together (one added block, one revealed block) is one piece,
+// and a piece too long to be a message is a region re-rendering: read_page's.
 const MUTATION_COUNTER_SCRIPT = `(() => {
   window.__cmaMutations = 0;
   window.__cmaAppeared = [];
   window.__cmaAppearedSeq = 0;
   try {
     window.__cmaMutationObserver?.disconnect();
-    const shown = (node) => {
-      const el = node.nodeType === 1 ? node : node.parentElement;
-      if (!el || !el.isConnected || el.closest('script,style,noscript,template')) return false;
-      return typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
-    };
+    let watchUntil = 0;
+    let baseline = null;
+    let later = [];
+    let timer = 0;
+    const visible = (el) => !!el && el.isConnected && !el.closest('script,style,noscript,template') &&
+      (typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+    const shown = (textNode) => visible(textNode.parentElement);
     const note = (raw) => {
       const text = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
       if (!text || text.length > ${APPEARED_MAX_CHARS}) return;
@@ -2785,29 +2802,65 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
       log.push({ n: ++window.__cmaAppearedSeq, t: text });
       if (log.length > 40) log.splice(0, log.length - 40);
     };
+    const textNodes = (root, limit) => {
+      if (root.nodeType === 3) return root.data.trim() ? [root] : [];
+      if (root.nodeType !== 1) return [];
+      const found = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (found.length < limit && walker.nextNode()) {
+        if (walker.currentNode.data.trim()) found.push(walker.currentNode);
+      }
+      return found;
+    };
+    const say = (nodes) => {
+      const seen = nodes.filter(shown);
+      if (seen.length) note(seen.map((n) => n.data).join(' '));
+      return seen.length > 0;
+    };
+    const consider = (nodes) => {
+      if (nodes.length && !say(nodes) && later.length < 100) later.push(nodes);
+    };
+    const lookAgain = () => {
+      timer = 0;
+      later = later.filter((nodes) => nodes.some((n) => n.isConnected) && !say(nodes));
+      if (later.length && Date.now() < watchUntil) timer = setTimeout(lookAgain, 250);
+      else later = [];
+    };
+    const REVEALS = { class: 1, style: 1, hidden: 1, 'aria-hidden': 1, open: 1 };
     const observer = new MutationObserver((records) => {
       window.__cmaMutations += records.length;
+      if (Date.now() > watchUntil) return;
       for (const r of records) {
         try {
-          if (r.type === 'characterData') { if (shown(r.target)) note(r.target.data); }
+          if (r.type === 'characterData') consider(textNodes(r.target, 1));
           else if (r.type === 'childList') {
-            for (const node of r.addedNodes) {
-              if (node.nodeType === 3) { if (shown(node)) note(node.data); }
-              // innerText, not textContent: a visible block can hold a hidden
-              // error beside its "Saved", and only what is rendered appeared.
-              // (Asked only of small blocks — it costs a layout.)
-              else if (node.nodeType === 1 && shown(node) && (node.textContent || '').length <= 2000) {
-                note(typeof node.innerText === 'string' ? node.innerText : node.textContent);
-              }
-            }
+            for (const added of r.addedNodes) consider(textNodes(added, 400));
           } else if (r.attributeName === 'aria-label' || r.attributeName === 'title') {
-            if (shown(r.target)) note(r.target.getAttribute(r.attributeName));
+            if (visible(r.target)) note(r.target.getAttribute(r.attributeName));
+          } else if (baseline && REVEALS[r.attributeName]) {
+            consider(textNodes(r.target, 4000).filter((n) => !baseline.has(n)));
           }
         } catch (e) {}
       }
+      if (later.length && !timer) timer = setTimeout(lookAgain, 120);
     });
     observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
     window.__cmaMutationObserver = observer;
+    window.__cmaWatch = () => {
+      watchUntil = Date.now() + 6000;
+      later = [];
+      baseline = null;
+      try {
+        const all = textNodes(document.documentElement, 30000);
+        // A page too large to list is one where "revealed" cannot be told from
+        // "was there": reveals are then not reported at all, rather than wrongly.
+        if (all.length < 30000) {
+          baseline = new WeakSet();
+          for (const node of all) if (shown(node)) baseline.add(node);
+        }
+      } catch (e) {}
+      return window.__cmaAppearedSeq;
+    };
   } catch (e) {}
 })();`;
 

@@ -53,7 +53,18 @@ const PAGES: Record<string, string> = {
   // A visible block that holds hidden text beside its visible text: the hidden
   // part did not appear to anyone (Codex on #242).
   [`${TOP}/nested`]: `<!doctype html><title>Form</title>
-    <button onclick="const d=document.createElement('div');d.innerHTML='<span hidden>hidden-error</span><span style=&quot;display:none&quot;>gone-words</span><span style=&quot;visibility:hidden&quot;>unseen-words</span><span>Saved fine</span>';document.body.append(d)">Show result</button>`,
+    <button onclick="const d=document.createElement('div');d.innerHTML='<span hidden>hidden-error</span><span style=&quot;display:none&quot;>gone-words</span><span style=&quot;visibility:hidden&quot;>unseen-words</span><span style=&quot;opacity:0&quot;>transparent-error</span><span>Saved fine</span>';document.body.append(d)">Show result</button>`,
+  // A message that was in the page all along and is revealed for a moment:
+  // by the hidden attribute, and by a class (round 2 of Codex on #242).
+  [`${TOP}/reveal-hidden`]: `<!doctype html><title>Draft</title><p>Always here</p><p id="t" hidden>Draft stored</p>
+    <button onclick="const t=document.getElementById('t');t.hidden=false;setTimeout(()=>{t.hidden=true},300)">Show status</button>`,
+  [`${TOP}/reveal-class`]: `<!doctype html><title>Share</title><style>.off{display:none}</style><p>Always here</p><div id="t" class="toast off"><b>Done.</b> Link is on your clipboard</div>
+    <button onclick="const t=document.getElementById('t');t.classList.remove('off');setTimeout(()=>t.classList.add('off'),300)">Show link status</button>`,
+  // A toast that arrives transparent and fades in, as most do.
+  [`${TOP}/fade`]: `<!doctype html><title>Fade</title><style>.toast{opacity:0;transition:opacity 150ms}.toast.in{opacity:1}</style>
+    <button onclick="const t=document.createElement('div');t.className='toast';t.textContent='Changes refreshed';document.body.append(t);requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('in')));setTimeout(()=>t.remove(),700)">Refresh changes</button>`,
+  // A control whose own class changes says nothing new: its label was there.
+  [`${TOP}/active`]: `<!doctype html><title>Tabs</title><p>Always here</p><button onclick="this.classList.toggle('active');this.style.fontWeight='bold'">Show overview</button>`,
   // A whole region re-rendering is not a message.
   [`${TOP}/long`]: `<!doctype html><title>List</title>
     <button onclick="const r=document.createElement('section');r.textContent=${JSON.stringify(LONG).replace(/"/g, "&quot;")};document.body.append(r);const k=document.createElement('p');k.textContent='List refreshed';document.body.append(k)">Refresh list</button>`,
@@ -189,10 +200,41 @@ async function main() {
       const env = await envAt(browser, "/nested");
       const result = await executeTool(env, "click", { role: "button", name: "Show result" });
       check(
-        "of a block that appeared, only its visible text is named — not the hidden error inside it",
-        result.includes('"Saved fine"') && !result.includes("hidden-error") && !result.includes("gone-words") && !result.includes("unseen-words"),
+        "of a block that appeared, only its visible text is named — not the hidden or transparent error inside it",
+        result.includes('"Saved fine"') &&
+          !result.includes("hidden-error") &&
+          !result.includes("gone-words") &&
+          !result.includes("unseen-words") &&
+          !result.includes("transparent-error"),
         result,
       );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/reveal-hidden");
+      const result = await executeTool(env, "click", { role: "button", name: "Show status" });
+      check("a message revealed by removing `hidden` for 300 ms is named", result.includes('"Draft stored"'), result);
+      check("…and text that was visible all along is not", !result.includes("Always here") && !result.includes("Show status"), result);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/reveal-class");
+      const result = await executeTool(env, "click", { role: "button", name: "Show link status" });
+      check("a message revealed by a class change is named, as one piece", result.includes('"Done. Link is on your clipboard"'), result);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/fade");
+      const result = await executeTool(env, "click", { role: "button", name: "Refresh changes" });
+      check("a toast that arrives transparent and fades in is named", result.includes('"Changes refreshed"'), result);
+      const after = await executeTool(env, "read_page", {});
+      check("…and it too is gone by the next read", !after.includes("Changes refreshed"), after.slice(0, 160));
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/active");
+      const result = await executeTool(env, "click", { role: "button", name: "Show overview" });
+      check("a control whose own class and style change has not said anything new", result.startsWith("Clicked") && !result.includes(APPEARED), result);
       await env.page.context().close();
     }
     {
