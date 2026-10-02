@@ -253,6 +253,47 @@ const UNGUARDED_ACTIONS: Record<string, string> = {
   "src/app/team/switch-actions.ts switchTeamAction":
     "stores nothing: it sets the browser's own cookie for which of the signed-in person's teams the next page shows",
 };
+// GET handlers (Codex on #262). The checker's browser never announces itself
+// on a GET — a GET goes out byte-identical to a visitor's, by design
+// (src/agent/self-hosts.ts shouldAnnounceSelfCheck) — so a GET cannot be
+// guarded by the header. It has to be safe for our checker to load. Every GET
+// handler is therefore named here as one of three things, and a new one fails
+// until somebody names it:
+//   "reads"        — the handler writes nothing (checked below: no write call
+//                    in the file);
+//   "browser-only" — it stores nothing on our side: a short-lived cookie in the
+//                    caller's own browser, then a redirect to the provider;
+//   { writes, needs } — it can write, and only after something our checker
+//                    cannot produce. `needs` says what.
+type GetKind = "reads" | "browser-only" | { writes: string; needs: string };
+const GET_HANDLERS: Record<string, GetKind> = {
+  "src/app/.well-known/posthog-client.json/route.ts": "reads",
+  "src/app/api/checks/lookup/route.ts": "reads",
+  "src/app/api/checks/today/route.ts": "reads",
+  "src/app/api/evidence/[...path]/route.ts": "reads",
+  "src/app/api/runs/[id]/review/route.ts": "reads",
+  "src/app/api/runs/[id]/route.ts": "reads",
+  "src/app/api/runs/[id]/stream/route.ts": "reads",
+  "src/app/api/runs/[id]/verdict/route.ts": "reads",
+  "src/app/api/status/[slug]/route.ts": "reads",
+  "src/app/api/tests/[id]/route.ts": "reads",
+  "src/app/api/integrations/linear/start/route.ts": "browser-only",
+  "src/app/api/integrations/posthog/start/route.ts": "browser-only",
+  "src/app/api/billing/one-check/route.ts": {
+    writes: "starts the run of a paid $1 check when the webhook has not arrived yet",
+    needs: "a Stripe Checkout session that Stripe reports as paid — parking one is the POST above it, which is guarded, and paying it is a card at Stripe",
+  },
+  "src/app/api/integrations/linear/callback/route.ts": {
+    writes: "stores the tracker connection",
+    needs: "the nonce cookie its start route set AND a code Linear's token endpoint accepts — issued only after a person consents at Linear, off our origin",
+  },
+  "src/app/api/integrations/posthog/callback/route.ts": {
+    writes: "stores the analytics connection",
+    needs: "the nonce and verifier cookies its start route set AND a code PostHog's token endpoint accepts — issued only after a person consents at PostHog, off our origin",
+  },
+};
+const WRITE_CALL = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/;
+
 const ROUTE_GUARD = /^if \(isSelfCheckRequest\((_?req)\.headers\)\) return selfCheckReadOnlyResponse\(\)$/;
 const ACTION_GUARD = /^(await refuseSelfCheck\(|if \(isSelfCheckRequest\(await headers\(\)\)\) redirect\()/;
 const FILE_LEVEL_DIRECTIVE = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*["']use server["']/;
@@ -324,6 +365,30 @@ function inventory() {
     Object.keys(UNGUARDED_ACTIONS).every((key) => excepted.includes(key)), Object.keys(UNGUARDED_ACTIONS).filter((key) => !excepted.includes(key)).join(", "));
   check("inventory: the webhooks are the only handlers left out, and there are three of them",
     files.filter(({ file }) => file.startsWith(WEBHOOKS) && file.endsWith("/route.ts")).map(({ file }) => file.slice(WEBHOOKS.length).split("/")[0]).sort().join() === "clerk,stripe,telegram");
+
+  // GET handlers: each one named, none stale, and "reads" means what it says.
+  const gets = files.filter(({ file, src }) => file.endsWith("/route.ts") && /export\s+(?:async\s+)?(?:function|const)\s+GET\b/.test(src));
+  const unnamed = gets.filter(({ file }) => !(file in GET_HANDLERS)).map(({ file }) => file);
+  const stale = Object.keys(GET_HANDLERS).filter((file) => !gets.some((g) => g.file === file));
+  check("inventory: every GET handler is named as one that reads, one that only sets a cookie in the caller's browser, or one that writes after something our checker cannot produce",
+    unnamed.length === 0 && stale.length === 0, [...unnamed.map((f) => `not named: ${f}`), ...stale.map((f) => `no such GET handler: ${f}`)].join(" ¦ "));
+  const notJustReading = gets.filter(({ file, src }) => GET_HANDLERS[file] === "reads" && (WRITE_CALL.test(src) || /cookies\(\)/.test(src))).map(({ file }) => file);
+  const notJustCookies = gets.filter(({ file, src }) => GET_HANDLERS[file] === "browser-only" && (WRITE_CALL.test(src) || !/\.set\(/.test(src) || !/NextResponse\.redirect\(/.test(src))).map(({ file }) => file);
+  check("inventory: a GET handler named \"reads\" has no write call and touches no cookie; one named \"browser-only\" sets a cookie, redirects, and has no write call",
+    notJustReading.length === 0 && notJustCookies.length === 0, [...notJustReading, ...notJustCookies].join(" ¦ "));
+  const writers = Object.entries(GET_HANDLERS).filter((entry): entry is [string, { writes: string; needs: string }] => typeof entry[1] === "object");
+  check("inventory: a GET handler that can write says what it needs first — and its own source shows the gate",
+    writers.length > 0 && writers.every(([, kind]) => kind.writes.length > 20 && kind.needs.length > 40) &&
+      // The paid check: the state is asked of Stripe, by the session id.
+      /paidCheckState\(db, stripe, sessionId\)/.test(readFileSync(path.join(repoRoot, "src/app/api/billing/one-check/route.ts"), "utf8")) &&
+      // The callbacks: the nonce is compared before anything, and the code is exchanged before the write.
+      ["linear", "posthog"].every((provider) => {
+        const src = readFileSync(path.join(repoRoot, `src/app/api/integrations/${provider}/callback/route.ts`), "utf8");
+        const nonceAt = src.search(/[nN]once[^\n]*!== nonce/);
+        const exchangeAt = src.indexOf("exchangeCode(");
+        const writeAt = src.search(/\.upsert\(/);
+        return nonceAt > 0 && exchangeAt > nonceAt && writeAt > exchangeAt;
+      }));
 
   // The shared helper: reads the request, redirects with the flag, and is not
   // itself an action.
