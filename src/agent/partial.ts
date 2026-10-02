@@ -314,13 +314,18 @@ export async function planPartialRun(
   const [currentCreds, baselineCreds] = await Promise.all([
     env.db.run.findUnique({
       where: { id: run.id },
-      select: { testEmail: true, testPasswordEnc: true, testAccounts: true },
+      select: { testEmail: true, testPasswordEnc: true, testAccounts: true, storePasswordEnc: true },
     }),
     env.db.run.findUnique({
       where: { id: baseline.id },
-      select: { testEmail: true, testPasswordEnc: true, testAccounts: true },
+      select: { testEmail: true, testPasswordEnc: true, testAccounts: true, storePasswordEnc: true },
     }),
   ]);
+  // CHE-372: a store password that appeared since the last real walk opens the
+  // whole store, which that walk only ever saw the password page of.
+  if (currentCreds?.storePasswordEnc && !baselineCreds?.storePasswordEnc) {
+    return { taken: false, reason: "the store password was added since the last full walk — re-checking everything" };
+  }
   const hasCreds = Boolean(currentCreds?.testEmail && currentCreds?.testPasswordEnc);
   const baselineHadCreds = Boolean(baselineCreds?.testEmail && baselineCreds?.testPasswordEnc);
   if (hasCreds && (!baselineHadCreds || currentCreds?.testEmail !== baselineCreds?.testEmail)) {

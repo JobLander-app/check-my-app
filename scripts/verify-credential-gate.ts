@@ -25,6 +25,7 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-credential-gate.ts
 
 import { executeTool, credentialRejection, type RecordedAction, type ToolEnv } from "@/agent/tools";
+import type { StoreState } from "@/agent/store-password";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -54,6 +55,11 @@ function fillingEnv(): { env: ToolEnv; received: () => string | null } {
     or: () => locator,
     fill: async (v: string) => {
       filled = v;
+    },
+    // A credential is written in the page by tools.ts WRITE_SECRET (CHE-373); here it lands.
+    evaluate: async (_write: unknown, arg: { value: string }) => {
+      filled = arg.value;
+      return "ok";
     },
     inputValue: async () => filled,
   };
@@ -171,6 +177,96 @@ async function main() {
       received() === "qa@target.testx" && action?.kind === "fill" && action.value === "{{TEST_EMAIL}}x",
       `field received ${JSON.stringify(received())}, recorded ${JSON.stringify(action?.kind === "fill" ? action.value : action)}`,
     );
+  }
+
+  // 6 — CHE-372: the store password follows the same one-attempt rule. A
+  // store that turns it away is not asked again — not by the next page of this
+  // phase, not by a phase that starts from the run's state, and not through the
+  // fill tool. A submission whose outcome we do not know, or could not record,
+  // counts as an attempt: fail closed.
+  {
+    // A locked store: every page is its Shopify password page, and nothing we
+    // submit is accepted. `pressFails` makes the submit throw after it left;
+    // `writeFails` makes the run's state impossible to write.
+    function lockedStore(opts: { pressFails?: boolean; writeFails?: boolean; runState?: StoreState } = {}) {
+      let presses = 0;
+      let url = "about:blank";
+      let runState: StoreState = opts.runState ?? "untried";
+      const field = {
+        first: () => field,
+        count: async () => (url.endsWith("/password") ? 1 : 0),
+        fill: async () => {},
+        press: async () => {
+          presses++;
+          if (opts.pressFails) throw new Error("Timeout 8000ms exceeded.");
+        },
+      };
+      const page = {
+        url: () => url,
+        goto: async () => {
+          url = "https://target.test/password";
+          return { status: () => 200 };
+        },
+        waitForURL: async () => {
+          throw new Error("Timeout");
+        },
+        waitForLoadState: async () => {},
+        evaluate: async () => ({ storefront: true, method: "post", action: "https://target.test/password" }),
+        locator: () => field,
+      };
+      const phase = (): ToolEnv =>
+        ({
+          page,
+          targetOrigin: "https://target.test",
+          networkLog: [],
+          consoleLog: [],
+          actionTrail: [],
+          // A new phase reads the run's state, as storeAccessFor does.
+          store: {
+            password: "stale-store-pw",
+            state: { status: runState },
+            persist: async (s: StoreState) => {
+              if (opts.writeFails) return false;
+              runState = s;
+              return true;
+            },
+          },
+        }) as unknown as ToolEnv;
+      return { phase, presses: () => presses, runState: () => runState };
+    }
+
+    const s = lockedStore();
+    const env = s.phase();
+    const first = await executeTool(env, "navigate", { url: "https://target.test/" });
+    check("store password: the first locked page gets exactly one attempt, recorded as rejected",
+      s.presses() === 1 && s.runState() === "rejected" && first.includes("missing_access"), `${s.presses()} ${first.slice(0, 80)}`);
+    await executeTool(env, "navigate", { url: "https://target.test/cart" });
+    await executeTool(env, "navigate", { url: "https://target.test/collections/all" });
+    check("store password: after the rejection, no later page submits it again", s.presses() === 1, `${s.presses()} submissions`);
+    const typed = await executeTool(env, "fill", { label: "Password", value: "{{TEST_PASSWORD}}" });
+    check("store password: nor can the model type into the store's password form",
+      typed.startsWith("Refused:") && s.presses() === 1, typed.slice(0, 80));
+    await executeTool(s.phase(), "navigate", { url: "https://target.test/" });
+    check("store password: a phase that starts from the run's state never submits it", s.presses() === 1, `${s.presses()} submissions`);
+
+    // (b) The submit threw after it may have reached the store: unknown = attempted.
+    const b = lockedStore({ pressFails: true });
+    await executeTool(b.phase(), "navigate", { url: "https://target.test/" });
+    await executeTool(b.phase(), "navigate", { url: "https://target.test/" });
+    check("store password: a submit with an unknown outcome is never repeated, in this phase or the next",
+      b.presses() === 1 && b.runState() === "pending", `${b.presses()} submissions, run state ${b.runState()}`);
+
+    // (c) The attempt cannot be written down first: nothing is submitted.
+    const c = lockedStore({ writeFails: true });
+    const closed = await executeTool(c.phase(), "navigate", { url: "https://target.test/" });
+    await executeTool(c.phase(), "navigate", { url: "https://target.test/" });
+    check("store password: when the run's state cannot be written, nothing is submitted at all",
+      c.presses() === 0 && closed.includes("our_capability"), `${c.presses()} submissions; ${closed.slice(0, 80)}`);
+
+    // A run left "pending" by a phase that died mid-submit submits nothing.
+    const d = lockedStore({ runState: "pending" });
+    await executeTool(d.phase(), "navigate", { url: "https://target.test/" });
+    check("store password: a run left pending by an earlier phase is never submitted again", d.presses() === 0);
   }
 
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);

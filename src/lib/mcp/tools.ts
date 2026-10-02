@@ -41,6 +41,8 @@ import { appPriceRange, teamBalance } from "@/lib/plans";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
+import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
+import type { McpDoor } from "@/lib/started-via";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
 // (as before) or as the entry labelled "default" in `test_accounts` — the same
@@ -61,11 +63,13 @@ function splitDefault<T extends { label: string; email?: string; password?: stri
 }
 
 // Who is calling: the person who minted the key (attribution), the team the
-// key acts for (tenancy, plan, quota) and the key's own scope (CHE-263).
+// key acts for (tenancy, plan, quota) and the key's own scope (CHE-263); and
+// the door, which a run it starts records as Run.startedVia (CHE-383).
 export interface McpCaller {
   user: { id: string; email: string; name: string | null };
   team: { id: string; name: string; plan: string };
   scope: TeamScope;
+  door: McpDoor;
 }
 
 // Everything that touches the platform comes in here, so the whole server can
@@ -113,6 +117,15 @@ const testAccounts = z
     }),
   )
   .max(MAX_EXTRA_ACCOUNTS);
+// CHE-373: shape here; what counts as an allowed origin is decided once, in
+// src/lib/allowed-origins.ts, for every caller.
+const allowedOrigins = z
+  .array(z.string().min(1).max(200))
+  .max(MAX_ALLOWED_ORIGINS)
+  .describe(
+    "Other https origins the check may open and act on besides the app's own — for an app that runs inside another " +
+      "product's page, e.g. ['https://admin.shopify.com', 'https://your-app.example.com'] for a Shopify embedded app",
+  );
 
 export const toolSchemas = {
   list_apps: {},
@@ -133,6 +146,12 @@ export const toolSchemas = {
         "More test accounts, each a different kind of user, e.g. [{label:'admin', …}, {label:'free user', …}]. " +
           "A scenario that names one ('As admin: refunds work') is checked signed in as it.",
       ),
+    allowed_origins: allowedOrigins.optional(),
+    store_password: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("For a password-protected store (Shopify's 'Enter store password' page): the store password. Stored encrypted and never returned"),
     notify_email: z.string().email().optional().describe("Where verdict emails go"),
     frequency: frequency.optional().describe("How often it is checked; default daily"),
   },
@@ -155,6 +174,12 @@ export const toolSchemas = {
       .optional()
       .describe("Adds each named account, or updates the one already stored under that label. Others are kept"),
     remove_test_accounts: z.array(accountLabel).max(MAX_EXTRA_ACCOUNTS).optional().describe("Labels of named accounts to delete"),
+    allowed_origins: allowedOrigins.optional().describe("Replaces the app's allowed origins; [] clears them"),
+    store_password: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("New store password of a password-protected store. Stored encrypted and never returned; \"\" removes it"),
     notify_email: z.string().email().or(z.literal("")).optional().describe("Verdict email; \"\" clears it"),
   },
   start_check: {
@@ -337,9 +362,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           focusAreas: true,
           scopeHints: true,
           userNotes: true,
+          allowedOrigins: true,
           writeMode: true,
           testEmail: true,
           testPasswordEnc: true,
+          // CHE-372: read only to say whether one is stored.
+          storePasswordEnc: true,
           // CHE-322: label and email only. The password column is not selected,
           // so no later edit to the mapping below can leak it.
           testAccounts: { orderBy: { createdAt: "asc" }, select: { label: true, email: true } },
@@ -382,6 +410,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             scenarios: a.focusAreas,
             limits: a.scopeHints,
             notes: a.userNotes,
+            allowed_origins: parseAllowedOrigins(a.allowedOrigins),
             may_create_test_records: a.writeMode === "create_cleanup",
             // The password never leaves the database; whether one is stored
             // is all an agent needs to know.
@@ -392,6 +421,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
               ...(a.testEmail ? [{ label: DEFAULT_ACCOUNT_LABEL, email: a.testEmail, has_password: Boolean(a.testPasswordEnc) }] : []),
               ...a.testAccounts.map((t) => ({ label: t.label, email: t.email, has_password: true })),
             ],
+            // CHE-372: whether a store password is stored — never the password.
+            has_store_password: Boolean(a.storePasswordEnc),
             // What a check of this app usually costs; null until it has a
             // history (plan.typical_check_price_usd covers it until then).
             usual_price_usd: money?.range ? { low: money.range.low, high: money.range.high } : null,
@@ -426,6 +457,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       test_email?: string;
       test_password?: string;
       test_accounts?: { label: string; email: string; password: string }[];
+      allowed_origins?: string[];
+      store_password?: string;
       notify_email?: string;
       frequency?: WatchFrequency;
     }): Promise<ToolResult> {
@@ -444,6 +477,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           testEmail: accounts.email,
           testPassword: accounts.password,
           testAccounts: accounts.named,
+          allowedOrigins: args.allowed_origins,
+          storePassword: args.store_password || null,
           notifyEmail: args.notify_email,
           frequency: args.frequency,
         },
@@ -498,6 +533,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       test_password?: string;
       test_accounts?: { label: string; email?: string; password?: string }[];
       remove_test_accounts?: string[];
+      allowed_origins?: string[];
+      store_password?: string;
       notify_email?: string;
     }): Promise<ToolResult> {
       const denied = deny("app.settings.write");
@@ -520,6 +557,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           set: accounts.named.map((a) => ({ match: { label: a.label }, ...a })),
           remove: args.remove_test_accounts,
         },
+        allowedOrigins: args.allowed_origins,
+        // CHE-372: like test_password — "" removes it from the app and its watch.
+        storePassword: args.store_password === undefined ? undefined : args.store_password || null,
         notifyEmail: args.notify_email,
       });
       if ("error" in result) {
@@ -560,7 +600,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           db,
           { id: caller.user.id, teamId: team.id, plan },
           args.app_id,
-          { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: "mcp" },
+          { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: caller.door },
           { notes: args.notes, deploy: args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env } : undefined },
         );
         if ("error" in started) {
@@ -601,7 +641,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       });
       if (!gate.ok) {
         if (isBalanceExhausted(gate.code)) {
-          await captureBalanceExhausted(deps.capture, { distinctId: caller.user.id, teamId: team.id, plan, source: "mcp" });
+          await captureBalanceExhausted(deps.capture, { distinctId: caller.user.id, teamId: team.id, plan, source: caller.door });
         }
         return fail(gate.code, gate.reason, HINTS[gate.code]);
       }
@@ -612,7 +652,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           input,
           ownerId: caller.user.id,
           teamId: team.id,
-          startedVia: "mcp",
+          startedVia: caller.door,
           anonKeyHash: null,
           ephemeral: expiresAt ? { expiresAt } : undefined,
           distinctId: null,
@@ -809,23 +849,29 @@ export type RemoteTools = ReturnType<typeof createRemoteTools>;
 
 const DESCRIPTIONS: Record<ToolName, string> = {
   list_apps:
-    "The team's apps: id, address, scenarios (what must keep working), limits, notes, the test accounts a check " +
-    "signs in as (label and email — never a password), recurring-check state, what a check of it usually costs " +
+    "The team's apps: id, address, scenarios (what must keep working), limits, notes, allowed origins, the test accounts a check " +
+    "signs in as (label and email — never a password), whether a store password is stored (has_store_password), " +
+    "recurring-check state, what a check of it usually costs " +
     "(usual_price_usd) and whether one can run now, and the last run; plus `plan`: the team's balance, what a check " +
     "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. Start here.",
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
-    "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. A " +
+    "\"free user\"), and a scenario that names one (\"As admin: refunds work\") is checked signed in as it. An app " +
+    "that runs inside another product's page (a Shopify embedded app) needs allowed_origins: the host page's origin " +
+    "and the app's own. For a " +
+    "password-protected store (Shopify's \"Enter store password\" page), pass store_password and every check enters " +
+    "it. A " +
     "website gets a recurring check (daily by default) within the team's plan; each check spends the team's " +
     "balance, so the first one runs automatically when the balance covers it and otherwise waits for a top-up " +
     "(or, on a paid plan, the next monthly credit) " +
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   update_app:
-    "Change a saved app: scenarios, limits, notes, test logins, verdict email. Only the fields you pass change; " +
-    "\"\" clears a field (for test_password: removes the stored password). test_accounts adds or updates named " +
-    "accounts by label; remove_test_accounts deletes them.",
+    "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
+    "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
+    "test_accounts adds or updates named accounts by label; remove_test_accounts deletes them. When a verdict says " +
+    "the store password is needed or was not accepted, set it here.",
   start_check:
     "Start a check. With app_id: checks a saved app using its stored test logins, scenarios and limits — the usual " +
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +

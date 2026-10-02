@@ -58,9 +58,18 @@ model Run {
   // passwords encrypted like testPasswordEnc and cleared with it after a
   // one-off run (src/lib/test-accounts.ts clearedCredentials). Null = none.
   testAccounts         String?
+  // CHE-372: a password-protected store's storefront password (a Shopify
+  // store redirects every page to /password until it is entered). An access
+  // input like the test login: encrypted the same way, cleared with it after
+  // a one-off run (clearedCredentials), and entered by code, never the model.
+  storePasswordEnc     String?
   scopeHints           String? // "don't touch /admin"
   userNotes            String? // "don't delete the test account"
   focusAreas           String? // CHE-81: owner's priority concerns
+  // CHE-373: App.allowedOrigins as it was when this run was created — JSON
+  // array of https origins the run may navigate to and act on besides the
+  // target's own. Null = the target's origin only.
+  allowedOrigins       String?
 
   notifyEmail          String?
   // CHE-224: what happened to the verdict email. "sent" / "sent:<provider id>",
@@ -138,6 +147,13 @@ model Run {
   // gives. Null on a row with credentialsRejected set means the one account
   // that existed before named accounts did — the default.
   rejectedAccounts    String?
+  // CHE-372: what the store's own password page made of the store password we
+  // hold (storePasswordEnc). Null = never submitted; "pending" = written BEFORE
+  // a submission and left there when its outcome is unknown (a submit that
+  // threw, a write that failed) — no phase submits again; "accepted" = the
+  // store let us in, and each new browser context may enter it once more;
+  // "rejected" = turned away, never submitted again this run (CHE-100's rule).
+  storePasswordState String?
   // CHE-132: the free page survey this run took before deciding its mode.
   // A plain id, no relation: snapshots are the app's history and must outlive
   // any one run.
@@ -555,6 +571,8 @@ model Watch {
   // Encrypted test credentials retained for recurring runs.
   testEmail        String?
   testPasswordEnc  String?
+  // CHE-372: mirrored from App.storePasswordEnc, like the test login above.
+  storePasswordEnc String?
 
   // M3: owner-scoping + one Watch per App. Legacy anonymous watches keep null.
   app      App?    @relation(fields: [appId], references: [id])
@@ -608,6 +626,8 @@ model PendingCheck {
   testEmail       String?
   // Encrypted like Run.testPasswordEnc; cleared the moment the run is created.
   testPasswordEnc String?
+  // CHE-372: encrypted the same way; cleared with testPasswordEnc.
+  storePasswordEnc String?
   userNotes       String?
   notifyEmail     String?
   // Same salted IP hash the anonymous quota uses, carried onto the run.
@@ -926,11 +946,20 @@ model App {
   testEmail       String?
   testPasswordEnc String?
   testAccounts    TestAccount[]
+  // CHE-372: the store password of a password-protected store (Shopify's
+  // /password page). Write-only like the test password: no read path returns
+  // it; list_apps says only whether one is stored.
+  storePasswordEnc String?
   scopeHints      String?
   userNotes       String?
   // Priority concerns (CHE-81): what the owner is most worried about, in their
   // own words. Discovery must cover each with a journey; walking verifies.
   focusAreas      String?
+  // CHE-373: further https origins a check may navigate to and act on — an
+  // embedded app's host page and the frame it renders in (Shopify admin and
+  // the app's own origin). JSON array, validated by src/lib/allowed-origins.ts.
+  // Null = the app's own origin only.
+  allowedOrigins  String?
   // CHE-90: may the agent create records while checking? read_only (default)
   // or create_cleanup — full CRUD lifecycle, every creation removed again.
   writeMode       String  @default("read_only")

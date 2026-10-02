@@ -4,6 +4,7 @@ import type { ProposedJourney } from "./discovery";
 import type { AppKnowledge } from "./knowledge";
 import { JOURNEY_METRICS_GUIDE, metricLine, type JourneyMetric } from "./journey-metrics";
 import { usableRunAccounts } from "@/lib/test-accounts";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 // System-prompt assembly. The worker's contract is textual: the standing
 // mission + the client's own instructions (scope hints, notes) compose into the
@@ -22,8 +23,12 @@ type Run = {
   testPasswordEnc?: string | null;
   // CHE-322: Run.testAccounts — read here for the LABELS only.
   testAccounts?: string | null;
+  // CHE-372: presence only — the model is told the store unlocks itself.
+  storePasswordEnc?: string | null;
   // CHE-81: the owner's priority concerns, verbatim.
   focusAreas?: string | null;
+  // CHE-373: Run.allowedOrigins (JSON array of https origins).
+  allowedOrigins?: string | null;
   // CHE-90: CRUD lifecycle permission + the marker every created record carries.
   writeAllowed?: boolean;
   testMarker?: string;
@@ -222,7 +227,36 @@ click through them one by one.`;
 // which scrubSecrets treats as a secret too — and signs in as one with
 // {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}}. A scenario in the owner's
 // concerns that names an account ("as admin: …") is how the owner says which.
-export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts">): string {
+export function credentialsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts" | "storePasswordEnc">): string {
+  return `${testAccountsBlock(run)}${storePasswordBlock(run)}`;
+}
+
+// CHE-372: the store password is entered by the navigate tool itself, on the
+// store's /password page (store-password.ts). The model is told only that this
+// happens, so it does not report the gate as the product or try to get past it
+// with something it typed — never the value, not even as a placeholder.
+// Said on every run, password or not: a run that holds none meets the gate too,
+// and the model must not mistake the lock for the product or try to pick it.
+function storePasswordBlock(run: Pick<Run, "storePasswordEnc">): string {
+  if (!run.storePasswordEnc) {
+    return `
+
+PASSWORD-PROTECTED STORES: if a page of the target leads to the store's own password
+page ("Enter store password"), the store is locked and no store password was given for
+this run. Never type anything into that form. Report the step "skipped" with
+unverifiedReason "missing_access" — the store password is what is needed. A locked
+store is not a defect.`;
+  }
+  return `
+
+STORE PASSWORD IS PROVIDED for this run: this store is password-protected, and the
+client supplied its store password. Whenever a page of the store leads to its password
+page, the password is entered for you before the page reaches you — you never see it,
+and there is no placeholder for it. Never type anything into the store's password form
+yourself. If a navigation says the store password was not accepted, do what it says.`;
+}
+
+function testAccountsBlock(run: Pick<Run, "testEmail" | "testPasswordEnc" | "testAccounts">): string {
   const hasDefault = Boolean(run.testEmail && run.testPasswordEnc);
   const named = accountLabels(run);
   if (!hasDefault && named.length === 0) return "";
@@ -269,6 +303,23 @@ ${lines.join("\n")}
 // the model cannot fill is one it must not be offered.
 export function accountLabels(run: Pick<Run, "testAccounts">): string[] {
   return usableRunAccounts(run.testAccounts).map((a) => a.label);
+}
+
+// CHE-373: the origins the owner allowed besides the target's — the tools
+// already accept them (navigate, credential entry); this tells the model they
+// are the product, not a third-party site the MISSION keeps it away from.
+// Empty for every app that has none, so their prompt is unchanged.
+export function allowedOriginsBlock(run: Pick<Run, "allowedOrigins">): string {
+  const origins = parseAllowedOrigins(run.allowedOrigins);
+  if (origins.length === 0) return "";
+  return `
+
+ALLOWED ORIGINS: besides the target's own origin, the owner allowed this run to
+open and act on ${origins.join(", ")}. They are part of the product, not
+third-party sites: navigate there, sign in there with the test credentials, and
+judge what you find there as the product. The app may render inside an embedded
+frame from one of them — read_page shows it as FRAME <n>, and click/fill reach
+into it (pass frame to pick one).`;
 }
 
 export function clientInstructionBlock(run: Pick<Run, "scopeHints" | "userNotes">): string {
@@ -524,7 +575,7 @@ When done, respond with ONLY a JSON object, no prose:
       ? "\n\nEvery priority concern that names a test account needs a journey signed in as" +
         ' that account, and its title must say which (e.g. "As admin: …").'
       : ""
-  }${clientInstructionBlock(run)}${knowledgeTail(knowledge, "discovery")}`;
+  }${allowedOriginsBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "discovery")}`;
 }
 
 export function walkingSystem(
@@ -556,5 +607,5 @@ with label="...", getByPlaceholder for placeholder="..." fields.
 
 Finish with a 1-2 sentence summary of what you found (plain text). If anything
 was not ok, the FIRST sentence names the problem — the summary's job is "what's
-wrong", never a recap of what works.${focusBlock(run)}${credentialsBlock(run)}${crudBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "walking")}`;
+wrong", never a recap of what works.${focusBlock(run)}${credentialsBlock(run)}${crudBlock(run)}${allowedOriginsBlock(run)}${clientInstructionBlock(run)}${knowledgeTail(knowledge, "walking")}`;
 }
