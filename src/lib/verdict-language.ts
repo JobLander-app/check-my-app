@@ -844,8 +844,52 @@ export function splitSentences(text: string): string[] {
 // CHE-197 added the walk's own tools: oEmbed is how verify_links resolves a
 // YouTube link (run #154: "all playable via oEmbed"), and the tool names are
 // the loop's vocabulary, never the product's.
-export const MACHINERY_TERMS =
-  /\b(browsers?|headless|environments?|models?|harness(es)?|playwright|screenshots?|checkers?|first reader|tooling|automation|agents?|test environment|our test|oembed|verify_links|read_page|report_step|write_e2e_test|record_created|record_deleted|get_network_log)\b/i;
+//
+// CHE-396: until then the list was bare nouns — browser, environment, model,
+// agent, screenshot, automation, checker, tooling — and any sentence holding
+// one was dropped. Those nouns are the PRODUCT'S in a large share of apps: an
+// AI product has agents and models, an extension lives in a browser, a store-
+// protection app blocks "by browser" and "automation", a dev tool has
+// environments. Our own guide page ("Connect a coding agent…") came back with
+// five steps named "Check this part of the product". So a noun is ours only
+// when the sentence says so:
+//   - words with no product meaning stay bare (headless, Playwright, harness,
+//     "first reader", the tool names, "test environment", "our test");
+//   - the rest need our determiner ("our browser", "the test agent", "this
+//     environment"), or to be the walk acting ("the agent could not click",
+//     "the model decided"), or to be our evidence ("the screenshot shows").
+// A product's agent that "could not answer", a model that "failed to load", a
+// screenshot one uploads — those are the customer's words and often the
+// evidence of a finding; the gate errs to their side.
+const OURS = "(?:our(?:\\s+own)?|the\\s+test|this\\s+(?:run|check)['’]s|the\\s+(?:run|check|walk|checker)['’]s)";
+const OUR_NOUN = "(?:browser|environment|agent|model|automation|tooling|checker|crawler|screenshot)s?";
+// What the walk does to a page — as distinct from what a product's own agent
+// does (answer, reply, respond, hand off).
+const WALK_VERB =
+  "(?:click|tap|press|interact|navigate|scroll|type|fill|submit|select|upload|open|load|reach|access|verify|confirm|complete|proceed|sign\\s+in|log\\s+in)";
+const UNABLE = "(?:could\\s*n[o’']t|couldn['’]t|cannot|can['’]t|(?:was|is|were)\\s+(?:unable|not\\s+able)\\s+to|failed\\s+to|did\\s*n[o’']t|didn['’]t|did\\s+not)";
+export const MACHINERY_TERMS = new RegExp(
+  "\\b(?:" +
+    [
+      // no product meaning
+      "headless|harness(?:es)?|playwright|first reader|test environment|our test",
+      "oembed|verify_links|read_page|report_step|write_e2e_test|record_created|record_deleted|get_network_log",
+      // ours by determiner, with at most one word between ("our headless browser")
+      `${OURS}\\s+(?:[a-z-]+\\s+)?${OUR_NOUN}`,
+      "(?:in|within|under|for)\\s+this\\s+(?:environment|browser)",
+      // the walk acting, named as an agent, a checker, an automation, a browser
+      `(?:the|an)\\s+(?:(?:nav|navigation|walking|ai)\\s+)?(?:agent|checker|automation|browser)\\s+(?:${UNABLE}\\s+(?:\\w+\\s+)?${WALK_VERB}|(?:clicked|tapped|pressed|navigated|scrolled|typed|filled|submitted|signed\\s+in|logged\\s+in))`,
+      // a browser that "could not play / render" is ours: a real visitor's did
+      `the\\s+browser\\s+${UNABLE}\\s+(?:\\w+\\s+)?(?:render|play|display|run|grant|allow)`,
+      "the\\s+(?:(?:nav|navigation|walking|ai)\\s+)?model\\s+(?:decided|chose|assumed|inferred|guessed|hallucinated|misread|was\\s+(?:instructed|told|asked))",
+      "the\\s+(?:nav|navigation|walking)\\s+(?:agent|model)",
+      // our evidence
+      "(?:the|a|this|each|every)\\s+screenshots?\\s+(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?|(?:was|were|is|are)\\s+taken)",
+      "(?:in|from|per|on|by|according\\s+to|(?:as\\s+)?seen\\s+in)\\s+the\\s+screenshots?",
+    ].join("|") +
+    ")\\b",
+  "i",
+);
 
 // Product-facing prose: the walker's envelope unwrapped and the walker's
 // first person cut at the clause (CHE-197, before the sentence gate so that

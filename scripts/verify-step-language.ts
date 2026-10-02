@@ -314,6 +314,79 @@ async function main() {
     productProse("The pricing page lists three plans with prices. The agent could not click in the test environment.") ===
       "The pricing page lists three plans with prices.");
 
+  // ── CHE-396: the product's own vocabulary ──
+  // The word list was bare nouns — browser, environment, model, agent,
+  // screenshot, automation, checker — and any sentence holding one was dropped.
+  // Run cmuqfizeu… (our own guide page, 2026-10-02) showed five steps named
+  // "Check this part of the product" and a journey called "A journey": the
+  // product is about connecting an agent. The nouns are the product's in a
+  // large share of apps; they are ours only when the sentence says so.
+  const PRODUCT_VOCABULARY = [
+    // the six from the ticket
+    "Connect a coding agent for automated checks",
+    "Open the Connect-your-agent guide",
+    "Follow the Connect-Your-Agent guide and copy the integration snippets",
+    "Choose a model for the assistant",
+    "Install the browser extension",
+    "Switch the environment to staging",
+    // a store-protection app (CHE-333): its features are named in these words
+    "Block visitors by browser and device",
+    "Bot and automation protection is enabled for the storefront.",
+    "The Blocked browsers list shows Chrome 90 and older.",
+    // an AI product: its agent and its models are the product
+    "The agent replied with a tracking link and offered a human handoff.",
+    "The agent could not answer the billing question and showed 'Something went wrong'.",
+    "The Models page lists 12 models with their context sizes.",
+    "The model failed to load and the page showed 'Out of memory'.",
+    // screenshots, environments, checkers and automation as features
+    "Upload a screenshot of the receipt",
+    "The Screenshots tab shows three uploaded screenshots.",
+    "The environment switcher shows Production and Staging.",
+    "The Environments page lists two environments with their variables.",
+    "The spell checker underlined two words in the draft.",
+    "The Automation rules page lists four rules, all enabled.",
+    "Developer tooling is listed under Integrations.",
+  ];
+  for (const s of PRODUCT_VOCABULARY) {
+    check(`product vocabulary survives: ${JSON.stringify(s)}`, productProse(s, 0) === s && !MACHINERY_TERMS.test(s), productProse(s, 0) ?? "(null)");
+  }
+  // …and the sentences the list was written for still go, whole.
+  const OUR_SIDE = [
+    "It requires camera/mic access unavailable in our test environment.",
+    "The button did nothing in our test browser.",
+    "Our headless browser filled the name field and clicked Save.",
+    "The harness saw the page update.",
+    "Our browser got a 500 from the report endpoint.",
+    "The agent could not click the Save button.",
+    "The agent was unable to interact with the date picker.",
+    "The agent clicked Continue and waited.",
+    "Our agent signed in with the test account.",
+    "The model decided to skip the optional fields.",
+    "The navigation model chose the first result.",
+    "The screenshot shows the dashboard with three charts.",
+    "As seen in the screenshot, the banner overlaps the menu.",
+    "A screenshot was taken after the click.",
+    "The camera is unavailable in this environment.",
+    "Clicking did nothing in this browser.",
+    "The checker could not reach the settings page.",
+    "The automation could not complete the card form.",
+    "The browser could not play the embedded video.",
+    "The browser did not grant camera access.",
+    "Verified with Playwright against the live site.",
+    "The first reader flagged the price as inconsistent.",
+  ];
+  for (const s of OUR_SIDE) {
+    check(`our side still goes: ${JSON.stringify(s)}`, productProse(s) === null, productProse(s) ?? "(null)");
+  }
+  check(
+    "a product label survives report_step as written",
+    (() => {
+      const s: ReportedStep = { label: "Connect a coding agent for automated checks", status: "ok", attempted: "Opened the Connect-your-agent guide.", observed: "The guide lists three steps and two code snippets." };
+      productizeStep(s);
+      return s.label === "Connect a coding agent for automated checks" && s.attempted === "Opened the Connect-your-agent guide.";
+    })(),
+  );
+
   // The live progress note carries the stripped label.
   {
     const notes: string[] = [];
