@@ -124,8 +124,11 @@ function JourneyCard({
             </span>
           )}
           <span
-            className={`rounded-full border px-2.5 py-1 font-mono text-xs ${meta.className} border-current/30 bg-current/10`}
-            style={{ borderColor: "color-mix(in srgb, currentColor 30%, transparent)" }}
+            className={`rounded-full border px-2.5 py-1 font-mono text-xs ${meta.className}`}
+            style={{
+              borderColor: "color-mix(in srgb, currentColor 30%, transparent)",
+              backgroundColor: "color-mix(in srgb, currentColor 10%, transparent)",
+            }}
           >
             {meta.emoji} {meta.label}
           </span>
@@ -140,7 +143,8 @@ function JourneyCard({
               down, each line naming the step and quoting what happened. */}
           {problems.length > 0 && (
             <div
-              className={`mb-3 rounded-r-md border-l-2 border-current/50 bg-ink-800/40 py-2 pl-3 pr-3 ${meta.className}`}
+              className={`mb-3 rounded-r-md border-l-2 bg-ink-800/40 py-2 pl-3 pr-3 ${meta.className}`}
+              style={{ borderColor: "color-mix(in srgb, currentColor 50%, transparent)" }}
             >
               <p className="text-sm font-medium">
                 Why this journey is “{meta.label}”:
@@ -253,7 +257,8 @@ function JourneyCard({
                accent in the journey's worst status color — a verdict line,
                not another step caption. */
             <p
-              className={`mt-3 rounded-r-md border-l-2 border-current/50 bg-ink-800/40 py-2 pl-3 pr-3 text-sm text-fg-muted ${meta.className}`}
+              className={`mt-3 rounded-r-md border-l-2 bg-ink-800/40 py-2 pl-3 pr-3 text-sm text-fg-muted ${meta.className}`}
+              style={{ borderColor: "color-mix(in srgb, currentColor 50%, transparent)" }}
             >
               <span className="font-medium">What we found:</span>{" "}
               <span className="text-fg-muted">{journey.summary}</span>
