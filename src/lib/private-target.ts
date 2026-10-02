@@ -19,8 +19,15 @@ const LOCAL_NAMES = /(^|\.)(localhost|local|internal|lan|home\.arpa)$/i;
 function privateV4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
+  const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
   return (
+    // Not routed on the internet at all: documentation, benchmarking, protocol
+    // assignments, multicast and the reserved top of the space.
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224 ||
     a === 0 || // "this network"
     a === 10 ||
     a === 127 || // loopback
@@ -54,6 +61,22 @@ export function isPrivateTarget(url: string): boolean {
     return false; // not an address at all: another rule's refusal
   }
   return LOCAL_NAMES.test(host) || privateV4(host) || privateV6(host);
+}
+
+/**
+ * The same question for a stored check, app or watch: its target, and for an
+ * extension the page it is opened on (extensionConfig.companionUrl — the store
+ * link itself is public).
+ */
+export function holdsPrivateTarget(row: { targetUrl: string; extensionConfig?: string | null }): boolean {
+  if (isPrivateTarget(row.targetUrl)) return true;
+  if (!row.extensionConfig) return false;
+  try {
+    const companion = (JSON.parse(row.extensionConfig) as { companionUrl?: unknown }).companionUrl;
+    return typeof companion === "string" && companion !== "" && isPrivateTarget(companion);
+  } catch {
+    return false;
+  }
 }
 
 // What the person who pasted it is told — on the form, in the API's answer and

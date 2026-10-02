@@ -17,8 +17,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "../src/lib/private-target";
+import { holdsPrivateTarget, isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "../src/lib/private-target";
 import { createCheckSchema } from "../src/lib/validation";
+import { createRecheckRun } from "../src/lib/recheck";
+import { enableWatchForRun } from "../src/lib/watch-enable";
+import { startSavedApp } from "../src/lib/start-saved-app";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -52,6 +55,11 @@ const PRIVATE = [
   "http://[fd12:3456:789a::1]",
   "http://[fe80::1]",
   "http://[::ffff:192.168.0.197]",
+  "https://198.18.0.1", // benchmarking — not routed (Codex P2 r3 on #237)
+  "https://192.0.2.10", // documentation
+  "https://203.0.113.7",
+  "https://224.0.0.1", // multicast
+  "https://255.255.255.255",
   "http://localhost.:3000", // the root dot does not make it public
   "https://my-macbook.local.",
 ];
@@ -65,6 +73,10 @@ const PUBLIC = [
   "https://100.128.0.1",
   "https://169.253.1.1",
   "https://8.8.8.8",
+  "https://198.17.255.1",
+  "https://198.20.0.1",
+  "https://192.0.3.1",
+  "https://223.255.255.1",
   "https://localhost.example.com",
   "https://local.example.com",
   "https://internal-tools.example.com",
@@ -113,5 +125,74 @@ for (const [door, file] of [
   check(`${door} validates its target with createCheckSchema`, /createCheckSchema(\.shape\.url)?\.safeParse\(/.test(read(file)));
 }
 
-console.log(failures ? `\n${failures} FAILED` : "\nall passed");
-process.exit(failures ? 1 : 0);
+// ── 3. What was accepted before the doors refused it ────────────────────────
+// Codex P1 on #237: a check, an app or a watch that already holds a private
+// address never passes the schema again — the verdict's Re-check button, Enable
+// Daily Watch, a saved app's Run and the scheduler copy the stored address. Runs
+// #291–#293 are exactly that. Each path refuses before it writes or starts
+// anything.
+const PRIVATE_URL = "https://192.168.0.197:53317";
+function stubDb(answers: Record<string, unknown>) {
+  const calls: string[] = [];
+  const db = new Proxy({}, {
+    get: (_t, model: string) => new Proxy({}, {
+      get: (_m, op: string) => async () => {
+        calls.push(`${model}.${op}`);
+        return answers[`${model}.${op}`] ?? null;
+      },
+    }),
+  });
+  return { db: db as never, calls };
+}
+
+async function persisted() {
+  const triggered: string[] = [];
+  const trigger = async (id: string) => void triggered.push(id);
+
+  const re = stubDb({ "run.findUnique": { id: "r292", targetUrl: PRIVATE_URL, appSlug: "192.168.0.197:53317", ownerId: "u1", teamId: "t1", team: { plan: "free" }, status: "completed" } });
+  const rechecked = await createRecheckRun(re.db, "pub_292", {}, {}, {
+    canMutate: async () => true, trigger, siteCap: () => 20, now: () => new Date(), ephemeralTtlDays: () => 7,
+  });
+  check("re-check of a check on a private address is refused with the sentence, and nothing is created or started",
+    rechecked.kind === "quota" && rechecked.reason === PRIVATE_TARGET_MESSAGE && rechecked.code === "private_target" &&
+      re.calls.join() === "run.findUnique" && triggered.length === 0,
+    `${JSON.stringify(rechecked)} · ${re.calls.join()}`);
+
+  const en = stubDb({ "run.findUnique": { id: "r292", ownerId: "u1", appSlug: "192.168.0.197:53317", targetUrl: PRIVATE_URL, targetKind: "website", ephemeral: false } });
+  const enabled = await enableWatchForRun(en.db, { id: "u1", teamId: "t1", plan: "free" }, { runPublicId: "pub_292", frequency: "daily", notifyOnChangeOnly: true });
+  check("Enable Daily Watch on that check is refused before an app or a watch is written",
+    enabled.kind === "gated" && enabled.reason === PRIVATE_TARGET_MESSAGE && en.calls.join() === "run.findUnique",
+    `${JSON.stringify(enabled)} · ${en.calls.join()}`);
+
+  const sv = stubDb({ "app.findFirst": { id: "a1", ownerId: "u1", teamId: "t1", targetUrl: PRIVATE_URL, appSlug: "192.168.0.197:53317", targetKind: "website" } });
+  const saved = await startSavedApp(sv.db, { id: "u1", teamId: "t1", plan: "free" }, "a1", { trigger, siteCap: () => 20 });
+  check("a saved app on a private address does not start",
+    "error" in saved && saved.error === PRIVATE_TARGET_MESSAGE && sv.calls.join() === "app.findFirst" && triggered.length === 0,
+    `${JSON.stringify(saved)} · ${sv.calls.join()}`);
+
+  // Codex P1 r2 on #237: a stored extension's target is the public store link;
+  // what the check opens is its companion page.
+  const STORE_APP = { id: "a2", ownerId: "u1", teamId: "t1", targetUrl: STORE, appSlug: "extension:abc", targetKind: "extension" };
+  const companionCfg = (companionUrl: string) => JSON.stringify({ companionUrl });
+  check("holdsPrivateTarget: a public store link with a private companion page is private; with a public one it is not",
+    holdsPrivateTarget({ targetUrl: STORE, extensionConfig: companionCfg("https://192.168.1.2:3000") }) &&
+      !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: companionCfg("https://example.com/app") }) &&
+      !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: null }) && !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: "not json" }));
+  const svx = stubDb({ "app.findFirst": { ...STORE_APP, extensionConfig: companionCfg("https://192.168.1.2:3000") } });
+  const savedExt = await startSavedApp(svx.db, { id: "u1", teamId: "t1", plan: "free" }, "a2", { trigger, siteCap: () => 20 });
+  check("a saved extension whose companion page is private does not start",
+    "error" in savedExt && savedExt.error === PRIVATE_TARGET_MESSAGE && svx.calls.join() === "app.findFirst", `${JSON.stringify(savedExt)} · ${svx.calls.join()}`);
+  const rex = stubDb({ "run.findUnique": { id: "r9", targetUrl: STORE, targetKind: "extension", extensionConfig: companionCfg("http://localhost:3000"), appSlug: "extension:abc", ownerId: "u1", teamId: "t1", team: { plan: "free" }, status: "completed" } });
+  const recheckedExt = await createRecheckRun(rex.db, "pub_9", {}, {}, { canMutate: async () => true, trigger, siteCap: () => 20, now: () => new Date(), ephemeralTtlDays: () => 7 });
+  check("a re-check of an extension check whose companion page is private starts nothing",
+    recheckedExt.kind === "quota" && rex.calls.join() === "run.findUnique" && triggered.length === 0, `${JSON.stringify(recheckedExt)} · ${rex.calls.join()}`);
+
+  const scheduler = read("src/agent/scheduler.ts");
+  const loop = scheduler.slice(scheduler.indexOf("for (const watch of due)"), scheduler.indexOf("const inFlight"));
+  check("the scheduler skips a watch on a private address before it creates a run", /if \(isPrivateTarget\(watch\.targetUrl\)\) \{[\s\S]*?continue;/.test(loop));
+}
+
+persisted().then(() => {
+  console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+  process.exit(failures ? 1 : 0);
+});
