@@ -648,18 +648,77 @@ function readModule(path: string, source: string): Module {
       else if (arg) m.opaqueImports.push(arg.getText(file));
     }
     if (ts.isIdentifier(node)) m.identifiers.add(node.text);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-      m.strings.push(node.text);
-      if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.PlusToken && node.parent.left === node) m.stems.push(node.text);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) m.strings.push(node.text);
+    // Literals joined in the source are one string: "lens-" + "product" spells
+    // a key, and "lens" + "-" + name builds one (Codex on #260). Each `+` chain
+    // and each template is read as the text it is known to be, piece by piece.
+    if (isPlus(node) && !isPlus(node.parent)) {
+      const whole = knownText(node);
+      if (whole !== null) m.strings.push(whole);
+    }
+    if (isPlus(node) && knownText(node.right) === null) {
+      const before = knownEnd(node.left);
+      if (before) m.stems.push(before);
     }
     if (ts.isTemplateExpression(node)) {
-      m.strings.push(node.head.text, ...node.templateSpans.map((s) => s.literal.text));
-      m.stems.push(node.head.text, ...node.templateSpans.slice(0, -1).map((s) => s.literal.text));
+      let run = node.head.text;
+      for (const span of node.templateSpans) {
+        const inner = knownText(span.expression);
+        if (inner === null) {
+          if (run) m.stems.push(run);
+          m.strings.push(run);
+          run = span.literal.text;
+        } else run += inner + span.literal.text;
+      }
+      m.strings.push(run);
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
   return m;
+}
+
+const isPlus = (node: ts.Node): node is ts.BinaryExpression => ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken;
+
+/** The text an expression is known to be from the source alone, or null when any part of it is decided at run time. */
+function knownText(node: ts.Expression): string | null {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return knownText(node.expression);
+  if (isPlus(node)) {
+    const left = knownText(node.left);
+    const right = knownText(node.right);
+    return left === null || right === null ? null : left + right;
+  }
+  if (ts.isTemplateExpression(node)) {
+    let out = node.head.text;
+    for (const span of node.templateSpans) {
+      const inner = knownText(span.expression);
+      if (inner === null) return null;
+      out += inner + span.literal.text;
+    }
+    return out;
+  }
+  return null;
+}
+
+/** The known text an expression ends with: all of it when it is known, its last literal pieces when its start is not, "" when it ends in something decided at run time. */
+function knownEnd(node: ts.Expression): string {
+  const whole = knownText(node);
+  if (whole !== null) return whole;
+  if (ts.isParenthesizedExpression(node)) return knownEnd(node.expression);
+  if (isPlus(node)) {
+    const right = knownText(node.right);
+    return right === null ? "" : knownEnd(node.left) + right;
+  }
+  if (ts.isTemplateExpression(node)) {
+    let run = "";
+    for (const span of node.templateSpans) {
+      const inner = knownText(span.expression);
+      run = inner === null ? span.literal.text : run + inner + span.literal.text;
+    }
+    return run;
+  }
+  return "";
 }
 
 function resolveModule(root: string, from: string, spec: string, files: Set<string>): string | null {
@@ -726,7 +785,7 @@ function browserOffenders(root: string): { offenders: string[]; graphSize: numbe
     }
     const m = modules.get(path)!;
     for (const k of keys) if (m.strings.some((s) => s.includes(k))) offenders.push(`${where} mentions ${k}`);
-    for (const n of names) if (m.identifiers.has(n)) offenders.push(`${where} mentions ${n}`);
+    for (const n of names) if (m.identifiers.has(n) || m.strings.some((s) => s.includes(n))) offenders.push(`${where} mentions ${n}`);
     for (const s of m.stems) if (stems.some((stem) => s.endsWith(stem))) offenders.push(`${where} builds a flag key at run time from "${s}"`);
     for (const spec of m.opaqueImports) offenders.push(`${where} imports a module chosen at run time (${spec}), which cannot be followed`);
   }
@@ -789,6 +848,11 @@ function clientGraphFixtureChecks(): void {
       ["a module chosen at run time", "src/components/opaque.tsx", `"use client";\nexport const load = (name: string) => import(\`@/lib/\${name}\`);\n`, /imports a module chosen at run time/],
       ["a key spelled out in a string", "src/components/spelled.tsx", `"use client";\nexport const key = "lens-release";\n`, /mentions lens-release/],
       ["the constant's name", "src/components/named.tsx", `"use client";\nimport * as all from "@/lib/types";\nexport const key = (all as Record<string, unknown>).LENS_PRODUCT_FLAG;\n`, /mentions LENS_PRODUCT_FLAG/],
+      // Codex on #260: the text patterns caught these three by accident of spelling; the tree has to on purpose.
+      ["the constant's name as a string (flags[\"LENS_PRODUCT_FLAG\"])", "src/components/indexed.tsx", `"use client";\nexport const read = (flags: Record<string, boolean>) => flags["LENS_PRODUCT_FLAG"];\n`, /mentions LENS_PRODUCT_FLAG/],
+      ["a key built from split literals (\"lens\" + \"-\" + name)", "src/components/split.tsx", `"use client";\nexport const key = (name: string) => "lens" + "-" + name;\n`, /builds a flag key at run time from "lens-"/],
+      ["a key spelled in two literals (\"lens-\" + \"product\")", "src/components/joined.tsx", `"use client";\nexport const key = "lens-" + "product";\n`, /mentions lens-product/],
+      ["a key built in a template around a literal piece", "src/components/pieces.tsx", `"use client";\nexport const key = (name: string) => \`\${"lens"}-\${name}\`;\n`, /builds a flag key at run time from "lens-"/],
     ];
     write("src/lib/lens-helper.ts", `export { productLensFor as showProduct } from "../lib/viewer-flags";\n`);
     for (const [name, rel, text, expected] of bypasses) {
