@@ -23,16 +23,21 @@
 //      server sends; flagPlan rewrites any drift that changes an audience,
 //      inside or outside the conditions (CHE-381); and reconcileFlag — the
 //      code posthog:setup runs — writes exactly the declared body, reads it
-//      back, and refuses what a write cannot clear;
-//   5. no browser code can read these flags: no client module mentions their
-//      keys or imports the server flag modules (CHE-381).
+//      back, and refuses what a write cannot clear; and posthog:setup itself,
+//      run whole against a fake PostHog, does nothing else to a declared flag
+//      (CHE-386);
+//   5. no browser code can read these flags: no module in the client graph —
+//      read from its syntax tree — imports the server flag modules, mentions
+//      a key or its constant, builds a key at run time, or imports a module
+//      chosen at run time (CHE-381, CHE-386).
 //
 // --live asks the real project: every declared flag holds exactly the
 // declared state; the owner, a fresh account, a test account and a look-alike
 // e-mail get what they should; a person with is_test_account="true" and the
 // owner's e-mail stored (set here with the public token, as anyone could) gets
 // nothing as a stranger, nothing with an empty e-mail, and nothing through a
-// browser-shaped request. That person is deleted at the end, pass or fail.
+// request that does not say it is a server. That person is this run's own and
+// is deleted at the end, pass or fail.
 // Needs POSTHOG_PERSONAL_API_KEY (.env); not in CI.
 //
 // Usage: npm run verify:lens-flags [-- --live]
@@ -55,6 +60,8 @@ import {
   type FlagCondition,
   type PostHogApi,
 } from "./posthog-flags";
+import { API as SETUP_API, makeApi, runSetup } from "./posthog-setup";
+import ts from "typescript";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -455,10 +462,115 @@ async function reconcileChecks(): Promise<void> {
     check(`reconcileFlag refuses to call a flag ${name} done: it throws after the write`, /is not as declared after setup/.test(error), error || "no error");
   }
 
+}
+
+// ─── 4b. The whole of posthog:setup, against a fake PostHog (CHE-386) ────────
+//
+// reconcileFlag is one function of setup. A flag write added to setup beside
+// it, or a request changed on its way out, would pass every check above and be
+// found only by --live, after the bad write. So setup itself is run here —
+// `runSetup` through its own `makeApi`, with only `fetch` replaced — and every
+// write it makes to a flag is read: a write that touches a declared flag
+// carries exactly the declared body, and when setup is done each declared key
+// is held by one flag in the declared state.
+
+function fakePostHog(initial: Record<string, unknown>[], onTheWay: (body: string) => string = (b) => b) {
+  const admin = fakeAdmin(initial);
+  let nextId = 5000;
+  const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+    const address = String(url);
+    if (!address.startsWith(SETUP_API)) throw new Error(`setup called outside the project's API: ${address}`);
+    const path = address.slice(SETUP_API.length);
+    const method = (init?.method ?? "GET") as "GET" | "POST" | "PATCH";
+    const body = typeof init?.body === "string" ? JSON.parse(onTheWay(init.body)) : undefined;
+    if (path.startsWith("/feature_flags/")) {
+      try {
+        return Response.json(await admin.api(method, path, body));
+      } catch (err) {
+        return Response.json({ detail: String(err) }, { status: 404 });
+      }
+    }
+    // Experiments and insights: none exist, each create is answered with an id.
+    if (method === "GET") return Response.json({ results: [] });
+    const id = nextId++;
+    return Response.json({ id, short_id: `s${id}`, start_date: null, ...(body as Record<string, unknown>) });
+  }) as typeof fetch;
+  return { fetchImpl, writes: admin.writes, flagsById: admin.flagsById };
+}
+
+/** What setup did to a declared flag that it should not have, in words. Empty when it did nothing wrong. */
+function setupOffenders(writes: { method: string; path: string; body: unknown }[], flagsById: Map<number, Record<string, unknown>>): string[] {
+  const declared = new Map(DECLARED_FLAGS.map((d) => [d.key, d]));
+  const out: string[] = [];
+  for (const w of writes) {
+    const id = w.path.match(/^\/feature_flags\/(\d+)\/$/)?.[1];
+    const named = new Set([String((w.body as { key?: unknown } | undefined)?.key ?? ""), id ? String(flagsById.get(Number(id))?.key ?? "") : ""]);
+    for (const key of named) {
+      const d = declared.get(key);
+      if (d && JSON.stringify(w.body) !== JSON.stringify(flagWriteBody(d))) out.push(`${w.method} ${w.path} writes ${key} with a body that is not the declared one`);
+    }
+  }
+  for (const d of DECLARED_FLAGS) {
+    const held = [...flagsById.values()].filter((f) => f.key === d.key);
+    if (held.length !== 1) out.push(`${held.length} flags hold ${d.key} after setup`);
+    else if (flagState(held[0]) !== declaredState(d)) out.push(`${d.key} is not as declared after setup`);
+  }
+  return out;
+}
+
+async function wholeSetupChecks(): Promise<void> {
+  const quiet = () => {};
+  const ext = DECLARED_FLAGS.find((f) => f.key === featureFlags.HOME_EXTENSION_CHECK_FLAG)!;
+  const stale = { ...asPostHogHolds(ext, 913845), evaluation_runtime: "all", filters: { groups: STALE_GROUPS } };
+  const ICONTAINS = { filters: { groups: [{ properties: [{ key: "email", type: "person", operator: "icontains", value: ["@"] }], rollout_percentage: 100 }] } };
+
+  for (const [name, initial] of [["an empty project", []], ["a project holding the stale 913845", [stale]]] as [string, Record<string, unknown>[]][]) {
+    const ph = fakePostHog(initial);
+    let error = "";
+    await runSetup(makeApi(ph.fetchImpl, "fake-key"), { launch: false, log: quiet }).catch((e: Error) => (error = e.message));
+    const offenders = setupOffenders(ph.writes, ph.flagsById);
+    const flagWrites = ph.writes.filter((w) => DECLARED_FLAGS.some((d) => d.key === (w.body as { key?: string }).key));
+    check(
+      `posthog:setup, run whole on ${name}: every declared flag written once, as declared, and nothing else done to one`,
+      !error && offenders.length === 0 && flagWrites.length === DECLARED_FLAGS.length,
+      error || offenders.join("; ") || `${flagWrites.length} writes`,
+    );
+  }
+
+  // The same audit must see what the two bypasses would do (shown red here, so
+  // the day one is written into setup the check above is what goes red).
+  {
+    const ph = fakePostHog([]);
+    const api = makeApi(ph.fetchImpl, "fake-key");
+    let error = "";
+    await runSetup(api, { launch: false, log: quiet }).catch((e: Error) => (error = e.message));
+    const id = [...ph.flagsById.values()].find((f) => f.key === ext.key)?.id;
+    if (!error && id !== undefined) await api("PATCH", `/feature_flags/${id}/`, ICONTAINS);
+    const offenders = setupOffenders(ph.writes, ph.flagsById);
+    check("…a further PATCH of a declared flag after the loop (icontains) is caught", !error && offenders.length === 2, error.split("\n")[0] || offenders.join("; ") || "nothing caught");
+  }
+  {
+    const ph = fakePostHog([], (body) => body.replaceAll('"operator":"exact"', '"operator":"icontains"'));
+    let error = "";
+    await runSetup(makeApi(ph.fetchImpl, "fake-key"), { launch: false, log: quiet }).catch((e: Error) => (error = e.message));
+    const offenders = setupOffenders(ph.writes, ph.flagsById);
+    check(
+      "…a request rewritten on its way out (exact → icontains) stops setup at the read-back and is caught",
+      /is not as declared after setup/.test(error) && offenders.length > 0,
+      `${error.split("\n")[0] || "no error"} · ${offenders.length} offenders`,
+    );
+  }
+
   const setup = readFileSync(join(process.cwd(), "scripts/posthog-setup.ts"), "utf8");
-  check("posthog:setup reconciles every declared flag through reconcileFlag", /for \(const declared of DECLARED_FLAGS\) \w+\.push\(await reconcileFlag\(api, declared\)\)/.test(setup));
-  check("…and writes no server-read flag by itself", !/DeclaredFlag|flagWriteBody|evaluation_runtime/.test(setup));
+  check("setup reconciles every declared flag through reconcileFlag", /for \(const declared of DECLARED_FLAGS\) \w+\.push\(await reconcileFlag\(api, declared, log\)\)/.test(setup));
+  check("…and spells out no server-read flag by itself", !/DeclaredFlag|flagWriteBody|evaluation_runtime/.test(setup));
   check("the owner's e-mail is written in one place", !setup.includes(OWNER_EMAIL));
+  const entry = setup.slice(setup.indexOf("if (require.main === module)"));
+  check(
+    "run as a script, setup is runSetup through makeApi and the real fetch — the lines that start it make no request of their own",
+    entry.startsWith("if (require.main === module)") && /await runSetup\(makeApi\(fetch, key\), \{ launch: process\.argv\.includes\("--launch"\) \}\);/.test(entry) && !/\bapi\(|fetch\(/.test(entry),
+  );
+  check("…and nothing in setup calls fetch but makeApi", (setup.match(/\bfetchImpl\(/g) ?? []).length === 1 && !/[^.\w]fetch\(/.test(setup));
 }
 
 // ─── 5. No browser code reads these flags ───────────────────────────────────
@@ -488,23 +600,66 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-// Code only: a comment saying "this prop is the flag X, evaluated by the page"
-// is how a browser component documents that it does NOT read the flag.
-function withoutComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-}
+// What a module is, read from its syntax tree and not from its text (CHE-386).
+// The text was read with patterns before, and four ways around them exited 0:
+// a dynamic import written as a template literal, a path with a `.js` suffix,
+// a string holding "/*" or "//" that made the comment stripper eat the code
+// after it, and a flag key put together at run time. A tree has none of the
+// first three problems by construction; the fourth is a rule below.
+//
+// Comments are not in it: a comment saying "this prop is the flag X, evaluated
+// by the page" is how a browser component documents that it does NOT read the flag.
+type Module = {
+  directive: "use client" | "use server" | null;
+  /** Module specifiers pulled into the bundle: imports, re-exports, dynamic imports, requires — nothing that is types only. */
+  imports: string[];
+  /** A dynamic import or require whose module is decided at run time: `import(\`@/lib/${x}\`)`. */
+  opaqueImports: string[];
+  identifiers: Set<string>;
+  /** Every string and every piece of a template literal, as written. */
+  strings: string[];
+  /** A string that something is appended to at run time: the head of `\`lens-${x}\``, the left side of `"lens-" + x`. */
+  stems: string[];
+};
 
-/** Module specifiers a file pulls into its bundle: imports, re-exports, dynamic imports, requires — not `import type`/`export type`. */
-function runtimeImports(code: string): string[] {
-  const out: string[] = [];
-  const patterns = [
-    /\bimport\s+(?!type\b)(?:[\w*{}\s,$]+?\s+from\s+)?["']([^"']+)["']/g,
-    /\bexport\s+(?!type\b)(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+["']([^"']+)["']/g,
-    /\bimport\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
-  ];
-  for (const re of patterns) for (const m of code.matchAll(re)) out.push(m[1]);
-  return out;
+function readModule(path: string, source: string): Module {
+  const kind = path.endsWith(".tsx") ? ts.ScriptKind.TSX : path.endsWith(".jsx") ? ts.ScriptKind.JSX : /\.(js|mjs)$/.test(path) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
+  const m: Module = { directive: null, imports: [], opaqueImports: [], identifiers: new Set(), strings: [], stems: [] };
+  for (const s of file.statements) {
+    if (!ts.isExpressionStatement(s) || !ts.isStringLiteral(s.expression)) break;
+    if (s.expression.text === "use client" || s.expression.text === "use server") m.directive = s.expression.text;
+  }
+  // `import { type A, type B } from "x"` is erased like `import type`; one value among them keeps the import.
+  const typesOnly = (elements: readonly { isTypeOnly: boolean }[]) => elements.length > 0 && elements.every((e) => e.isTypeOnly);
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const c = node.importClause;
+      const erased = c !== undefined && (c.isTypeOnly || (!c.name && c.namedBindings !== undefined && ts.isNamedImports(c.namedBindings) && typesOnly(c.namedBindings.elements)));
+      if (!erased) m.imports.push(node.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      const erased = node.isTypeOnly || (node.exportClause !== undefined && ts.isNamedExports(node.exportClause) && typesOnly(node.exportClause.elements));
+      if (!erased) m.imports.push(node.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteral(node.moduleReference.expression)) {
+      if (!node.isTypeOnly) m.imports.push(node.moduleReference.expression.text);
+    } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+      const arg = node.arguments[0];
+      if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) m.imports.push(arg.text);
+      else if (arg) m.opaqueImports.push(arg.getText(file));
+    }
+    if (ts.isIdentifier(node)) m.identifiers.add(node.text);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      m.strings.push(node.text);
+      if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.PlusToken && node.parent.left === node) m.stems.push(node.text);
+    }
+    if (ts.isTemplateExpression(node)) {
+      m.strings.push(node.head.text, ...node.templateSpans.map((s) => s.literal.text));
+      m.stems.push(node.head.text, ...node.templateSpans.slice(0, -1).map((s) => s.literal.text));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return m;
 }
 
 function resolveModule(root: string, from: string, spec: string, files: Set<string>): string | null {
@@ -512,29 +667,28 @@ function resolveModule(root: string, from: string, spec: string, files: Set<stri
   if (spec.startsWith("@/")) base = join(root, "src", spec.slice(2));
   else if (spec.startsWith(".")) base = join(from, "..", spec);
   else return null; // a package: not ours to walk
-  const candidates = [base, ...[".ts", ".tsx", ".js", ".jsx", ".mjs"].map((e) => base + e), ...["ts", "tsx", "js", "jsx"].map((e) => join(base, `index.${e}`))];
+  // "./x.js" names x.ts as well: the suffix a bundler accepts for a TypeScript file.
+  const bare = base.replace(/\.(js|jsx|mjs)$/, "");
+  const candidates = [base, ...[bare, base].flatMap((b) => [".ts", ".tsx", ".js", ".jsx", ".mjs"].map((e) => b + e)), ...["ts", "tsx", "js", "jsx"].map((e) => join(base, `index.${e}`))];
   return candidates.find((c) => files.has(c)) ?? null;
 }
 
 /** Every module in the client graph, each with the import chain that put it there. */
-function clientGraph(root: string, files: string[]): Map<string, string[]> {
-  const fileSet = new Set(files);
-  const code = new Map(files.map((f) => [f, withoutComments(readFileSync(f, "utf8"))]));
-  const isUseServer = (f: string) => /^\s*["']use server["']/.test(code.get(f) ?? "");
+function clientGraph(root: string, modules: Map<string, Module>): Map<string, string[]> {
+  const fileSet = new Set(modules.keys());
   const graph = new Map<string, string[]>();
   const queue: string[] = [];
-  for (const f of files) {
-    const text = code.get(f) ?? "";
-    if (/^\s*["']use client["']/.test(text) || /from ["']posthog-js["']/.test(text)) {
+  for (const [f, m] of modules) {
+    if (m.directive === "use client" || m.imports.includes("posthog-js")) {
       graph.set(f, [relative(root, f)]);
       queue.push(f);
     }
   }
   while (queue.length > 0) {
     const f = queue.shift()!;
-    for (const spec of runtimeImports(code.get(f) ?? "")) {
+    for (const spec of modules.get(f)!.imports) {
       const target = resolveModule(root, f, spec, fileSet);
-      if (!target || graph.has(target) || isUseServer(target)) continue;
+      if (!target || graph.has(target) || modules.get(target)!.directive === "use server") continue;
       graph.set(target, [...graph.get(f)!, relative(root, target)]);
       queue.push(target);
     }
@@ -542,33 +696,47 @@ function clientGraph(root: string, files: string[]): Map<string, string[]> {
   return graph;
 }
 
-function browserChecks(root = process.cwd(), label = ""): number {
+// A key put together at run time — `lens-${name}`, "lens-" + name — names a
+// server flag without spelling one. The stem that gives it away: what every
+// server flag's key begins with, up to and including a dash.
+function keyStems(keys: string[]): string[] {
+  return [...new Set(keys.flatMap((k) => [...k.matchAll(/-/g)].map((d) => k.slice(0, d.index! + 1))))];
+}
+
+function browserOffenders(root: string): { offenders: string[]; graphSize: number } {
   const files = sourceFiles(join(root, "src"));
-  const graph = clientGraph(root, files);
+  const modules = new Map(files.map((f) => [f, readModule(f, readFileSync(f, "utf8"))]));
+  const graph = clientGraph(root, modules);
   const keys = LENSES.map((l) => l.key);
   const names = LENSES.map((l) => l.constant);
+  const stems = keyStems(keys);
   const serverModules = [join("src", "lib", "feature-flags.ts"), join("src", "lib", "viewer-flags.ts")];
   const offenders: string[] = [];
   for (const [path, chain] of graph) {
     const rel = relative(root, path);
+    const where = chain.join(" → ");
     if (serverModules.includes(rel)) {
-      offenders.push(`browser code reaches ${rel}: ${chain.join(" → ")}`);
+      offenders.push(`browser code reaches ${rel}: ${where}`);
       continue;
     }
-    const text = withoutComments(readFileSync(path, "utf8"));
-    for (const k of [...keys, ...names]) if (text.includes(k)) offenders.push(`${chain.join(" → ")} mentions ${k}`);
+    const m = modules.get(path)!;
+    for (const k of keys) if (m.strings.some((s) => s.includes(k))) offenders.push(`${where} mentions ${k}`);
+    for (const n of names) if (m.identifiers.has(n)) offenders.push(`${where} mentions ${n}`);
+    for (const s of m.stems) if (stems.some((stem) => s.endsWith(stem))) offenders.push(`${where} builds a flag key at run time from "${s}"`);
+    for (const spec of m.opaqueImports) offenders.push(`${where} imports a module chosen at run time (${spec}), which cannot be followed`);
   }
-  for (const path of files) {
+  for (const [path, m] of modules) {
     const rel = relative(root, path);
     if (graph.has(path) || rel === serverModules[0]) continue;
-    const text = withoutComments(readFileSync(path, "utf8"));
-    for (const k of keys) if (text.includes(`"${k}"`) || text.includes(`'${k}'`)) offenders.push(`${rel} spells out "${k}" instead of importing its constant`);
+    for (const k of keys) if (m.strings.includes(k)) offenders.push(`${rel} spells out "${k}" instead of importing its constant`);
   }
-  if (!label) {
-    check(`client graph found to inspect (${graph.size} modules)`, graph.size > 0);
-    check("no browser code reaches a server flag module or mentions a server flag", offenders.length === 0, offenders.join("; "));
-  }
-  return offenders.length;
+  return { offenders, graphSize: graph.size };
+}
+
+function browserChecks(): void {
+  const { offenders, graphSize } = browserOffenders(process.cwd());
+  check(`client graph found to inspect (${graphSize} modules)`, graphSize > 0);
+  check("no browser code reaches a server flag module, mentions a server flag or builds its key", offenders.length === 0, offenders.join("; "));
 }
 
 // The walk itself, on a small tree written for the purpose: a client
@@ -586,11 +754,45 @@ function clientGraphFixtureChecks(): void {
     write("src/lib/viewer-flags.ts", `import { LENS_PRODUCT_FLAG } from "./feature-flags";\nexport const productLensFor = async () => Boolean(LENS_PRODUCT_FLAG);\n`);
     write("src/app/actions.ts", `"use server";\nimport { productLensFor } from "@/lib/viewer-flags";\nexport async function save() { return productLensFor(); }\n`);
     write("src/lib/types.ts", `export type { FlagPerson } from "./feature-flags";\n`);
-    write("src/components/ok.tsx", `"use client";\nimport { save } from "@/app/actions";\nimport type { FlagPerson } from "@/lib/feature-flags";\nexport const Ok = () => save;\n`);
-    check("client graph: a component calling a \"use server\" action that reads the flag is fine", browserChecks(root, "fixture") === 0);
+    write(
+      "src/components/ok.tsx",
+      [
+        `"use client";`,
+        `import { save } from "@/app/actions";`,
+        `import type { FlagPerson } from "@/lib/feature-flags";`,
+        // Types only, written inline: erased like the line above (it was a false alarm before CHE-386).
+        `import { type FlagPerson as Person } from "@/lib/feature-flags";`,
+        // Strings that look like comment marks, and a comment that names the flag: none of it is a read.
+        `const glob = "/lenses/*"; const address = "https://example.test//a"; /* lens-product is evaluated by the page */`,
+        `const cls = \`lens\${glob}-\${address}\`;`,
+        `export const Ok = () => [save, cls] as [typeof save, string, Person?, FlagPerson?];`,
+      ].join("\n"),
+    );
+    const clean = browserOffenders(root).offenders;
+    check("client graph: a component calling a \"use server\" action that reads the flag, with type-only imports of the flag module, is fine", clean.length === 0, clean.join("; "));
+
+    // Each way round the walk, alone: written, caught, removed, clean again.
+    const bypasses: [string, string, string, RegExp][] = [
+      ["client component → plain helper without the directive → viewer-flags", "src/components/sidebar.tsx", `"use client";\nimport { showProduct } from "@/lib/lens-helper";\nexport const Sidebar = () => showProduct;\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["a dynamic import written as a template literal", "src/components/lazy.tsx", `"use client";\nexport const load = () => import(\`@/lib/viewer-flags\`);\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["a path with a .js suffix", "src/components/suffix.tsx", `"use client";\nimport { productLensFor } from "../lib/viewer-flags.js";\nexport const S = productLensFor;\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["an import after a string holding \"/*\" (the old comment stripper ate it)", "src/components/star.tsx", `"use client";\nconst glob = "/lenses/*";\nimport { productLensFor } from "@/lib/viewer-flags";\nexport const S = [glob, productLensFor]; /* done */\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["an import on a line after a string holding \"//\"", "src/components/slashes.tsx", `"use client";\nconst a = "x//y"; import { productLensFor } from "@/lib/viewer-flags";\nexport const S = [a, productLensFor];\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["a require", "src/components/req.tsx", `"use client";\nexport const S = require("@/lib/viewer-flags");\n`, /reaches src\/lib\/viewer-flags\.ts/],
+      ["a key built in a template literal", "src/components/built.tsx", `"use client";\nexport const key = (name: string) => \`lens-\${name}\`;\n`, /builds a flag key at run time from "lens-"/],
+      ["a key built by concatenation", "src/components/concat.tsx", `"use client";\nexport const key = (name: string) => "home-extension-" + name;\n`, /builds a flag key at run time from "home-extension-"/],
+      ["a module chosen at run time", "src/components/opaque.tsx", `"use client";\nexport const load = (name: string) => import(\`@/lib/\${name}\`);\n`, /imports a module chosen at run time/],
+      ["a key spelled out in a string", "src/components/spelled.tsx", `"use client";\nexport const key = "lens-release";\n`, /mentions lens-release/],
+      ["the constant's name", "src/components/named.tsx", `"use client";\nimport * as all from "@/lib/types";\nexport const key = (all as Record<string, unknown>).LENS_PRODUCT_FLAG;\n`, /mentions LENS_PRODUCT_FLAG/],
+    ];
     write("src/lib/lens-helper.ts", `export { productLensFor as showProduct } from "../lib/viewer-flags";\n`);
-    write("src/components/sidebar.tsx", `"use client";\nimport { showProduct } from "@/lib/lens-helper";\nexport const Sidebar = () => showProduct;\n`);
-    check("client graph: client component → plain helper → viewer-flags is caught", browserChecks(root, "fixture") > 0);
+    for (const [name, rel, text, expected] of bypasses) {
+      write(rel, text);
+      const found = browserOffenders(root).offenders;
+      rmSync(join(root, rel));
+      const after = browserOffenders(root).offenders;
+      check(`client graph: ${name} is caught`, found.some((o) => expected.test(o)) && after.length === 0, found.join("; ") || "nothing caught");
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -599,7 +801,9 @@ function clientGraphFixtureChecks(): void {
 // ─── Live (optional) ────────────────────────────────────────────────────────
 
 const POSTHOG_API = "https://us.posthog.com/api/projects/595090";
-const SPOOFED_ID = "verify-che-381-spoofed";
+// One person per run (CHE-386): with a fixed id, two --live runs at once
+// stored, read and deleted the same person under each other.
+const SPOOFED_ID = `verify-che-381-spoofed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 async function liveChecks(realFetch: typeof fetch): Promise<void> {
   globalThis.fetch = realFetch;
@@ -665,7 +869,10 @@ async function liveChecks(realFetch: typeof fetch): Promise<void> {
       body: JSON.stringify({ api_key: featureFlags.POSTHOG_FLAGS_TOKEN, distinct_id: SPOOFED_ID, flag_keys_to_evaluate: LENSES.map((l) => l.key) }),
     });
     const answered = Object.keys(((await res.json()) as { flags?: object }).flags ?? {});
-    check("live: a browser-shaped request for that person gets no answer for any of them", res.ok && answered.length === 0, `HTTP ${res.status} ${JSON.stringify(answered)}`);
+    // Named for what it is (CHE-386): the body posthog-js sends — no overrides,
+    // no runtime — from Node, so not a browser's headers. PostHog decides on
+    // the body's `evaluation_runtime`, which is what is absent here.
+    check("live: a request for that person that does not say it is a server gets no answer for any of them", res.ok && answered.length === 0, `HTTP ${res.status} ${JSON.stringify(answered)}`);
   } finally {
     let left = 1;
     for (let i = 0; i < 12 && left > 0; i++) {
@@ -700,6 +907,7 @@ process.on("exit", (code) => {
   globalThis.fetch = realFetch;
   declarationChecks();
   await reconcileChecks();
+  await wholeSetupChecks();
   clientGraphFixtureChecks();
   browserChecks();
   if (process.argv.includes("--live")) await liveChecks(realFetch);
