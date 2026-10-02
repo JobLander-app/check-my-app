@@ -760,9 +760,9 @@ function clientGraph(root: string, modules: Map<string, Module>): Map<string, st
 // server flag's key begins with, up to and including a dash.
 //
 // What this does not catch, and is not meant to: a key assembled with no such
-// stem in the source (from character codes, from a string fetched at run
-// time). No reading of source can; the flags' "server" runtime is what refuses
-// that read, and --live is what shows it does.
+// stem in the source (["lens", name].join("-"), character codes, a string
+// fetched at run time). No reading of source can; the flags' "server" runtime
+// is what refuses that read, and --live is what shows it does.
 function keyStems(keys: string[]): string[] {
   return [...new Set(keys.flatMap((k) => [...k.matchAll(/-/g)].map((d) => k.slice(0, d.index! + 1))))];
 }
@@ -786,7 +786,12 @@ function browserOffenders(root: string): { offenders: string[]; graphSize: numbe
     const m = modules.get(path)!;
     for (const k of keys) if (m.strings.some((s) => s.includes(k))) offenders.push(`${where} mentions ${k}`);
     for (const n of names) if (m.identifiers.has(n) || m.strings.some((s) => s.includes(n))) offenders.push(`${where} mentions ${n}`);
-    for (const s of m.stems) if (stems.some((stem) => s.endsWith(stem))) offenders.push(`${where} builds a flag key at run time from "${s}"`);
+    // Any text that ends where a key's stem ends, however the rest is attached:
+    // `+`, a template, "lens-".concat(name) (Codex on #260). The rule is on the
+    // text, so a new way to append needs no new case here.
+    for (const s of new Set([...m.stems, ...m.strings])) {
+      if (stems.some((stem) => s.endsWith(stem))) offenders.push(`${where} holds the start of a flag key ("${s}"), which is how one is built at run time`);
+    }
     for (const spec of m.opaqueImports) offenders.push(`${where} imports a module chosen at run time (${spec}), which cannot be followed`);
   }
   for (const [path, m] of modules) {
@@ -843,16 +848,17 @@ function clientGraphFixtureChecks(): void {
       ["an import after a string holding \"/*\" (the old comment stripper ate it)", "src/components/star.tsx", `"use client";\nconst glob = "/lenses/*";\nimport { productLensFor } from "@/lib/viewer-flags";\nexport const S = [glob, productLensFor]; /* done */\n`, /reaches src\/lib\/viewer-flags\.ts/],
       ["an import on a line after a string holding \"//\"", "src/components/slashes.tsx", `"use client";\nconst a = "x//y"; import { productLensFor } from "@/lib/viewer-flags";\nexport const S = [a, productLensFor];\n`, /reaches src\/lib\/viewer-flags\.ts/],
       ["a require", "src/components/req.tsx", `"use client";\nexport const S = require("@/lib/viewer-flags");\n`, /reaches src\/lib\/viewer-flags\.ts/],
-      ["a key built in a template literal", "src/components/built.tsx", `"use client";\nexport const key = (name: string) => \`lens-\${name}\`;\n`, /builds a flag key at run time from "lens-"/],
-      ["a key built by concatenation", "src/components/concat.tsx", `"use client";\nexport const key = (name: string) => "home-extension-" + name;\n`, /builds a flag key at run time from "home-extension-"/],
+      ["a key built in a template literal", "src/components/built.tsx", `"use client";\nexport const key = (name: string) => \`lens-\${name}\`;\n`, /holds the start of a flag key \("lens-"\)/],
+      ["a key built by concatenation", "src/components/concat.tsx", `"use client";\nexport const key = (name: string) => "home-extension-" + name;\n`, /holds the start of a flag key \("home-extension-"\)/],
+      ["a key built with .concat()", "src/components/method.tsx", `"use client";\nexport const key = (name: string) => "lens-".concat(name);\n`, /holds the start of a flag key \("lens-"\)/],
       ["a module chosen at run time", "src/components/opaque.tsx", `"use client";\nexport const load = (name: string) => import(\`@/lib/\${name}\`);\n`, /imports a module chosen at run time/],
       ["a key spelled out in a string", "src/components/spelled.tsx", `"use client";\nexport const key = "lens-release";\n`, /mentions lens-release/],
       ["the constant's name", "src/components/named.tsx", `"use client";\nimport * as all from "@/lib/types";\nexport const key = (all as Record<string, unknown>).LENS_PRODUCT_FLAG;\n`, /mentions LENS_PRODUCT_FLAG/],
       // Codex on #260: the text patterns caught these three by accident of spelling; the tree has to on purpose.
       ["the constant's name as a string (flags[\"LENS_PRODUCT_FLAG\"])", "src/components/indexed.tsx", `"use client";\nexport const read = (flags: Record<string, boolean>) => flags["LENS_PRODUCT_FLAG"];\n`, /mentions LENS_PRODUCT_FLAG/],
-      ["a key built from split literals (\"lens\" + \"-\" + name)", "src/components/split.tsx", `"use client";\nexport const key = (name: string) => "lens" + "-" + name;\n`, /builds a flag key at run time from "lens-"/],
+      ["a key built from split literals (\"lens\" + \"-\" + name)", "src/components/split.tsx", `"use client";\nexport const key = (name: string) => "lens" + "-" + name;\n`, /holds the start of a flag key \("lens-"\)/],
       ["a key spelled in two literals (\"lens-\" + \"product\")", "src/components/joined.tsx", `"use client";\nexport const key = "lens-" + "product";\n`, /mentions lens-product/],
-      ["a key built in a template around a literal piece", "src/components/pieces.tsx", `"use client";\nexport const key = (name: string) => \`\${"lens"}-\${name}\`;\n`, /builds a flag key at run time from "lens-"/],
+      ["a key built in a template around a literal piece", "src/components/pieces.tsx", `"use client";\nexport const key = (name: string) => \`\${"lens"}-\${name}\`;\n`, /holds the start of a flag key \("lens-"\)/],
     ];
     write("src/lib/lens-helper.ts", `export { productLensFor as showProduct } from "../lib/viewer-flags";\n`);
     for (const [name, rel, text, expected] of bypasses) {
