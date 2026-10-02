@@ -14,6 +14,8 @@ import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
 import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
+import { releaseLensFor } from "@/lib/viewer-flags";
+import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 
 const TIMELINE = 12;
@@ -54,7 +56,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // the ones made before it was saved (no appId). Otherwise the header could
   // name a check the timeline does not have.
   const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
-  const [health, recurring, runs, journeys, namedAccounts] = await Promise.all([
+  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount] = await Promise.all([
     // This app's entries alone: the page's work follows one app's history,
     // not the team's whole portfolio.
     appHealth(db, team.id, { only: app.id }),
@@ -75,6 +77,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     }),
     db.appJourney.count({ where: { appId: app.id, retiredAt: null } }),
     db.testAccount.count({ ...alreadyScoped("the App was just scoped to this team"), where: { appId: app.id } }),
+    // CHE-367: the Release lens is the owner's until it is proven; the layout
+    // has already asked, so this is the same answer, not a second request.
+    releaseLensFor(user),
+    // A release is a check CI told us is a build (src/lib/releases.ts).
+    db.run.count({ where: { ...teamOwned(team.id), appId: app.id, deploySha: { not: null }, status: { in: FINISHED } } }),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
@@ -209,6 +216,9 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             </div>
           ) : (
             <Row href={appPath.schedule(app.id)} label="Schedule" value={scheduleLabel(watch)} />
+          )}
+          {releaseLens && (
+            <Row href={releasesHref(app.id)} label="Releases" value={releaseCount === 0 ? "none checked yet" : `${releaseCount} checked`} />
           )}
           <Row
             href={appPath.section(app.id, "integrations")}

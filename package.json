@@ -90,6 +90,7 @@
     "verify:issues-checks": "tsx --tsconfig tsconfig.json scripts/verify-issues-checks.ts",
     "verify:app-settings-sections": "tsx --tsconfig tsconfig.json scripts/verify-app-settings-sections.ts",
     "verify:settings-pages": "tsx --tsconfig tsconfig.json scripts/verify-settings-pages.ts",
+    "verify:release-page": "tsx --tsconfig tsconfig.json scripts/verify-release-page.ts",
     "verify:closed-door": "tsx --tsconfig tsconfig.json scripts/verify-closed-door.ts",
     "verify:click-shows-what-appeared": "tsx --tsconfig tsconfig.json scripts/verify-click-shows-what-appeared.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",

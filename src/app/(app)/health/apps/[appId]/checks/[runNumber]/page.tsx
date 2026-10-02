@@ -7,8 +7,14 @@ import { extensionDisplayName } from "@/lib/extension-target";
 import { recurrencesAsOf } from "@/lib/recurring";
 import { checkDelta, deltaLine } from "@/lib/check-delta";
 import { VerdictView } from "@/components/verdict-view";
+import { releaseLensFor } from "@/lib/viewer-flags";
+import { releasesByTeam } from "@/lib/releases";
+import { envLabel, releasesHref, shortSha } from "@/lib/release-page";
+import { ReleaseDelta } from "@/components/release-delta";
 
 const FINISHED = ["completed", "partial"];
+// The loader's window is for a feed; one release is found whenever it was.
+const ALL_TIME_DAYS = 36_500;
 
 // One check, inside the app (CHE-371, epic CHE-348 direction C): the verdict
 // the public permalink shows — the same component, so the two cannot disagree —
@@ -32,7 +38,7 @@ export default async function CheckPage({
   const { watch_error: watchError, recheck, balance } = await searchParams;
   const runNumber = /^\d{1,9}$/.test(raw) ? Number(raw) : 0;
   if (runNumber < 1) notFound();
-  const { db, team } = await requireUser();
+  const { user, db, team } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
@@ -48,9 +54,16 @@ export default async function CheckPage({
   const ofThisApp = { OR: [{ appId: app.id }, ...(onlyOneWithSlug ? [{ appId: null, appSlug: app.appSlug }] : [])] };
   const run = await db.run.findFirst({
     where: { ...teamOwned(team.id), ...ofThisApp, runNumber },
-    select: { publicId: true, runNumber: true, quickPagesOpened: true },
+    select: { publicId: true, runNumber: true, quickPagesOpened: true, deploySha: true },
   });
   if (!run) notFound();
+  // CHE-367: a check CI told us is a build is a release, and says what it
+  // broke or fixed against the release before it. Read only for such a check,
+  // and only for whoever has the Release lens (the layout has already asked).
+  const release =
+    run.deploySha && (await releaseLensFor(user))
+      ? ((await releasesByTeam(db, team.id, { days: ALL_TIME_DAYS })).find((r) => r.runNumber === run.runNumber) ?? null)
+      : null;
 
   // The checks on either side, by number: a finished check with a verdict is
   // one there is something to open (a failed one says nothing about the app —
@@ -112,6 +125,19 @@ export default async function CheckPage({
           </Link>
         </div>
       </div>
+
+      {release && (
+        <section className="card mb-6 flex flex-col gap-2 px-5 py-4">
+          <p className="flex flex-wrap items-center gap-2 text-[13px] text-fg-muted">
+            <Link href={releasesHref(app.id)} className="text-accent hover:underline">
+              Release
+            </Link>
+            <span className="font-mono text-fg">{shortSha(release.sha)}</span>
+            <span className="inline-flex h-6 items-center rounded-full border border-ink-600 px-2.5 text-xs">{envLabel(release.env)}</span>
+          </p>
+          <ReleaseDelta release={release} open />
+        </section>
+      )}
 
       <VerdictView
         id={run.publicId}
