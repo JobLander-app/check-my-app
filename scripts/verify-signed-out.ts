@@ -27,7 +27,11 @@ import {
   completeSignedOut,
   landedOutside,
   noteSessionReached,
+  SIGN_IN_AWAY_MS,
+  SIGN_IN_LIMIT_MS,
+  SIGN_IN_WATCH_MS,
   SIGNED_OUT_FEED,
+  whereItSettled,
   SIGNED_OUT_JOURNEY_TITLE,
   signedOutBottomLine,
   signedOutMessage,
@@ -74,6 +78,41 @@ async function main() {
   }
   check("landed: with nothing allowed, only the app's own origin is the app",
     landedOutside("https://securify-app-production-d4wmn.ondigitalocean.app/", TARGET, []) === "securify-app-production-d4wmn.ondigitalocean.app");
+
+  // Where the address settled: watched on a clock of our own, so each case is
+  // the timeline it says it is.
+  {
+    const APP = TARGET;
+    const AWAY = "https://accounts.shopify.com/lookup";
+    // timeline: [from ms, address] — the address from that moment on.
+    const settle = async (timeline: [number, string][]) => {
+      let clock = 0;
+      const address = () => [...timeline].reverse().find(([from]) => clock >= from)![1];
+      const settled = await whereItSettled(address, (url) => landedOutside(url, TARGET, ALLOWED), async (ms) => { clock += ms as number; }, () => clock);
+      return { settled, took: clock };
+    };
+    const onApp = await settle([[0, APP]]);
+    check("settled: on the app through the whole watch → the app", onApp.settled === null && onApp.took >= SIGN_IN_WATCH_MS && onApp.took < SIGN_IN_WATCH_MS + 500, JSON.stringify(onApp));
+    const sentAway = await settle([[0, AWAY]]);
+    check("settled: sent to the sign-in at once and still there after a while → the sign-in has ended", sentAway.settled === HOST && sentAway.took >= SIGN_IN_AWAY_MS && sentAway.took < SIGN_IN_AWAY_MS + 500, JSON.stringify(sentAway));
+    const byScript = await settle([[0, APP], [1_200, AWAY]]);
+    check("settled: sent away by a script after the page loaded → ended", byScript.settled === HOST, JSON.stringify(byScript));
+    const chain = await settle([[0, AWAY], [900, "https://accounts.shopify.com/session-service/login"], [2_100, "https://accounts.shopify.com/select"]]);
+    check("settled: moving between pages of the sign-in host is still away → ended", chain.settled === HOST && chain.took < SIGN_IN_AWAY_MS + 500, JSON.stringify(chain));
+    const bounce = await settle([[0, AWAY], [1_500, APP]]);
+    check("settled: a bounce through the identity host that comes straight back is a sign-in that works — believed once it has stayed",
+      bounce.settled === null && bounce.took >= 1_500 + SIGN_IN_WATCH_MS && bounce.took < 1_500 + SIGN_IN_WATCH_MS + 500, JSON.stringify(bounce));
+    const lateBounce = await settle([[0, APP], [4_000, AWAY], [6_000, APP]]);
+    check("settled: the same when the bounce starts late in the watch", lateBounce.settled === null && lateBounce.took >= 6_000 + SIGN_IN_WATCH_MS, JSON.stringify(lateBounce));
+    const bounceThenOut = await settle([[0, AWAY], [1_000, APP], [2_000, AWAY]]);
+    check("settled: a return that does not hold is not a return", bounceThenOut.settled === HOST && bounceThenOut.took >= 2_000 + SIGN_IN_AWAY_MS, JSON.stringify(bounceThenOut));
+    const allowedHop = await settle([[0, APP], [800, "https://securify-app-production-d4wmn.ondigitalocean.app/auth"], [2_000, APP]]);
+    check("settled: a hop to an origin allowed for the app was never 'away'", allowedHop.settled === null && allowedHop.took < SIGN_IN_WATCH_MS + 500, JSON.stringify(allowedHop));
+    let flips = 0;
+    let clock = 0;
+    const restless = await whereItSettled(() => (Math.floor(clock / 1_000) % 2 === 0 ? AWAY : APP), (url) => { flips++; return landedOutside(url, TARGET, ALLOWED); }, async (ms) => { clock += ms as number; }, () => clock);
+    check("settled: an address that never stays put is judged where it stands when time is up — the watch ends", clock >= SIGN_IN_LIMIT_MS && clock < SIGN_IN_LIMIT_MS + 500 && flips > 10 && (restless === null || restless === HOST), `${clock} ms → ${restless}`);
+  }
 
   // ── 2 — the run ends at the sign-in page ─────────────────────────────────
   {

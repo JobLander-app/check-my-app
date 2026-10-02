@@ -17,11 +17,8 @@ import { unlockStoreGate } from "./store-password";
 import { storeAccessFor } from "./credentials";
 import { closedDoor, deepAddresses, opensBehindDoor, DOOR_DEEP_TRIES, DOOR_RETRY_WAIT_MS, type ClosedDoor } from "./closed-door";
 import { isSessionTarget, SessionBrowser, sessionBrowserFor, sessionHost, type SessionConnect } from "./session-browser";
-import { landedOutside } from "./signed-out";
+import { landedOutside, whereItSettled } from "./signed-out";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
-
-/** How long a page in a signed-in session gets to send the visitor to its sign-in. */
-const SIGN_IN_SETTLE_MS = 5_000;
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   // CHE-389: an app checked inside a signed-in session runs in the session
@@ -178,13 +175,14 @@ export async function surfaceScan(
     let signedOut: string | null = null;
     if (inSession) {
       const allowed = parseAllowedOrigins(run.allowedOrigins, env.bindings.SELF_CHECK_HOSTS);
-      // "Loaded" is not the end of it: the script that sends the visitor away
-      // runs after the load. So the address is watched for a few seconds; a
-      // page that stays on the app for that long is the app.
-      await page
-        .waitForURL((url) => landedOutside(url.toString(), targetUrl, allowed) !== null, { timeout: SIGN_IN_SETTLE_MS, waitUntil: "commit" })
-        .catch(() => {});
-      signedOut = landedOutside(page.url(), targetUrl, allowed);
+      // "Loaded" is not the end of it, and neither is the first address that
+      // is not the app: the address is watched until it has stayed put
+      // (whereItSettled, signed-out.ts).
+      signedOut = await whereItSettled(
+        () => page.url(),
+        (url) => landedOutside(url, targetUrl, allowed),
+        (ms) => page.waitForTimeout(ms),
+      );
     }
     // The signal tables live in lib/tech-signals (CHE-132) so the free page
     // survey reads the same stack off a plain fetch that this scan reads off

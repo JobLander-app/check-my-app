@@ -124,8 +124,14 @@ async function main() {
   // ── the product, the person's browser, the host's server ──
   // The product's sign-in lives on a host of its own, as Shopify's does: where
   // the app's address leads once a sign-in has ended.
-  const signIn = http.createServer((_req, res) => {
+  const signIn = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
+    // A sign-in that is still good: the identity host renews it and sends the
+    // visitor straight back — a moment away from the app, not a sign-in ended.
+    if ((req.url ?? "").startsWith("/sso")) {
+      res.end('<!doctype html><title>Signing you in…</title><script>setTimeout(() => { location.href = new URLSearchParams(location.search).get("return_to"); }, 700);</script>');
+      return;
+    }
     res.end('<!doctype html><title>Log in</title><form><input type="email" name="email"><button>Continue</button></form>');
   });
   await new Promise<void>((resolve) => signIn.listen(0, "127.0.0.1", resolve));
@@ -139,6 +145,10 @@ async function main() {
     // the page does it from a script a moment after it loads.
     if (url.pathname === "/expired") {
       res.writeHead(302, { Location: `${SIGN_IN}/login?return_to=expired` }).end();
+      return;
+    }
+    if (url.pathname === "/renewed") {
+      res.writeHead(302, { Location: `${SIGN_IN}/sso?return_to=${encodeURIComponent(`http://${req.headers.host}/admin`)}` }).end();
       return;
     }
     if (url.pathname === "/expired-late") {
@@ -299,6 +309,11 @@ async function main() {
     const late = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, again.browser, { targetUrl: `${SITE}/expired-late`, id: RUN_A, storePasswordEnc: null });
     check("surfaceScan: the same when the page sends the visitor away from a script, after it loaded",
       late.signedOut === signInHost && (await until(onlyThePersonsTab)), String(late.signedOut));
+    // A sign-in that works may leave the app for a moment — a bounce through
+    // the identity host that comes straight back. Where it ends is what counts.
+    const renewed = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, again.browser, { targetUrl: `${SITE}/renewed`, id: RUN_A, storePasswordEnc: null });
+    check("surfaceScan: a bounce through the sign-in host that comes straight back is not a sign-in that ended — the app was reached",
+      renewed.signedOut === null && renewed.internalLinkCount === 1 && (await until(onlyThePersonsTab)), JSON.stringify({ signedOut: renewed.signedOut, links: renewed.internalLinkCount }));
     // Outside a session nothing of this applies: an ordinary check that is
     // redirected to another host is read the way it always was.
     {

@@ -45,6 +45,53 @@ export function landedOutside(landedUrl: string, targetUrl: string, allowedOrigi
   return landed.host.toLowerCase();
 }
 
+// ── where the address settled ──
+//
+// One look at the address is not enough, in either direction. A product may
+// send a signed-out visitor to its sign-in from a script, after the first
+// document has loaded — so "it loaded on the app" is not yet "it is the app".
+// And a sign-in that is perfectly alive may leave the app for a moment — a
+// single-sign-on or token-refresh bounce through the identity host — and come
+// straight back; the first outside address is then not where it ended, and
+// calling it "signed out" would end a good run and tell a person to sign in
+// who is signed in (Codex on #253). So the address is watched until it has
+// stayed put: on the app for the whole watch → the app; away, and still away
+// after a while without coming back → the sign-in has ended.
+export const SIGN_IN_WATCH_MS = 5_000;
+export const SIGN_IN_AWAY_MS = 4_000;
+export const SIGN_IN_LIMIT_MS = 20_000;
+const SIGN_IN_LOOK_MS = 250;
+
+/** → the host the address settled on when that is not the app; null when it settled on the app. */
+export async function whereItSettled(
+  address: () => string,
+  outside: (url: string) => string | null,
+  wait: (ms: number) => Promise<unknown>,
+  now: () => number = Date.now,
+): Promise<string | null> {
+  const started = now();
+  let awaySince: number | null = null;
+  let onAppSince: number | null = null;
+  for (;;) {
+    const at = now();
+    if (outside(address()) !== null) {
+      onAppSince = null;
+      awaySince ??= at;
+      if (at - awaySince >= SIGN_IN_AWAY_MS) break;
+    } else {
+      // Counted from when it last came to the app, not from the start: an
+      // address that was just away has to stay before it is believed.
+      awaySince = null;
+      onAppSince ??= at;
+      if (at - onAppSince >= SIGN_IN_WATCH_MS) break;
+    }
+    // An address that keeps moving is judged where it stands when time is up.
+    if (at - started >= SIGN_IN_LIMIT_MS) break;
+    await wait(SIGN_IN_LOOK_MS);
+  }
+  return outside(address());
+}
+
 // Customer-facing. What happened at their address, that it is not a verdict,
 // that it cost nothing, and the one thing rule 2 lets us ask for — access.
 // Nothing about how we check.
