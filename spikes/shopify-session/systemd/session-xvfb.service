@@ -3,8 +3,10 @@ Description=Session host virtual display :99 (CHE-378)
 After=network.target
 
 [Service]
-User=session-host
-Group=session-host
+# The browser's user (see session-chrome.service): the display, Chrome and the
+# VNC server that reads the display are the three things that run as it.
+User=session-browser
+Group=session-browser
 # -nolisten tcp: the display is reachable only through the local socket, which
 # x11vnc and Chrome use. Nothing outside the VM talks X11.
 ExecStart=/usr/bin/Xvfb :99 -screen 0 1366x900x24 -nolisten tcp
