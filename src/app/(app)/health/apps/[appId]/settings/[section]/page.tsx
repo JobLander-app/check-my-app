@@ -322,9 +322,9 @@ async function Notifications({ appId, teamId, userId, notifyEmail, save }: { app
             </span>
           </label>
         ))}
-        <button type="submit" className="btn-secondary text-sm">
+        <Button type="submit" variant="outline">
           Save who hears about it
-        </button>
+        </Button>
       </form>
 
       {notifyEmail !== null && (
@@ -402,7 +402,7 @@ async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; t
           </div>
           <a
             href={`/api/integrations/linear/start?appId=${app.id}`}
-            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-ink-500 hover:text-fg"
+            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
           >
             {tracker ? "Reconnect →" : "Connect →"}
           </a>

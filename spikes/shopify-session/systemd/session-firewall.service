@@ -1,0 +1,13 @@
+[Unit]
+Description=Session host: the browser's user cannot reach this host or the private network (CHE-389)
+Before=session-chrome.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# firewall.nft replaces its own table, so loading it again is safe.
+ExecStart=/usr/sbin/nft -f /etc/session-host/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet session_browser
+
+[Install]
+WantedBy=multi-user.target

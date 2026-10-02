@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 
 // CHE-277: opens Stripe's own billing portal for the team.
 //
@@ -32,9 +33,9 @@ export function ManageBillingButton() {
 
   return (
     <div className="mt-4">
-      <button type="button" onClick={open} disabled={busy} className="btn-secondary text-sm">
+      <Button type="button" variant="outline" onClick={open} disabled={busy}>
         {busy ? "Opening…" : "Manage billing"}
-      </button>
+      </Button>
       {error && <p className="mt-2 text-sm text-status-broken">{error}</p>}
     </div>
   );
