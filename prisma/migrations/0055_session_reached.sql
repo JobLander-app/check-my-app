@@ -1,0 +1,12 @@
+-- CHE-389: an app checked inside a signed-in session records when a check last
+-- got past the sign-in and reached the app. The surface scan writes it, so it
+-- holds whatever became of that run afterwards. When the sign-in has ended, the
+-- person who signs in is told once per value of this column — a run that
+-- reached the app and later failed still marks a new sign-in, which a count of
+-- finished runs did not (Codex on #253).
+--
+-- Numbered 0055: 0054 is taken by an open branch (run_latest_per_app_index).
+-- wrangler applies migrations by name, so the order the two merge in does not
+-- matter, and adding a nullable column is safe under the worker still running
+-- when CI migrates before deploying.
+ALTER TABLE "App" ADD COLUMN "sessionReachedAt" DATETIME;

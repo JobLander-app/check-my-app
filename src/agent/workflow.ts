@@ -39,7 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
-import { completeSignedOut, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
+import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
@@ -563,6 +563,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           // CHE-389: what loaded was the sign-in page, not the app — its status,
           // stack and links are not the app's, and are not reported as such.
           if (r.signedOut) return { ...r, extensionIdentity: null };
+          // …and when it was the app, the sign-in works as of now: written
+          // here, at the scan, so it holds whatever becomes of this run. It
+          // names the sign-in the next "ended" message is about.
+          if (isSession && !r.door) await noteSessionReached(env, run);
           await appendEvent(env, runId, "surface_scan", {
             icon: "ok",
             text: `Loaded homepage (HTTP ${r.status ?? "?"})`,

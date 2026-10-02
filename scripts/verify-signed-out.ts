@@ -26,6 +26,7 @@ import { join } from "node:path";
 import {
   completeSignedOut,
   landedOutside,
+  noteSessionReached,
   SIGNED_OUT_FEED,
   SIGNED_OUT_JOURNEY_TITLE,
   signedOutBottomLine,
@@ -100,6 +101,21 @@ async function main() {
     const price = await priceRun(stub.db, "run_1", new Date("2026-10-02T06:05:00Z"));
     check("end: the check is priced $0", price === 0 && (await stub.db.run.findUnique({ where: { id: "run_1" } }))?.priceUsd === 0, `price=${price}`);
   }
+  // A retry that finds the journey written and the step not: the step is still
+  // owed. A journey alone would publish Not verified with nothing saying why.
+  {
+    const stub = createStubDb({
+      run: [{ id: "run_half", status: "surface_scan", verdict: null, bottomLine: null, costUsd: null, completedAt: null }],
+      journey: [{ id: "j_half", runId: "run_half", order: 0, title: SIGNED_OUT_JOURNEY_TITLE, status: "skipped", summary: signedOutObserved(HOST) }],
+    });
+    await completeSignedOut({ db: stub.db } as unknown as AgentEnv, { id: "run_half", targetUrl: TARGET }, HOST);
+    const journeys = await stub.db.journey.findMany({ where: { runId: "run_half" } });
+    const steps = await stub.db.step.findMany({ where: { journeyId: "j_half" } });
+    check("end: a retry after the journey was written and the step was not writes the step — and no second journey",
+      journeys.length === 1 && steps.length === 1 && steps[0].unverifiedReason === "missing_access" &&
+        (await stub.db.run.findUnique({ where: { id: "run_half" } }))?.verdict === "unverified",
+      `${journeys.length} journeys, ${steps.length} steps`);
+  }
 
   // ── 3 — rule 1 over every sentence a customer reads ──────────────────────
   for (const text of [signedOutBottomLine(HOST), signedOutObserved(HOST), SIGNED_OUT_FEED]) {
@@ -123,11 +139,7 @@ async function main() {
       newId: () => `out-${++n}`,
       now: () => new Date("2026-10-02T06:00:00Z"),
     };
-    const day = (d: number) => new Date(Date.UTC(2026, 9, d, 6));
-    const runRow = (id: string, d: number, costUsd: number, more: Record<string, unknown> = {}) => ({
-      id, appId: "app_admin", targetKind: "session", status: "partial", costUsd, startedAt: day(d), ...more,
-    });
-    const stub = createStubDb({ run: [runRow("run_out_1", 2, 0)] });
+    const stub = createStubDb({ app: [{ id: "app_admin", sessionReachedAt: null }, { id: "app_other", sessionReachedAt: null }] });
     const env = { db: stub.db, bindings: { OWNER_TELEGRAM_CHAT_ID: CHAT, SESSION_SIGN_IN_URL: "https://session.checkmyapp.dev" } } as unknown as AgentEnv;
     const tell = (id: string) => tellOwnerSignedOut(env, { id, appId: "app_admin", appSlug: "admin.shopify.com" }, HOST, deps);
     const rows = () => table.all() as { direction: string; status: string; text: string; sendId: string; chatId: string }[];
@@ -140,32 +152,33 @@ async function main() {
       rows()[0].text === signedOutMessage("admin.shopify.com", HOST, "https://session.checkmyapp.dev") &&
         rows()[0].text.includes("admin.shopify.com") && rows()[0].text.includes(HOST) && rows()[0].text.includes("https://session.checkmyapp.dev") && /Отвечать не нужно/.test(rows()[0].text),
       rows()[0].text);
-    check("told: the id is the sign-in that ended — the app, and the last run that got in (none yet)",
+    check("told: the id is the sign-in that ended — the app, and when a check last reached it (never yet)",
       "sendId" in first && first.sendId === signedOutSendId("admin.shopify.com", null) && first.sendId === "session-signed-out:admin.shopify.com:never");
 
     const retried = await tell("run_out_1");
     check("told: the same step retried sends nothing", retried.told === "already" && sends === 1, JSON.stringify(retried));
-    // The next day's run, and nine more: the sign-in is still the same ended one.
-    for (let d = 3; d <= 12; d++) await stub.db.run.create({ data: runRow(`run_out_${d}`, d, 0) });
+    // The next day's run, and more after it: the sign-in is still the same ended one.
     const later = await Promise.all([3, 7, 12].map((d) => tell(`run_out_${d}`)));
     check("told: every later run that meets the same ended sign-in sends nothing", later.every((t) => t.told === "already") && sends === 1 && rows().length === 1,
       `${later.map((t) => t.told).join()} — ${sends} sends`);
 
-    // Someone signed in; a run got in (it spent something); then it ended again.
-    await stub.db.run.create({ data: runRow("run_in_13", 13, 0.71, { status: "completed" }) });
-    await stub.db.run.create({ data: runRow("run_out_20", 20, 0) });
+    // Someone signed in. A run's scan reached the app — and that is recorded
+    // there and then, whatever became of the run: this one failed in discovery
+    // (it never finished, spent nothing that was written), and the sign-in it
+    // rode on was real all the same. Then that sign-in ended.
+    const REACHED = new Date("2026-10-13T06:00:05.000Z");
+    await noteSessionReached(env, { appId: "app_admin" }, REACHED);
+    check("reached: written on the app's own row by the scan", ((await stub.db.app.findUnique({ where: { id: "app_admin" } }))?.sessionReachedAt as Date)?.getTime() === REACHED.getTime());
     const again = await tell("run_out_20");
-    check("told: a sign-in that was restored and ended again is a new message",
-      again.told === "sent" && sends === 2 && "sendId" in again && again.sendId === "session-signed-out:admin.shopify.com:run_in_13", JSON.stringify(again));
-    await stub.db.run.create({ data: runRow("run_out_21", 21, 0) });
+    check("told: a sign-in that was restored and ended again is a new message — even when the only run that rode on it failed later",
+      again.told === "sent" && sends === 2 && "sendId" in again && again.sendId === "session-signed-out:admin.shopify.com:2026-10-13T06:00:05.000Z", JSON.stringify(again));
     check("told: …and once for that one too", (await tell("run_out_21")).told === "already" && sends === 2);
-    // What does not count as having got in: another app's run, a run of this
-    // app outside a session, a run that failed, a closed door (spent nothing).
-    await stub.db.run.create({ data: runRow("other_app", 22, 0.5, { appId: "app_other", status: "completed" }) });
-    await stub.db.run.create({ data: runRow("not_session", 22, 0.5, { targetKind: "website", status: "completed" }) });
-    await stub.db.run.create({ data: runRow("failed", 22, 0.5, { status: "failed" }) });
-    await stub.db.run.create({ data: runRow("run_out_23", 23, 0) });
-    check("told: another app's run, a run outside a session and a failed run are not 'got in'", (await tell("run_out_23")).told === "already" && sends === 2, `${sends} sends`);
+    // Another app's sign-in is another app's: it does not make this one new.
+    await noteSessionReached(env, { appId: "app_other" }, new Date("2026-10-22T06:00:00.000Z"));
+    check("told: another app being reached does not make this app's ended sign-in a new one", (await tell("run_out_23")).told === "already" && sends === 2, `${sends} sends`);
+    // A run with no saved app has no row to write on: nothing happens, nothing throws.
+    await noteSessionReached(env, { appId: null });
+    check("reached: a run with no saved app writes nothing", (await stub.db.app.findMany({})).length === 2);
 
     // The channel is not configured: nothing is sent and nothing fails.
     for (const bindings of [{}, { TELEGRAM_BOT_TOKEN: "t" }, { OWNER_TELEGRAM_CHAT_ID: CHAT }, { TELEGRAM_BOT_TOKEN: " ", OWNER_TELEGRAM_CHAT_ID: CHAT }]) {
@@ -175,7 +188,7 @@ async function main() {
     }
     // Telegram refuses, D1 is down: said, never thrown — the run has finished.
     const refusing: SendDeps = { ...deps, sendMessage: async () => ({ ok: false, description: "Bad Request: chat not found" }) };
-    await stub.db.run.create({ data: runRow("run_in_30", 30, 0.4, { status: "completed" }) });
+    await noteSessionReached(env, { appId: "app_admin" }, new Date("2026-10-30T06:00:00.000Z"));
     const refused = await tellOwnerSignedOut(env, { id: "run_out_31", appId: "app_admin", appSlug: "admin.shopify.com" }, HOST, refusing);
     check("told: a refused send is reported as failed, not thrown", refused.told === "failed" && "detail" in refused && /chat not found/.test(refused.detail), JSON.stringify(refused));
     const afterRefusal = await tell("run_out_31");
@@ -200,7 +213,13 @@ async function main() {
     check("workflow: the message is a step of its own, the host is given back, and no gap is filed on our board for missing access",
       /step\.do\("tell-signed-out"/.test(block) && /tellOwnerSignedOut\(/.test(block) && /releaseSessionHost\("release-session-signed-out"\)/.test(block) && !/fileCapabilityGaps\(/.test(block));
     check("workflow: a sign-in page's status, stack and links are not reported as the app's",
-      /if \(r\.signedOut\) return \{ \.\.\.r, extensionIdentity: null \};\s*await appendEvent\(env, runId, "surface_scan", \{\s*icon: "ok",\s*text: `Loaded homepage/.test(workflow));
+      /if \(r\.signedOut\) return \{ \.\.\.r, extensionIdentity: null \};[\s\S]{0,400}?await appendEvent\(env, runId, "surface_scan", \{\s*icon: "ok",\s*text: `Loaded homepage/.test(workflow));
+    // Reaching the app is recorded by the scan step itself, for a session run
+    // that was neither sent to a sign-in nor turned away at the door — before
+    // anything later in the run can fail.
+    const scanStep = workflow.slice(workflow.indexOf('step.do("surface_scan"'), exit);
+    check("workflow: the scan records that the app was reached, in the scan step, after the signed-out return",
+      /if \(r\.signedOut\) return [^\n]+\n[\s\S]{0,400}?if \(isSession && !r\.door\) await noteSessionReached\(env, run\);/.test(scanStep));
     const feed = block.match(/appendEvent\([^)]*\)/g) ?? [];
     check("workflow: the feed says one thing, in the product's terms", feed.length === 1 && /SIGNED_OUT_FEED/.test(feed[0]), feed.join(" | "));
   }

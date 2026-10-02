@@ -67,18 +67,24 @@ export const SIGNED_OUT_FEED = "The app asked for a sign-in before anything load
 /**
  * End the run at the sign-in page: one journey with one skipped step that says
  * access is missing, verdict Not verified, cost 0 (so priceRun prices it 0).
- * Idempotent for a retried Workflow step: the journey is written once.
+ * Idempotent for a retried Workflow step, write by write: the journey is
+ * written once and so is its step — a retry after the journey was written and
+ * the step was not finds the journey and still owes the step (a journey with
+ * no step would publish Not verified with nothing saying why; Codex on #253).
  */
 export async function completeSignedOut(
   env: Pick<AgentEnv, "db">,
   run: { id: string; targetUrl: string },
   host: string,
 ): Promise<"unverified"> {
-  const existing = await env.db.journey.findFirst({ where: { runId: run.id, title: SIGNED_OUT_JOURNEY_TITLE }, select: { id: true } });
-  if (!existing) {
-    const journey = await env.db.journey.create({
+  const journey =
+    (await env.db.journey.findFirst({ where: { runId: run.id, title: SIGNED_OUT_JOURNEY_TITLE }, select: { id: true } })) ??
+    (await env.db.journey.create({
       data: { runId: run.id, order: 0, title: SIGNED_OUT_JOURNEY_TITLE, status: "skipped", summary: signedOutObserved(host) },
-    });
+      select: { id: true },
+    }));
+  const step = await env.db.step.findFirst({ where: { journeyId: journey.id }, select: { id: true } });
+  if (!step) {
     await env.db.step.create({
       data: {
         journeyId: journey.id,
@@ -111,12 +117,25 @@ export async function completeSignedOut(
 // One message per ended sign-in. Every run of the app meets the same sign-in
 // page until someone signs in again — a daily check would otherwise write every
 // day, and the rule for this chat is "do not repeat yourself". So the message's
-// identity is the sign-in that ended: the app, and the last run of it that got
-// in. Until a run gets in again, every later run produces the same id, and
-// sendRecorded (CHE-375) refuses an id it has already sent.
+// identity is the sign-in that ended: the app, and when a check last reached
+// it. Until a check reaches the app again, every later run produces the same
+// id, and sendRecorded (CHE-375) refuses an id it has already sent.
+//
+// "Reached" is written by the surface scan itself (noteSessionReached, on the
+// app's own row), the moment the address turned out to lead to the app — not
+// worked out afterwards from how runs ended. A run that got in and then failed
+// in discovery is still a sign-in that worked; counted by finished runs, the
+// next ended sign-in looked like the previous one and its message was
+// swallowed (Codex on #253).
 
-export function signedOutSendId(appSlug: string, lastRunThatGotIn: string | null): string {
-  return `session-signed-out:${appSlug}:${lastRunThatGotIn ?? "never"}`;
+/** The scan of a session run reached the app: this sign-in works as of now. */
+export async function noteSessionReached(env: Pick<AgentEnv, "db">, run: { appId: string | null }, at: Date = new Date()): Promise<void> {
+  if (!run.appId) return;
+  await env.db.app.update({ where: { id: run.appId }, data: { sessionReachedAt: at } });
+}
+
+export function signedOutSendId(appSlug: string, reachedAt: Date | null): string {
+  return `session-signed-out:${appSlug}:${reachedAt ? reachedAt.toISOString() : "never"}`;
 }
 
 export function signedOutMessage(appSlug: string, host: string, signInUrl: string | null): string {
@@ -176,24 +195,10 @@ export async function tellOwnerSignedOut(
 
   let sendId: string;
   try {
-    // The last run of this app that got past the sign-in. A run that ends here
-    // (or at a closed door) spends nothing; one that went on to map and walk
-    // spent something — so "got in" is "finished having spent", a fact on the
-    // run's own row. Its id names the sign-in that has now ended.
-    const gotIn = run.appId
-      ? await env.db.run.findFirst({
-          where: {
-            appId: run.appId,
-            targetKind: "session",
-            id: { not: run.id },
-            status: { in: ["completed", "partial"] },
-            costUsd: { gt: 0 },
-          },
-          orderBy: { startedAt: "desc" },
-          select: { id: true },
-        })
-      : null;
-    sendId = signedOutSendId(run.appSlug, gotIn?.id ?? null);
+    // When a check last reached this app names the sign-in that has now ended.
+    const app = run.appId ? await env.db.app.findUnique({ where: { id: run.appId }, select: { sessionReachedAt: true } }) : null;
+    const reachedAt = app?.sessionReachedAt ? new Date(app.sessionReachedAt) : null;
+    sendId = signedOutSendId(run.appSlug, reachedAt);
   } catch (error) {
     return { told: "failed", sendId: "", detail: `could not tell which sign-in ended: ${error instanceof Error ? error.message : String(error)}` };
   }
