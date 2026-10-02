@@ -338,6 +338,20 @@ async function main() {
     "Open the test environment settings",
     "Switch the workspace to the test environment",
     "Create the test agent",
+    "The agent replies to a customer question",
+    // labels prod has stored (Step.label, runs #20–#179), found by the
+    // cross-review: the product's, and until now blanked
+    "Open agent transcript JSON",
+    "View the agent transcript JSON",
+    "Click Pricing in nav → view pricing model",
+    "User installs extension into Chrome browser",
+    "Install the extension in the browser",
+    "Scroll through specialist agent tabs (Signals, Scouts, Inbox, Pull requests)",
+    "Read FAQ answers about agent checks, source code, and free tier limits",
+    "Open screenshot evidence link",
+    "Verify run artifacts (screenshots and test specs)",
+    "Expand an agent step to see sub-actions",
+    "Open /practice and observe agent selection",
   ];
   for (const s of NAMES) {
     check(`a name keeps its words: ${JSON.stringify(s)}`, productStepLabel(s) === s && productName(s) === s, productStepLabel(s));
@@ -398,6 +412,23 @@ async function main() {
     "Screenshot shows the checkout page after Save was clicked.",
     "The screenshot did not show the modal after Save was clicked.",
     "This environment blocked camera access.",
+    // five labels prod has stored that are the walk's voice (runs #32–#140)
+    "Capture full-page screenshot",
+    "Capture screenshot as evidence of static page",
+    "Confirm static page layout via screenshot",
+    "Screenshot + agent transcript + action buttons (via page digest & network log)",
+    "Browser navigates to Chrome Web Store listing",
+    // the same two shapes and their neighbours, invented
+    "Agent clicks Sign in",
+    "Take a screenshot of the dashboard",
+    "No screenshot captured",
+    "Waiting for the agent",
+    "Let the agent sign in",
+    "Resume the agent after the CAPTCHA",
+    "Ask the model whether the toast appeared",
+    "Launch browser and open the home page",
+    "Retry in a fresh browser context",
+    "Agent: open the dashboard",
   ];
   for (const s of WALK_VOICE) {
     check(`the walk speaking, as a name: ${JSON.stringify(s)}`, productName(s) === null, productName(s) ?? "(null)");

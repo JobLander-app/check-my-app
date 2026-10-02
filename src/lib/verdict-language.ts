@@ -912,13 +912,22 @@ const ACTOR = "(?:agent|browser|model|environment|automation|checker)";
 const ACTS =
   "(?:could|couldn['’]t|cannot|can['’]t|was|were|is|are|has|had|did|didn['’]t|does|doesn['’]t|will|would|never|tried|attempted|waited|" +
   "received|hit|skipped|got|ran|saw|used|crashed|blocked|triggered|timed|failed|clicked|tapped|pressed|typed|filled|scrolled|navigated|" +
-  "submitted|opened|closed|signed|logged|decided|chose|assumed|session)";
+  "submitted|opened|closed|signed|logged|decided|chose|assumed|session|" +
+  // the present tense a label is written in: "Browser navigates to …", "Agent clicks Sign in"
+  "navigates|opens|loads|goes|clicks|taps|presses|types|fills|scrolls|submits|signs|logs|waits|reads|checks|verifies|captures|takes)";
 const WALK_IN_A_NAME = new RegExp(
   [
     // the noun as the one acting: "The agent could not click Save", "Agent could not click", "The browser crashed"
     `(?:^|[.;:!?]\\s+)(?:(?:the|an?|this)\\s+)?${ACTOR}(?:['’]s)?\\s+${ACTS}\\b`,
     `\\b(?:by|according\\s+to)\\s+the\\s+${ACTOR}\\b`,
     `\\bthe\\s+${ACTOR}['’]s\\s+(?:browser|click|session|attempt)\\b`,
+    `(?:^|[.;:!?]\\s+)${ACTOR}\\s*:`,
+    // the walk handling its own instrument
+    "\\b(?:let|resume|restart|retry|wait(?:ing)?\\s+for)\\s+the\\s+(?:agent|model|checker)\\b",
+    "\\bask\\s+the\\s+model\\s+(?:whether|if)\\b",
+    "\\blaunch(?:es|ed)?\\s+(?:a\\s+|the\\s+)?browser\\b",
+    "\\b(?:fresh|new|clean)\\s+browser\\s+(?:context|session|profile)\\b",
+    "\\bpage\\s+digest\\b",
     // our determiner
     "\\b(?:our(?:\\s+own)?|this\\s+(?:run|check)['’]s|the\\s+(?:run|check|walk|checker)['’]s)\\s+(?:[a-z-]+\\s+)?(?:browser|environment|agent|model|automation|tooling|checker|screenshot)s?\\b",
     "\\b(?:the|an?|this)\\s+(?:automated|headless|sandbox(?:ed)?|check(?:ing)?)\\s+(?:browser|environment|agent)s?\\b",
@@ -930,6 +939,14 @@ const WALK_IN_A_NAME = new RegExp(
     // our evidence
     "\\bscreenshots?\\s+(?:(?:did|does|do)\\s*n[o’']t\\s+|(?:did|does|do)\\s+not\\s+|failed\\s+to\\s+)?(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?)\\s+(?:a|an|the|that|no|nothing|only)\\b",
     "\\bscreenshots?\\s+(?:was|were)\\s+(?:taken|captured)\\b",
+    // the screenshot as our act or our means — "Capture full-page screenshot",
+    // "Confirm layout via screenshot", "… screenshot as evidence" (five labels
+    // prod had stored, runs #32–#140). The product's are opened, uploaded,
+    // viewed, extracted from — and stay.
+    "\\b(?:captur(?:e|es|ed|ing)|tak(?:e|es|ing)|took|grab(?:s|bed|bing)?|record(?:s|ed|ing)?)\\s+(?:(?:a|an|the|full-page|full|final|new|another)\\s+)*screenshots?\\b",
+    "\\b(?:via|by|using|with)\\s+(?:(?:a|an|the)\\s+)?screenshots?\\b",
+    "\\bscreenshots?\\s+(?:as\\s+evidence|captured)\\b",
+    "(?:^|[.;:!?]\\s+)screenshots?\\s*\\+",
     "\\b(?:in|per|according\\s+to|(?:as\\s+)?seen\\s+in)\\s+the\\s+(?:[a-z-]+\\s+)?screenshots?\\b",
   ].join("|"),
   "i",
