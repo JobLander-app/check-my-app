@@ -153,15 +153,59 @@ function seenIn(run: ReleaseRunInput): Array<[string, Seen]> {
 // signature, and inside a "page" or "req" bucket a title that says the same
 // thing — one /login holds many problems, and "X and Y before, only Y now"
 // must read as Y unchanged and X fixed.
-const same = (a: [string, Seen], b: [string, Seen]) =>
-  sameIssue({ signature: a[0], title: a[1].finding.title }, { signature: b[0], title: b[1].finding.title });
+//
+// One problem of one release: its signature, the finding it is shown as, and
+// every place the release stated it. A check may state a problem twice, at two
+// steps or in two journeys; it is one item of the delta, shown as its first
+// finding (by id, so the order findings were stored in decides nothing), and
+// "looked there again" must hold for every place it was seen.
+interface Problem {
+  signature: string;
+  shown: Seen;
+  places: Seen[];
+}
 
-// One release may state a problem twice (two findings of one check that are
-// the same issue). It is one item of the delta, the first as the check wrote it.
-function distinct(list: Array<[string, Seen]>): Array<[string, Seen]> {
-  const out: Array<[string, Seen]> = [];
-  for (const entry of list) if (!out.some((kept) => same(kept, entry))) out.push(entry);
+const titleOf = (p: Problem) => p.shown.finding.title;
+const same = (a: Problem, b: Problem) =>
+  sameIssue({ signature: a.signature, title: titleOf(a) }, { signature: b.signature, title: titleOf(b) });
+
+function problems(list: Array<[string, Seen]>): Problem[] {
+  const out: Problem[] = [];
+  const byId = [...list].sort((a, b) => a[1].finding.id.localeCompare(b[1].finding.id));
+  for (const [signature, seen] of byId) {
+    const p: Problem = { signature, shown: seen, places: [seen] };
+    const kept = out.find((k) => same(k, p));
+    if (kept) kept.places.push(seen);
+    else out.push(p);
+  }
   return out;
+}
+
+// Which earlier problem each current problem is. Every earlier problem answers
+// for one current problem at most; as many pairs as can be made are made (a
+// broadly worded title must not take the only twin a narrower one has), and
+// among equals the closest wording wins. Both sides are in id order, so the
+// answer does not depend on the order findings were stored in.
+function twins(now: Problem[], before: Problem[]): Map<Problem, Problem> {
+  const closeness = (a: Problem, b: Problem) => titleSimilarity(titleOf(a), titleOf(b));
+  const candidates = new Map(
+    now.map((n) => [n, before.filter((b) => same(b, n)).sort((a, b) => closeness(b, n) - closeness(a, n))]),
+  );
+  const heldBy = new Map<Problem, Problem>(); // earlier → current
+  const place = (n: Problem, visited: Set<Problem>): boolean => {
+    for (const b of candidates.get(n)!) {
+      if (visited.has(b)) continue;
+      visited.add(b);
+      const holder = heldBy.get(b);
+      if (!holder || place(holder, visited)) {
+        heldBy.set(b, n);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const n of now) place(n, new Set());
+  return new Map([...heldBy].map(([b, n]) => [n, b]));
 }
 
 const statuses = (j: ReleaseRunInput["journeys"][number]): RecurrenceJourney => ({
@@ -174,21 +218,27 @@ const statuses = (j: ReleaseRunInput["journeys"][number]): RecurrenceJourney => 
 // recurrence calls a second look (lookedAgainAt), not "the journey is in the
 // list": a walked journey can still skip the very step the problem was on.
 // Anchored: its journey, executed through the steps its own walk executed up
-// to the anchored one. Unanchored: every journey `from` walked, any step of each.
-function looked(other: ReleaseRunInput, seen: Seen, from: ReleaseRunInput): boolean {
-  const again = (identity: string, positions: number[] | "any") =>
-    other.journeys.some((j) => j.identity === identity && lookedAgainAt(statuses(j), positions));
+// to the anchored one. Unanchored: every journey `from` walked, each executed
+// through everything that walk executed (a release is a check from the time
+// findings are anchored, so recurrence's stricter no-anchor rule applies).
+function lookedAt(other: ReleaseRunInput, seen: Seen, from: ReleaseRunInput): boolean {
+  const again = (identity: string, positions: number[]) =>
+    positions.length > 0 && other.journeys.some((j) => j.identity === identity && lookedAgainAt(statuses(j), positions));
   if (seen.journey) {
-    const positions = positionsSeen(statuses(seen.journey), seen.stepIndex >= 0 ? seen.stepIndex : null);
-    return positions.length > 0 && again(seen.journey.identity, positions);
+    return again(seen.journey.identity, positionsSeen(statuses(seen.journey), seen.stepIndex >= 0 ? seen.stepIndex : null));
   }
   const walked = from.journeys.filter((j) => lookedAgainAt(statuses(j), "any"));
-  return walked.length > 0 && walked.every((j) => again(j.identity, "any"));
+  return walked.length > 0 && walked.every((j) => again(j.identity, positionsSeen(statuses(j), null)));
 }
 
-function item(signature: string, seen: Seen): ReleaseItem {
+// …at every place the problem was stated: a fix (or a break) is not inferred
+// from the one place that happened to be looked at.
+const looked = (other: ReleaseRunInput, p: Problem, from: ReleaseRunInput) => p.places.every((seen) => lookedAt(other, seen, from));
+
+function item(p: Problem): ReleaseItem {
+  const seen = p.shown;
   return {
-    signature,
+    signature: p.signature,
     title: seen.finding.title,
     category: seen.finding.category,
     severity: seen.finding.severity,
@@ -197,38 +247,30 @@ function item(signature: string, seen: Seen): ReleaseItem {
 }
 
 function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable<Release["delta"]> {
-  const before = distinct(seenIn(previous));
-  const now = distinct(seenIn(current));
+  const before = problems(seenIn(previous));
+  const now = problems(seenIn(current));
   const d: NonNullable<Release["delta"]> = { broke: [], fixed: [], unchanged: [], notCompared: [] };
-  // Each earlier problem answers for one current problem at most, and the
-  // closest wording takes it (two problems of one bucket, both still there).
-  const taken = new Set<Seen>();
-  const leftNow: Array<[string, Seen]> = [];
-  for (const entry of now) {
-    const [sig, seen] = entry;
-    const twin = before
-      .filter((b) => !taken.has(b[1]) && same(b, entry))
-      .sort((a, b) => titleSimilarity(b[1].finding.title, seen.finding.title) - titleSimilarity(a[1].finding.title, seen.finding.title))[0];
-    if (twin) {
-      taken.add(twin[1]);
-      d.unchanged.push(item(sig, seen));
-    } else leftNow.push(entry);
-  }
-  // What is left on both sides under one signature is, by construction, in a
-  // bucket with titles that no longer match: the same problem reworded beyond
-  // recognition, or one problem fixed and another broken on the same page. We
-  // cannot tell which, so it is neither "broke" nor "fixed" (CLAUDE.md §8) —
-  // the current one is listed as not compared and the earlier one is its pair.
-  for (const [sig, seen] of leftNow) {
-    const pair = before.find((b) => b[0] === sig && !taken.has(b[1]));
+  const twin = twins(now, before);
+  const answered = new Set(twin.values());
+  for (const n of now) {
+    if (twin.has(n)) {
+      d.unchanged.push(item(n));
+      continue;
+    }
+    // What is left on both sides under one signature is, by construction, in a
+    // bucket with titles that no longer match: the same problem reworded beyond
+    // recognition, or one problem fixed and another broken on the same page. We
+    // cannot tell which, so it is neither "broke" nor "fixed" (CLAUDE.md §8) —
+    // the current one is listed as not compared and the earlier one is its pair.
+    const pair = before.find((b) => b.signature === n.signature && !answered.has(b));
     if (pair) {
-      taken.add(pair[1]);
-      d.notCompared.push(item(sig, seen));
-    } else (looked(previous, seen, current) ? d.broke : d.notCompared).push(item(sig, seen));
+      answered.add(pair);
+      d.notCompared.push(item(n));
+    } else (looked(previous, n, current) ? d.broke : d.notCompared).push(item(n));
   }
-  for (const [sig, seen] of before) {
-    if (taken.has(seen)) continue;
-    (looked(current, seen, previous) ? d.fixed : d.notCompared).push(item(sig, seen));
+  for (const b of before) {
+    if (answered.has(b)) continue;
+    (looked(current, b, previous) ? d.fixed : d.notCompared).push(item(b));
   }
   return d;
 }

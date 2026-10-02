@@ -175,6 +175,47 @@ const twice = computeReleases([
 check("a problem stated twice by one check is one unchanged item", twice?.delta?.unchanged.length === 1 && twice.delta.broke.length === 0,
   `unchanged ${twice?.delta?.unchanged.length}, broke ${twice?.delta?.broke.length}`);
 
+// Codex round 3 on #231, P1: one problem stated at two places (the order page
+// and the sign-up page). The next release looks at one of them and carries the
+// other. That is not a fix — in either order the findings were stored in.
+const atOrders = (id: string) => ({ ...X(0, "Prices show the wrong currency"), id });
+const atSignup = (id: string) => ({ ...X(0, "Prices show the wrong currency"), id, anchor: JSON.stringify({ stepRef: { journeyIndex: 1, stepIndex: 0 } }) });
+for (const [name, findings] of [["as stored", [atOrders("p1"), atSignup("p2")]], ["reversed", [atSignup("p2"), atOrders("p1")]]] as const) {
+  const half = computeReleases([
+    run({ runNumber: 90, findings: [...findings] }),
+    run({ runNumber: 91, journeys: [account(), signup(false)], findings: [] }),
+  ]).find((r) => r.runNumber === 91);
+  check(`stated at two places, only one looked at again (${name}): not fixed — not compared, once`,
+    half?.delta?.fixed.length === 0 && half.delta.notCompared.length === 1,
+    `fixed ${half?.delta?.fixed.length}, notCompared ${half?.delta?.notCompared.length}`);
+}
+const bothLooked = computeReleases([
+  run({ runNumber: 92, findings: [atOrders("p1"), atSignup("p2")] }),
+  run({ runNumber: 93, findings: [] }),
+]).find((r) => r.runNumber === 93);
+check("…and fixed, once, when every place was looked at again", bothLooked?.delta?.fixed.length === 1 && bothLooked.delta.notCompared.length === 0,
+  `fixed ${bothLooked?.delta?.fixed.length}, notCompared ${bothLooked?.delta?.notCompared.length}`);
+
+// P2: a broadly worded current title matches both earlier problems of the
+// page, a narrower one matches only one. Both are still there — whichever
+// order the findings come in, the broad one must not take the narrow one's twin.
+const cart = (id: string, title: string) => ({
+  id, title, category: "broken", severity: "high", mark: "none", signature: null,
+  detail: JSON.stringify({ where: "/cart — checkout", whatHappened: "Wrong." }),
+  anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 1 } }),
+});
+// (Measured with titleSimilarity: BROAD–b1 0.33, BROAD–b2 0.43, NARROW–b2 0.40;
+// b1–b2, NARROW–b1 and BROAD–NARROW 0 — so greedy-by-closeness gives BROAD b2.)
+const EARLIER = [cart("b2", "Order total wrong, discount ignored"), cart("b1", "Checkout button does nothing")];
+const BROAD = cart("n1", "Checkout button and order total wrong");
+const NARROW = cart("n2", "Discount ignored");
+for (const [name, findings] of [["broad first", [BROAD, NARROW]], ["narrow first", [NARROW, BROAD]]] as const) {
+  const both = computeReleases([run({ runNumber: 94, findings: EARLIER }), run({ runNumber: 95, findings: [...findings] })]).find((r) => r.runNumber === 95);
+  check(`two problems of one page, both still there (${name}): two unchanged, nothing else`,
+    both?.delta?.unchanged.length === 2 && both.delta.notCompared.length === 0 && both.delta.broke.length === 0 && both.delta.fixed.length === 0,
+    JSON.stringify({ unchanged: both?.delta?.unchanged.length, notCompared: both?.delta?.notCompared.length, broke: both?.delta?.broke.length, fixed: both?.delta?.fixed.length }));
+}
+
 // "Looked again" is recurrence's rule, step by step: a release that walked the
 // account journey but skipped the order step did not look at X.
 const skippedOrders: J = { identity: "aj_account", carried: false, steps: [{ status: "ok", actions: SIGN_IN }, { status: "skipped", actions: null }] };
