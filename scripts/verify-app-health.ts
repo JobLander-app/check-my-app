@@ -158,6 +158,15 @@ async function main() {
   const blog = app("blog.test");
   const ext = app("extension:abc");
 
+  // CHE-358: a page about one app asks for that app alone. Its entry is the
+  // same, the team's totals are still the team's, and no other app is built.
+  const onlyShop = await appHealth(db, "t", { now: NOW, only: shop.appId });
+  check("only: one app is built, identical to its entry in the full report",
+    onlyShop.apps.length === 1 && JSON.stringify(onlyShop.apps[0]) === JSON.stringify(shop), `${onlyShop.apps.length} app(s)`);
+  check("only: the team's totals do not change",
+    onlyShop.totalSpendUsd === report.totalSpendUsd && onlyShop.monthlyRunRateUsd === report.monthlyRunRateUsd && onlyShop.planCoversTimes === report.planCoversTimes);
+  check("only: an id that is not the team's builds nothing", (await appHealth(db, "t", { now: NOW, only: "not-an-app" })).apps.length === 0);
+
   // ─── 1. Spend, per day, scheduled vs on request ──────────────────────────
   check("the window is 30 days by default", report.windowDays === 30);
   check("every app of the team is listed, biggest spend first; no other team's app",

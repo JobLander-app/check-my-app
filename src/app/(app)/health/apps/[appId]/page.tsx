@@ -49,15 +49,26 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // otherwise (CHE-261) — so it is said in one place.
   if (!app) redirect(appPath.settings(appId));
 
+  // Which checks are this app's is appHealth's rule, here as there: the ones
+  // attached to it, and — when it is the team's only app with this address —
+  // the ones made before it was saved (no appId). Otherwise the header could
+  // name a check the timeline does not have.
+  const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
   const [health, recurring, runs, journeys, namedAccounts] = await Promise.all([
-    appHealth(db, team.id),
-    recurringByApp(db, team.id),
+    // This app's entries alone: the page's work follows one app's history,
+    // not the team's whole portfolio.
+    appHealth(db, team.id, { only: app.id }),
+    recurringByApp(db, team.id, app.id),
     db.run.findMany({
       // The header's rule (appHealth): a check is shown with its price, which
       // is written a step after its verdict — so the timeline never runs ahead
       // of the badge above it. Newest first by the check's number: D1 orders
       // completedAt as text and prod holds two spellings of it.
-      where: { ...teamOwned(team.id), appId: app.id, status: { in: FINISHED }, verdict: { not: null }, priceUsd: { not: null } },
+      where: {
+        ...teamOwned(team.id),
+        OR: [{ appId: app.id }, ...(onlyOneWithSlug ? [{ appId: null, appSlug: app.appSlug }] : [])],
+        status: { in: FINISHED }, verdict: { not: null }, priceUsd: { not: null },
+      },
       orderBy: { runNumber: "desc" },
       take: TIMELINE,
       select: { publicId: true, runNumber: true, verdict: true, bottomLine: true, priceUsd: true, completedAt: true, quickPagesOpened: true },

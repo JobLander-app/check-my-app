@@ -104,6 +104,16 @@ async function main() {
       [...byApp.keys()].sort().join(",") === "big,small" && ![...byApp.values()].flat().some((i) => /Their sign-in/.test(i.title)),
       [...byApp.keys()].join(","));
 
+    // One app's page asks for one app (CHE-358): the same answer for it, and
+    // nothing for an app of another team even when asked for by id.
+    const onlySmall = await recurringByApp(db, "t", "small");
+    check("asked for one app: that app alone, with the same answer",
+      [...onlySmall.keys()].join(",") === "small" && JSON.stringify(onlySmall.get("small")) === JSON.stringify(small), [...onlySmall.keys()].join(","));
+    const onlyBig = await recurringByApp(db, "t", "big");
+    check("…and the big app alone is the big app's two issues", JSON.stringify(onlyBig.get("big")) === JSON.stringify(big) && onlyBig.size === 1);
+    const notOurs = await recurringByApp(db, "t", "theirs");
+    check("asked for another team's app by id: nothing is read", notOurs.size === 0, [...notOurs.keys()].join(","));
+
     const src = readFileSync(path.join(repoRoot, "src/lib/recurring.ts"), "utf8");
     check("the loader holds no nested run → journey → step select", !/steps:\s*\{\s*orderBy/.test(src) && !/db\.run\.findMany/.test(src));
   } finally {

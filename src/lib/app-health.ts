@@ -105,7 +105,10 @@ const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 export async function appHealth(
   db: PrismaClient,
   teamId: string,
-  opts: { days?: number; now?: Date } = {},
+  // `only`: a page about one app (CHE-358) asks for that app's entry alone —
+  // the team's totals are still the team's, but the per-app history and price
+  // explanation, which cost several queries each, are read for it only.
+  opts: { days?: number; now?: Date; only?: string } = {},
 ): Promise<AppHealthReport> {
   const days = windowDays(opts.days);
   const now = opts.now ?? new Date();
@@ -172,7 +175,7 @@ export async function appHealth(
   }
 
   const health = await Promise.all(
-    apps.map(async (app): Promise<AppHealth> => {
+    apps.filter((app) => opts.only === undefined || app.id === opts.only).map(async (app): Promise<AppHealth> => {
       const t = tallies.get(app.id)!;
       const unique = bySlug.get(app.appSlug) === app;
       const where = {

@@ -87,12 +87,20 @@ eq("cost: nothing in the window", costSplit({ count: 0, usd: 0 }, { count: 0, us
 // ── 3. The page ─────────────────────────────────────────────────────────────
 const page = read("src/app/(app)/health/apps/[appId]/page.tsx");
 check("the app and its checks are read for the team", /db\.app\.findFirst\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(page) &&
-  /db\.run\.findMany\(\{(?:\s*\/\/[^\n]*)*\s*where: \{ \.\.\.teamOwned\(team\.id\), appId: app\.id/.test(page));
+  /db\.run\.findMany\(\{(?:\s*\/\/[^\n]*)*\s*where: \{\s*\.\.\.teamOwned\(team\.id\),/.test(page));
+// Codex round 3 on #241: one rule for which checks are the app's, and one
+// app's worth of database work.
+check("the timeline takes the app's checks by appHealth's rule: attached, or unattached with the team's only app of that address",
+  /OR: \[\{ appId: app\.id \}, \.\.\.\(onlyOneWithSlug \? \[\{ appId: null, appSlug: app\.appSlug \}\] : \[\]\)\]/.test(page) &&
+    /onlyOneWithSlug = \(await db\.app\.count\(\{ where: \{ \.\.\.teamOwned\(team\.id\), appSlug: app\.appSlug \} \}\)\) === 1/.test(page));
+check("…and it is the rule appHealth itself applies", /OR: \[\{ appId: app\.id \}, \.\.\.\(unique \? \[\{ appId: null, appSlug: app\.appSlug \}\] : \[\]\)\]/.test(read("src/lib/app-health.ts")));
+check("the page asks both report builders for this app alone",
+  /appHealth\(db, team\.id, \{ only: app\.id \}\)/.test(page) && /recurringByApp\(db, team\.id, app\.id\)/.test(page));
 check("the status line is the strip's own story, not a model's sentence", /stripStory\(\(mine\?\.verdicts \?\? \[\]\)\.map/.test(page));
 check("'Keeps coming back' lists recurring problems only", /filter\(\(i\) => i\.state === "recurring"\)/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("the timeline shows only finished checks with a verdict and a price — the header's rule — newest first by number",
-  /status: \{ in: FINISHED \}, verdict: \{ not: null \}, priceUsd: \{ not: null \} \},\s*orderBy: \{ runNumber: "desc" \}/.test(page));
+  /status: \{ in: FINISHED \}, verdict: \{ not: null \}, priceUsd: \{ not: null \},\s*\},\s*orderBy: \{ runNumber: "desc" \}/.test(page));
 check("the tracker offer is shown only to someone the connect flow will accept",
   /const mayConnectTracker =\s*can\(scope, "integration\.connect"\) && PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration && app\.ownerId === user\.id;/.test(page) &&
     /app\.tracker === null && mayConnectTracker &&/.test(page));
