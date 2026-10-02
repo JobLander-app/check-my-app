@@ -8,7 +8,7 @@ import { teamOwned } from "@/lib/tenant-db";
 import { extensionCheckFor } from "@/lib/viewer-flags";
 import { integrationNotice } from "@/lib/integration-notice";
 import { BALANCE_PATH } from "@/lib/balance-links";
-import { appPath } from "@/lib/app-shell";
+import { appPath, checkHref } from "@/lib/app-shell";
 import { VERDICT_META } from "@/lib/status";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
@@ -81,6 +81,8 @@ export default async function HomePage({
     .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
   const days = [...new Set(feed.map((r) => dayLabel(r.completedAt, now)))];
   const brief = briefing(latestPerApp(feed.filter((r) => r.appId !== null), now), shell.apps.length);
+  // The check the sentence quotes, to open it inside the app (CHE-371).
+  const attentionCheck = brief.attention ? feed.find((r) => r.publicId === brief.attention!.publicId) : undefined;
 
   // The scheduler's own gate, per watched app: a watch the balance cannot pay
   // for, or one past its trial, is not running — said here, with the way out.
@@ -188,7 +190,7 @@ export default async function HomePage({
               <div className="flex flex-wrap items-center gap-2.5">
                 {brief.attention && (
                   <Link
-                    href={`/verdict/${brief.attention.publicId}`}
+                    href={attentionCheck ? checkHref(attentionCheck) : "/health/apps"}
                     className="inline-flex h-9 items-center rounded-lg bg-accent px-3.5 text-sm font-medium text-ink-950 transition-opacity hover:opacity-90"
                   >
                     Open the review
@@ -254,7 +256,7 @@ export default async function HomePage({
                               <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${v?.pillClassName ?? "border-ink-600 text-fg-faint"}`}>
                                 {v?.label ?? r.verdict}
                               </span>
-                              <Link href={`/verdict/${r.publicId}`} className="font-mono text-[13px] text-accent hover:underline">
+                              <Link href={checkHref(r)} className="font-mono text-[13px] text-accent hover:underline">
                                 #{r.runNumber}
                               </Link>
                             </div>

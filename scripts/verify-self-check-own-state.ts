@@ -278,7 +278,7 @@ function wiringChecks(): void {
     /unverifiedReason: "our_capability", journey: \{ runId, carriedFromRunId: null \}/.test(source("src/agent/capability-gaps.ts")));
   const synthesis = source("src/agent/synthesis.ts");
   check("synthesis.ts: the bottom line and findings go through ownGuardRefusals", /ownGuardRefusals\(journeys, bottomLine, cleanedFindings\)/.test(synthesis));
-  const verdict = source("src/app/verdict/[id]/page.tsx");
+  const verdict = source("src/components/verdict-view.tsx");
   check("verdict page: the findings section knows whether the run is over and what was flagged",
     /finished=\{run\.status === "completed" \|\| run\.status === "partial"\}/.test(verdict) && /journeysFlagged=\{/.test(verdict));
 }

@@ -45,7 +45,7 @@ function Latest({ app }: { app: Row }) {
       <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${meta.pillClassName}`}>
         {meta.label}
       </span>
-      <Link href={`/verdict/${app.latest.publicId}`} className="font-mono text-[13px] text-accent hover:underline">
+      <Link href={appPath.check(app.appId, app.latest.runNumber)} className="font-mono text-[13px] text-accent hover:underline">
         #{app.latest.runNumber}
       </Link>
       {app.latest.completedAt && (

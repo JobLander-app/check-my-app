@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { VERDICT_META } from "@/lib/status";
 import { WatchSettings } from "@/components/watch-settings";
 import { teamOwned } from "@/lib/tenant-db";
-import { appPath } from "@/lib/app-shell";
+import { appPath, checkHref } from "@/lib/app-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -94,7 +94,7 @@ export default async function AppSettingsSection({
                         )}
                       </span>
                       <Link
-                        href={`/verdict/${run.publicId}`}
+                        href={checkHref(run)}
                         className="font-mono text-xs text-accent underline-offset-2 hover:underline"
                       >
                         view verdict

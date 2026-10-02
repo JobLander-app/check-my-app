@@ -198,7 +198,7 @@ check(
   // The page must not have gone back to a blanket include: a `select` naming
   // the projection is the only shape that keeps an added column out by default.
   const page = readFileSync(
-    fileURLToPath(new URL("../src/app/verdict/[id]/page.tsx", import.meta.url)),
+    fileURLToPath(new URL("../src/components/verdict-view.tsx", import.meta.url)),
     "utf8",
   );
   const findingsQuery = page.slice(page.indexOf("findings: {"), page.indexOf("watch: {"));

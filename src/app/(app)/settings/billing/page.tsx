@@ -187,7 +187,7 @@ export default async function BillingPage({
               {nameOf.get(opened.appId) ?? opened.appSlug}, check #{opened.latest.runNumber}:{" "}
               <span className="font-mono">{usd(opened.latest.priceUsd)}</span>
             </h2>
-            <Link href={`/verdict/${opened.latest.publicId}`} className="text-sm text-accent hover:underline">
+            <Link href={appPath.check(opened.appId, opened.latest.runNumber)} className="text-sm text-accent hover:underline">
               Open review
             </Link>
           </div>

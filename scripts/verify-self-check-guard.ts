@@ -225,8 +225,9 @@ function sourceChecks() {
     !/export\s+async\s+function\s+refuseSelfCheck/.test(actions));
   // The page must not grow copy for the flag: the verdict page reads only the
   // params it already did.
-  const page = readFileSync(path.join(repoRoot, "src/app/verdict/[id]/page.tsx"), "utf8");
-  check("src/app/verdict/[id]/page.tsx: shows nothing for ?self_check=read_only", !page.includes("self_check"));
+  for (const file of ["src/app/verdict/[id]/page.tsx", "src/components/verdict-view.tsx"]) {
+    check(`${file}: shows nothing for ?self_check=read_only`, !readFileSync(path.join(repoRoot, file), "utf8").includes("self_check"));
+  }
 }
 
 async function main() {

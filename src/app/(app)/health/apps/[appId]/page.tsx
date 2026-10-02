@@ -114,7 +114,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             {mayRun && <RunSavedApp appId={app.id} primary />}
             {mine?.latest && (
               <Link
-                href={`/verdict/${mine.latest.publicId}`}
+                href={appPath.check(app.id, mine.latest.runNumber)}
                 className="inline-flex h-9 items-center rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
               >
                 Open latest review
@@ -141,7 +141,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                 <div key={run.publicId} className="grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5">
                   <div className="py-3.5">
                     <div className="text-[13px]">{run.completedAt ? dayMonth(run.completedAt) : "—"}</div>
-                    <Link href={`/verdict/${run.publicId}`} className="font-mono text-xs text-accent hover:underline">
+                    <Link href={appPath.check(app.id, run.runNumber)} className="font-mono text-xs text-accent hover:underline">
                       #{run.runNumber}
                     </Link>
                   </div>

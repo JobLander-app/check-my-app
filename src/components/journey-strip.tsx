@@ -104,15 +104,17 @@ function JourneyCard({
     <div className="card overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-ink-800/50"
+        // On a phone the chips go under the title instead of pushing the card
+        // wider than the screen (a carried journey's two chips are ~300px).
+        className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-4 text-left transition-colors hover:bg-ink-800/50 sm:flex-nowrap"
       >
-        <h3 className="font-medium text-fg">
+        <h3 className="min-w-0 font-medium text-fg">
           <span className={`chevron mr-2 inline-block text-fg-faint ${open ? "rotate-90" : ""}`}>
             ›
           </span>
           {journey.order + 1}. {journey.title}
         </h3>
-        <span className="flex shrink-0 items-center gap-2">
+        <span className="flex flex-wrap items-center gap-2 whitespace-nowrap sm:shrink-0 sm:flex-nowrap">
           {/* CHE-57: this journey was not walked this run — it was copied
               forward from the run that did walk it. The status pill next to it
               is therefore a statement about that run, and this chip is the only

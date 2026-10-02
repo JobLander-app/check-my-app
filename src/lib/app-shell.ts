@@ -17,4 +17,13 @@ export const appPath = {
   page: (appId: string) => `/health/apps/${appId}`,
   settings: (appId: string) => `/health/apps/${appId}/settings`,
   schedule: (appId: string) => `/health/apps/${appId}/settings/schedule`,
+  check: (appId: string, runNumber: number) => `/health/apps/${appId}/checks/${runNumber}`,
 };
+
+// Where a check opens from inside the app (CHE-371): on its app's page tree,
+// with the sidebar. A check that belongs to no saved app (a preview, a one-off
+// address) has no such page and opens on its public permalink — which is also
+// the link to share, for every check.
+export function checkHref(run: { appId: string | null; runNumber: number; publicId: string }): string {
+  return run.appId ? appPath.check(run.appId, run.runNumber) : `/verdict/${run.publicId}`;
+}

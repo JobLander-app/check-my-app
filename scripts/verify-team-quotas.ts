@@ -71,6 +71,7 @@ const CALLERS = [
   "src/app/(app)/health/apps/[appId]/settings/page.tsx",
   "src/app/(app)/settings/billing/page.tsx",
   "src/app/verdict/[id]/page.tsx",
+  "src/components/verdict-view.tsx",
   "src/app/onboarding/actions.ts",
   "src/lib/recheck.ts",
   "src/lib/start-saved-app.ts",

@@ -23,7 +23,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { realD1 } from "./fixtures/real-d1";
-import { recurringByApp } from "../src/lib/recurring";
+import { recurrencesAsOf, recurringByApp } from "../src/lib/recurring";
+import { checkDelta, deltaLine } from "../src/lib/check-delta";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -113,6 +114,24 @@ async function main() {
     check("…and the big app alone is the big app's two issues", JSON.stringify(onlyBig.get("big")) === JSON.stringify(big) && onlyBig.size === 1);
     const notOurs = await recurringByApp(db, "t", "theirs");
     check("asked for another team's app by id: nothing is read", notOurs.size === 0, [...notOurs.keys()].join(","));
+
+    // A check opened inside the app says what it changed (CHE-371): the same
+    // rule over the history cut at that check — what was true THEN.
+    const lineAt = async (appId: string, n: number) => {
+      const asOf = await recurrencesAsOf(db, "t", appId, n);
+      return asOf ? deltaLine(checkDelta(asOf.recurrences, asOf.checks, n), false) : null;
+    };
+    const eq = (name: string, got: unknown, want: unknown) => check(name, got === want, JSON.stringify(got));
+    eq("as of #100: the invoice problem is new", await lineAt("big", 100), "Since check #99: 1 new problem.");
+    eq("as of #101: that check looked again and did not find it — gone, on evidence", await lineAt("big", 101), "Since check #100: nothing new, 1 gone.");
+    eq("as of #102: it is not announced as gone a second time", await lineAt("big", 102), "Since check #101: nothing new.");
+    eq("as of #149: the checkout problem is new — and #150 has not happened yet", await lineAt("big", 149), "Since check #148: 1 new problem.");
+    eq("as of #150: it is still there", await lineAt("big", 150), "Since check #149: nothing new, 1 still there.");
+    eq("as of #1: the first check", await lineAt("big", 1), "The first check of this app.");
+    const at149 = await recurrencesAsOf(db, "t", "big", 149);
+    check("history cut at #149 holds no check after it", at149 !== null && Math.max(...at149.checks) === 149 && !at149.recurrences.some((r) => r.sightings.some((s) => s.runNumber > 149)));
+    eq("a number that is not one of this app's checks has no history to stand in", await lineAt("big", 201), null);
+    eq("another team's app, asked for by id and by its own check's number: nothing", await lineAt("theirs", 301), null);
 
     const src = readFileSync(path.join(repoRoot, "src/lib/recurring.ts"), "utf8");
     check("the loader holds no nested run → journey → step select", !/steps:\s*\{\s*orderBy/.test(src) && !/db\.run\.findMany/.test(src));

@@ -475,6 +475,32 @@ async function teamHistory(db: PrismaClient, teamId: string, only?: string): Pro
 // `only`: a page about one app asks for that app alone (CHE-358), so its
 // database work follows that app's history and not the team's whole portfolio.
 export async function recurringByApp(db: PrismaClient, teamId: string, only?: string): Promise<Map<string, RecurringIssue[]>> {
+  const byApp = await recurrencesByApp(db, teamId, only);
+  return new Map([...byApp].map(([appId, r]) => [appId, r.recurrences.map((x) => x.issue)]));
+}
+
+// One app's problems as they stood at check `runNumber` (CHE-371): the same
+// rule over the app's history up to and including that check, so a page about
+// a past check says what was new, still there and gone THEN — not what is true
+// today. `checks` are the numbers of the checks that history holds, oldest
+// first; a check that is not among them (never attached to the app) has no
+// history to stand in, and gets null.
+export async function recurrencesAsOf(
+  db: PrismaClient,
+  teamId: string,
+  appId: string,
+  runNumber: number,
+): Promise<{ recurrences: Recurrence[]; checks: number[] } | null> {
+  const mine = (await recurrencesByApp(db, teamId, appId, runNumber)).get(appId);
+  return mine && mine.checks.includes(runNumber) ? mine : null;
+}
+
+async function recurrencesByApp(
+  db: PrismaClient,
+  teamId: string,
+  only?: string,
+  upTo?: number,
+): Promise<Map<string, { recurrences: Recurrence[]; checks: number[] }>> {
   const [apps, history] = await Promise.all([
     db.app.findMany({
       where: { ...teamOwned(teamId), ...(only === undefined ? {} : { id: only }) },
@@ -483,8 +509,8 @@ export async function recurringByApp(db: PrismaClient, teamId: string, only?: st
     teamHistory(db, teamId, only),
   ]);
   const entries = await Promise.all(
-    apps.map(async (app): Promise<[string, RecurringIssue[]]> => {
-      const runs = history.get(app.id) ?? [];
+    apps.map(async (app): Promise<[string, { recurrences: Recurrence[]; checks: number[] }]> => {
+      const runs = (history.get(app.id) ?? []).filter((r) => upTo === undefined || r.runNumber <= upTo);
       const [links, catalog] = await Promise.all([
         db.issueLink.findMany({
           where: { appId: app.id },
@@ -508,7 +534,10 @@ export async function recurringByApp(db: PrismaClient, teamId: string, only?: st
       }));
       return [
         app.id,
-        recurrence(app, published.map(toRecurrenceRun), recurrenceLinks, { retiredSince, liveJourneys }).map((r) => r.issue),
+        {
+          recurrences: recurrence(app, published.map(toRecurrenceRun), recurrenceLinks, { retiredSince, liveJourneys }),
+          checks: published.map((r) => r.runNumber),
+        },
       ];
     }),
   );

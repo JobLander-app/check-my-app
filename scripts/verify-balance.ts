@@ -338,7 +338,8 @@ async function main() {
     }
     check("MCP priceFields: price_usd with journeys_walked, steps_walked and price_explanation",
       /price_usd: p\.price_usd,\s*journeys_walked[\s\S]{0,80}steps_walked[\s\S]{0,40}price_explanation/.test(tools));
-    const verdict = read("src/app/verdict/[id]/page.tsx");
+    // CHE-371: the verdict's body is one component, rendered by the permalink and inside the app.
+    const verdict = read("src/components/verdict-view.tsx");
     check("verdict page: the price is a disclosure over the explanation, for the team only",
       /<CheckPrice explanation=/.test(verdict) && /viewerTeam\.team\.id === run\.teamId/.test(verdict) && /<details/.test(read("src/components/check-price.tsx")));
   }
