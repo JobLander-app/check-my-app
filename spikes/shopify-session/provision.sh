@@ -59,7 +59,14 @@ cat > /opt/session-host/novnc/index.html <<'HTML'
 HTML
 
 install -d -m 0755 /opt/session-host/probe
-install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/package.json" /opt/session-host/probe/
+# The session server (CHE-389) lives beside the probe: they share classify.mjs
+# and one node_modules. It is restarted only when one of its own files changed —
+# a restart drops the check that is connected at that moment.
+server_changed=0
+for file in session-server.mjs lease.mjs classify.mjs package.json; do
+  cmp -s "$SRC/$file" "/opt/session-host/probe/$file" || server_changed=1
+done
+install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/session-server.mjs" "$SRC/lease.mjs" "$SRC/package.json" /opt/session-host/probe/
 (cd /opt/session-host/probe && npm install --omit=dev --no-audit --no-fund --silent)
 
 # portability.mjs reaches DevTools through an IAP SSH tunnel. On 2026-10-01 the
@@ -101,6 +108,15 @@ if [ -s /etc/cloudflared/tunnel.env ]; then
   systemctl enable --now session-cloudflared
 else
   echo "provision: /etc/cloudflared/tunnel.env is missing — the tunnel is not started (README.md, 'Tunnel token')."
+fi
+if [ -s /etc/session-host/server.env ]; then
+  systemctl enable --now session-server
+  # try-restart above covered a changed unit file; this covers changed code.
+  if [ "$server_changed" = 1 ]; then
+    systemctl restart session-server
+  fi
+else
+  echo "provision: /etc/session-host/server.env is missing — the session server is not started (README.md, 'The session server')."
 fi
 
 systemctl --no-pager --plain list-units 'session-*'

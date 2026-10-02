@@ -12,6 +12,7 @@ directory is the instrument that measures it.
 |---|---|---|
 | `checkmyapp-session-host` | GCP `meet-assistant-6d8ad`, `europe-west1-b`, e2-medium, Debian 12, static IP `checkmyapp-session-host-ip` | Xvfb `:99` → Chrome with a persistent profile → x11vnc → noVNC |
 | `session.checkmyapp.dev` | Cloudflare tunnel `checkmyapp-session-host` → `http://127.0.0.1:6080` | noVNC for the owner, behind Cloudflare Access (one-time PIN, `sorokinvj@gmail.com` only) |
+| `session-api.checkmyapp.dev` | same tunnel → `http://127.0.0.1:9090` | the session server for checks (CHE-389), behind a Cloudflare Access service token — no person signs in there |
 | `probe.mjs` | on the host, `session-probe.timer`, hourly | opens the app in one new tab of that Chrome, classifies, appends to `/var/lib/session-host/probe.jsonl` |
 | `portability.mjs` | our side (an agent's machine), daily | copies the host's admin cookies into a fresh Cloudflare Browser Run session, appends to `/var/lib/session-host/portability.jsonl` |
 
@@ -104,6 +105,66 @@ The agent's Mac runs it daily from cron (10:17 local; `crontab -l`), from the
 main checkout, once this directory is on `main` there. Output goes to
 `~/Library/Logs/checkmyapp-session-portability.log`.
 
+## The session server (CHE-389)
+
+Phase C's host half: the way a check gets to work inside this Chrome.
+`session-server.mjs` runs as `session-server.service`, listens on
+`127.0.0.1:9090`, and is published as `session-api.checkmyapp.dev` through the
+same tunnel, behind a Cloudflare Access application that admits one **service
+token** and no person. Past Access, every request also needs the server's own
+bearer token. The agent Worker holds both; nobody types either.
+
+| | |
+|---|---|
+| `GET /state` | who holds the lease, whether a check is connected, Chrome's version, the last probe line (`at`, `state`) |
+| `POST /lease` `{ownerRunId, maxDurationSeconds}` | take or renew (60–1800 s) → `{sessionId, expiresAt, browser}`; `409` with `heldUntil` while another run holds it; `503` if Chrome is down |
+| `DELETE /lease` `{ownerRunId}` | give it back; the tabs the check opened are closed before the answer |
+| `WS /v1/devtools/browser/<sessionId>` | DevTools — the address shape the extension runner serves, so `@cloudflare/playwright`'s `connect({fetch}, {sessionId})` works unchanged |
+
+What the server holds a check to (`lease.mjs`, checked by
+`scripts/verify-session-server.mjs` against a real Chrome with a persistent
+profile):
+
+- **One check at a time.** A run takes the lease at each phase; the same run
+  taking it again renews it and keeps its session id.
+- **A check ends nothing it did not start.** `Browser.close` only disconnects
+  the check. Closing a tab the check did not open, disposing a context it did
+  not make, and anything that clears or rewrites cookies or site storage are
+  refused with a DevTools error. Reading is not restricted.
+- **A check leaves nothing behind.** Its tabs — and the tabs those opened — are
+  closed when it disconnects, when its connection dies or goes silent (two
+  missed 20 s beats), when its lease runs out, and when the same run connects
+  again. This is not tidiness: an abandoned Playwright connection leaves every
+  new tab paused at `about:blank` (see the portability note above).
+
+A check works in the profile's own context and its own new tab. It can see the
+person's tab — Playwright attaches to every tab, as the hourly probe already
+does — and must not drive it; the Worker side never takes a page it did not
+open.
+
+**Secrets** (GCP Secret Manager, project `meet-assistant-6d8ad`; on the host
+only the first, in `/etc/session-host/server.env`, root, 0600):
+`checkmyapp-session-server-token`, `checkmyapp-session-access-client-id`,
+`checkmyapp-session-access-client-secret`. The Access service token
+(`checkmyapp-agent-session`) **expires 2027-10-02**; Access answers 401 after
+that, and every check of a signed-in app would stop at our own door.
+
+Proven through the tunnel on 2026-10-02, from outside Cloudflare: no token →
+Access 401; the bearer alone → Access 401; the Access token alone → the
+server's 401; both → a lease, a second run refused with 409, Playwright
+connected in 0.4 s, its own tab opened on the admin (and, nobody being signed
+in yet, landed on `accounts.shopify.com`), a screenshot came back, clearing
+cookies was refused, and after the check left the host had the one tab it
+started with.
+
+A look from a desk, without the tunnel:
+
+```
+gcloud compute ssh checkmyapp-session-host --tunnel-through-iap --zone europe-west1-b \
+  --project meet-assistant-6d8ad --command \
+  'sudo bash -c ". /etc/session-host/server.env; curl -s -H \"Authorization: Bearer \$SESSION_SERVER_TOKEN\" http://127.0.0.1:9090/state"'
+```
+
 ## Reading the result
 
 ```
@@ -155,5 +216,6 @@ time.
 
 Delete the VM, the address `checkmyapp-session-host-ip`, the firewall rules
 `allow-iap-ssh` and `checkmyapp-session-host-deny-ingress`, the service
-account; in Cloudflare the tunnel, the `session` CNAME and the Access
-application; and the cron line on the agent's Mac.
+account; in Cloudflare the tunnel, the `session` and `session-api` CNAMEs, both
+Access applications and the service token `checkmyapp-agent-session`; the three
+`checkmyapp-session-*` secrets; and the cron line on the agent's Mac.
