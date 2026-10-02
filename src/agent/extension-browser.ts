@@ -9,6 +9,7 @@ import { ExtensionRuntimeError, extensionOperation } from "./extension-error";
 import type { ExtensionFinalEvidence } from "./extension-evidence";
 import { extensionReplaySpec, type ExtensionReplayAction, type NativeReplayControl } from "./extension-replay";
 import type { RecordedAction } from "./tools";
+import { humanCheckRefusal, isChallengeAnswerField, isHumanCheckText } from "./human-check";
 
 const sessions = new WeakMap<Browser, ExtensionBrowser>();
 export const extensionBrowserFor = (browser: Browser) => sessions.get(browser);
@@ -131,6 +132,13 @@ export class ExtensionBrowser {
       else if (name === "extension_click" || name === "extension_fill") {
         const node = this.nodes.find(n => n.ref === input.ref);
         if (!node || !this.popup) throw new Error("Read the native popup to obtain a current control reference");
+        // CHE-401: a human-verification challenge is never pressed or typed
+        // into, in an extension's own popup as anywhere else. A native control
+        // is known by its accessible name; that is what is judged (Codex on #252).
+        if (name === "extension_click" ? isHumanCheckText(node.name) : isChallengeAnswerField(node.name)) {
+          console.warn(`[${name}] refused a human-verification control: ${node.name}`);
+          return humanCheckRefusal(node.name.slice(0, 80));
+        }
         // A request for the known Start control has an available owned action.
         // Routing it there is not a failed product interaction: carrying that
         // refusal into report_step marked a later confirmed Start as skipped.

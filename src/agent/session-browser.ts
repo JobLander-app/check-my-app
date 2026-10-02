@@ -283,6 +283,10 @@ export interface ControlSeen {
   // CHE-401: how the control and what it sits in are marked up — ids, classes,
   // names — where a challenge widget says what it is when its text does not.
   marks?: string[];
+  // …and the control's own id, name and class, apart from what it sits in: a
+  // field called "captcha" is one thing, a field inside a form called that is
+  // another.
+  own?: string[];
   base?: string;
 }
 
@@ -333,6 +337,7 @@ export async function controlSeen(locator: Locator): Promise<ControlSeen | null>
           texts: texts.map((t) => t.trim().slice(0, 200)).filter(Boolean),
           addresses: addresses.filter(Boolean),
           marks: marks.map((m) => m.trim().slice(0, 200)).filter(Boolean),
+          own: [el.id, typeof el.className === "string" ? el.className : "", el.getAttribute("name") ?? ""].map((m) => m.trim().slice(0, 200)).filter(Boolean),
           base: document.baseURI,
         };
       },

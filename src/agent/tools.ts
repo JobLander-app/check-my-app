@@ -32,7 +32,7 @@ import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
 import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
-import { humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText } from "./human-check";
+import { challengeAnswerIn, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
 
 export interface ToolEnv {
@@ -1704,7 +1704,7 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   // CHE-401: the field itself — how it and the widget it sits in are marked up
   // ("g-recaptcha-response", a .h-captcha container) — whatever it was called.
   const fieldSeen = await controlSeen(field);
-  const answerTo = fieldSeen ? (humanCheckIn(fieldSeen) ?? fieldSeen.texts.find((text) => isChallengeAnswerField(text)) ?? null) : null;
+  const answerTo = fieldSeen ? challengeAnswerIn(fieldSeen) : null;
   if (answerTo) {
     console.warn(`[fill] refused a human-verification field: ${fieldCalled} (${answerTo})`);
     return humanCheckRefusal(answerTo.slice(0, 80));
