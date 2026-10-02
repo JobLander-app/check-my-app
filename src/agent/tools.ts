@@ -1102,6 +1102,33 @@ interface ReactionSnapshot {
 const mutationCount = (doc: Page | Frame) =>
   doc.evaluate("window.__cmaMutations || 0").then((n) => Number(n) || 0, () => 0);
 
+// CHE-392: text that appeared in a document, by running number (see
+// MUTATION_COUNTER_SCRIPT). A piece longer than this is a region re-rendering,
+// not a message — and stays on the page for read_page to find.
+const APPEARED_MAX_CHARS = 200;
+const APPEARED_MAX_ITEMS = 6;
+
+const appearedMark = (doc: Page | Frame) =>
+  doc.evaluate("window.__cmaAppearedSeq || 0").then((n) => Number(n) || 0, () => 0);
+
+const appearedAfter = (doc: Page | Frame, mark: number): Promise<string[]> =>
+  doc
+    .evaluate(`(window.__cmaAppeared || []).filter((e) => e.n > ${mark}).map((e) => e.t)`)
+    .then((list) => (Array.isArray(list) ? list.map(String) : []), () => []);
+
+// What a click made the page say, as one sentence for the model — or "" when
+// it said nothing new. The last few pieces win: a confirmation comes after the
+// spinner that preceded it.
+export function appearedSentence(texts: string[]): string {
+  const unique = texts.filter((t, i) => t && texts.indexOf(t) === i);
+  if (!unique.length) return "";
+  const quoted = unique.slice(-APPEARED_MAX_ITEMS).map((t) => JSON.stringify(t)).join(", ");
+  return (
+    ` Text that appeared on the page right after the click: ${quoted}.` +
+    ` It may be gone again by the next read — a confirmation shown briefly still counts as shown.`
+  );
+}
+
 // CHE-373: the mutation counters of every document a click can move. A click
 // inside an embedded app changes the frame's DOM — or, when the app talks to
 // its host (postMessage, a host-rendered modal), only the page's. Counted in
@@ -1286,6 +1313,10 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   // is indistinguishable from a dead button.
   await waitForHydration(inFrame ?? env.page, 1_500);
   const before = await snapshotReaction(env, inFrame);
+  // CHE-392: where each document's "text that appeared" log stands now — the
+  // frame's and, as with mutations, the page hosting it.
+  const watched: (Page | Frame)[] = inFrame ? [inFrame, env.page] : [env.page];
+  const marks = await Promise.all(watched.map(appearedMark));
 
   // CHE-214: a click that could not be PERFORMED is our limitation and says
   // nothing about the control. A click that was performed and produced nothing
@@ -1462,7 +1493,12 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     strategy !== "trusted click"
       ? await attachLook(env, `click needed a fallback (${strategy})`)
       : await lookIfJudgmentMoment(env, { requests: fresh });
-  return `Clicked${where} (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${note}${ledgerNudge}${looked}`;
+  // CHE-392: a document that navigated is a new page, not something that
+  // "appeared" — its log restarted, and read_page is how a page is read.
+  const appeared = reaction.navigated
+    ? ""
+    : appearedSentence((await Promise.all(watched.map((doc, i) => appearedAfter(doc, marks[i])))).flat());
+  return `Clicked${where} (strategy: ${strategy}). Current URL: ${env.page.url()} (${observed}).${appeared}${note}${ledgerNudge}${looked}`;
 }
 
 // CHE-172: a placeholder the model padded with whitespace — " {{TEST_EMAIL}}",
@@ -2723,11 +2759,47 @@ async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
 // N mutations" is client-side validation / in-page state change — a real
 // difference the model previously could not see. Kept as a plain string so
 // esbuild cannot inject helpers into it.
+//
+// CHE-392: it also keeps the last few pieces of TEXT that appeared — a label
+// that flips to "copied ✓" for a second and a half, a toast, a validation line
+// that clears. A count says the page reacted; only the text says how, and by
+// the next read_page it is gone: run #294 reported "no Copied confirmation" on
+// a button that had shown one, because nothing we had could see it. Each entry
+// carries a running number so a click can ask for what came after it.
 const MUTATION_COUNTER_SCRIPT = `(() => {
   window.__cmaMutations = 0;
+  window.__cmaAppeared = [];
+  window.__cmaAppearedSeq = 0;
   try {
     window.__cmaMutationObserver?.disconnect();
-    const observer = new MutationObserver((records) => { window.__cmaMutations += records.length; });
+    const shown = (node) => {
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      if (!el || !el.isConnected || el.closest('script,style,noscript,template')) return false;
+      return typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    };
+    const note = (raw) => {
+      const text = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+      if (!text || text.length > ${APPEARED_MAX_CHARS}) return;
+      const log = window.__cmaAppeared;
+      if (log.length && log[log.length - 1].t === text) return;
+      log.push({ n: ++window.__cmaAppearedSeq, t: text });
+      if (log.length > 40) log.splice(0, log.length - 40);
+    };
+    const observer = new MutationObserver((records) => {
+      window.__cmaMutations += records.length;
+      for (const r of records) {
+        try {
+          if (r.type === 'characterData') { if (shown(r.target)) note(r.target.data); }
+          else if (r.type === 'childList') {
+            for (const node of r.addedNodes) {
+              if ((node.nodeType === 1 || node.nodeType === 3) && shown(node)) note(node.textContent);
+            }
+          } else if (r.attributeName === 'aria-label' || r.attributeName === 'title') {
+            if (shown(r.target)) note(r.target.getAttribute(r.attributeName));
+          }
+        } catch (e) {}
+      }
+    });
     observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
     window.__cmaMutationObserver = observer;
   } catch (e) {}
