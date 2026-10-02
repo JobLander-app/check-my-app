@@ -51,7 +51,6 @@ export default async function BillingPage({
     creditUsd: balance.creditUsd,
     renews: balance.renewsOn !== null,
     monthlyUsd: health.monthlyRunRateUsd,
-    perDayUsd: health.perDayUsd,
     balanceUsd: balance.balanceUsd,
   });
 
@@ -95,8 +94,10 @@ export default async function BillingPage({
         </Tile>
       </section>
 
-      {apps.length > 0 && (
+      {(apps.length > 0 || outside) && (
         // The table scrolls inside its card; the page never scrolls sideways.
+        // A team with no saved app but paid checks (previews, one-off
+        // addresses) still gets its one row.
         <section className="card overflow-x-auto">
           <div className="flex flex-wrap items-baseline justify-between gap-2 px-[18px] pb-3 pt-[18px]">
             <h2 className="text-[17px] font-semibold">What each app costs</h2>

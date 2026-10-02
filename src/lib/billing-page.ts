@@ -46,7 +46,6 @@ export function pace(i: {
   creditUsd: number | null;
   renews: boolean;
   monthlyUsd: number;
-  perDayUsd: number;
   balanceUsd: number | null;
 }): { headline: string; detail: string } {
   if (i.monthlyUsd <= 0) return { headline: "Nothing spent yet", detail: "A month of checks shows here once your apps have been checked." };
@@ -62,8 +61,11 @@ export function pace(i: {
       detail: `${against} Top-ups are only needed beyond that.`,
     };
   }
-  const days = i.perDayUsd > 0 ? Math.floor(i.balanceUsd / i.perDayUsd) : null;
-  const lasts = days === null ? "The balance is not being spent" : days < 1 ? "The balance runs out today" : `The balance lasts about ${plural(days, "day")}`;
+  // From the month's amount, not from a day's amount rounded to the cent:
+  // $0.03 over 30 days is "$0.00 a day" on the page and still spends.
+  const days = Math.floor(i.balanceUsd / (i.monthlyUsd / 30));
+  const lasts =
+    days < 1 ? "The balance runs out today" : days > 365 ? "The balance lasts more than a year" : `The balance lasts about ${plural(days, "day")}`;
   return {
     headline: lasts,
     detail: i.renews ? `${against} The rest comes from top-ups.` : "This plan's amount does not renew. A paid plan adds its amount every month.",
