@@ -16,7 +16,7 @@ import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
-import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
+import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -114,7 +114,7 @@ export async function createRecheckRun(
   // CHE-390: the checks that were accepted on a private address before it was
   // refused at intake (#291–#293) still carry a Re-check button. It starts
   // nothing: the address cannot be opened, and a re-check would be priced.
-  if (isPrivateTarget(prev.targetUrl)) return { kind: "quota", reason: PRIVATE_TARGET_MESSAGE, code: "private_target" };
+  if (holdsPrivateTarget(prev)) return { kind: "quota", reason: PRIVATE_TARGET_MESSAGE, code: "private_target" };
 
   // CHE-94. Everything below is about the ANONYMOUS path: the caller proved
   // nothing except that they have the link.
@@ -192,6 +192,10 @@ export async function createRecheckRun(
   const saved = prev.targetKind === "extension" && prev.appId && prev.ownerId
     ? await prisma.app.findFirst({ ...alreadyScoped("the previous run names its own app"), where: { id: prev.appId, ownerId: prev.ownerId, targetKind: "extension", extensionId: prev.extensionId },
       select: { testEmail: true, testPasswordEnc: true, storePasswordEnc: true, extensionConfig: true, userNotes: true } }) : null;
+  // The saved extension's own page is what the re-check would open.
+  if (saved && holdsPrivateTarget({ targetUrl: prev.targetUrl, extensionConfig: saved.extensionConfig })) {
+    return { kind: "quota", reason: PRIVATE_TARGET_MESSAGE, code: "private_target" };
+  }
   // CHE-322: a re-check of a saved website's run signs in as the app does NOW —
   // its default login and every named account. The run being re-checked lost
   // its passwords when it ended (workflow.ts "cleanup") unless a watch kept

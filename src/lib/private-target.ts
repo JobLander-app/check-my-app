@@ -56,6 +56,22 @@ export function isPrivateTarget(url: string): boolean {
   return LOCAL_NAMES.test(host) || privateV4(host) || privateV6(host);
 }
 
+/**
+ * The same question for a stored check, app or watch: its target, and for an
+ * extension the page it is opened on (extensionConfig.companionUrl — the store
+ * link itself is public).
+ */
+export function holdsPrivateTarget(row: { targetUrl: string; extensionConfig?: string | null }): boolean {
+  if (isPrivateTarget(row.targetUrl)) return true;
+  if (!row.extensionConfig) return false;
+  try {
+    const companion = (JSON.parse(row.extensionConfig) as { companionUrl?: unknown }).companionUrl;
+    return typeof companion === "string" && companion !== "" && isPrivateTarget(companion);
+  } catch {
+    return false;
+  }
+}
+
 // What the person who pasted it is told — on the form, in the API's answer and
 // to a coding agent over MCP. For now the sentence the form already says for an
 // address it cannot use; one that says what to paste instead is PR #235 and

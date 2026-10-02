@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "../src/lib/private-target";
+import { holdsPrivateTarget, isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "../src/lib/private-target";
 import { createCheckSchema } from "../src/lib/validation";
 import { createRecheckRun } from "../src/lib/recheck";
 import { enableWatchForRun } from "../src/lib/watch-enable";
@@ -160,6 +160,23 @@ async function persisted() {
   check("a saved app on a private address does not start",
     "error" in saved && saved.error === PRIVATE_TARGET_MESSAGE && sv.calls.join() === "app.findFirst" && triggered.length === 0,
     `${JSON.stringify(saved)} · ${sv.calls.join()}`);
+
+  // Codex P1 r2 on #237: a stored extension's target is the public store link;
+  // what the check opens is its companion page.
+  const STORE_APP = { id: "a2", ownerId: "u1", teamId: "t1", targetUrl: STORE, appSlug: "extension:abc", targetKind: "extension" };
+  const companionCfg = (companionUrl: string) => JSON.stringify({ companionUrl });
+  check("holdsPrivateTarget: a public store link with a private companion page is private; with a public one it is not",
+    holdsPrivateTarget({ targetUrl: STORE, extensionConfig: companionCfg("https://192.168.1.2:3000") }) &&
+      !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: companionCfg("https://example.com/app") }) &&
+      !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: null }) && !holdsPrivateTarget({ targetUrl: STORE, extensionConfig: "not json" }));
+  const svx = stubDb({ "app.findFirst": { ...STORE_APP, extensionConfig: companionCfg("https://192.168.1.2:3000") } });
+  const savedExt = await startSavedApp(svx.db, { id: "u1", teamId: "t1", plan: "free" }, "a2", { trigger, siteCap: () => 20 });
+  check("a saved extension whose companion page is private does not start",
+    "error" in savedExt && savedExt.error === PRIVATE_TARGET_MESSAGE && svx.calls.join() === "app.findFirst", `${JSON.stringify(savedExt)} · ${svx.calls.join()}`);
+  const rex = stubDb({ "run.findUnique": { id: "r9", targetUrl: STORE, targetKind: "extension", extensionConfig: companionCfg("http://localhost:3000"), appSlug: "extension:abc", ownerId: "u1", teamId: "t1", team: { plan: "free" }, status: "completed" } });
+  const recheckedExt = await createRecheckRun(rex.db, "pub_9", {}, {}, { canMutate: async () => true, trigger, siteCap: () => 20, now: () => new Date(), ephemeralTtlDays: () => 7 });
+  check("a re-check of an extension check whose companion page is private starts nothing",
+    recheckedExt.kind === "quota" && rex.calls.join() === "run.findUnique" && triggered.length === 0, `${JSON.stringify(recheckedExt)} · ${rex.calls.join()}`);
 
   const scheduler = read("src/agent/scheduler.ts");
   const loop = scheduler.slice(scheduler.indexOf("for (const watch of due)"), scheduler.indexOf("const inFlight"));
