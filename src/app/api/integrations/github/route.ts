@@ -7,6 +7,7 @@ import { encryptSecret } from "@/lib/crypto";
 import { GitHubError, validateRepoAccess } from "@/lib/github";
 import { connectGithubSchema } from "@/lib/validation";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 
 // POST /api/integrations/github — connect a repo for spec export from a verdict.
 // v1 is a fine-grained PAT (no GitHub OAuth app yet): validated against the
@@ -14,6 +15,7 @@ import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 // (CHE-33): a signed-in user connecting from an anonymous run's verdict
 // find-or-creates their App for that target and adopts the run.
 export async function POST(req: Request) {
+  if (isSelfCheckRequest(req.headers)) return selfCheckReadOnlyResponse();
   const db = await getDbFromContext();
   const decision = await requireScope(db, req, "integration.connect");
   if (!decision.ok) return decision.response;
@@ -106,6 +108,7 @@ export async function POST(req: Request) {
 // DELETE /api/integrations/github?runId={publicId} — disconnect the repo for
 // the run's target app (drops the stored token).
 export async function DELETE(req: Request) {
+  if (isSelfCheckRequest(req.headers)) return selfCheckReadOnlyResponse();
   const db = await getDbFromContext();
   const user = await getOptionalUser(db);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -21,10 +21,17 @@
 //      verdict page's server actions, which cannot be called outside a Next
 //      request scope (`headers()` throws there), so for them the source is the
 //      evidence: the first statement of each exported action is the guard.
+//   4. CHE-194: nothing is left off the list. The list above was written by
+//      hand, and run #304 (2026-10-02) registered an app through the one form
+//      nobody had put on it. So the source tree is read whole: every route
+//      handler that takes POST / PUT / PATCH / DELETE and every exported
+//      server action under src/app starts with the guard, or is named below
+//      with the reason it does not — a new handler or action without either
+//      fails here.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-self-check-guard.ts
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import {
@@ -45,6 +52,7 @@ import { POST as enableWatch } from "@/app/api/watch/route";
 import { PATCH as updateWatch, DELETE as cancelWatch } from "@/app/api/watch/[slug]/route";
 import { POST as exportSpecs } from "@/app/api/runs/[id]/export-specs/route";
 import { POST as mcp } from "@/app/api/mcp/route";
+import { POST as connectGithub, DELETE as disconnectGithub } from "@/app/api/integrations/github/route";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -131,6 +139,11 @@ const rows: Row[] = [
   // watches — every one of them a record our checker must never create.
   { name: "POST /mcp", file: "src/app/api/mcp/route.ts", fn: "POST", method: "POST",
     path: "/api/mcp", handler: mcp as unknown as Handler, params: {} },
+  // CHE-194: connecting a repository stores a token and can register an app.
+  { name: "POST /api/integrations/github", file: "src/app/api/integrations/github/route.ts", fn: "POST", method: "POST",
+    path: "/api/integrations/github", handler: connectGithub as unknown as Handler, params: {} },
+  { name: "DELETE /api/integrations/github", file: "src/app/api/integrations/github/route.ts", fn: "DELETE", method: "DELETE",
+    path: "/api/integrations/github?runId=run_1", handler: disconnectGithub as unknown as Handler, params: {} },
 ];
 
 function makeRequest(row: Row, withHeader: boolean): Request {
@@ -181,17 +194,164 @@ async function handlers() {
 // (a body read, a Turnstile call, an auth lookup) is caught here.
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
-// The first statement of `export async function NAME(...) {`, comments
+// Where the body of the function declared at `head` opens: past its parameter
+// list and past a return type. `Promise<{ id: string }>` and
+// `{ error: string } | null` both carry braces that are not the body's — the
+// first brace after the first `)` (what this did before CHE-194) lands inside
+// createApiKey's return type and reads a type as the function's first statement.
+function bodyOpen(source: string, head: number): number {
+  let i = source.indexOf("(", head);
+  if (i < 0) return -1;
+  for (let depth = 0; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")" && --depth === 0) break;
+  }
+  let angle = 0;
+  let typed = "";
+  for (i++; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "{") {
+      // A brace that opens the body: outside any <…>, and not where a type is
+      // expected (after `:`, `|` or `&`).
+      if (angle === 0 && !/[:|&]\s*$/.test(typed)) return i;
+      for (let braces = 0; i < source.length; i++) {
+        if (source[i] === "{") braces++;
+        else if (source[i] === "}" && --braces === 0) break;
+      }
+      typed += "{}";
+      continue;
+    }
+    if (ch === "<") angle++;
+    else if (ch === ">" && source[i - 1] !== "=") angle--;
+    typed += ch;
+  }
+  return -1;
+}
+
+// The first statement of `export [async] function NAME(...) {`, comments
 // stripped. Ends at the first `;` — enough to see one call.
 function firstStatement(source: string, fn: string): string | null {
-  const head = source.indexOf(`export async function ${fn}(`);
+  const head = source.search(new RegExp(`export\\s+(?:async\\s+)?function\\s+${fn}\\s*\\(`));
   if (head < 0) return null;
-  const open = source.indexOf("{", source.indexOf(")", head));
+  const open = bodyOpen(source, head);
   if (open < 0) return null;
   let body = source.slice(open + 1);
   body = body.replace(/^\s*\/\/[^\n]*\n/gm, ""); // whole-line comments
   const end = body.indexOf(";");
   return body.slice(0, end < 0 ? undefined : end).trim();
+}
+
+// ── 4 — nothing is left off the list (CHE-194) ─────────────────────────────
+//
+// The three webhooks are called by Clerk, Stripe and Telegram, each proving
+// who it is with its own signature; our checker cannot make such a request.
+const WEBHOOKS = "src/app/api/webhooks/";
+// An exported server action that does NOT start with the guard, and why. A
+// name here is a decision; an action missing from here and from the guard is
+// a failure.
+const UNGUARDED_ACTIONS: Record<string, string> = {
+  "src/app/team/switch-actions.ts switchTeamAction":
+    "stores nothing: it sets the browser's own cookie for which of the signed-in person's teams the next page shows",
+};
+const ROUTE_GUARD = /^if \(isSelfCheckRequest\((_?req)\.headers\)\) return selfCheckReadOnlyResponse\(\)$/;
+const ACTION_GUARD = /^(await refuseSelfCheck\(|if \(isSelfCheckRequest\(await headers\(\)\)\) redirect\()/;
+const FILE_LEVEL_DIRECTIVE = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*["']use server["']/;
+
+function filesUnder(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(path.join(repoRoot, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...filesUnder(rel));
+    else if (/\.(ts|tsx)$/.test(entry.name)) out.push(rel);
+  }
+  return out;
+}
+
+function inventory() {
+  const files = filesUnder("src/app").map((file) => ({ file, src: readFileSync(path.join(repoRoot, file), "utf8") }));
+  const bare: string[] = [];
+  const seenRoutes: string[] = [];
+  const seenActions: string[] = [];
+  const guardedActions = new Set<string>();
+  const excepted: string[] = [];
+
+  for (const { file, src } of files) {
+    if (file.endsWith("/route.ts") && !file.startsWith(WEBHOOKS)) {
+      for (const m of src.matchAll(/export\s+(?:async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/g)) {
+        seenRoutes.push(`${file} ${m[2]}`);
+        const first = m[1] === "function" ? firstStatement(src, m[2]) : null;
+        if (!first || !ROUTE_GUARD.test(first)) bare.push(`${file} ${m[2]}() — ${first === null ? "not a function declaration this guard can read" : first.slice(0, 60)}`);
+      }
+    }
+    if (!FILE_LEVEL_DIRECTIVE.test(src)) continue;
+    // In a "use server" file every export is an action a browser can call.
+    for (const m of src.matchAll(/export\s+(?:async\s+)?(function|const)\s+(\w+)/g)) {
+      const key = `${file} ${m[2]}`;
+      seenActions.push(key);
+      if (UNGUARDED_ACTIONS[key]) {
+        excepted.push(key);
+        continue;
+      }
+      const first = m[1] === "function" ? firstStatement(src, m[2]) : null;
+      if (first && ACTION_GUARD.test(first)) guardedActions.add(m[2]);
+      else bare.push(`${key}() — ${first === null ? "not a function declaration this guard can read" : first.slice(0, 60)}`);
+    }
+    // `refuseSelfCheck` is the real one: the shared helper, or the verdict
+    // page's own (checked above).
+    if (/await refuseSelfCheck\(/.test(src) && !src.includes('from "@/lib/self-check-action"') && file !== "src/app/verdict/actions.ts") {
+      bare.push(`${file}: calls a refuseSelfCheck that is not the one in src/lib/self-check-action.ts`);
+    }
+  }
+  // An action written inline in a page ("use server" inside a function) may
+  // only hand over to a guarded action.
+  const inline: string[] = [];
+  for (const { file, src } of files) {
+    if (FILE_LEVEL_DIRECTIVE.test(src)) continue;
+    for (const m of src.matchAll(/["']use server["'];?\s*([^}]*)\}/g)) {
+      inline.push(file);
+      const call = m[1].trim().match(/^await (\w+)\([^;]*\);?$/);
+      if (!call || !guardedActions.has(call[1])) bare.push(`${file}: an inline action that does more than call a guarded one — ${m[1].trim().slice(0, 60)}`);
+    }
+  }
+
+  check("inventory: every POST / PUT / PATCH / DELETE handler outside the webhooks starts with the guard, and every exported server action does or is named with its reason",
+    bare.length === 0, bare.join(" ¦ "));
+  check("inventory: it read the tree — the handlers listed above, the onboarding form's action and the invitation page's inline action are among what it saw",
+    rows.every((row) => seenRoutes.includes(`${row.file} ${row.fn}`)) && seenActions.includes("src/app/onboarding/actions.ts createApp") &&
+      seenActions.includes("src/app/dashboard/actions.ts createApiKey") && inline.includes("src/app/invite/[token]/page.tsx"),
+    `${seenRoutes.length} handlers, ${seenActions.length} actions, ${inline.length} inline`);
+  check("inventory: every named exception still exists — a stale name is a rule nobody can read",
+    Object.keys(UNGUARDED_ACTIONS).every((key) => excepted.includes(key)), Object.keys(UNGUARDED_ACTIONS).filter((key) => !excepted.includes(key)).join(", "));
+  check("inventory: the webhooks are the only handlers left out, and there are three of them",
+    files.filter(({ file }) => file.startsWith(WEBHOOKS) && file.endsWith("/route.ts")).map(({ file }) => file.slice(WEBHOOKS.length).split("/")[0]).sort().join() === "clerk,stripe,telegram");
+
+  // The shared helper: reads the request, redirects with the flag, and is not
+  // itself an action.
+  const helper = readFileSync(path.join(repoRoot, "src/lib/self-check-action.ts"), "utf8");
+  check("src/lib/self-check-action.ts: reads next/headers, redirects with ?self_check=read_only, and is not a \"use server\" file",
+    /export async function refuseSelfCheck\(path: string\): Promise<void> \{\s*if \(isSelfCheckRequest\(await headers\(\)\)\) redirect\(selfCheckRedirectPath\(path\)\);\s*\}/.test(helper) &&
+      !FILE_LEVEL_DIRECTIVE.test(helper));
+
+  // The reader itself, on the shapes that fooled the old one.
+  const shapes = `
+export async function a(x: string): Promise<{ id: string; raw: string }> {
+  await refuseSelfCheck("/a");
+  return { id: x, raw: x };
+}
+export async function b(
+  _prev: { error: string } | null,
+  form: FormData,
+): Promise<{ error: string } | null> {
+  // a comment first
+  const first = 1;
+  return null;
+}
+export async function c(x = fn(1, (2))): { error: string } | null {
+  return null;
+}`;
+  check("reader: a return type's braces are not the body — Promise<{…}>, { … } | null, a default with brackets",
+    firstStatement(shapes, "a") === 'await refuseSelfCheck("/a")' && firstStatement(shapes, "b") === "const first = 1" && firstStatement(shapes, "c") === "return null",
+    [firstStatement(shapes, "a"), firstStatement(shapes, "b"), firstStatement(shapes, "c")].join(" ¦ "));
 }
 
 function sourceChecks() {
@@ -232,6 +392,7 @@ function sourceChecks() {
 async function main() {
   await handlers();
   sourceChecks();
+  inventory();
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }
