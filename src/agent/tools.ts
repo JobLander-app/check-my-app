@@ -34,6 +34,10 @@ import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
+import { CREATE_VERBS, handsOffIn, handsOffRefusal, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
+
+// The word lists live with the rest of what a walk does not press (CHE-406).
+export { SELF_HOST_GUARDED_VERBS };
 
 export interface ToolEnv {
   page: Page;
@@ -181,8 +185,11 @@ function isSelfTarget(env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts">): bo
 
 // CHE-334: remember that our own guard answered, for the step about to be
 // reported. Only on our own hosts — a customer's refusal is never ours.
+// CHE-406: …and inside a person's signed-in session, where the same gates
+// refuse by what the control is: a walk that was refused "Save" and reports
+// the button as dead would publish our refusal as their defect (rule 8).
 function noteSelfCheckRefusal(env: ToolEnv, evidence: string): void {
-  if (!isSelfTarget(env)) return;
+  if (!isSelfTarget(env) && !inSignedInSession(env.page)) return;
   (env.selfCheckRefusals ??= []).push(evidence);
 }
 
@@ -1262,38 +1269,9 @@ export function credentialRejection(entries: string[]): string | null {
 //      trusted click in this environment.
 // The result text records WHICH strategy produced a reaction, so transcripts
 // (and the synthesis pass) can see when only a fallback worked.
-// Buttons that leave state behind. Deterministic refusal beats instruction:
-// run #108 created a real app during discovery, where the prompt had already
-// said read-only — and never ledgered it, so cleanup could not see it either.
-const CREATE_VERBS =
-  /\b(create|register|sign ?up|save|add|publish|post|submit|send|order|buy|subscribe|book|invite|start watching|place order)\b/i;
-// Submits that only read: never blocked.
-const SAFE_SUBMITS = /\b(search|filter|apply filter|log ?in|sign ?in|continue|next|show|find|preview|refresh)\b/i;
-
-// Controls that flip the state of something that ALREADY exists — someone
-// else's record, not ours. Refused in every mode, including runs allowed to
-// create: permission to add a test record was never permission to resume a
-// paused subscription, cancel a plan or re-enable a watch. Our own self-check
-// re-enabled a watch its owner had paused (CHE-98) and quietly spent $1.26
-// re-checking a domain nobody wanted checked.
-const STATE_TOGGLE_VERBS =
-  /\b(enable|disable|resume|reactivate|activate|deactivate|pause|unpause|cancel|upgrade|downgrade|subscribe|unsubscribe|renew|restore|archive|revoke|start watching|turn (on|off))\b/i;
-
-// CHE-193: controls on OUR OWN product that act on real users' data. The
-// self-check of 2026-09-05 (run #146) pressed "Re-check now" on a stranger's
-// public verdict page and created two real runs (#147, #148), then pressed
-// "Looks right ✓" and graded a stranger's verdict. None of these labels is a
-// create or a toggle in the CREATE_VERBS / STATE_TOGGLE_VERBS sense, so a new
-// list, applied only when the target is one of our hosts (self-hosts.ts) — on
-// a customer's app "Export" or "Check now" is theirs to have pressed. The web
-// half answers 403 to the same actions when the self-check header is present;
-// this gate keeps the walk from even asking. The list is the ticket's: the $1
-// check, a re-check, the verdict lens ("Looks right", "Something's off",
-// "That's fine", "Mark as fixed", "Dispute"), tickets and exports. "Enable
-// Daily Watch" is caught by STATE_TOGGLE_VERBS, in every mode.
-export const SELF_HOST_GUARDED_VERBS =
-  /\b(re-?check|check now|run check|run (this one|it|one) now|run now|looks right|something'?s off|that'?s fine|mark as|dispute|file ticket|create ticket|export)\b/i;
-
+// The lists a control's name is tested against — CREATE_VERBS, SAFE_SUBMITS,
+// STATE_TOGGLE_VERBS, SELF_HOST_GUARDED_VERBS — and the second reading, of the
+// control itself, are in hands-off.ts.
 async function click(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
   const label = [input.name, input.selector].filter(Boolean).map(String).join(" ");
   // CHE-401: a human-verification challenge is never pressed, in any kind of
@@ -1311,6 +1289,8 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
     console.warn(`[click] refused a sign-out control in a signed-in session: ${label}`);
     return signOutRefusal(label.slice(0, 80));
   }
+  // CHE-406: where this run stands, for the gates that read the control itself.
+  const place = { session: signedIn, ownHost: isSelfTarget(env), writeAllowed: Boolean(env.writeAllowed) };
   if (label && SELF_HOST_GUARDED_VERBS.test(label) && isSelfTarget(env)) {
     console.warn(`[click] refused self-host guarded click: ${label}`);
     noteSelfCheckRefusal(env, `click gate: ${label}`);
@@ -1356,8 +1336,12 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       `Refused: "${label}" looks like it would create or send something, and this run is read-only ` +
       `(the owner has not enabled record creation). You have confirmed the form accepts input — ` +
       `that is the whole check here. Report this step "skipped" with unverifiedReason ` +
-      `"not_applicable" and move on. If you believe this button only reads data, click it by CSS ` +
-      `selector instead and say why in the step.`
+      `"not_applicable" and move on.` +
+      // CHE-406: in a strict place the control is read for what it is, below —
+      // there is no pressing it under another name.
+      (isStrictPlace(place)
+        ? ""
+        : ` If you believe this button only reads data, click it by CSS selector instead and say why in the step.`)
     );
   }
   // CHE-373: the page first, then each embedded frame.
@@ -1386,6 +1370,16 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       console.warn(`[click] refused a sign-out control in a signed-in session: ${label} (${signsOut})`);
       return signOutRefusal(signsOut);
     }
+  }
+  // CHE-406: in a person's session and on our own product, a control that
+  // creates, removes, commits or toggles is refused for what it is — the name
+  // gates above saw only what the walk called it, and run #304 called the
+  // onboarding's "Save & start watching" `button[type=submit]`.
+  const held = seen ? handsOffIn(seen, place) : null;
+  if (held) {
+    console.warn(`[click] refused by what the control is (${held.rule}): ${held.what} — addressed as ${label || "nothing"}`);
+    noteSelfCheckRefusal(env, `click gate: ${held.what}`);
+    return handsOffRefusal(held);
   }
   // Never interact before hydration: a click landing before listeners attach
   // is indistinguishable from a dead button.
@@ -2413,7 +2407,10 @@ export function coerceSelfCheck403(
   step: ReportedStep,
   env: Pick<ToolEnv, "targetOrigin" | "selfCheckHosts" | "networkLog" | "actionTrail" | "selfCheckRefusals">,
 ): void {
-  if (!isSelfTarget(env)) return;
+  // CHE-406: off our own hosts the only refusals there are to settle are the
+  // ones the click gate noted inside a person's signed-in session; without
+  // one, a customer's step is never touched here.
+  if (!isSelfTarget(env) && !env.selfCheckRefusals?.length) return;
   // An ok step is never rewritten, and it does not use up a refusal: the
   // model often reports "the form accepts input" before the step the refusal
   // belongs to. Every other status — "exposed" included, a 403 of ours is no

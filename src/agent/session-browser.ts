@@ -288,6 +288,12 @@ export interface ControlSeen {
   // another.
   own?: string[];
   base?: string;
+  // CHE-406: what kind of control it is — the nearest thing a person presses
+  // or types into, counted from the element outwards: "a", "button",
+  // "input:checkbox", "textarea", or its role ("tab", "switch", "menuitem").
+  // And, when that nearest thing is a link, where the link leads.
+  kind?: string;
+  link?: string;
 }
 
 // → what about the control says "this signs out", or null.
@@ -333,7 +339,13 @@ export async function controlSeen(locator: Locator): Promise<ControlSeen | null>
         if (labels) for (let i = 0; i < labels.length; i++) texts.push(labels[i].innerText ?? "");
         const form = el.closest("form");
         if (form && el.closest("button, input[type=submit], input[type=image]")) addresses.push(form.getAttribute("action") ?? "");
+        const nearest = el.closest(
+          "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=option], [role=checkbox], [role=switch], [role=tab], [role=radio]",
+        );
+        const tag = nearest ? nearest.tagName.toLowerCase() : "";
         return {
+          kind: nearest ? nearest.getAttribute("role") || (tag === "input" ? `input:${(nearest.getAttribute("type") || "text").toLowerCase()}` : tag) : "",
+          link: nearest && tag === "a" ? (nearest.getAttribute("href") ?? "") : "",
           texts: texts.map((t) => t.trim().slice(0, 200)).filter(Boolean),
           addresses: addresses.filter(Boolean),
           marks: marks.map((m) => m.trim().slice(0, 200)).filter(Boolean),
