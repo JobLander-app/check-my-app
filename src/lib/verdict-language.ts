@@ -813,15 +813,6 @@ export function hasEnvironmentLeak(text: string | null | undefined): boolean {
   return environmentLeaks(text).length > 0;
 }
 
-// A name — a step's label, a journey's title — as the customer reads it: the
-// walker's voice and the phrase gate still apply ("Upload a file. Done in our
-// test browser." loses its second sentence), the noun list does not (CHE-396:
-// "Connect a coding agent for automated checks" is what that part of the
-// product is called). Null when nothing is left.
-export function productName(text: string | null | undefined): string | null {
-  return productProse(text, 0, NAME);
-}
-
 export function productStepLabel(text: string): string {
   const label = text.replace(/\b(?:pre-session\s+)?account preflight\b/gi, "Session balance")
     .replace(/\b(?:audio|microphone) preflight\b/gi, "Prepare the session");
@@ -856,116 +847,6 @@ export function splitSentences(text: string): string[] {
 export const MACHINERY_TERMS =
   /\b(browsers?|headless|environments?|models?|harness(es)?|playwright|screenshots?|checkers?|first reader|tooling|automation|agents?|test environment|our test|oembed|verify_links|read_page|report_step|write_e2e_test|record_created|record_deleted|get_network_log)\b/i;
 
-// ─── The product's own vocabulary (CHE-396) ──────────────────────────────────
-//
-// Eight of the words above are also what products are made of: an AI product
-// has agents and models, an extension lives in a browser, a store-protection
-// app blocks "by browser" and "automation", a dev tool has environments. Run
-// cmuqfizeu… (our own guide page, 2026-10-02) came back with five steps named
-// "Check this part of the product" and the journey "Connect a coding agent for
-// automated checks" listed as "A journey": every sentence, and every NAME,
-// holding one of those nouns had been dropped.
-//
-// Whose agent it is cannot be told from grammar. A first attempt replaced the
-// bare list with "ours only when the sentence says so" and failed in both
-// directions at once (cross-review of #246: seventeen of the walk's own
-// sentences passed — "the agent got stuck on the login form", "the final
-// screenshot shows an empty cart" — while "the agent failed to complete the
-// booking", an AI product's own failure, was still cut; every patch to one
-// list widened the other). What can tell is where the words came from:
-//
-//   1. A NAME — a step's label, a journey's title — is what that part of the
-//      product is called. It keeps the phrase gate ("…in our test browser")
-//      and loses the noun list: there is no walker in a name.
-//   2. In prose the list stays as strict as it was, unless the product's own
-//      pages use the noun: an app whose pages say "agent" has agents. The
-//      walk collects those nouns from the pages it reads (tools.ts) and hands
-//      them in.
-//   3. For a noun the product does use, the sentence is ours only in the
-//      shapes below — the walk named as the one driving the page. They are
-//      deliberately few; the gate errs to the product's side there, and only
-//      there.
-//   4. Quoted text is the product's.
-export type ProductVocabulary = ReadonlySet<string>;
-
-const PRODUCT_NOUN_STEMS = ["browser", "environment", "model", "screenshot", "checker", "tooling", "automation", "agent"] as const;
-const PRODUCT_NOUN = new RegExp(`\\b(${PRODUCT_NOUN_STEMS.join("|")})s?\\b`, "gi");
-
-// Which of those nouns a product's own text uses. `texts` is what the product
-// itself shows or is addressed by — page titles, headings, links, buttons,
-// visible text, its URLs — never the walk's words about it.
-export function productVocabulary(texts: Iterable<string | null | undefined>, into: Set<string> = new Set()): Set<string> {
-  for (const text of texts) {
-    if (!text) continue;
-    for (const m of text.matchAll(PRODUCT_NOUN)) into.add(m[1].toLowerCase());
-    if (into.size === PRODUCT_NOUN_STEMS.length) break;
-  }
-  return into;
-}
-
-// The walk, named with one of the product's nouns, driving the page. Applied
-// only to a noun the product itself uses (everything else is still caught by
-// the bare list).
-const PAGE_PART = "(?:button|link|field|form|page|dashboard|screen|menu|modal|dialog|tab|element|control|checkbox|input|dropdown|toggle|selector)";
-const TRIED = "(?:could\\s*n[o’']t|couldn['’]t|cannot|can['’]t|(?:was|is|were)\\s+(?:unable|not\\s+able)\\s+to|failed\\s+to|did\\s*n[o’']t|didn['’]t|did\\s+not|tried\\s+to|attempted\\s+to)";
-const DRIVE = "(?:click|tap|press|type|fill|scroll|navigate|submit|interact|sign\\s+in|log\\s+in)";
-const DROVE = "(?:clicked|tapped|pressed|typed|filled|scrolled|navigated|submitted|signed\\s+in|logged\\s+in)";
-const WALKER_NOUN = "(?:agent|checker|automation|browser)";
-const OUR_SIDE_OF_A_PRODUCT_NOUN = new RegExp(
-  "\\b(?:" +
-    [
-      // ours by determiner: "our agent", "the test browser", "the automated browser", "in the testing environment"
-      "(?:our(?:\\s+own)?|this\\s+(?:run|check)['’]s|the\\s+(?:run|check|walk|checker)['’]s)\\s+(?:[a-z-]+\\s+)?(?:browser|environment|agent|model|automation|tooling|checker|screenshot)s?",
-      "(?:the|an?|this)\\s+(?:automated|headless|sandbox(?:ed)?|check(?:ing)?)\\s+(?:browser|environment|agent)s?",
-      "automated\\s+(?:browser|environment|client)s?",
-      "in\\s+(?:the|an?|this|our)\\s+(?:test(?:ing)?|current|automated|sandbox(?:ed)?)\\s+environment",
-      "(?:in|within|under|for)\\s+this\\s+(?:environment|browser)",
-      "this\\s+(?:environment|browser)\\s+(?:blocked|blocks|timed\\s+out|lacks|has\\s+no|prevent(?:s|ed))",
-      "(?:artifact|artefact|limitation|quirk)\\s+of\\s+(?:the\\s+|our\\s+)?automation",
-      // the walk driving the page
-      `the\\s+(?:${WALKER_NOUN}|model)\\s+${TRIED}\\s+(?:\\w+\\s+)?${DRIVE}`,
-      `the\\s+(?:${WALKER_NOUN}|model)\\s+${DROVE}`,
-      `the\\s+(?:${WALKER_NOUN}|model)\\s+(?:tried|attempted|kept|was)\\s+(?:clicking|tapping|pressing|typing|filling|scrolling|navigating|submitting|signing\\s+in|logging\\s+in)`,
-      `the\\s+(?:${WALKER_NOUN}|model)\\s+(?:${TRIED}\\s+)?(?:find|locate|see|reach|open|load|complete|use|operate)\\s+(?:the|a|an|any)\\s+(?:[\\w'"“”‘’-]+\\s+){0,4}${PAGE_PART}`,
-      "the\\s+model\\s+(?:was|got)\\s+(?:blocked|stuck)\\s+(?:on|at|by)",
-      `the\\s+${WALKER_NOUN}\\s+never\\s+(?:reached|got|made\\s+it|saw|found)`,
-      `the\\s+${WALKER_NOUN}\\s+(?:was|got)\\s+(?:blocked|stuck|stopped)`,
-      `the\\s+${WALKER_NOUN}\\s+ran\\s+out\\s+of\\s+(?:steps|time|turns|budget)`,
-      "the\\s+(?:agent|checker)\\s+(?:saw|observed|noticed)\\s+(?:a|an|the|no|that)",
-      `(?:${DROVE}|opened|reached)\\s+by\\s+the\\s+${WALKER_NOUN}`,
-      "the\\s+(?:(?:nav|navigation|walking)\\s+)(?:agent|model)",
-      "the\\s+model\\s+(?:decided|chose)\\s+to|the\\s+model\\s+(?:assumed|inferred|guessed|hallucinated|misread|was\\s+(?:instructed|told|asked))",
-      // our evidence: a screenshot that shows something (not one that "shows in the gallery")
-      "(?:(?:the|a|an|this|each|every|one|another)\\s+)?(?:[a-z-]+\\s+)?screenshots?\\s+(?:(?:did|does|do)\\s*n[o’']t\\s+|(?:did|does|do)\\s+not\\s+|failed\\s+to\\s+)?(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?)\\s+(?:a|an|the|that|no|nothing|only)",
-      "screenshots?\\s+(?:was|were)\\s+taken\\s+(?:after|before|during|at|of\\s+the\\s+(?:page|result|screen))",
-      "(?:in|per|according\\s+to|(?:as\\s+)?seen\\s+in)\\s+the\\s+(?:[a-z-]+\\s+)?screenshots?",
-    ].join("|") +
-    ")\\b",
-  "i",
-);
-
-// Quoted spans, blanked: what the product says about itself is the product's.
-function withoutQuotes(sentence: string): string {
-  return sentence.replace(/"[^"]*"|“[^”]*”|«[^»]*»|(?<=^|[\s(\[])['‘][^'’]*['’](?=[\s.,;:!?)\]]|$)/g, " ");
-}
-
-// Does this sentence name our side with one of the words above?
-export function namesOurSide(sentence: string, vocabulary?: ProductVocabulary): boolean {
-  if (!MACHINERY_TERMS.test(sentence)) return false;
-  if (!vocabulary || vocabulary.size === 0) return true;
-  const unquoted = withoutQuotes(sentence);
-  // The nouns the product uses, set aside: if the list still matches, the
-  // sentence holds a word that is not the product's (headless, harness, a
-  // noun its pages never use, a tool's name).
-  const others = unquoted.replace(PRODUCT_NOUN, (word, stem: string) => (vocabulary.has(stem.toLowerCase()) ? "…" : word));
-  if (MACHINERY_TERMS.test(others)) return true;
-  if (vocabulary === NAME) return false;
-  return OUR_SIDE_OF_A_PRODUCT_NOUN.test(unquoted);
-}
-
-// A name's vocabulary: every noun, and no reading of the sentence around it.
-const NAME: ProductVocabulary = new Set(PRODUCT_NOUN_STEMS);
-
 // Product-facing prose: the walker's envelope unwrapped and the walker's
 // first person cut at the clause (CHE-197, before the sentence gate so that
 // "The product is a chat app; I tested the flow via oEmbed" keeps its
@@ -981,20 +862,91 @@ const NAME: ProductVocabulary = new Set(PRODUCT_NOUN_STEMS);
 // intact and must stay as written — the floor exists to catch fragments left
 // by the strip, not to reject brevity. A step label is a few words by design,
 // so its caller sets the floor to 0.
-//
-// `vocabulary` (CHE-396): the nouns of the word list that the product's own
-// pages use. Without it the list is as strict as it always was.
-export function productProse(text: string | null | undefined, floor = 20, vocabulary?: ProductVocabulary): string | null {
+export function productProse(text: string | null | undefined, floor = 20): string | null {
+  return scrubbed(text, floor, (s) => MACHINERY_TERMS.test(s));
+}
+
+function scrubbed(text: string | null | undefined, floor: number, namesOurSide: (sentence: string) => boolean): string | null {
   if (!text) return null;
   const unwrapped = unwrapEnvelope(splitSentences(text));
   const voiced = cutNarration(unwrapped.sentences);
-  const kept = voiced.sentences.filter((s) => !leaksMachinery(s) && !namesOurSide(s, vocabulary));
+  const kept = voiced.sentences.filter((s) => !leaksMachinery(s) && !namesOurSide(s));
   const cut = cutHomework(kept);
   const out = cut.sentences.join(" ").replace(/\s+/g, " ").trim();
   if (!out) return null;
   const untouched = !unwrapped.changed && !voiced.changed && kept.length === voiced.sentences.length && !cut.changed;
   if (untouched) return out;
   return out.length >= floor ? out : null;
+}
+
+// ─── A name is not prose (CHE-396) ───────────────────────────────────────────
+//
+// Eight words of the list above are also what products are made of: an AI
+// product has agents and models, an extension lives in a browser, a store-
+// protection app blocks "by browser" and "automation", a dev tool has
+// environments. Run cmuqfizeu… (our own guide page, 2026-10-02) came back with
+// five steps named "Check this part of the product" and the journey "Connect a
+// coding agent for automated checks" listed as "A journey": a NAME is one
+// sentence, so a name holding any of those nouns was dropped whole.
+//
+// A step's label and a journey's title say what a part of the product is
+// called. They keep everything else — the walker's voice, the phrase gate
+// ("Upload a file. Done in our test browser." loses its second sentence), the
+// words with no product meaning (headless, harness, a tool's name) — and lose
+// only the eight bare nouns. The walk speaking in a name is still caught, by
+// shape: the noun as the one acting ("The agent could not click Save", "The
+// browser crashed during checkout"), our determiner ("our agent", "the
+// automated browser"), our evidence ("the screenshot shows …").
+//
+// PROSE IS NOT TOUCHED. Two attempts to open the list for prose — by grammar,
+// then by "the product's own pages use the word" — were each broken in cross-
+// review (#246): a cookie notice says "browser" and a chat launcher says
+// "agent", so nearly every site would have qualified, and with the noun opened
+// most of the walk's own sentences ("The agent was redirected to the login
+// page") walked through. In prose a dropped sentence costs a neutral fallback
+// line; a leaked one is rule 1. What would make prose safe to open — the noun
+// tied to the product by a quotation or by the product's own phrase for it —
+// is CHE-396's remaining half and is not attempted here.
+const NAME_NOUN = /\b(?:browser|environment|model|screenshot|checker|tooling|automation|agent)s?\b/gi;
+const ACTOR = "(?:agent|browser|model|environment|automation|checker)";
+const ACTS =
+  "(?:could|couldn['’]t|cannot|can['’]t|was|were|is|are|has|had|did|didn['’]t|does|doesn['’]t|will|would|never|tried|attempted|waited|" +
+  "received|hit|skipped|got|ran|saw|used|crashed|blocked|triggered|timed|failed|clicked|tapped|pressed|typed|filled|scrolled|navigated|" +
+  "submitted|opened|closed|signed|logged|decided|chose|assumed|session)";
+const WALK_IN_A_NAME = new RegExp(
+  [
+    // the noun as the one acting: "The agent could not click Save", "Agent could not click", "The browser crashed"
+    `(?:^|[.;:!?]\\s+)(?:(?:the|an?|this)\\s+)?${ACTOR}(?:['’]s)?\\s+${ACTS}\\b`,
+    `\\b(?:by|according\\s+to)\\s+the\\s+${ACTOR}\\b`,
+    `\\bthe\\s+${ACTOR}['’]s\\s+(?:browser|click|session|attempt)\\b`,
+    // our determiner
+    "\\b(?:our(?:\\s+own)?|this\\s+(?:run|check)['’]s|the\\s+(?:run|check|walk|checker)['’]s)\\s+(?:[a-z-]+\\s+)?(?:browser|environment|agent|model|automation|tooling|checker|screenshot)s?\\b",
+    "\\b(?:the|an?|this)\\s+(?:automated|headless|sandbox(?:ed)?|check(?:ing)?)\\s+(?:browser|environment|agent)s?\\b",
+    "\\bautomated\\s+(?:browser|environment|client)s?\\b",
+    "\\bin\\s+(?:the|an?|this|our)\\s+(?:test(?:ing)?|current|automated|sandbox(?:ed)?)\\s+environment\\b",
+    "\\b(?:in|within|under|for)\\s+this\\s+(?:environment|browser)\\b",
+    "\\b(?:artifact|artefact|limitation|quirk)\\s+of\\s+(?:the\\s+|our\\s+)?automation\\b",
+    "\\bautomation\\s+(?:was\\s+detected|triggered)\\b",
+    // our evidence
+    "\\bscreenshots?\\s+(?:(?:did|does|do)\\s*n[o’']t\\s+|(?:did|does|do)\\s+not\\s+|failed\\s+to\\s+)?(?:show(?:s|ed)?|confirm(?:s|ed)?|reveal(?:s|ed)?|indicate(?:s|d)?|capture(?:s|d)?)\\s+(?:a|an|the|that|no|nothing|only)\\b",
+    "\\bscreenshots?\\s+(?:was|were)\\s+(?:taken|captured)\\b",
+    "\\b(?:in|per|according\\s+to|(?:as\\s+)?seen\\s+in)\\s+the\\s+(?:[a-z-]+\\s+)?screenshots?\\b",
+  ].join("|"),
+  "i",
+);
+
+function nameNamesOurSide(sentence: string): boolean {
+  if (!MACHINERY_TERMS.test(sentence)) return false;
+  // The eight nouns set aside: if the list still matches, the sentence holds a
+  // word with no product meaning (headless, harness, a tool's name, "our test").
+  if (MACHINERY_TERMS.test(sentence.replace(NAME_NOUN, "…"))) return true;
+  return WALK_IN_A_NAME.test(sentence);
+}
+
+// A name — a step's label, a journey's title — as the customer reads it. Null
+// when nothing is left.
+export function productName(text: string | null | undefined): string | null {
+  return scrubbed(text, 0, nameNamesOurSide);
 }
 
 // What is written when the model's own words did not survive the scrub. Used

@@ -291,7 +291,7 @@ export async function walkOneJourney(args: {
         });
         // CHE-180: the customer's words, decided after the judge has seen the
         // model's. Nothing between here and the row may reintroduce ours.
-        productizeStep(step, toolEnv.productWords);
+        productizeStep(step);
         // CHE-334: a step our own guard refused is kept (it is what the walk
         // did) but is no part of the journey's status — the journey is judged
         // up to the guard.
@@ -415,7 +415,7 @@ export async function walkOneJourney(args: {
       // cap cut mid-action (run #144: "Let me try the Reset to Defaults
       // button") is asked once more for the summary alone.
       const status = journeyStatus(stepStatuses);
-      const written = await summarizeWalk(llm, result, usage, status, toolEnv.productWords);
+      const written = await summarizeWalk(llm, result, usage, status);
       // CHE-219: run #159's journey 0 summary said the notes field "fails to
       // accept input — the fill operation times out", about a control this
       // journey never drove. The phrase tables cannot see that sentence; the
@@ -446,7 +446,7 @@ export async function walkOneJourney(args: {
         await extension.finish();
         const failure = extensionProductFailureStep(await extension.finalEvidence());
         if (failure) {
-          productizeStep(failure, toolEnv.productWords);
+          productizeStep(failure);
           await env.db.step.create({ data: { journeyId: journey.id, order: stepOrder++, ...failure } });
           stepStatuses.push(failure.status);
           await env.db.journey.update({ where: { id: journey.id }, data: { status: journeyStatus(stepStatuses) } });
