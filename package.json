@@ -111,6 +111,7 @@
     "verify:signed-out": "tsx --tsconfig tsconfig.json scripts/verify-signed-out.ts",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
     "verify:human-check": "tsx --tsconfig tsconfig.json scripts/verify-human-check.ts",
+    "verify:model-ampersand": "tsx --tsconfig tsconfig.json scripts/verify-model-ampersand.ts",
     "verify:recurring-load": "tsx --tsconfig tsconfig.json scripts/verify-recurring-load.ts",
     "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",

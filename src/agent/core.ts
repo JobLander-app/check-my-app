@@ -17,6 +17,7 @@ import {
   type UsageTotals,
 } from "./llm";
 import { productName } from "@/lib/verdict-language";
+import { inOwnWords } from "@/lib/model-text";
 import { browserToolsFor, executeTool, type ToolEnv } from "./tools";
 
 export interface AgentLoopArgs {
@@ -467,7 +468,11 @@ export async function createWithRetry(
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await fn();
+      // CHE-402: an answer comes back through here (or through createOnRoutes,
+      // llm.ts — the two between them are every model call the agent makes),
+      // so this is where the model's own "&amp;" comes off: before a tool acts
+      // on the words and before any of them is stored.
+      return inOwnWords(await fn());
     } catch (err) {
       lastErr = err;
       const status = err instanceof Anthropic.APIError ? err.status : undefined;
