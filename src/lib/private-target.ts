@@ -48,7 +48,8 @@ function privateV6(host: string): boolean {
 export function isPrivateTarget(url: string): boolean {
   let host: string;
   try {
-    host = new URL(url).hostname;
+    // "localhost." is localhost: the URL parser keeps the root dot.
+    host = new URL(url).hostname.replace(/\.$/, "");
   } catch {
     return false; // not an address at all: another rule's refusal
   }

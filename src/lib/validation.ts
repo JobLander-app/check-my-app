@@ -8,7 +8,9 @@ export const extensionOptionsSchema = z.object({
       const url = new URL(u);
       return url.protocol === "https:" && !url.username && !url.password && url.hostname.includes(".");
     } catch { return false; }
-  }, "Enter the HTTPS address where your extension works").optional().or(z.literal("")),
+  }, "Enter the HTTPS address where your extension works")
+    // The page the extension is opened on is a target too (CHE-390).
+    .refine((u) => !isPrivateTarget(u), PRIVATE_TARGET_MESSAGE).optional().or(z.literal("")),
   expectedOutcome: z.string().trim().max(1000).optional(),
   allowSessions: z.boolean().optional(),
   maxSessionSeconds: z.number().int().min(60).max(600).optional(),

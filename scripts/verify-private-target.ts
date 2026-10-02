@@ -52,6 +52,8 @@ const PRIVATE = [
   "http://[fd12:3456:789a::1]",
   "http://[fe80::1]",
   "http://[::ffff:192.168.0.197]",
+  "http://localhost.:3000", // the root dot does not make it public
+  "https://my-macbook.local.",
 ];
 const PUBLIC = [
   "https://checkmyapp.dev",
@@ -86,6 +88,16 @@ check("a public address still passes", refusal("checkmyapp.dev") === null && ref
 check("a word that is no address keeps its own message", refusal("hello") === "Doesn't look like a working URL", String(refusal("hello")));
 check("the url shape other doors reuse refuses it too (app settings, onboarding)",
   !createCheckSchema.shape.url.safeParse("https://10.0.0.5").success);
+
+// The page an extension is opened on is a target as well (Codex P2 on #235).
+const STORE = "https://chromewebstore.google.com/detail/x/abcdefghijklmnopabcdefghijklmnop";
+const companion = (companionUrl: string) => {
+  const r = createCheckSchema.safeParse({ url: STORE, extension: { companionUrl } });
+  return r.success ? null : r.error.issues[0]?.message ?? "";
+};
+check("an extension's companion page on a private address is refused with the same sentence",
+  companion("https://192.168.1.2:3000") === PRIVATE_TARGET_MESSAGE, String(companion("https://192.168.1.2:3000")));
+check("…and a public companion page still passes", companion("https://example.com/app") === null, String(companion("https://example.com/app")));
 
 check("the sentence says what to paste and names none of our machinery",
   /Paste the public address/.test(PRIVATE_TARGET_MESSAGE) && !/\b(browser|server|cloud|bot|crawler|our|we)\b/i.test(PRIVATE_TARGET_MESSAGE), PRIVATE_TARGET_MESSAGE);
