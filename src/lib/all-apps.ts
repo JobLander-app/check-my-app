@@ -113,7 +113,13 @@ export function stripStory(verdicts: string[]): string {
 
   const run = verdicts.slice(n - streak);
   if (streak === 1) {
-    return before.length === 0 ? `${label} in its first check.` : `${label} in the latest check; it was not in the one before.`;
+    if (before.length === 0) return `${label} in its first check.`;
+    // The check before is fine or verified nothing (a third kind would have
+    // extended the streak). One that verified nothing cannot say the problem
+    // was absent.
+    return group(before[before.length - 1]) === "none"
+      ? `${label} in the latest check; the check before verified nothing.`
+      : `${label} in the latest check; it was not in the one before.`;
   }
   const allBroken = run.every((v) => v === "broken");
   return `${allBroken ? "Broken" : "Needs attention or broken"} ${streak} checks in a row.`;

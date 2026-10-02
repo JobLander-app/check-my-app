@@ -24,7 +24,11 @@ import { AppsViewToggle } from "@/components/apps-view-toggle";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { CheckPrice } from "@/components/check-price";
 
-type Row = AppHealth & { name: string; watch: WatchState };
+// `newestVerdict` is the strip's last bar. `latest` can be one check behind it:
+// a check is shown with its price, and the price is written a step after the
+// verdict (appHealth). "Need attention" follows the newest verdict, so the
+// filter never leaves out an app whose strip already ends in red.
+type Row = AppHealth & { name: string; watch: WatchState; newestVerdict: string | null };
 
 function Latest({ app }: { app: Row }) {
   const meta = app.latest?.verdict ? VERDICT_META[app.latest.verdict] : null;
@@ -83,8 +87,8 @@ function Card({ app, days }: { app: Row; days: number }) {
   );
 }
 
-const TH = "whitespace-nowrap border-b border-ink-700 px-4 py-2.5 text-left text-xs font-medium text-fg-muted";
-const TD = "border-b border-ink-800 px-4 py-3.5 align-middle";
+const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-4 last:pr-4";
+const TD = "border-b border-ink-800 px-3 py-3.5 align-middle first:pl-4 last:pr-4";
 
 function List({ apps, days }: { apps: Row[]; days: number }) {
   return (
@@ -95,6 +99,7 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
           <tr>
             <th className={TH}>App</th>
             <th className={TH}>Latest</th>
+            <th className={TH}>Last 21 checks</th>
             <th className={`${TH} text-right`}>{days} days</th>
             <th className={`${TH} text-right`}>A day</th>
             <th className={`${TH} text-right`}>Last check</th>
@@ -114,6 +119,10 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
               </td>
               <td className={`${TD} whitespace-nowrap`}>
                 <Latest app={app} />
+              </td>
+              {/* The same strip as the card, small; its one line is the tooltip. */}
+              <td className={TD} title={stripStory(app.verdicts.map((v) => v.verdict))}>
+                <VerdictStrip verdicts={app.verdicts} className="h-4 w-[132px]" />
               </td>
               <td className={`${TD} text-right font-mono`}>{usd(app.spendUsd)}</td>
               <td className={`${TD} text-right font-mono`}>{usd(app.perDayUsd)}</td>
@@ -169,8 +178,13 @@ export default async function AllAppsPage({
   const watchOf = new Map(
     watches.map((w) => [w.appId, { active: w.active, frequency: w.frequency, trialEnded: shouldSkipWatch(w, team.plan as UserPlan) }]),
   );
-  const all: Row[] = health.apps.map((a) => ({ ...a, name: nameOf.get(a.appId) ?? a.appSlug, watch: watchOf.get(a.appId) }));
-  const apps = all.filter((a) => inFilter(filter, { latestVerdict: a.latest?.verdict ?? null, watch: a.watch }));
+  const all: Row[] = health.apps.map((a) => ({
+    ...a,
+    name: nameOf.get(a.appId) ?? a.appSlug,
+    watch: watchOf.get(a.appId),
+    newestVerdict: a.verdicts.at(-1)?.verdict ?? null,
+  }));
+  const apps = all.filter((a) => inFilter(filter, { latestVerdict: a.newestVerdict, watch: a.watch }));
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
@@ -197,7 +211,7 @@ export default async function AllAppsPage({
       {all.length > 0 && (
         <nav aria-label="Which apps" className="flex flex-wrap gap-1.5">
           {APPS_FILTERS.map((f) => {
-            const count = all.filter((a) => inFilter(f.key, { latestVerdict: a.latest?.verdict ?? null, watch: a.watch })).length;
+            const count = all.filter((a) => inFilter(f.key, { latestVerdict: a.newestVerdict, watch: a.watch })).length;
             return (
               <Link
                 key={f.key}

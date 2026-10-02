@@ -81,6 +81,10 @@ check("story: the counts in the sentence never exceed the checks before", (() =>
   return m !== null && Number(m[1]) === 3 && Number(m[2]) === 2 && Number(m[3]) === 7;
 })(), stripStory(s("b,b,n,m,g,b,n,g,g")));
 eq("story: trouble only in the latest check", stripStory(s("g,g,n")), "Needs attention in the latest check; it was not in the one before.");
+eq("story: trouble right after a check that verified nothing claims nothing about that check (Codex P1 r2 on #233)",
+  stripStory(s("g,u,b")), "Broken in the latest check; the check before verified nothing.");
+check("story: no sentence says a problem was absent from an unverified check",
+  ["u,b", "u,n", "g,u,b", "b,u,n"].every((spec) => !/was not in the one before/.test(stripStory(s(spec)))));
 eq("story: broken three in a row", stripStory(s("g,b,b,b")), "Broken 3 checks in a row.");
 eq("story: a mixed bad streak is not called broken", stripStory(s("g,n,b,n")), "Needs attention or broken 3 checks in a row.");
 eq("story: nothing verified, ever", stripStory(s("u")), "Nothing verified yet.");
@@ -101,6 +105,9 @@ check("the toggle writes the cookie in its click handler, with no effect",
   /onClick=\{\(\) => \{\s*document\.cookie = `\$\{APPS_VIEW_COOKIE\}=/.test(toggle) && !/use(Layout)?Effect/.test(toggle));
 check("the page reads the same cookie on the server", /jar\.get\(APPS_VIEW_COOKIE\)/.test(page));
 check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
+check("both views show the strip of checks", (page.match(/<VerdictStrip verdicts=\{app\.verdicts\}/g) ?? []).length === 2);
+check("'Need attention' follows the strip's newest verdict, not the latest priced check (Codex P1 r2 on #233)",
+  /newestVerdict: a\.verdicts\.at\(-1\)\?\.verdict \?\? null/.test(page) && !/latestVerdict: a\.latest/.test(page));
 check("the latest check's price opens its reason — in the cards and in the list (§10: never a bare price)",
   (page.match(/<CheckPrice explanation=\{app\.latest\.price\}/g) ?? []).length === 2 && !/usd\(app\.latest\.priceUsd\)/.test(page));
 check("the schedule is the scheduler's rule: the page asks shouldSkipWatch with the team's plan",
