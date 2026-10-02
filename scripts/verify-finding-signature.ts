@@ -450,6 +450,41 @@ check("no anchor: a later walk that executed any step of its journey has looked 
   noAnchorPartLook.issue.state === "gone" && noAnchorPartLook.goneSinceRunNumber === 49,
   `${noAnchorPartLook.issue.state}, gone since ${noAnchorPartLook.goneSinceRunNumber}`);
 
+// Cross-review, second pass: "no anchor" is not only old rows — 6 of the 36
+// findings of prod's checks #250+ have none. In a check whose findings ARE
+// anchored, an unanchored one is not released by a walk that ran step 0 and
+// skipped the rest; it waits for everything its own walk executed.
+const twoJourneys = (runNumber: number, findings: RecurrenceFinding[], a: string[], b: string[]): RecurrenceRun => ({
+  runNumber,
+  journeys: [{ identity: "check-by-url", carried: false, steps: a }, { identity: "pricing", carried: false, steps: b }],
+  findings,
+});
+const anchoredNeighbour: RecurrenceFinding = {
+  id: "n1", title: "Result page shows a stale timestamp", category: "confusing", severity: "low", mark: "none", signature: null,
+  detail: JSON.stringify({ where: "/result" }), anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 1 } }),
+};
+const pricingFootnote = (rs: ReturnType<typeof recurrence>) => rs.find((r) => r.issue.title === unanchoredFinding.title)!;
+const full = ["ok", "ok", "ok"];
+const eraRuns = (...later: Array<[string[], string[]]>): RecurrenceRun[] => [
+  twoJourneys(260, [anchoredNeighbour, unanchoredFinding], full, full),
+  ...later.map(([a, b], i) => twoJourneys(261 + i, [], a, b)),
+];
+const eraPartLook = pricingFootnote(recurrence({ id: "x", appSlug: "app.example" }, eraRuns([["ok", "skipped", "skipped"], ["ok", "skipped", "skipped"]]), []));
+check("no anchor, in a check that anchors its findings: step 0 of each journey and the rest skipped → NOT gone",
+  eraPartLook.issue.state === "new" && eraPartLook.goneSinceRunNumber === null, `${eraPartLook.issue.state}, gone since ${eraPartLook.goneSinceRunNumber}`);
+const eraFullLook = pricingFootnote(recurrence({ id: "x", appSlug: "app.example" },
+  eraRuns([["ok", "skipped", "skipped"], ["ok", "skipped", "skipped"]], [full, ["ok", "ok", "skipped"]], [["skipped", "skipped", "skipped"], full]), []));
+check("…gone only once each journey was executed through everything its walk did — across checks (#262 one, #263 the other)",
+  eraFullLook.issue.state === "gone" && eraFullLook.goneSinceRunNumber === 263, `${eraFullLook.issue.state}, gone since ${eraFullLook.goneSinceRunNumber}`);
+
+// A later walk shorter than the anchored step answers with its own last step
+// (the journey got shorter): one step, executed, releases a finding of step 4.
+// Deliberate — meetbashar #275 — and pinned so it is a decision, not an accident.
+const shorter = recurrence({ id: "x", appSlug: "app.example" },
+  [neverFourth(43, [anchoredAt4], ["ok", "ok", "ok", "ok", "broken"]), neverFourth(49, [], ["ok"])], [])[0];
+check("a later walk of one executed step stands for a journey that got shorter → gone", shorter.issue.state === "gone" && shorter.goneSinceRunNumber === 49,
+  `${shorter.issue.state}, gone since ${shorter.goneSinceRunNumber}`);
+
 // A journey that is no longer in the app's catalog can never be walked again.
 // Checks from before the catalog named journeys by title, a new set every run.
 const titled = (runNumber: number, identity: string, findings: RecurrenceFinding[]): RecurrenceRun => ({
