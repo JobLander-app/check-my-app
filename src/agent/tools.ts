@@ -34,7 +34,7 @@ import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
-import { CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
+import { CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, handsOffUnread, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
 
 // The word lists live with the rest of what a walk does not press (CHE-406).
 export { SELF_HOST_GUARDED_VERBS };
@@ -1389,12 +1389,15 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   // creates, removes, commits or toggles is refused for what it is — the name
   // gates above saw only what the walk called it, and run #304 called the
   // onboarding's "Save & start watching" `button[type=submit]`.
-  const held = seen ? handsOffIn(seen, place) : null;
+  // …and one that could not be read is not pressed there at all: the click
+  // below would find it again and press whatever it turned out to be.
+  const held = seen ? handsOffIn(seen, place) : handsOffUnread(place);
   if (held) {
     console.warn(`[click] refused by what the control is (${held.rule}): ${held.what} — addressed as ${label || "nothing"}`);
-    // A link's refusal sends the walk to its address: nothing was held back
-    // yet, so there is no refusal for the next step to be settled by.
-    if (held.rule !== "link") noteSelfCheckRefusal(env, `click gate: ${held.what}`);
+    // A link's refusal sends the walk to its address, and an unread control is
+    // asked for again: nothing was held back yet, so there is no refusal for
+    // the next step to be settled by.
+    if (held.rule !== "link" && held.rule !== "unreadable") noteSelfCheckRefusal(env, `click gate: ${held.what}`);
     return handsOffRefusal(held);
   }
   // Never interact before hydration: a click landing before listeners attach

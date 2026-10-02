@@ -26,7 +26,7 @@
 
 import { chromium, type Browser, type Page } from "playwright";
 import { executeTool, prepareAgentPage, type ToolEnv } from "@/agent/tools";
-import { COMMIT_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, isActionAddress, isStrictPlace, REMOVE_VERBS, type HandsOffPlace } from "@/agent/hands-off";
+import { COMMIT_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, handsOffUnread, isActionAddress, isStrictPlace, REMOVE_VERBS, STATE_TOGGLE_VERBS, type HandsOffPlace } from "@/agent/hands-off";
 import type { ControlSeen } from "@/agent/session-browser";
 import { hasEnvironmentLeak, hasHomework, SELF_CHECK_REFUSED_OBSERVED } from "@/lib/verdict-language";
 
@@ -140,11 +140,45 @@ async function main() {
   check("a link, or a form, that leads to an address naming an action is not opened at all — whatever its words",
     held(control("Details", { kind: "a", link: "/orders/7/cancel" }), session) === "address" && held(control("Go", { kind: "a", link: "/admin/post.php?post=1&action=trash" }), session) === "address" &&
       held(control("OK", { kind: "button", addresses: ["/items/42/delete"] }), session) === "address" && held(control("Details", { kind: "a", link: "/orders/7/cancel" }), ordinary) === null);
-  const ACTIONS = ["/delete/42", "/orders/7/cancel", "/admin?action=trash", "https://x.test/apps/1/uninstall", "/subscription/cancel-now", "/users/3/deactivate", "/keys/9/revoke?next=/"];
-  const PAGES_ONLY = ["/removed-items", "/cancellation-policy", "/settings/disabled-features", "/blog/how-to-delete-a-rule", "/dashboard?removed=shop.test", "/apps/x/block-countries", "/archived", "/trashcan-guide"];
-  check("addresses: a segment or a query value that begins with the verb — never a word inside a longer one",
+  const ACTIONS = ["/delete/42", "/orders/7/cancel", "/admin?action=trash", "https://x.test/apps/1/uninstall", "/users/42/block", "/users/3/deactivate", "/keys/9/revoke?next=/", "/keys/9/reset", "/plan/upgrade#now", "/charges/5/approve"];
+  // A segment that only begins with a verb is a page's name — said here so the
+  // limit is on record: "/cancel-subscription" would be read as a page too.
+  const PAGES_ONLY = ["/removed-items", "/cancellation-policy", "/settings/disabled-features", "/blog/how-to-delete-a-rule", "/dashboard?removed=shop.test", "/apps/x/block-countries",
+    "/apps/easy-block-customer-ip-country", "/archived", "/trashcan-guide", "/guides/connect-your-agent", "/updates", "/orders/7"];
+  check("addresses: a segment, or a query key or value, that IS the verb — never one that only begins with it or holds it",
     ACTIONS.every((a) => isActionAddress(a, THEIRS)) && !PAGES_ONLY.some((a) => isActionAddress(a, THEIRS)),
     [...ACTIONS.filter((a) => !isActionAddress(a, THEIRS)), ...PAGES_ONLY.filter((a) => isActionAddress(a, THEIRS))].join(" | "));
+  // Codex on #261, round 3: a link refused for its word is sent to its address,
+  // so the address is refused for the same word. Read off the lists themselves:
+  // every single-word verb of the toggle, remove and commit lists.
+  // The list's own alternatives, split where they are alternatives of the list
+  // and not of a group inside one ("start (?:free )?trial", "(?:select|choose) plan").
+  const singleWords = (verbs: RegExp) => {
+    const inner = verbs.source.replace(/^\\b\(/, "").replace(/\)\\b$/, "");
+    const out: string[] = [];
+    let depth = 0;
+    let word = "";
+    for (const ch of `${inner}|`) {
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      if (ch === "|" && depth === 0) {
+        out.push(word);
+        word = "";
+      } else word += ch;
+    }
+    return out.filter((w) => /^[a-z]+$/.test(w));
+  };
+  const listed = [...singleWords(STATE_TOGGLE_VERBS), ...singleWords(REMOVE_VERBS), ...singleWords(COMMIT_VERBS)];
+  const missing = listed.filter((w) => !isActionAddress(`/things/42/${w}`, THEIRS) || !isActionAddress(`/admin?action=${w}`, THEIRS));
+  check("addresses: every single-word verb the gates hold on a link is held as an address too — a refused link's address is no way round",
+    listed.length > 30 && ["enable", "block", "reset", "ban", "disconnect", "unlink", "revert", "approve", "connect"].every((w) => listed.includes(w)) && missing.length === 0,
+    `${listed.length} verbs read; missing: ${missing.join(", ")}`);
+  check("a link called \"Block user\" that leads to /users/42/block is not opened by a click, and not by its address",
+    held(control("Block user", { kind: "a", link: "/users/42/block" }), session) === "address" && handsOffAddress(`${THEIRS}/users/42/block`, session)?.rule === "address" &&
+      held(control("Block countries", { kind: "a", link: "/app/block-countries" }), session) === "link" && handsOffAddress(`${THEIRS}/app/block-countries`, session) === null);
+  check("a control that could not be read is not pressed in a strict place — and is, as before, anywhere else",
+    handsOffUnread(session)?.rule === "unreadable" && handsOffUnread(oursMayWrite)?.rule === "unreadable" && handsOffUnread(ordinary) === null &&
+      /could not be read/.test(handsOffRefusal({ rule: "unreadable", what: "the control" })) && /"our_capability"/.test(handsOffRefusal({ rule: "unreadable", what: "the control" })));
   check("the same for an address the walk types: refused in a strict place, nowhere else",
     handsOffAddress(`${THEIRS}/orders/7/cancel`, session)?.rule === "address" && handsOffAddress(`${OURS}/api/x/delete`, oursMayWrite)?.rule === "address" &&
       handsOffAddress(`${THEIRS}/orders/7/cancel`, ordinary) === null && handsOffAddress(`${THEIRS}/orders/7`, session) === null);
@@ -185,6 +219,27 @@ async function main() {
   check("…and of an address that names an action: not by a click, not by typing it, not by another route",
     toldAddress.startsWith('Refused: the address "/orders/7/cancel"') && toldAddress.includes('"not_applicable"') && /Do not reach it by a click, by typing it or by another route/.test(toldAddress) &&
       !hasEnvironmentLeak(toldAddress) && !hasHomework(toldAddress), toldAddress);
+
+  // The same in the tool itself: a control that cannot be asked what it is —
+  // here, a hand-made one with no way to ask — is not pressed on our own
+  // product, and is pressed, as it always was, on a customer's.
+  const unread = (origin: string) => {
+    let pressed = 0;
+    const locator = { first: () => locator, count: async () => 1, or: () => locator, elementHandle: async () => null, click: async () => void pressed++ };
+    const page = {
+      url: () => `${origin}/dashboard`, goto: async () => ({ status: () => 200 }), waitForLoadState: async () => {}, waitForTimeout: async () => {}, evaluate: async () => 0,
+      addInitScript: async () => {}, on: () => {}, getByRole: () => locator, getByText: () => locator, locator: () => locator,
+    };
+    const env = { page, targetOrigin: origin, credentials: { rejected: false }, networkLog: [], consoleLog: [], actionTrail: [], undrivenControls: [], writeAllowed: true } as unknown as ToolEnv;
+    return { env, pressed: () => pressed };
+  };
+  const oursUnread = unread(OURS);
+  const refusedUnread = await executeTool(oursUnread.env, "click", { selector: "#anything" });
+  check("the click tool, our own product: a control that could not be read is refused, not pressed",
+    refusedUnread.startsWith("Refused:") && /could not be read/.test(refusedUnread) && oursUnread.pressed() === 0, `${refusedUnread.slice(0, 80)} | pressed ${oursUnread.pressed()}`);
+  const theirsUnread = unread(THEIRS);
+  const pressedUnread = await executeTool(theirsUnread.env, "click", { selector: "#anything" });
+  check("…and on a customer's app, in an ordinary run, it is pressed as before", !pressedUnread.startsWith("Refused:") && theirsUnread.pressed() > 0, `${pressedUnread.slice(0, 80)} | pressed ${theirsUnread.pressed()}`);
 
   const browser = await launch();
   try {

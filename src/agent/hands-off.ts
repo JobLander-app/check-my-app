@@ -41,6 +41,11 @@
 //   - text longer than a label: a card or a row the walk pressed to open it is
 //     not named by every word inside it.
 //
+// The price, inside a person's account: a checkbox or a radio button is never
+// pressed there, so one that only selects a row or narrows a list is not
+// pressed either, and a button with no name stays shut. Those are steps we
+// could not take — ours to say so — not defects of the product.
+//
 // Known limit, said so it is not mistaken for coverage: a control whose words
 // say nothing of what it does — "OK", "Yes" on a confirmation — is not seen
 // here, and neither is an address that changes state without saying so.
@@ -100,7 +105,15 @@ export interface HandsOffPlace {
   writeAllowed: boolean;
 }
 
-export type HandsOffRule = "own_host" | "toggle" | "create" | "remove" | "commit" | "switch" | "unnamed" | "address" | "link";
+export type HandsOffRule = "own_host" | "toggle" | "create" | "remove" | "commit" | "switch" | "unnamed" | "address" | "link" | "unreadable";
+
+// A control that could not be read at all (Codex on #261, round 3): the page
+// re-rendered under the question, or the element went away. In a strict place
+// what cannot be read is not pressed — the click that follows would find the
+// control again and press whatever it turned out to be.
+export function handsOffUnread(place: HandsOffPlace): HandsOff | null {
+  return isStrictPlace(place) ? { rule: "unreadable", what: "the control" } : null;
+}
 
 export interface HandsOff {
   rule: HandsOffRule;
@@ -137,11 +150,19 @@ function named(texts: string[], verbs: RegExp): string | null {
   return hit ? hit.replace(/\s+/g, " ").trim().slice(0, 80) : null;
 }
 
-// An address that names an action: a path segment or a query value that
-// begins with the verb — "/orders/7/cancel", "/delete/42", "?action=trash",
-// "/cancel-subscription" — never a word inside a longer one ("/removed-items",
-// "/cancellation-policy").
-const ACTION_ADDRESS = /(^|[/=?&])(delete|destroy|remove|trash|cancel|uninstall|unsubscribe|deactivate|disable|revoke|archive|unpublish)(?![a-z])/i;
+// An address that names an action: a path segment, or a query key or value,
+// that IS one of the verbs the gates hold — "/orders/7/cancel", "/delete/42",
+// "/users/42/block", "?action=trash". Every single-word verb of the toggle,
+// remove and commit lists is here (Codex on #261, round 3: a link refused for
+// its word is sent to its address, so the address must be refused for the same
+// word; verify:hands-off reads the lists and fails on one that is missing).
+// A segment that only begins with a verb names a page — "/block-countries",
+// "/cancellation-policy", "/removed-items" — and is read like any other.
+const ACTION_WORDS =
+  "delete|destroy|remove|trash|erase|purge|wipe|reset|block|unblock|ban|unban|disconnect|unlink|revert|rollback|roll-back|uninstall|unpublish|" +
+  "enable|disable|resume|reactivate|activate|deactivate|pause|unpause|cancel|upgrade|downgrade|subscribe|unsubscribe|renew|restore|archive|revoke|" +
+  "update|apply|confirm|approve|install|import|generate|regenerate|duplicate|pay|charge|refund|fulfill|fulfil|transfer|grant|rotate|connect|unpin";
+const ACTION_ADDRESS = new RegExp(`(^|[/=?&])(${ACTION_WORDS})([/?&#=]|$)`, "i");
 
 export function isActionAddress(url: string | null | undefined, base?: string): boolean {
   if (!url) return false;
@@ -253,6 +274,13 @@ export function handsOffRefusal(held: HandsOff): string {
       return (
         `Refused: this is ${held.what} — no text, no accessible name, no title — so what it does ` +
         `cannot be read before it is pressed, and this run only reads. ${THEN}`
+      );
+    case "unreadable":
+      return (
+        `Refused: ${held.what} could not be read just now, so what it does is not known, and here a ` +
+        `control is not pressed before it is read. Re-read the page and address the control again; ` +
+        `if it still cannot be read, report the step "skipped" with unverifiedReason ` +
+        `"our_capability" and move on.`
       );
     case "address":
       return (

@@ -74,6 +74,10 @@ function stubPage(origin: string, opts: { onClick: string[]; networkLog: string[
     count: async () => 1,
     or: () => locator,
     elementHandle: async () => null,
+    // CHE-406: on our own host a control that cannot be read is not pressed.
+    // This one can be, and says nothing of what it does — so what these cases
+    // exercise is still the name the walk gave and the product's own answer.
+    evaluate: async () => ({ texts: ["control"], addresses: [], marks: [], own: [], kind: "button", link: "" }),
     click: async () => {
       opts.networkLog.push(...opts.onClick);
       if (opts.landsOn) url = opts.landsOn;
