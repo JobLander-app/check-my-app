@@ -248,6 +248,10 @@ const CLICK_PRODUCT = [
   "The audit log recorded the click itself, but no save event appeared.",
   "The click itself returned a 500 and the page stayed as it was.",
   "The export shows the click's result in a column named 'Outcome'.",
+  // Round 3: a participle after "the click" is not its verb.
+  "The export shows the click's result listed in the Outcome column.",
+  "The click reported by the audit log had no matching save event.",
+  "The click noted in the activity feed is dated a day earlier than the order.",
 ];
 
 // A scripted model: any call is the summary call (finalizeJson sends no
