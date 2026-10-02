@@ -17,10 +17,14 @@
 //     steps its own walk executed up to the anchored one — none of them
 //     carried, none skipped. Positions, because step labels are reworded from
 //     walk to walk (lookedAgainAt);
-//   - not anchored (rows from before CHE-215): every journey its check walked,
-//     each looked at again — any step executed — across any number of later
-//     checks. We never knew which step it came from, and journeys that old
-//     have changed shape since;
+//   - not anchored, in a check from before anchors existed (CHE-215): every
+//     journey its check walked, each looked at again — any step executed —
+//     across any number of later checks. We never knew which step it came
+//     from, and journeys that old have changed shape since;
+//   - not anchored, in a check from the time findings are anchored (some still
+//     are not): every journey its check walked, each executed again through
+//     everything that walk executed — a walk that ran step 0 and skipped the
+//     rest has not looked;
 //   - a sighting whose check walked nothing gives no journey to wait for; the
 //     first later check that walked anything is its second look, and a check
 //     that carried or skipped everything is none.
@@ -221,9 +225,14 @@ export function recurrence(
     if (best) return best.key;
     return allowNew ? `${signature}~${s.finding.id}` : null;
   };
+  // The app's first check with an anchored finding (CHE-215). Before it, "no
+  // anchor" means "we never recorded one"; from it on, it means "this finding
+  // has none" — and the second look is held to what the walk executed.
+  let anchorsSince = Infinity;
   for (const run of ordered) {
     for (const finding of run.findings) {
       const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor)?.stepRef;
+      if (typeof ref?.journeyIndex === "number") anchorsSince = Math.min(anchorsSince, run.runNumber);
       const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] ?? null : null;
       const signature = signatureOf(finding, app.appSlug);
       if (signatureKind(signature) === "ours") continue;
@@ -259,7 +268,15 @@ export function recurrence(
       const positions = positionsSeen(seen.journey, seen.stepIndex);
       if (positions.length > 0) waitingFor.set(seen.journey.identity, positions);
     } else {
-      for (const j of seen.run.journeys) if (!j.carried && executed(j).length > 0) waitingFor.set(j.identity, "any");
+      // No anchor. In a check from before anchors existed, any later look at
+      // each journey counts. In a check from the time findings ARE anchored
+      // (one in six still is not: 6 of 36 on prod's checks #250+), "any" would
+      // let a walk that ran step 0 and skipped the rest release it — so each
+      // journey must be executed again through everything its own walk did.
+      const strict = seen.run.runNumber >= anchorsSince;
+      for (const j of seen.run.journeys) {
+        if (!j.carried && executed(j).length > 0) waitingFor.set(j.identity, strict ? positionsSeen(j, null) : "any");
+      }
     }
     for (const r of ordered) {
       if (r.runNumber <= seen.run.runNumber) continue;
