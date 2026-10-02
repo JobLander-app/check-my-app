@@ -159,19 +159,20 @@ export default async function BillingPage({
               {outside && (
                 <tr>
                   <td className={`${TD} text-fg-muted`}>Outside your apps</td>
-                  <td className={`${TD} text-right font-mono text-[15px]`}>{usd(outside.usd)}</td>
-                  <td className={TD} />
-                  <td className={TD} />
                   <td className={`${TD} whitespace-nowrap text-right`}>
-                    <span className="font-mono">{usd(outside.usd)}</span>
+                    <span className="font-mono text-[15px]">{usd(outside.usd)}</span>
                     <span className="block text-xs text-fg-muted">{countLine(outside.checks, "none")}</span>
                   </td>
+                  <td className={TD} />
+                  {/* Not split: a removed app's checks lose their schedule with it. */}
+                  <td className={TD} />
+                  <td className={TD} />
                   <td className={`${TD} w-40`}>
                     <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
                       <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
                     </span>
                   </td>
-                  <td className={`${TD} text-right text-xs text-fg-faint`}>previews and one-off addresses</td>
+                  <td className={`${TD} text-right text-xs text-fg-faint`}>previews, one-off addresses, removed apps</td>
                 </tr>
               )}
             </tbody>
