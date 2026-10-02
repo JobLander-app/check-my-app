@@ -104,18 +104,25 @@ export const DOOR_STEP_LABEL = "Open the first page";
 /**
  * End the run at the closed door: one journey with one skipped step that
  * carries our gap, verdict Not verified, cost 0 (so priceRun prices it 0).
- * Idempotent for a retried Workflow step: the journey is written once.
+ * Idempotent for a retried Workflow step, write by write: the journey is
+ * written once and so is its step. A retry after the journey was written and
+ * the step was not still owes the step — the step is what carries the gap to
+ * our board, and a journey without it would publish Not verified with nothing
+ * filed (found on the signed-out exit modelled on this one, CHE-389).
  */
 export async function completeClosedDoor(
   env: Pick<AgentEnv, "db">,
   run: { id: string; targetUrl: string },
   door: ClosedDoor,
 ): Promise<"unverified"> {
-  const existing = await env.db.journey.findFirst({ where: { runId: run.id, title: DOOR_JOURNEY_TITLE }, select: { id: true } });
-  if (!existing) {
-    const journey = await env.db.journey.create({
+  const journey =
+    (await env.db.journey.findFirst({ where: { runId: run.id, title: DOOR_JOURNEY_TITLE }, select: { id: true } })) ??
+    (await env.db.journey.create({
       data: { runId: run.id, order: 0, title: DOOR_JOURNEY_TITLE, status: "skipped", summary: doorObserved(door) },
-    });
+      select: { id: true },
+    }));
+  const step = await env.db.step.findFirst({ where: { journeyId: journey.id }, select: { id: true } });
+  if (!step) {
     await env.db.step.create({
       data: {
         journeyId: journey.id,

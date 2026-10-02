@@ -242,6 +242,24 @@ the one thing it cannot run is `@cloudflare/playwright`'s own transport, which
 is proven by the first live run (watch `journalctl -u session-server` for a
 refused DevTools method).
 
+### When the sign-in has ended
+
+A sign-in does not last: the product expires it or asks again. The app's
+address then leads to the product's sign-in on another host, and a run that
+went on would map and walk that page as if it were the app. So the surface scan
+decides it (`src/agent/signed-out.ts`): in a session, an address that ends on an
+origin that is neither the app's nor one allowed for it ends the run there —
+Not verified, nothing spent, nothing charged, access named as what is missing.
+
+The person who signs in is told **once per ended sign-in**, in the owner's
+chat, however many runs meet the same sign-in page; the message's id is the
+app and the last run of it that got in. That needs two secrets on the agent
+Worker, `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_CHAT_ID` (Secret Manager:
+`checkmyapp-telegram-bot-token`; the chat id is in the owner-channel skill).
+Without them nothing is sent and the run ends the same way. Where to sign in is
+the var `SESSION_SIGN_IN_URL`. Guard: `npm run verify:signed-out`, and the
+scan on a real browser in `verify:session-browser`.
+
 ## Reading the result
 
 ```
