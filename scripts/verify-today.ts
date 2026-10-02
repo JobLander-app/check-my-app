@@ -86,6 +86,13 @@ check("a check with no app is the team's only app of that address, as appHealth 
 check("the feed and the sentence go by when a check finished, not by its number (a long check can finish after a later quick one)",
   /\.sort\(\(a, b\) => b\.completedAt\.getTime\(\) - a\.completedAt\.getTime\(\)\);\s*const days = /.test(page));
 check("the feed is the team's finished, priced checks", /db\.run\.findMany\(\{\s*where: \{ \.\.\.teamOwned\(team\.id\), status: \{ in: FINISHED \}, verdict: \{ not: null \}, priceUsd: \{ not: null \}/.test(page));
+// Codex P2 on #245: a row limit taken before the latest-per-app reduction
+// drops a quiet app's check behind a busy app's, and the sentence then says
+// that app was not checked.
+const feedQuery = page.slice(page.indexOf("db.run.findMany({"), page.indexOf("const nameOf"));
+check("the feed's query has no row limit — the window bounds it", !/\btake:/.test(feedQuery) && /createdAt: \{ gte: since \}/.test(feedQuery));
+check("'Your apps cost' is the apps' own checks, the sidebar's number; the pace counts everything the balance pays for and the plan's next amount",
+  /usd\(health\.appsMonthlyUsd\)/.test(page) && /monthlyUsd: health\.monthlyRunRateUsd/.test(page) && /daysToRenewal: balance\.renewsOn !== null \? daysToNextMonth\(now\) : null/.test(page));
 check("a quick check's row is the price explanation's own line", /r\.quickPagesOpened !== null \? `\$\{quickCheckWork\(r\.quickPagesOpened\)\}\.`/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("the agent panel is still the first thing on the page", /<ConnectAgent keys=/.test(page));
