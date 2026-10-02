@@ -121,8 +121,8 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
                 <Latest app={app} />
               </td>
               {/* The same strip as the card, small; its one line is the tooltip. */}
-              <td className={TD} title={stripStory(app.verdicts.map((v) => v.verdict))}>
-                <VerdictStrip verdicts={app.verdicts} className="h-4 w-[132px]" />
+              <td className={TD}>
+                <VerdictStrip verdicts={app.verdicts} className="h-4 w-[132px]" summary={stripStory(app.verdicts.map((v) => v.verdict))} />
               </td>
               <td className={`${TD} text-right font-mono`}>{usd(app.spendUsd)}</td>
               <td className={`${TD} text-right font-mono`}>{usd(app.perDayUsd)}</td>
