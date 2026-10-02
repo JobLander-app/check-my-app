@@ -25,6 +25,7 @@ import type { Browser } from "@cloudflare/playwright";
 import type { AgentEnv } from "@/agent/env";
 import type { Page } from "@cloudflare/playwright";
 import type { ToolEnv } from "@/agent/tools";
+import { SELF_CHECK_REFUSED_OBSERVED } from "@/lib/verdict-language";
 import {
   askForSession,
   inSignedInSession,
@@ -139,6 +140,7 @@ async function main() {
 
   // Every request that would end the sign-in, however it was made.
   const signOuts: string[] = [];
+  const writes: string[] = [];
   const site = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://site");
     // An app whose sign-in has ended: the server sends the visitor away, or
@@ -174,6 +176,44 @@ async function main() {
         <a id="docs" href="/admin?logout-guide">How signing out works</a>
         <a href="/admin?next">Next</a>
       </nav>`);
+    } else if (url.pathname.startsWith("/admin/write/")) {
+      // CHE-406: every request that would change something in the person's account.
+      writes.push(`${req.method} ${url.pathname}`);
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<!doctype html><title>Written</title><h1>Written</h1>");
+    } else if (url.pathname === "/admin/app") {
+      // CHE-406: an app's settings inside the person's admin — the ways a page
+      // offers to save, remove, commit and switch, and the things on the same
+      // page that only read: a link that leads to a page, a tab, a field, a
+      // "View" button, a card with a paragraph inside it.
+      const write = (what: string) => `fetch('/admin/write/${what}', { method: 'POST' })`;
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><title>App settings</title>
+        <nav><a id="nav-block" href="/admin?block-countries">Block countries</a></nav>
+        <div role="tablist"><button id="tab" role="tab" onclick="document.title = 'Order protection'">Order protection</button></div>
+        <form action="/admin/write/save" method="post">
+          <input id="note" placeholder="Add a note…">
+          <button id="b0">Save</button>
+        </form>
+        <button id="b1" onclick="${write("delete")}"><span id="b1t">Delete rule</span></button>
+        <button id="b2" aria-label="Remove country" onclick="${write("remove")}">×</button>
+        <button id="b3" onclick="${write("block")}">Block country</button>
+        <button id="b4" onclick="${write("update")}">Update settings</button>
+        <button id="b5" role="switch" aria-checked="false" onclick="${write("switch")}">VPN traffic</button>
+        <button id="b6" onclick="${write("plan")}">Start free trial</button>
+        <button id="b7" onclick="${write("pause")}">Pause protection</button>
+        <a id="b8" href="#" onclick="${write("add")}">Add rule</a>
+        <button id="b9" aria-labelledby="l9" style="width:24px;height:24px" onclick="${write("labelled")}"></button><span id="l9" style="position:absolute;left:-999px">Delete rule</span>
+        <button id="b10" onclick="${write("alt")}"><img alt="Remove" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="16" height="16"></button>
+        <button id="b11" style="width:24px;height:24px" onclick="${write("unnamed")}"></button>
+        <button id="b12" onclick="${write("both")}">Save and continue</button>
+        <a id="b13" href="/admin/write/cancel">Details</a>
+        <a id="b14" href="/admin?products-new">Add product</a>
+        <label id="b15l"><input id="b15" type="checkbox" onchange="${write("checkbox")}"> <span id="b15t">Email alerts</span></label>
+        <div id="b16" role="checkbox" aria-checked="false" tabindex="0" onclick="${write("rolecheckbox")}">Weekly digest</div>
+        <label><input id="b17" type="radio" name="mode" onchange="${write("radio")}"> Strict mode</label>
+        <button id="view" onclick="document.title = 'Details'">View details</button>
+        <section id="card" onclick="document.title = 'Card'"><p>Rules you save here apply to every visitor. You can add, update or delete a rule at any time, and block or unblock a country from the list below this card.</p></section>`);
     } else if (url.pathname === "/signin") {
       res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": `session=${COOKIE}; Path=/; HttpOnly` });
       res.end("<!doctype html><title>Signed in</title><h1>Signed in</h1>");
@@ -360,6 +400,76 @@ async function main() {
     check("addresses: a path segment or a query value",
       ["/logout", "/auth/sign_out", "/users/sign-out", "/account/logout?next=/", "/admin?action=logout", "https://x.test/session/logoff"].every((a) => isSignOutAddress(a, SITE)) &&
         !["/blog/outline", "/catalog/outdoor", "/design-office", "/admin?next", "/checkout", "/dialogout"].some((a) => isSignOutAddress(a, SITE)));
+
+    // ── nothing in the person's account is ours to change (CHE-406) ──
+    // Run #304 pressed a button its gate refuses by name, by calling it
+    // `button[type=submit]`. Inside a person's session the control is read for
+    // what it is, and there is no gate at all for "Delete" to slip past.
+    await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/app` });
+    const heldAt = async (name: string, input: Record<string, unknown>) => {
+      const result = await executeTool(toolEnv, "click", input);
+      check(`changing the account is refused: ${name}`,
+        result.startsWith("Refused:") && result.includes("not_applicable") && !/CSS selector instead/.test(result) && menuPage.url() === `${SITE}/admin/app`, result.slice(0, 110));
+    };
+    // Addressed by selectors that say nothing of what the controls do — as a
+    // walk addresses them when it wants the gate not to hear.
+    await heldAt("\"Save\", addressed as the form's button", { selector: "form button" });
+    await heldAt("\"Save\" by its name — and the refusal no longer offers a selector as the way round", { role: "button", name: "Save" });
+    await heldAt("\"Delete rule\", clicked on the text inside the button", { selector: "#b1t" });
+    await heldAt("an icon button whose accessible name is \"Remove country\"", { selector: "#b2" });
+    await heldAt("\"Block country\" by selector", { selector: "#b3" });
+    await heldAt("\"Update settings\" by selector", { selector: "#b4" });
+    await heldAt("a switch, whatever it is called (\"VPN traffic\")", { selector: "#b5" });
+    await heldAt("\"Start free trial\" by selector", { selector: "#b6" });
+    await heldAt("\"Pause protection\" by selector", { selector: "#b7" });
+    await heldAt("a link that leads nowhere (href=\"#\") and is called \"Add rule\"", { selector: "#b8" });
+    // Codex on #261, round 1.
+    await heldAt("an icon button named only through aria-labelledby (\"Delete rule\")", { selector: "#b9" });
+    await heldAt("an icon button named only by its image's alt (\"Remove\")", { selector: "#b10" });
+    await heldAt("a button with no name at all", { selector: "#b11" });
+    await heldAt("\"Save and continue\" — a word that only reads does not cancel the one that saves", { selector: "#b12" });
+    await heldAt("a link called \"Details\" that leads to an address naming an action (/admin/write/cancel)", { selector: "#b13" });
+    // Codex on #261, round 2: a checkbox saves on the spot as readily as a switch.
+    await heldAt("a checkbox called \"Email alerts\"", { selector: "#b15" });
+    await heldAt("…pressed through the text of its label", { selector: "#b15t" });
+    await heldAt("a role=checkbox called \"Weekly digest\"", { selector: "#b16" });
+    await heldAt("a radio button called \"Strict mode\"", { selector: "#b17" });
+    const typed = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/write/delete` });
+    check("…and such an address is not opened when the walk types it either", typed.startsWith("Refused:") && typed.includes("not_applicable") && menuPage.url() === `${SITE}/admin/app`, typed.slice(0, 110));
+    check("…and none of it reached the product", writes.length === 0, writes.join(", "));
+    // The refusal is a request to a model. A walk that was refused "Save" and
+    // then reports the button as dead must not publish that about the product.
+    const reported: Record<string, unknown>[] = [];
+    toolEnv.onReportStep = async (step) => {
+      reported.push({ ...step });
+    };
+    await executeTool(toolEnv, "report_step", { label: "Save the settings", status: "broken", attempted: "Pressed Save", observed: "The Save button does nothing: the settings are never stored." });
+    check("a step reported broken after such a refusal is settled in code: skipped, not applicable, not counted against the product",
+      reported[0]?.status === "skipped" && reported[0]?.unverifiedReason === "not_applicable" && reported[0]?.observed === SELF_CHECK_REFUSED_OBSERVED, JSON.stringify(reported[0]));
+    await executeTool(toolEnv, "report_step", { label: "Read the rules", status: "confusing", attempted: "Read the list", observed: "Two rules have the same name." });
+    check("…and it is spent on that step: the next one is the walk's own", reported[1]?.status === "confusing" && reported[1]?.observed === "Two rules have the same name.", JSON.stringify(reported[1]));
+    // What only reads is still pressed, on the same page.
+    const tab = await executeTool(toolEnv, "click", { selector: "#tab" });
+    const view = await executeTool(toolEnv, "click", { role: "button", name: "View details" });
+    const card = await executeTool(toolEnv, "click", { selector: "#card" });
+    const note = await executeTool(toolEnv, "fill", { selector: "#note", value: "seen" });
+    check("a tab called \"Order protection\", a \"View details\" button, a card whose paragraph mentions saving and deleting, and a field whose placeholder says \"Add a note…\" are pressed and typed into",
+      tab.startsWith("Clicked") && view.startsWith("Clicked") && card.startsWith("Clicked") && note.startsWith("Filled"),
+      [tab, view, card, note].map((r) => r.slice(0, 40)).join(" | "));
+    // A link whose words say it changes something is not clicked — a click
+    // runs whatever the page hung on it — and the walk is sent to its address.
+    const notClicked = await executeTool(toolEnv, "click", { selector: "#nav-block" });
+    check("a link called \"Block countries\" is not clicked, and the walk is told to open its address instead",
+      notClicked.startsWith("Refused:") && /open that page by its address with navigate/.test(notClicked) && menuPage.url() === `${SITE}/admin/app`, notClicked.slice(0, 120));
+    await executeTool(toolEnv, "report_step", { label: "Open the countries page", status: "skipped", unverifiedReason: "our_capability", attempted: "Opened the countries page", observed: "The page could not be opened." });
+    check("…a refusal that leaves a way open settles no step: what the walk reports next is its own", reported[2]?.unverifiedReason === "our_capability" && reported[2]?.observed !== SELF_CHECK_REFUSED_OBSERVED, JSON.stringify(reported[2]));
+    const led = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin?block-countries` });
+    check("…and opened by its address, the page is read", led.startsWith("Navigated") && menuPage.url() === `${SITE}/admin?block-countries`, `${led.slice(0, 60)} → ${menuPage.url()}`);
+    await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/app` });
+    const form = await executeTool(toolEnv, "click", { selector: "#b14" });
+    check("a link called \"Add product\" that leads to a page is followed — opening a form is reading",
+      form.startsWith("Clicked") && menuPage.url() === `${SITE}/admin?products-new`, `${form.slice(0, 60)} → ${menuPage.url()}`);
+    check("…and still nothing was written", writes.length === 0, writes.join(", "));
     await guarded.close();
 
     // ── the end of the run ──
@@ -526,6 +636,12 @@ async function main() {
     const pressed = await executeTool(ordinaryEnv, "click", { selector: "#leave" });
     check("outside a signed-in session the same control is pressed: signing out is the product's to offer",
       pressed.startsWith("Clicked") && signOuts.join() === "GET /auth/sign_out", `${pressed.slice(0, 60)} | ${signOuts.join(", ")}`);
+    // CHE-406: and so is a control addressed by selector — in an ordinary run on
+    // a customer's app the gates read the name the walk gave, as they did.
+    await executeTool(ordinaryEnv, "navigate", { url: `${SITE}/admin/app` });
+    const ordinaryDelete = await executeTool(ordinaryEnv, "click", { selector: "#b1" });
+    check("outside a signed-in session a control addressed by selector is pressed as before",
+      ordinaryDelete.startsWith("Clicked") && writes.join() === "POST /admin/write/delete", `${ordinaryDelete.slice(0, 60)} | ${writes.join(", ")}`);
     await ordinary.close();
   } finally {
     const within = (work: () => Promise<unknown>) => Promise.race([work().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5_000))]);
