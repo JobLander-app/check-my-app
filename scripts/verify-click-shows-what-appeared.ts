@@ -106,6 +106,10 @@ const PAGES: Record<string, string> = {
   // A tab bar re-rendered from scratch with the words it already had.
   [`${TOP}/remount`]: `<!doctype html><title>Tabs</title><nav id="nav"><button>Overview</button><button>Reports</button><button>Settings</button></nav>
     <script>document.getElementById('nav').addEventListener('click',()=>{const nav=document.getElementById('nav');const labels=[...nav.children].map((b)=>b.textContent);nav.innerHTML='';for(const l of labels){const b=document.createElement('button');b.textContent=l;nav.append(b)}})</script>`,
+  // A page too large to list what was visible at the start: nothing of this
+  // kind is reported for it, rather than something wrong.
+  [`${TOP}/huge`]: `<!doctype html><title>Huge</title><button onclick="const t=document.createElement('p');t.textContent='Refreshed on a huge page';document.body.prepend(t)">Refresh view</button>
+    <div id="bulk" style="display:none"></div><script>const f=document.createDocumentFragment();for(let i=0;i<30050;i++){const s=document.createElement('span');s.textContent='cell '+i;f.append(s)}document.getElementById('bulk').append(f)</script>`,
   // A row added far below what is on screen.
   [`${TOP}/below`]: `<!doctype html><title>Long</title><button onclick="const p=document.createElement('p');p.textContent='Row added below';document.getElementById('end').append(p)">Show more rows</button><div style="height:4000px"></div><div id="end"></div>`,
   // A control whose own class changes says nothing new: its label was there.
@@ -282,6 +286,16 @@ async function main() {
       check(
         "a component re-mounted with the words it already showed has not said anything new",
         result.startsWith("Clicked") && !result.includes(APPEARED),
+        result,
+      );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/huge");
+      const result = await executeTool(env, "click", { role: "button", name: "Refresh view" });
+      check(
+        "on a page too large to list, the click still works and says nothing of this kind (and still says to re-read)",
+        result.startsWith("Clicked") && !result.includes(APPEARED) && result.includes("re-read the page"),
         result,
       );
       await env.page.context().close();
