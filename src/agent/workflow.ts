@@ -506,7 +506,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
             return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, door: null, extensionIdentity: extension.identity };
           }
-          const r = await surfaceScan(env, browser, run);
+          // CHE-390: what earlier looks at this app found, so a closed first
+          // page is not taken for a closed app.
+          const r = await surfaceScan(env, browser, run, knownAddresses(survey));
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
@@ -1575,6 +1577,12 @@ async function notifyAndRecord(
 function surveyedUrls(survey: SurveyOutcome | null | undefined): string[] {
   const pages = survey?.snapshot?.pages ?? [];
   return pages.flatMap((p) => [p.url, p.path]);
+}
+
+// CHE-390: every address an earlier or the current survey of this app holds —
+// what the surface scan tries before it calls a closed first page a closed app.
+function knownAddresses(survey: SurveyOutcome | null | undefined): string[] {
+  return [...(survey?.previous?.pages ?? []), ...(survey?.snapshot?.pages ?? [])].map((p) => p.url);
 }
 
 // ─── Outbound integrations (CHE-53) ──────────────────────────────────────────

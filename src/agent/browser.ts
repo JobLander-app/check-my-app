@@ -15,7 +15,7 @@ import { persistExtensionPhase } from "./extension-evidence";
 import { ExtensionRuntimeError } from "./extension-error";
 import { unlockStoreGate } from "./store-password";
 import { storeAccessFor } from "./credentials";
-import { closedDoor, DOOR_RETRY_WAIT_MS, type ClosedDoor } from "./closed-door";
+import { closedDoor, deepAddresses, opensBehindDoor, DOOR_DEEP_TRIES, DOOR_RETRY_WAIT_MS, type ClosedDoor } from "./closed-door";
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
@@ -114,6 +114,9 @@ export async function surfaceScan(
   // /password page — the store password and its state are loaded here, from
   // the run. Both fields required, so a caller that drops them does not compile.
   run: { targetUrl: string; id: string; storePasswordEnc: string | null },
+  // CHE-390: addresses the app is already known to have (the survey's pages),
+  // tried before its first page is called a closed door.
+  known: string[] = [],
 ): Promise<SurfaceScanResult> {
   const targetUrl = run.targetUrl;
   const store = await storeAccessFor(env, run);
@@ -162,6 +165,17 @@ export async function surfaceScan(
         internalLinkCount = await countInternalLinks();
       }
       door = closedDoor(firstStatus, again?.status() ?? null, internalLinkCount);
+      // An app we have looked at before may keep its first page closed and its
+      // product open: an address it is known to have decides.
+      if (door) {
+        for (const url of deepAddresses(targetUrl, known).slice(0, DOOR_DEEP_TRIES)) {
+          const deep = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
+          if (opensBehindDoor(deep?.status() ?? null)) {
+            door = null;
+            break;
+          }
+        }
+      }
     }
 
     let screenshotUrl: string | null = null;

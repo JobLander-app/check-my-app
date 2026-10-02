@@ -16,7 +16,9 @@
 //   - a second try a few seconds later answers the same — a bot challenge that
 //     lets a browser through once its script has run is not a closed door;
 //   - the page carries no link into the product — a 403 page with the app's
-//     own navigation on it is the app answering, and the walk can read it.
+//     own navigation on it is the app answering, and the walk can read it;
+//   - and, for an app we have looked at before, an address it is already
+//     known to have is turned away too.
 // A 5xx is not this: a site that is down is a legitimate "broken".
 //
 // No Playwright and no `cloudflare:workers` here, so
@@ -38,6 +40,43 @@ export function closedDoor(first: number | null, second: number | null, internal
   return second === 401 ? "unauthorized" : "forbidden";
 }
 
+/** How many addresses the app is already known to have are tried behind a closed first page. */
+export const DOOR_DEEP_TRIES = 2;
+
+/**
+ * Addresses of the app other than its first page, from what an earlier look at
+ * it found (the survey's pages). An app we already know can have a closed
+ * first page and an open product — its root an API or a bucket index — so a
+ * known address is tried before the door is called closed (review of PR #238).
+ * Same origin only; the first page itself is not "deeper".
+ */
+export function deepAddresses(targetUrl: string, known: Iterable<string>): string[] {
+  let target: URL;
+  try {
+    target = new URL(targetUrl);
+  } catch {
+    return [];
+  }
+  const path = (u: URL) => u.pathname.replace(/\/+$/, "") || "/";
+  const out = new Set<string>();
+  for (const raw of known) {
+    try {
+      const u = new URL(raw, target);
+      if (u.origin !== target.origin || path(u) === path(target)) continue;
+      u.hash = "";
+      out.add(u.toString());
+    } catch {
+      /* not an address */
+    }
+  }
+  return [...out];
+}
+
+/** A known address that opened: the product is there, whatever its first page said. */
+export function opensBehindDoor(status: number | null): boolean {
+  return status !== null && status >= 200 && status < 400;
+}
+
 const ANSWER: Record<ClosedDoor, string> = {
   forbidden: 'answered "403 Forbidden"',
   unauthorized: 'asked for a sign-in at the address itself ("401 Unauthorized")',
@@ -50,7 +89,8 @@ export function doorBottomLine(door: ClosedDoor): string {
   return (
     `We could not open your app this run: its first page ${ANSWER[door]} before anything loaded, ` +
     "and did the same on a second try. Nothing was checked, so this is not a verdict on your app, " +
-    "and this check was not charged. An address that opens without that is what would let us check it."
+    "and this check was not charged. An address that opens for a visitor who is not signed in to " +
+    "anything is what would let us check it."
   );
 }
 

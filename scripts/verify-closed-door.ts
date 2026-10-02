@@ -58,12 +58,20 @@ const TARGET = "https://192.168.0.197:53317/";
 
 // A site that answers each successive load of its first page with the next
 // status, and shows `links[i]` links into itself on that load.
-function fakeSite(statuses: Array<number | "timeout">, links: number[]) {
+function fakeSite(statuses: Array<number | "timeout">, links: number[], deep: Record<string, number> = {}) {
   let loads = 0;
   let url = "about:blank";
+  const opened: string[] = [];
   const page = {
     url: () => url,
     goto: async (to: string) => {
+      opened.push(new URL(to).pathname);
+      // An address deeper in the app answers with its own status.
+      const own = deep[new URL(to).pathname];
+      if (own !== undefined) {
+        url = to;
+        return { status: () => own, headers: () => ({}) };
+      }
       const i = loads++;
       const status = statuses[Math.min(i, statuses.length - 1)];
       if (status === "timeout") throw new Error("Timeout 30000ms exceeded.");
@@ -81,7 +89,7 @@ function fakeSite(statuses: Array<number | "timeout">, links: number[]) {
     },
   };
   const browser = { version: () => "126.0.0", newContext: async () => ({ newPage: async () => page, close: async () => {} }) };
-  return { browser, loads: () => loads };
+  return { browser, loads: () => loads, opened };
 }
 
 async function main() {
@@ -104,14 +112,30 @@ async function main() {
 
   // ── 2 — the surface scan asks twice ──────────────────────────────────────
   const { surfaceScan } = await import("@/agent/browser");
-  const scan = async (statuses: Array<number | "timeout">, links: number[]) => {
-    const site = fakeSite(statuses, links);
+  const scan = async (statuses: Array<number | "timeout">, links: number[], known: string[] = [], deep: Record<string, number> = {}) => {
+    const site = fakeSite(statuses, links, deep);
     const db = createStubDb({ run: [{ id: "run_scan", storePasswordEnc: null, storePasswordState: null }] });
     const result = await surfaceScan({ db: db.db, bindings: {} } as unknown as AgentEnv, site.browser as never, {
       targetUrl: TARGET, id: "run_scan", storePasswordEnc: null,
-    });
-    return { result, loads: site.loads() };
+    }, known);
+    return { result, loads: site.loads(), opened: site.opened };
   };
+  // An app we have looked at before: its first page is closed, an address it
+  // is known to have is not (review of PR #238).
+  {
+    const ORIGIN = new URL(TARGET).origin;
+    const { result, opened } = await scan([403, 403], [0, 0], [`${ORIGIN}/app`], { "/app": 200 });
+    check("scan: the first page is closed but a known address of the app opens → not a door, the check goes on",
+      result.door === null && opened.join() === "/,/,/app", `${result.door} opened ${opened.join()}`);
+    const closed = await scan([403, 403], [0, 0], [`${ORIGIN}/app`, `${ORIGIN}/pricing`, `${ORIGIN}/docs`], { "/app": 403, "/pricing": 401, "/docs": 200 });
+    check("scan: known addresses are turned away too → a closed door, and no more than two are tried",
+      closed.result.door === "forbidden" && closed.opened.join() === "/,/,/app,/pricing", `${closed.result.door} opened ${closed.opened.join()}`);
+    const foreign = await scan([403, 403], [0, 0], ["https://elsewhere.example/app", TARGET, `${ORIGIN}/#top`], { "/app": 200 });
+    check("scan: another site's address and the first page itself are not 'deeper'",
+      foreign.result.door === "forbidden" && foreign.opened.join() === "/,/", `${foreign.result.door} opened ${foreign.opened.join()}`);
+    const down = await scan([403, 403], [0, 0], [`${ORIGIN}/app`], { "/app": 500 });
+    check("scan: a known address that errors does not open the door", down.result.door === "forbidden", String(down.result.door));
+  }
   {
     const { result, loads } = await scan([403, 403], [0, 0]);
     check("scan: 403 on the first page and again on a second try → a closed door", result.door === "forbidden" && loads === 2, `${result.door} after ${loads} loads`);
