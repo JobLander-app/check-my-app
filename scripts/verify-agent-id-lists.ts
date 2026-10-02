@@ -43,19 +43,64 @@ function braces(text: string, open: number): string {
   return text.slice(open);
 }
 
+// The entries of an object literal at its OWN level: key → the source of its
+// value. Nesting is followed, not guessed at — `include` three levels down in a
+// relation's select is not the query's include, and a column named in a
+// relation's select is not one the query returns (Codex on #258: the first
+// reader looked for the word anywhere in the call).
+export function ownEntries(objectSource: string): Map<string, string> {
+  // Comments out first: "// CHE-403: …" inside a query would read as a key.
+  const source = objectSource.replace(/(^|\s)\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
+  const out = new Map<string, string>();
+  let depth = 0;
+  let key: string | null = null;
+  let valueStart = -1;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      for (i++; i < source.length && source[i] !== ch; i++) if (source[i] === "\\") i++;
+      continue;
+    }
+    if (ch === "{" || ch === "[" || ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === "}" || ch === "]" || ch === ")") {
+      depth--;
+      if (depth === 0 && key !== null) out.set(key, source.slice(valueStart, i).trim());
+      continue;
+    }
+    if (depth !== 1) continue;
+    if (key === null) {
+      const named = /^(\w+)\s*:/.exec(source.slice(i));
+      if (named && !/\w/.test(source[i - 1] ?? "")) {
+        key = named[1];
+        valueStart = i + named[0].length;
+        i = valueStart - 1;
+      }
+    } else if (ch === ",") {
+      out.set(key, source.slice(valueStart, i).trim());
+      key = null;
+    }
+  }
+  return out;
+}
+
 /** Every findMany / findFirst in a source text that has both a variable `in:` list and an `orderBy`. */
 export function idListQueries(text: string, where: string): IdListQuery[] {
   const found: IdListQuery[] = [];
   for (const call of text.matchAll(/\.(?:findMany|findFirst)\(\s*\{/g)) {
-    const body = braces(text, call.index + call[0].length - 1);
+    const top = ownEntries(braces(text, call.index + call[0].length - 1));
     // `in: [...]` written out is a fixed list; anything else can be any length.
-    const lists = [...body.matchAll(/(\w+):\s*\{\s*(?:not)?[iI]n:\s*(?![\s[])([^,}\n]+)/g)].map((m) => `${m[1]} in ${m[2].trim()}`);
-    const order = body.match(/orderBy:\s*(\{[^}]*\}|\[[\s\S]*?\])/);
+    const lists = [...(top.get("where") ?? "").matchAll(/(\w+):\s*\{\s*(?:not)?[iI]n:\s*(?![\s[])([^,}\n]+)/g)].map((m) => `${m[1]} in ${m[2].trim()}`);
+    const order = top.get("orderBy");
     if (lists.length === 0 || !order) continue;
-    const sortedBy = [...order[1].matchAll(/(\w+):\s*"(?:asc|desc)"/g)].map((m) => m[1]);
-    // The query's own select: the one at the top of the argument, not a nested relation's.
-    const top = body.match(/\n {6,8}select:\s*\{([\s\S]*?)\}\s*,?\s*\n/) ?? body.match(/select:\s*\{([^{}]*)\}/);
-    const selected = /\binclude:/.test(body) || !top ? null : [...top[1].matchAll(/(\w+):\s*true/g)].map((m) => m[1]);
+    const sortedBy = [...order.matchAll(/(\w+):\s*"(?:asc|desc)"/g)].map((m) => m[1]);
+    // What the query itself returns: every column of the model when it has no
+    // select of its own (with or without a top-level include); otherwise the
+    // columns its own select sets to true — not what a relation inside selects.
+    const select = top.get("select");
+    const selected = select === undefined ? null : [...ownEntries(select)].filter(([, value]) => value === "true").map(([column]) => column);
     found.push({ where: `${where}:${text.slice(0, call.index).split("\n").length}`, lists, sortedBy, selected });
   }
   return found;
@@ -84,6 +129,27 @@ function main() {
   check("reader: no orderBy, nothing to merge in order", idListQueries(unsorted, "x").length === 0);
   check("reader: each sorted column is checked — one missing is enough",
     unsafe(idListQueries(twoColumns, "x")[0]).join() === "createdAt", JSON.stringify(idListQueries(twoColumns, "x")));
+  // Nesting: what a relation inside the select does is not what the query returns.
+  const nestedInclude = `db.journey.findMany({ where: { runId: { in: ids } }, orderBy: { order: "asc" }, select: { id: true, steps: { include: { evidence: true } } } })`;
+  const nestedSelect = `db.journey.findMany({ where: { runId: { in: ids } }, orderBy: { order: "asc" }, select: { id: true, run: { select: { order: true } } } })`;
+  const topInclude = `db.journey.findMany({ where: { runId: { in: ids } }, orderBy: { order: "asc" }, include: { steps: { select: { id: true } } } })`;
+  const commented = `db.journey.findMany({
+      where: { runId: { in: ids } },
+      // order: listed here in words only, see select: below
+      orderBy: { order: "asc" },
+      select: { id: true /* order: true */ },
+    })`;
+  check("reader: an include inside a selected relation does not make the query return whole rows",
+    unsafe(idListQueries(nestedInclude, "x")[0]).join() === "order", JSON.stringify(idListQueries(nestedInclude, "x")));
+  check("reader: a column selected inside a relation is not a column the query returns",
+    unsafe(idListQueries(nestedSelect, "x")[0]).join() === "order", JSON.stringify(idListQueries(nestedSelect, "x")));
+  check("reader: an include of the query's own does return whole rows", unsafe(idListQueries(topInclude, "x")[0]).length === 0);
+  check("reader: a column named only in a comment is not selected",
+    unsafe(idListQueries(commented, "x")[0]).join() === "order", JSON.stringify(idListQueries(commented, "x")));
+  check("reader: an object's own entries, with nesting, strings and calls in the values",
+    JSON.stringify([...ownEntries(`{ a: { in: f(x, { y: 1 }) }, b: "c: d, e", g: [1, 2], h: true }`)]) ===
+      JSON.stringify([["a", "{ in: f(x, { y: 1 }) }"], ["b", '"c: d, e"'], ["g", "[1, 2]"], ["h", "true"]]),
+    JSON.stringify([...ownEntries(`{ a: { in: f(x, { y: 1 }) }, b: "c: d, e", g: [1, 2], h: true }`)]));
 
   // src/agent, every file.
   const root = join(process.cwd(), "src/agent");
