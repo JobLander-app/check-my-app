@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isChromeStoreUrl, parseExtensionLink } from "./extension-target";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "./private-target";
 
 export const extensionOptionsSchema = z.object({
   companionUrl: z.string().trim().url().refine(u => {
@@ -39,6 +40,8 @@ export const createCheckSchema = z.object({
       z
         .string()
         .url("Doesn't look like a working URL")
+        // First, so "localhost:3000" is told why and not that it is no URL.
+        .refine((u) => !isPrivateTarget(u), PRIVATE_TARGET_MESSAGE)
         .refine((u) => {
           try {
             return new URL(u).hostname.includes(".") && (!isChromeStoreUrl(u) || Boolean(parseExtensionLink(u)));
