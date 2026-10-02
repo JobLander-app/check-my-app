@@ -192,7 +192,7 @@ async function main() {
         rows()[0].text.includes("admin.shopify.com") && rows()[0].text.includes(HOST) && rows()[0].text.includes("https://session.checkmyapp.dev") && /Отвечать не нужно/.test(rows()[0].text),
       rows()[0].text);
     check("told: the id is the sign-in that ended — the app, and when a check last reached it (never yet)",
-      "sendId" in first && first.sendId === signedOutSendId("admin.shopify.com", null) && first.sendId === "session-signed-out:admin.shopify.com:never");
+      "sendId" in first && first.sendId === signedOutSendId("app_admin", null) && first.sendId === "session-signed-out:app_admin:never");
 
     const retried = await tell("run_out_1");
     check("told: the same step retried sends nothing", retried.told === "already" && sends === 1, JSON.stringify(retried));
@@ -210,7 +210,7 @@ async function main() {
     check("reached: written on the app's own row by the scan", ((await stub.db.app.findUnique({ where: { id: "app_admin" } }))?.sessionReachedAt as Date)?.getTime() === REACHED.getTime());
     const again = await tell("run_out_20");
     check("told: a sign-in that was restored and ended again is a new message — even when the only run that rode on it failed later",
-      again.told === "sent" && sends === 2 && "sendId" in again && again.sendId === "session-signed-out:admin.shopify.com:2026-10-13T06:00:05.000Z", JSON.stringify(again));
+      again.told === "sent" && sends === 2 && "sendId" in again && again.sendId === "session-signed-out:app_admin:2026-10-13T06:00:05.000Z", JSON.stringify(again));
     check("told: …and once for that one too", (await tell("run_out_21")).told === "already" && sends === 2);
     // Another app's sign-in is another app's: it does not make this one new.
     await noteSessionReached(env, { appId: "app_other" }, new Date("2026-10-22T06:00:00.000Z"));
@@ -235,6 +235,18 @@ async function main() {
     const down: SendDeps = { ...deps, d1: async () => { throw new Error("D1 unavailable"); } };
     const lost = await tellOwnerSignedOut(env, { id: "run_out_31", appId: "app_admin", appSlug: "admin.shopify.com" }, HOST, down);
     check("told: with the record unavailable nothing is sent", lost.told === "failed" && sends === 3, JSON.stringify(lost));
+    // Another owner's app at the same address — or this app deleted and added
+    // again — is another app: its first ended sign-in is told, though this
+    // app's "never reached" one already was. The id names the app, not the slug.
+    const twin = await tellOwnerSignedOut(env, { id: "run_twin_1", appId: "app_other", appSlug: "admin.shopify.com" }, HOST, deps);
+    await stub.db.app.create({ data: { id: "app_new", sessionReachedAt: null } });
+    const recreated = await tellOwnerSignedOut(env, { id: "run_new_1", appId: "app_new", appSlug: "admin.shopify.com" }, HOST, deps);
+    check("told: an app that shares the address with another, or was added again, is told for itself",
+      twin.told === "sent" && recreated.told === "sent" && sends === 5 && "sendId" in recreated && recreated.sendId === "session-signed-out:app_new:never", `${twin.told}, ${recreated.told} — ${sends} sends`);
+    const appless = await tellOwnerSignedOut(env, { id: "run_oneoff", appId: null, appSlug: "admin.shopify.com" }, HOST, deps);
+    check("told: a run with no saved app is its own — told once, under its own id",
+      appless.told === "sent" && "sendId" in appless && appless.sendId === "session-signed-out:run:run_oneoff:never" &&
+        (await tellOwnerSignedOut(env, { id: "run_oneoff", appId: null, appSlug: "admin.shopify.com" }, HOST, deps)).told === "already", JSON.stringify(appless));
   }
 
   // ── 5 — the workflow takes that exit before discovery ────────────────────

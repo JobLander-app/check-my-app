@@ -181,8 +181,12 @@ export async function noteSessionReached(env: Pick<AgentEnv, "db">, run: { appId
   await env.db.app.update({ where: { id: run.appId }, data: { sessionReachedAt: at } });
 }
 
-export function signedOutSendId(appSlug: string, reachedAt: Date | null): string {
-  return `session-signed-out:${appSlug}:${reachedAt ? reachedAt.toISOString() : "never"}`;
+// The app is named by its id, not its address: two owners' apps can share a
+// slug, and an app deleted and added again is a new app — while a send id is
+// unique across everyone. Keyed on the slug, the second app's first ended
+// sign-in ("…:never") would look already told (Codex on #253).
+export function signedOutSendId(appId: string, reachedAt: Date | null): string {
+  return `session-signed-out:${appId}:${reachedAt ? reachedAt.toISOString() : "never"}`;
 }
 
 export function signedOutMessage(appSlug: string, host: string, signInUrl: string | null): string {
@@ -245,7 +249,8 @@ export async function tellOwnerSignedOut(
     // When a check last reached this app names the sign-in that has now ended.
     const app = run.appId ? await env.db.app.findUnique({ where: { id: run.appId }, select: { sessionReachedAt: true } }) : null;
     const reachedAt = app?.sessionReachedAt ? new Date(app.sessionReachedAt) : null;
-    sendId = signedOutSendId(run.appSlug, reachedAt);
+    // A run with no saved app has no sign-in history to name; it is its own.
+    sendId = signedOutSendId(run.appId ?? `run:${run.id}`, reachedAt);
   } catch (error) {
     return { told: "failed", sendId: "", detail: `could not tell which sign-in ended: ${error instanceof Error ? error.message : String(error)}` };
   }
