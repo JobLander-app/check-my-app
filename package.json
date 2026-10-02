@@ -106,6 +106,7 @@
     "verify:extension-publication": "tsx --tsconfig tsconfig.json scripts/verify-extension-publication.ts",
     "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
+    "verify:recurring-load": "tsx --tsconfig tsconfig.json scripts/verify-recurring-load.ts",
     "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
