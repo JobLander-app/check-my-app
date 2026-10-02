@@ -15,6 +15,7 @@ import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } f
 import { sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
+import { isPrivateTarget } from "@/lib/private-target";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -128,6 +129,15 @@ export async function runDueWatches(
             `${watch.trialEndsAt?.toISOString()}, team still on free`,
         );
         await pauseExpiredTrial(env, bindings, watch, now);
+        continue;
+      }
+      // CHE-390: an address on somebody's own network is never started. No
+      // such watch exists (prod, 2026-10-02) and none can be made any more —
+      // every door refuses the address — so this is a backstop, and it leaves
+      // the row where it is rather than rescheduling it.
+      if (isPrivateTarget(watch.targetUrl)) {
+        skipped++;
+        console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — private-network address`);
         continue;
       }
 

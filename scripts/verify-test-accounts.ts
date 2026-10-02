@@ -411,8 +411,10 @@ async function main() {
       JSON.stringify(kept.map((x) => [x.label, x.email])) === JSON.stringify([["admin", "chief@shop.test"], ["free user", "free@shop.test"]]));
     const workflow = readFileSync(fileURLToPath(new URL("../src/agent/workflow.ts", import.meta.url)), "utf8");
     const uses = workflow.match(/clearedCredentials\(run\)/g)?.length ?? 0;
-    check("workflow: the success cleanup and the failure path both clear through clearedCredentials",
-      uses === 2 && !/testPasswordEnc:\s*null/.test(workflow), `${uses} uses`);
+    // Three ways a run ends: the success cleanup, the failure path, and the
+    // closed-door exit after the surface scan (CHE-390).
+    check("workflow: every way a run ends clears through clearedCredentials",
+      uses === 3 && !/testPasswordEnc:\s*null/.test(workflow), `${uses} uses`);
   }
 
   // ── the janitor's sweep of a test-account app takes its credentials along ──

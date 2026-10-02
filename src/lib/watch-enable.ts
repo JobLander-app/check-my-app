@@ -7,6 +7,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { TRIAL_ENDED_REASON, assertCanAddWatch, shouldSkipWatch, watchTrialEnd } from "@/lib/plans";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
+import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 
 export type EnableWatchResult =
   | { kind: "unauthenticated" }
@@ -68,6 +69,9 @@ export async function enableWatchForRun(
   // before any row is written.
   if (run.ephemeral) return { kind: "ephemeral" };
   if (run.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
+  // CHE-390: a check from before private addresses were refused must not
+  // become an app and a daily schedule on an address nothing can open.
+  if (isPrivateTarget(run.targetUrl)) return { kind: "gated", reason: PRIVATE_TARGET_MESSAGE };
 
   // Find-or-create the owner's App for this target. upsert is race-safe under
   // D1 (no transactions) vs a check-then-create double-submit window.

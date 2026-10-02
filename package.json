@@ -58,6 +58,7 @@
     "verify:gap-filing": "tsx --tsconfig tsconfig.json scripts/verify-gap-filing.ts",
     "verify:egress-links": "tsx --tsconfig tsconfig.json scripts/verify-egress-links.ts",
     "verify:public-copy": "tsx --tsconfig tsconfig.json scripts/verify-public-copy.ts",
+    "verify:private-target": "tsx --tsconfig tsconfig.json scripts/verify-private-target.ts",
     "verify:balance": "tsx --tsconfig tsconfig.json scripts/verify-balance.ts",
     "verify:self-check-agent": "tsx --tsconfig tsconfig.json scripts/verify-self-check-agent.ts",
     "verify:self-check-guard": "tsx --tsconfig tsconfig.json scripts/verify-self-check-guard.ts",
@@ -81,6 +82,7 @@
     "verify:app-health": "tsx --tsconfig tsconfig.json scripts/verify-app-health.ts",
     "verify:app-shell": "tsx --tsconfig tsconfig.json scripts/verify-app-shell.ts",
     "verify:all-apps": "tsx --tsconfig tsconfig.json scripts/verify-all-apps.ts",
+    "verify:closed-door": "tsx --tsconfig tsconfig.json scripts/verify-closed-door.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",
@@ -107,6 +109,7 @@
     "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
     "verify:recurring-load": "tsx --tsconfig tsconfig.json scripts/verify-recurring-load.ts",
+    "verify:releases": "tsx --tsconfig tsconfig.json scripts/verify-releases.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
