@@ -38,9 +38,13 @@ table inet session_browser {
 
     meta l4proto { tcp, udp } th dport 53 ip daddr { 127.0.0.0/8, 169.254.169.254 } accept
 
+    # "This host", whatever its addresses are or become — an interface added
+    # later (a tunnel, a bridge) is covered the day it comes up, in any range.
+    fib daddr type local reject with icmpx type admin-prohibited
+
     ip daddr 127.0.0.0/8 reject with icmpx type admin-prohibited
     ip6 daddr ::1 reject with icmpx type admin-prohibited
-    ip daddr { 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } reject with icmpx type admin-prohibited
+    ip daddr { 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } reject with icmpx type admin-prohibited
     ip6 daddr { fe80::/10, fc00::/7 } reject with icmpx type admin-prohibited
   }
 }

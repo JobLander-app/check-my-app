@@ -143,7 +143,8 @@ reach() { as "$1" curl -s -o /dev/null -m 5 "$2"; }
 for i in $(seq 1 30); do as session-host curl -s -o /dev/null -m 2 http://127.0.0.1:9222/json/version && break; sleep 1; done
 fail=0
 reach session-host http://127.0.0.1:9222/json/version || { echo "provision: FAIL — session-host cannot reach DevTools (the probe and the session server need it)"; fail=1; }
-for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://169.254.169.254/computeMetadata/v1/ "http://$(hostname -I | awk '{print $1}'):22/"; do
+for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://169.254.169.254/computeMetadata/v1/ \
+  "http://$(hostname -I | awk '{print $1}'):22/" http://0.0.0.0:9222/json 'http://[::ffff:127.0.0.1]:9222/json' http://localhost:9222/json 'http://[::1]:5900/'; do
   if reach session-browser "$url"; then echo "provision: FAIL — the browser's user can reach $url"; fail=1; fi
 done
 if as session-browser bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — the browser's user can reach VNC"; fail=1; fi

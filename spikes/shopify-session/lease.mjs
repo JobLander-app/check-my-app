@@ -127,6 +127,46 @@ function beyondAPage(method) {
   return COOKIE_METHOD.test(method) || method === "Network.clearBrowserCache";
 }
 
+// A domain list is still too wide at a few methods (cross-review of #240):
+// three ways off the page that sit inside allowed domains.
+//
+// 1. An address. A navigation asked for through DevTools is the browser's own,
+//    so it goes where a page's script would be refused: chrome://quit and
+//    chrome://inducebrowsercrashforrealz end the browser, chrome://settings can
+//    be driven to clear the cookie jar, file:// reads this host's disk. Any
+//    command's `url` must be the web's — and about:blank only, since the rest
+//    of about: is chrome:// by another name (about:crash).
+const WEB_SCHEMES = new Set(["http:", "https:", "data:", "blob:"]);
+export function webAddress(url) {
+  if (url === "" || url === "about:blank" || url === "about:srcdoc") return true;
+  try {
+    return WEB_SCHEMES.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+// 2. A file from this host handed to the page: an upload field or a drop
+//    filled from a path reads whatever the browser's user can read — the
+//    profile's own Cookies database among it, which on a host with no keyring
+//    is as good as plain. That is the cookie reader, refused above, by another
+//    door, and it leaves by an ordinary upload. A walk here has no host file
+//    to upload.
+function handsOverAHostFile(method, params) {
+  if (method === "DOM.setFileInputFiles" || method === "Page.handleFileChooser") return true;
+  return method === "Input.dispatchDragEvent" && Array.isArray(params?.data?.files) && params.data.files.length > 0;
+}
+
+// 3. Where downloads are written: any path the browser's user can write, the
+//    profile's own Preferences included. The page-level twin of
+//    Browser.setDownloadBehavior — answered, like it, and not passed on.
+const PAGE_SCOPE_ANSWERED = new Set(["Page.setDownloadBehavior"]);
+
+function leavesThePage(method, params) {
+  if (typeof params?.url === "string" && !webAddress(params.url)) return true;
+  return handsOverAHostFile(method, params);
+}
+
 // A response the check writes itself can carry Set-Cookie, and the browser
 // stores it: a cookie writer by another name.
 function forgesCookie(method, params) {
@@ -246,7 +286,8 @@ export class Gate {
       if (BROWSER_SCOPE_ANSWERED.has(method)) return this.contexts.has(params?.browserContextId) ? "forward" : "acknowledge";
       return "refuse";
     }
-    if (beyondAPage(method) || forgesCookie(method, params)) return "refuse";
+    if (beyondAPage(method) || forgesCookie(method, params) || leavesThePage(method, params)) return "refuse";
+    if (PAGE_SCOPE_ANSWERED.has(method)) return "acknowledge";
     // An answer can carry response headers as well as an event can
     // (Network.loadNetworkResource returns them): scrubbed on the way back.
     if (method.startsWith("Network.") || method.startsWith("Fetch.")) this.pending.set(Gate.key(message), "scrub");
@@ -272,10 +313,15 @@ export class Gate {
         expect("targets");
         return "forward";
       case "Target.createTarget":
+        if (typeof params?.url === "string" && !webAddress(params.url)) return "refuse";
         expect("target");
         this.creating++;
         return "forward";
       case "Target.createBrowserContext":
+        // A context of its own, yes; one whose traffic goes through a proxy of
+        // the check's choosing, or whose origins are let past the same-origin
+        // rule, no.
+        if (params?.proxyServer !== undefined || params?.proxyBypassList !== undefined || params?.originsWithUniversalNetworkAccess !== undefined) return "refuse";
         expect("context");
         return "forward";
       case "Target.attachToBrowserTarget":

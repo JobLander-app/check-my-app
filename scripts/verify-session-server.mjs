@@ -282,6 +282,43 @@ await check("inside its own tab a check does what a page can do, and nothing tha
   ]) assert.equal(on(method), "refuse", method);
 });
 
+await check("an address a check asks the browser to open must be the web's: no chrome://, no file://, no about: but blank", () => {
+  const gate = gateWithATab();
+  const good = ["https://admin.shopify.com/store/x", "http://example.test/", "about:blank", "about:srcdoc", "", "data:text/html,<p>x</p>", "blob:https://example.test/1b9d6bcd"];
+  const bad = [
+    "chrome://inducebrowsercrashforrealz", "chrome://quit", "chrome://restart", "chrome://crash", "chrome://settings/clearBrowserData",
+    "about:crash", "about:quit", "file:///etc/hostname", "FILE:///etc/passwd", "view-source:https://example.test/", "javascript:alert(1)",
+    "devtools://devtools/bundled/inspector.html", "chrome-extension://abc/page.html", "chrome-untrusted://x/", "ftp://example.test/", "not a url",
+  ];
+  let id = 100;
+  for (const url of good) {
+    assert.equal(gate.outgoing({ id: id++, sessionId: "S1", method: "Page.navigate", params: { url } }), "forward", `navigate ${url}`);
+    assert.equal(gate.outgoing({ id: id++, method: "Target.createTarget", params: { url } }), "forward", `createTarget ${url}`);
+  }
+  for (const url of bad) {
+    assert.equal(gate.outgoing({ id: id++, sessionId: "S1", method: "Page.navigate", params: { url } }), "refuse", `navigate ${url}`);
+    assert.equal(gate.outgoing({ id: id++, method: "Target.createTarget", params: { url } }), "refuse", `createTarget ${url}`);
+    // Whatever the method: the rule is on the address, not on a list of methods.
+    assert.equal(gate.outgoing({ id: id++, sessionId: "S1", method: "Network.loadNetworkResource", params: { url } }), "refuse", `loadNetworkResource ${url}`);
+    assert.equal(gate.outgoing({ id: id++, sessionId: "S1", method: "Fetch.continueRequest", params: { requestId: "r", url } }), "refuse", `continueRequest ${url}`);
+  }
+  assert.equal(gate.creating, good.length, "a refused createTarget must not be waited for");
+});
+
+await check("no file from the host is handed to a page, and downloads stay where the person's browser puts them", () => {
+  const gate = gateWithATab();
+  const on = (method, params) => gate.outgoing({ id: 5, sessionId: "S1", method, params });
+  assert.equal(on("DOM.setFileInputFiles", { files: ["/var/lib/session-browser/profile/Default/Cookies"], nodeId: 1 }), "refuse");
+  assert.equal(on("Page.handleFileChooser", { action: "accept", files: ["/etc/hostname"] }), "refuse");
+  assert.equal(on("Input.dispatchDragEvent", { type: "drop", x: 1, y: 1, data: { items: [], files: ["/etc/hostname"], dragOperationsMask: 1 } }), "refuse");
+  assert.equal(on("Input.dispatchDragEvent", { type: "drop", x: 1, y: 1, data: { items: [{ mimeType: "text/plain", data: "x" }], dragOperationsMask: 1 } }), "forward");
+  assert.equal(on("Page.setInterceptFileChooserDialog", { enabled: true }), "forward", "noticing a file chooser is not filling one");
+  assert.equal(on("Page.setDownloadBehavior", { behavior: "allow", downloadPath: "/var/lib/session-browser/profile/Default" }), "acknowledge");
+  assert.equal(gate.outgoing({ id: 6, method: "Target.createBrowserContext", params: { proxyServer: "http://proxy.example:8080" } }), "refuse");
+  assert.equal(gate.outgoing({ id: 7, method: "Target.createBrowserContext", params: { originsWithUniversalNetworkAccess: ["https://a.test"] } }), "refuse");
+  assert.equal(gate.outgoing({ id: 8, method: "Target.createBrowserContext", params: { disposeOnDetach: true } }), "forward");
+});
+
 await check("a response the check writes may not carry Set-Cookie", () => {
   const gate = gateWithATab();
   const on = (method, params) => gate.outgoing({ id: 5, sessionId: "S1", method, params });
@@ -660,6 +697,16 @@ try {
     ]) {
       assert.match((await client.send(method, params, tab.sessionId)).error?.message ?? "FORWARDED", NOT_ALLOWED, method);
     }
+    // The browser's own addresses and this machine's disk (cross-review of
+    // #240): refused, and the browser is still there to say so.
+    for (const url of ["chrome://inducebrowsercrashforrealz", "chrome://quit", "file:///etc/hosts"]) {
+      assert.match((await client.send("Page.navigate", { url }, tab.sessionId)).error?.message ?? "FORWARDED", NOT_ALLOWED, `Page.navigate ${url}`);
+      assert.match((await client.send("Target.createTarget", { url })).error?.message ?? "FORWARDED", NOT_ALLOWED, `Target.createTarget ${url}`);
+    }
+    assert.match((await client.send("Network.loadNetworkResource", { url: "file:///etc/hosts", options: { disableCache: true, includeCredentials: false } }, tab.sessionId)).error?.message ?? "FORWARDED", NOT_ALLOWED);
+    const { result: doc } = await client.send("DOM.getDocument", {}, tab.sessionId);
+    assert.match((await client.send("DOM.setFileInputFiles", { files: ["/etc/hosts"], nodeId: doc.root.nodeId }, tab.sessionId)).error?.message ?? "FORWARDED", NOT_ALLOWED);
+    assert.match((await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json()).Browser, /Chrome\//, "the browser is gone");
     // Both directions of the cookie pass through the check's own tab here: it
     // is sent with the request for /admin and set again by /signin.
     await client.send("Page.navigate", { url: `${SITE}/signin` }, tab.sessionId);
