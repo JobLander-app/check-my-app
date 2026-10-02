@@ -83,17 +83,25 @@ export function comparePrice(input: {
   // earlier all-skipped checks (0 vs 0) fell through to "the journeys took
   // longer than usual".
   if (input.journeys === 0) return `${above ? "Above" : "Below"} this app's usual ${range}.`;
+  // A reason is given only when it points the way the price went. Check #294
+  // read "Below this app's usual $0.65–$0.89: more steps than usual (18 vs
+  // 15)" — a count that went up cannot explain a price that went down. When
+  // the counts differ the other way, the price is stated without a reason
+  // rather than with a wrong one.
+  const explains = (now: number, usual: number | null): usual is number => usual !== null && (above ? now > usual : now < usual);
+  const differs = (now: number, usual: number | null) => usual !== null && now !== usual;
   const why = (() => {
-    if (input.usualJourneys !== null && input.journeys !== input.usualJourneys) {
+    if (explains(input.journeys, input.usualJourneys)) {
       const d = Math.abs(input.journeys - input.usualJourneys);
-      return `${plural(d, "journey")} ${input.journeys > input.usualJourneys ? "more" : "fewer"} than usual (${input.journeys} vs ${input.usualJourneys})`;
+      return `${plural(d, "journey")} ${above ? "more" : "fewer"} than usual (${input.journeys} vs ${input.usualJourneys})`;
     }
-    if (input.usualSteps !== null && input.steps !== input.usualSteps) {
-      return `${input.steps > input.usualSteps ? "more" : "fewer"} steps than usual (${input.steps} vs ${input.usualSteps})`;
+    if (explains(input.steps, input.usualSteps)) {
+      return `${above ? "more" : "fewer"} steps than usual (${input.steps} vs ${input.usualSteps})`;
     }
+    if (differs(input.journeys, input.usualJourneys) || differs(input.steps, input.usualSteps)) return null;
     return above ? "the journeys took longer than usual" : "the journeys were shorter than usual";
   })();
-  return `${above ? "Above" : "Below"} this app's usual ${range}: ${why}.`;
+  return `${above ? "Above" : "Below"} this app's usual ${range}${why ? `: ${why}` : ""}.`;
 }
 
 const median = (xs: number[]) => {

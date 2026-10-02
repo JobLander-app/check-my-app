@@ -4,12 +4,16 @@ After=session-xvfb.service
 Requires=session-xvfb.service
 
 [Service]
-User=session-host
-Group=session-host
+# The display's user; it only listens. websockify, which connects to it, runs
+# as session-host — the browser's user cannot connect to loopback at all
+# (firewall.nft).
+User=session-browser
+Group=session-browser
 # No VNC password: it listens on 127.0.0.1 only, and the one way in from
 # outside is session.checkmyapp.dev, which Cloudflare Access gates to the
 # owner's email. A password here would be a second secret to hand him for no
-# added protection.
+# added protection. A page inside Chrome cannot reach this port either: Chrome's
+# user is refused every loopback connection.
 ExecStart=/usr/bin/x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -noxdamage -quiet
 Restart=always
 RestartSec=3

@@ -42,7 +42,7 @@ export function TopUpCta({ amounts }: { amounts: readonly number[] }) {
             type="button"
             disabled={busy !== null}
             onClick={() => topUp(a)}
-            className="rounded-md border border-ink-600 bg-ink-850 px-3 py-1.5 font-mono text-xs text-fg transition-colors hover:border-ink-500 hover:bg-ink-800 disabled:opacity-60"
+            className="rounded-md border border-ink-600 bg-ink-850 px-3 py-1.5 font-mono text-xs text-fg transition-colors hover:border-fg-faint hover:bg-ink-800 disabled:opacity-60"
           >
             {busy === a ? "Redirecting…" : `Top up $${a}`}
           </button>
