@@ -31,6 +31,7 @@ import { ExtensionRuntimeError } from "./extension-error";
 import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
 import { isStoreGateUrl } from "@/lib/store-gate";
+import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
 
 export interface ToolEnv {
@@ -830,6 +831,12 @@ async function navigate(env: ToolEnv, url: string): Promise<string> {
     const others = env.allowedOrigins?.length ? ` or the origins allowed for it (${env.allowedOrigins.join(", ")})` : "";
     return `Refused: ${target.origin} is outside the target app (${env.targetOrigin})${others}. Stay on the target.`;
   }
+  // CHE-389: inside a person's signed-in session a sign-out address is never
+  // opened — it would end the sign-in for every later run (session-browser.ts).
+  if (inSignedInSession(env.page) && isSignOutAddress(target.toString())) {
+    console.warn(`[navigate] refused a sign-out address in a signed-in session: ${scrubSecrets(env, target.toString())}`);
+    return signOutRefusal(`${target.pathname}${target.search}`.slice(0, 120));
+  }
   const logBefore = env.networkLog.length;
   let res = await env.page.goto(target.toString(), {
     waitUntil: "domcontentloaded",
@@ -1277,6 +1284,13 @@ export const SELF_HOST_GUARDED_VERBS =
 
 async function click(env: ToolEnv, input: Record<string, unknown>): Promise<string> {
   const label = [input.name, input.selector].filter(Boolean).map(String).join(" ");
+  // CHE-389: inside a person's signed-in session nothing signs out — first by
+  // what the walk called the control, then (below) by what the control is.
+  const signedIn = inSignedInSession(env.page);
+  if (signedIn && isSignOutText(label)) {
+    console.warn(`[click] refused a sign-out control in a signed-in session: ${label}`);
+    return signOutRefusal(label.slice(0, 80));
+  }
   if (label && SELF_HOST_GUARDED_VERBS.test(label) && isSelfTarget(env)) {
     console.warn(`[click] refused self-host guarded click: ${label}`);
     noteSelfCheckRefusal(env, `click gate: ${label}`);
@@ -1334,6 +1348,16 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   const where = located.label ? ` inside ${located.label}` : "";
   const sessionRefusal = await env.extension?.guardClick(target);
   if (sessionRefusal) return sessionRefusal;
+  // CHE-389: the control itself — its text, its name, where it leads, the form
+  // it submits — whatever it was called ("the last item in the menu").
+  if (signedIn) {
+    const seen = await controlSeen(target);
+    const signsOut = seen ? signOutIn(seen) : null;
+    if (signsOut) {
+      console.warn(`[click] refused a sign-out control in a signed-in session: ${label} (${signsOut})`);
+      return signOutRefusal(signsOut);
+    }
+  }
   // Never interact before hydration: a click landing before listeners attach
   // is indistinguishable from a dead button.
   await waitForHydration(inFrame ?? env.page, 1_500);

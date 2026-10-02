@@ -212,6 +212,36 @@ gcloud compute ssh checkmyapp-session-host --tunnel-through-iap --zone europe-we
   'sudo bash -c ". /etc/session-host/server.env; curl -s -H \"Authorization: Bearer \$SESSION_SERVER_TOKEN\" http://127.0.0.1:9090/state"'
 ```
 
+## A run through the session (CHE-389, Worker half)
+
+An app whose kind is `session` is checked in this browser: every phase of its
+run takes the lease (`POST /lease` under the run's id), connects, opens tabs of
+its own in the profile's context and closes them; the run gives the lease back
+at its end (`src/agent/session-browser.ts`, `browser.ts`, `workflow.ts`). Such
+a run takes no shortcut that looks at the app from outside the session — no
+page survey, no smoke replay, no replay audit — because from outside it is a
+sign-in page.
+
+The agent Worker reaches the server with `SESSION_HOST_URL` (a var in
+`wrangler-agent.jsonc`) and three secrets — `SESSION_ACCESS_CLIENT_ID`,
+`SESSION_ACCESS_CLIENT_SECRET`, `SESSION_SERVER_TOKEN` — copied from Secret
+Manager with `wrangler secret put … --config wrangler-agent.jsonc`. **Putting
+a secret is a rollout of the Worker: only with no run in flight.**
+
+Marking an app (there is no public switch for this yet — one statement on our
+own app's row):
+
+```
+wrangler d1 execute checkmyapp --remote --command \
+  "UPDATE App SET targetKind='session' WHERE id='<app id>' AND teamId='<our team>'"
+```
+
+`scripts/verify-session-browser.ts` runs the Worker's `SessionBrowser` and the
+`browser.ts` helpers against this directory's real server and a real Chrome;
+the one thing it cannot run is `@cloudflare/playwright`'s own transport, which
+is proven by the first live run (watch `journalctl -u session-server` for a
+refused DevTools method).
+
 ## Reading the result
 
 ```

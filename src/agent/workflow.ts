@@ -39,6 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
+import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -185,6 +186,47 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
     });
     const isExtension = isExtensionTarget(run);
+    // CHE-389: an app checked inside a signed-in session (session-browser.ts).
+    // Everything that looks at the app from outside that session — the page
+    // survey's plain fetch, the smoke replay and the replay audit in a fresh
+    // browser — would meet the sign-in page and call it the product, so a
+    // session run takes none of those shortcuts: it walks, in the session.
+    const isSession = isSessionTarget(run);
+    // The host is leased to one run at a time. Given back at every way out of
+    // this function; the lease's own expiry is the backstop. Never fails a run.
+    const releaseSessionHost = async (stepName: string) => {
+      if (!isSession) return;
+      await step.do(stepName, async () => {
+        try {
+          return await releaseSession(sessionHost(env.bindings), run.id);
+        } catch (err) {
+          console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        }
+      });
+    };
+    // The host is one browser, held by one run for as long as that run needs
+    // it. Before every phase that opens it, the run takes its turn: asleep
+    // while another run holds the host, not retrying (session-browser.ts). A
+    // host held past the limit fails the run with an internal reason (rule 4).
+    // What the feed says while it waits is that it waits — nothing about whose
+    // turn it is on our host, which is not the customer's product (rule 1);
+    // saying nothing at all would read as a check that hung.
+    const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
+      if (!isSession) return;
+      await waitForSession(
+        {
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          waiting: (name) =>
+            step.do(name, async () => {
+              console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
+              await appendEvent(env, runId, feed.phase, { icon: "info", text: feed.text });
+            }),
+          sleep: (name, seconds) => step.sleep(name, seconds * 1000),
+        },
+        phase,
+      );
+    };
 
     // Everything below is inside the failure handler: a run left in a
     // non-terminal status is worse than a failed one — the scheduler treats it
@@ -196,7 +238,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // other pre-flight rungs: a survey that could not run leaves the ladder
       // exactly as it was before this step existed, never a failed run.
       const survey = await step.do("survey", async (): Promise<SurveyOutcome> => {
-        if (isExtension) return NO_SURVEY;
+        if (isExtension || isSession) return NO_SURVEY;
         try {
           return await takeSnapshot(env, run);
         } catch (err) {
@@ -263,6 +305,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // cheap pre-check must cost a full run, never the run itself.
       const smoke = await step.do("replay", async () => {
         if (isExtension) return { taken: false as const, reason: "extension checks require the installed product" };
+        if (isSession) return { taken: false as const, reason: "this app is checked while signed in — walking everything" };
         // Full re-check (CHE-74): the owner explicitly asked to walk everything
         // — no shortcut may eat that request.
         if (run.forceFull) {
@@ -293,6 +336,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // costs a full run, never the run itself.
       const plan = await step.do("partial-plan", async (): Promise<PartialDecision> => {
         if (isExtension) return { taken: false, reason: "extension checks require fresh native evidence" };
+        if (isSession) return { taken: false, reason: "this app is checked while signed in — walking everything" };
         if (run.forceFull) {
           return { taken: false, reason: "full re-check requested — walking everything" };
         }
@@ -495,6 +539,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await transition(env, runId, "connecting", { icon: "info", text: "Spinning up agent" });
       });
 
+      // CHE-389: a session run takes its turn on the host before it starts.
+      await sessionTurn("scan", { phase: "connecting", text: "Waiting to start" });
+
       // Phase 2 — Surface scan (deterministic).
       const scan = await step.do("surface_scan", extensionStepConfig(isExtension), async () => {
         await transition(env, runId, "surface_scan", { icon: "info", text: `Loading ${run.targetUrl}` });
@@ -569,6 +616,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
           }
         });
+        await releaseSessionHost("release-session-closed-door");
         return;
       }
 
@@ -589,6 +637,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           });
         });
       }
+      if (!plan.taken) await sessionTurn("discovery", { phase: "discovery", text: "Waiting to continue" });
       const discovery = plan.taken ? null : await step.do("discovery", extensionStepConfig(isExtension), async () => {
         // CHE-133: a watched app was mapped on its last full check; hand that
         // map to discovery so it confirms rather than redraws. Same swallow
@@ -751,6 +800,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // it 0 and publishes nothing. Read only from step outputs, so a
         // replayed workflow trips at the same journey.
         assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
+        await sessionTurn(`walk-${order}`, { phase: "walking", text: "Waiting to continue" });
         const jcost = await step.do(`walk-${order}`, extensionStepConfig(isExtension), async () => {
           const browser = await launchAgentBrowser(env, { run, phase: `walk-${order}`, expected: scan.extensionIdentity ?? undefined, scenario: proposed.extensionScenario }).catch(rethrowBudgetNonRetryable);
           try {
@@ -819,6 +869,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         });
         walkCost += jcost;
       }
+      // CHE-389: the last phase that opens the browser is behind us — the host
+      // goes back now, not after the verdict is written, so the next run does
+      // not wait through minutes of work that needs no browser. The releases
+      // at each way out below stay: giving back what is not held is a no-op.
+      await releaseSessionHost("release-session-walked");
       assertBelowRunaway(runId, (discovery?.costUsd ?? 0) + walkCost);
 
       // CHE-331: the app's other known journeys, as of their last real walk.
@@ -1265,7 +1320,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // sign-in replay needs it. Only journeys walked THIS run are measured: a
       // carried journey has nothing new to reproduce. Every failure ends up in
       // replayStatus, never in the run.
-      for (const { order } of isExtension ? [] : walkList) {
+      for (const { order } of isExtension || isSession ? [] : walkList) {
         await step.do(`replay-audit-${order}`, async () => {
           try {
             await auditJourneyReplay(env, walkRun, order);
@@ -1285,6 +1340,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
         }
       });
+      await releaseSessionHost("release-session");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // CHE-76: our own LLM budget dying is an internal outage, not a fact
@@ -1386,6 +1442,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         if (note) console.log(`[run-failure] ${note.text}`);
         return note?.text ?? null;
       });
+      await releaseSessionHost("release-session-failed");
       throw err;
     }
   }
