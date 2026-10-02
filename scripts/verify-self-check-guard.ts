@@ -248,11 +248,11 @@ function firstStatement(source: string, fn: string): string | null {
 const WEBHOOKS = "src/app/api/webhooks/";
 // An exported server action that does NOT start with the guard, and why. A
 // name here is a decision; an action missing from here and from the guard is
-// a failure.
-const UNGUARDED_ACTIONS: Record<string, string> = {
-  "src/app/team/switch-actions.ts switchTeamAction":
-    "stores nothing: it sets the browser's own cookie for which of the signed-in person's teams the next page shows",
-};
+// a failure. Empty, and meant to stay so: the one name it held, the team
+// switch, "stored nothing" — and began with requireUser(), which can create a
+// user, a personal team and a membership on the way in (Codex on #262). An
+// action has no "stores nothing" until the guard is its first line.
+const UNGUARDED_ACTIONS: Record<string, string> = {};
 // GET handlers (Codex on #262). The checker's browser never announces itself
 // on a GET — a GET goes out byte-identical to a visitor's, by design
 // (src/agent/self-hosts.ts shouldAnnounceSelfCheck) — so a GET cannot be
