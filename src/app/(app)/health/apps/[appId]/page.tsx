@@ -199,8 +199,8 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
         )}
 
         <section className="card px-[18px] py-1.5">
-          <Row href={settings} label="What we check" value={journeysLabel(journeys)} />
-          <Row href={settings} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          <Row href={appPath.section(app.id, "scope")} label="What we check" value={journeysLabel(journeys)} />
+          <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
           {isExtension ? (
             // An extension is checked on request only: there is no schedule to open.
             <div className="flex items-center justify-between gap-4 border-b border-ink-800 py-3 text-sm">
@@ -211,7 +211,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             <Row href={appPath.schedule(app.id)} label="Schedule" value={scheduleLabel(watch)} />
           )}
           <Row
-            href={settings}
+            href={appPath.section(app.id, "integrations")}
             label="Integrations"
             value={integrationsLabel({
               tracker: app.tracker !== null,
@@ -230,7 +230,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
               Connect Linear and each problem becomes one ticket that closes itself when a later check sees the fix.
             </div>
             <Link
-              href={settings}
+              href={appPath.section(app.id, "integrations")}
               className="inline-flex h-9 items-center self-start rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
             >
               Connect Linear

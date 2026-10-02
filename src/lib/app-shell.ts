@@ -17,6 +17,7 @@ export const appPath = {
   page: (appId: string) => `/health/apps/${appId}`,
   settings: (appId: string) => `/health/apps/${appId}/settings`,
   schedule: (appId: string) => `/health/apps/${appId}/settings/schedule`,
+  section: (appId: string, section: string) => `/health/apps/${appId}/settings/${section}`,
   check: (appId: string, runNumber: number) => `/health/apps/${appId}/checks/${runNumber}`,
 };
 

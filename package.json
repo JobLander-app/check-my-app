@@ -87,6 +87,7 @@
     "verify:today": "tsx --tsconfig tsconfig.json scripts/verify-today.ts",
     "verify:check-page": "tsx --tsconfig tsconfig.json scripts/verify-check-page.ts",
     "verify:issues-checks": "tsx --tsconfig tsconfig.json scripts/verify-issues-checks.ts",
+    "verify:app-settings-sections": "tsx --tsconfig tsconfig.json scripts/verify-app-settings-sections.ts",
     "verify:closed-door": "tsx --tsconfig tsconfig.json scripts/verify-closed-door.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",

@@ -12,11 +12,11 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { updateAppForTeam } from "@/lib/app-settings";
+import { updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
 import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
-import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 
@@ -183,37 +183,58 @@ export async function revokeApiKey(id: string): Promise<void> {
 // testPasswordEnc untouched on both records.
 //
 // CHE-315: the rules are in src/lib/app-settings.ts, shared with the MCP
-// update_app tool; this action reads its form. The form carries every field,
-// so each is passed — a blank box clears its field, as it always did — except
-// the password, whose blank box means "keep" (undefined), never "remove".
-export async function updateAppSettings(appId: string, formData: FormData) {
+// update_app tool; this action reads its form.
+//
+// CHE-359: the settings are sections, each its own form, and a form saves its
+// own section and nothing else. The section is bound into the action by the
+// page (never read from the form), and decides which fields are read at all:
+// a field the patch does not name is kept (updateAppForTeam's rule), so the
+// "What we check" form cannot blank a password and the accounts form cannot
+// untick write mode. Within its section a blank box still clears its field, as
+// it always did — except a password, whose blank box means "keep".
+//
+// A refusal (a cadence the plan does not allow, a bad account) goes back to
+// the section as a sentence, where the form is — it used to be thrown, and the
+// reader got an error page.
+export async function updateAppSettings(appId: string, section: string, formData: FormData) {
   const { user, db, team } = await requireActionScope("app.settings.write");
+  const text = (name: string) => String(formData.get(name) ?? "");
   const list = (name: string) =>
-    String(formData.get(name) ?? "")
+    text(name)
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
-  const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, {
-    testEmail: String(formData.get("testEmail") ?? ""),
-    testPassword: String(formData.get("testPassword") ?? "") || undefined,
-    // CHE-322: the named accounts' rows, saved with everything else.
-    testAccounts: testAccountsFromForm(formData),
-    focusAreas: String(formData.get("focusAreas") ?? ""),
-    writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
-    scopeHints: String(formData.get("scopeHints") ?? ""),
-    userNotes: String(formData.get("userNotes") ?? ""),
-    notifyEmail: String(formData.get("notifyEmail") ?? ""),
-    frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
-    pickupLabels: list("pickupLabels"),
-    repoLabel: String(formData.get("repoLabel") ?? ""),
-    urgentJourneys: list("urgentJourneys"),
-    extension: extensionOptionsFromForm(formData),
-  });
-  if ("error" in result) throw new Error(result.error);
+  const patch: AppSettingsPatch | null =
+    section === "scope"
+      ? {
+          focusAreas: text("focusAreas"),
+          writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
+          scopeHints: text("scopeHints"),
+          userNotes: text("userNotes"),
+          extension: extensionOptionsFromForm(formData),
+        }
+      : section === "accounts"
+        ? {
+            testEmail: text("testEmail"),
+            testPassword: text("testPassword") || undefined,
+            // CHE-322: the named accounts' rows, saved with the default login.
+            testAccounts: testAccountsFromForm(formData),
+          }
+        : section === "notifications"
+          ? { notifyEmail: text("notifyEmail") }
+          : section === "integrations"
+            ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
+            : null;
+  if (!patch) throw new Error("unknown settings section");
+
+  const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, patch);
+  const back = appPath.section(appId, section);
+  if ("error" in result) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
 
   revalidatePath("/home");
-  revalidatePath(appPath.settings(result.app.id));
+  revalidatePath(appPath.settings(result.app.id), "layout");
+  redirect(`${back}?saved=1`);
 }
 
 // Remove an app the owner no longer wants watched (CHE-95). Our own check

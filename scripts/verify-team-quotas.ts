@@ -68,7 +68,7 @@ const CALLERS = [
   "src/app/api/checks/route.ts",
   "src/app/dashboard/actions.ts",
   "src/app/(app)/home/page.tsx",
-  "src/app/(app)/health/apps/[appId]/settings/page.tsx",
+  "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx",
   "src/app/(app)/settings/billing/page.tsx",
   "src/app/verdict/[id]/page.tsx",
   "src/components/verdict-view.tsx",

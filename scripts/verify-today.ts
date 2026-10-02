@@ -98,7 +98,8 @@ check("prices only: the page names no cost, token or margin field", !/costUsd|co
 check("the agent panel is still the first thing on the page", /<ConnectAgent keys=/.test(page));
 check("an empty team is told how to start, not shown empty cards", /Nothing is being checked yet/.test(page) && /\{!empty && \(\s*<aside/.test(page));
 check("the per-app controls left this page", !/TeamSelect|AppPostHogProject|setIntegrationEndpoints|webhookUrl/.test(page));
-const settings = read("src/app/(app)/health/apps/[appId]/settings/page.tsx");
+// CHE-359: the settings are sections; these three are in Integrations.
+const settings = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
 check("…and the app's settings carry them: tracker team, analytics project, webhooks",
   /<TeamSelect appId=\{app\.id\}/.test(settings) && /AnalyticsProject/.test(settings) && /setIntegrationEndpoints\.bind\(null, app\.id\)/.test(settings));
 check("a paused schedule is said with the way out (balance or trial)", /paused, the balance is used/.test(page) && /trial ended — daily watch paused/.test(page));
