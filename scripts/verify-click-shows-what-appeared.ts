@@ -76,6 +76,38 @@ const PAGES: Record<string, string> = {
   // confirmation is shown on the way (round 3 of Codex on #242).
   [`${TOP}/route`]: `<!doctype html><title>Wizard</title>
     <button onclick="history.pushState({},'','/route/next');const t=document.createElement('div');t.textContent='Step stored';document.body.append(t);setTimeout(()=>t.remove(),300)">Continue to next</button>`,
+  // The shape of a popular toast list: fixed, no height of its own, nothing cut
+  // off, each toast positioned out of it.
+  [`${TOP}/sonner`]: `<!doctype html><title>Events</title><ol id="list" style="position:fixed;bottom:24px;right:24px;width:300px;margin:0;padding:0;list-style:none"></ol>
+    <button onclick="const li=document.createElement('li');li.style.cssText='position:absolute;bottom:0;right:0;width:300px';li.textContent='Event refreshed';document.getElementById('list').append(li);setTimeout(()=>li.remove(),300)">Refresh event</button>`,
+  // A notice that is always in the page, parked off-screen, and slides in.
+  [`${TOP}/slide`]: `<!doctype html><title>Profile</title><style>#n{position:fixed;left:16px;bottom:16px;transform:translateY(300px);transition:transform 150ms}#n.in{transform:none}</style>
+    <div id="n">Profile refreshed</div>
+    <button onclick="const n=document.getElementById('n');n.classList.add('in');setTimeout(()=>n.classList.remove('in'),700)">Show notice</button>`,
+  // Revealed by a data-state attribute and a CSS rule, as component kits do.
+  [`${TOP}/data-state`]: `<!doctype html><title>Kit</title><style>[data-state=closed]{display:none}</style>
+    <div id="p" data-state="closed">Details are open</div>
+    <button onclick="const p=document.getElementById('p');p.dataset.state='open';setTimeout(()=>{p.dataset.state='closed'},300)">Show details</button>`,
+  // Text only a screen reader gets: the usual 1px clipped live region, the same
+  // inside an open shadow root, and one parked far off-screen.
+  [`${TOP}/sr-only`]: `<!doctype html><title>Quiet</title><style>.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+    <div id="live" class="sr" aria-live="polite"></div><div id="far" style="position:absolute;left:-9999px"></div><div id="host"></div>
+    <script>const r=document.getElementById('host').attachShadow({mode:'open'});r.innerHTML='<div id="a" aria-live="assertive" style="position:absolute;border:0;height:1px;margin:-1px;padding:0;width:1px;clip:rect(0 0 0 0);overflow:hidden;white-space:nowrap"></div>';
+      function announce(){document.getElementById('live').textContent='Announced politely';document.getElementById('far').textContent='Announced far away';r.getElementById('a').textContent='Announced in shadow'}</script>
+    <button onclick="announce()">Show nothing</button>`,
+  // What Next.js does on a client-side navigation: the URL moves, the screen
+  // changes, and the new title goes into <next-route-announcer>'s open shadow
+  // root for screen readers.
+  [`${TOP}/next-nav`]: `<!doctype html><title>Home – Example</title><main id="m"><h1>Welcome home</h1></main><a href="/next-nav/pricing" id="l">Pricing</a><next-route-announcer></next-route-announcer>
+    <script>const ann=document.querySelector('next-route-announcer');ann.style.position='absolute';
+      ann.attachShadow({mode:'open'}).innerHTML='<div id="__next-route-announcer__" aria-live="assertive" role="alert" style="position:absolute;border:0;height:1px;margin:-1px;padding:0;width:1px;clip:rect(0 0 0 0);overflow:hidden;white-space:nowrap;word-wrap:normal"></div>';
+      document.getElementById('l').onclick=(e)=>{e.preventDefault();history.pushState({},'','/next-nav/pricing');document.title='Pricing – Example';
+        document.getElementById('m').innerHTML='<h1>Plans start at nine</h1>';ann.shadowRoot.firstChild.textContent=document.title}</script>`,
+  // A tab bar re-rendered from scratch with the words it already had.
+  [`${TOP}/remount`]: `<!doctype html><title>Tabs</title><nav id="nav"><button>Overview</button><button>Reports</button><button>Settings</button></nav>
+    <script>document.getElementById('nav').addEventListener('click',()=>{const nav=document.getElementById('nav');const labels=[...nav.children].map((b)=>b.textContent);nav.innerHTML='';for(const l of labels){const b=document.createElement('button');b.textContent=l;nav.append(b)}})</script>`,
+  // A row added far below what is on screen.
+  [`${TOP}/below`]: `<!doctype html><title>Long</title><button onclick="const p=document.createElement('p');p.textContent='Row added below';document.getElementById('end').append(p)">Show more rows</button><div style="height:4000px"></div><div id="end"></div>`,
   // A control whose own class changes says nothing new: its label was there.
   [`${TOP}/active`]: `<!doctype html><title>Tabs</title><p>Always here</p><button onclick="this.classList.toggle('active');this.style.fontWeight='bold'">Show overview</button>`,
   // A whole region re-rendering is not a message.
@@ -141,19 +173,31 @@ async function envAt(browser: Browser, path: string, allowedOrigins?: string[]):
   return env;
 }
 
-const APPEARED = "Text that appeared on the page right after the click:";
+const APPEARED = "Text that became visible within a few seconds of the click:";
+const NAMES = "Accessible names (aria-label or title — not text on the page) that changed in that time:";
 
 async function main() {
   // --- the sentence -----------------------------------------------------------
-  check("nothing appeared → nothing is said", appearedSentence([]) === "");
+  const text = (t: string) => ({ t, k: "text" as const });
+  const name = (t: string) => ({ t, k: "name" as const });
+  check("nothing became visible → nothing is said", appearedSentence([]) === "");
   check(
-    "what appeared is quoted, in order, once each",
-    appearedSentence(["copied ✓", "copy", "copied ✓"]).includes(`${APPEARED} "copied ✓", "copy".`),
-    appearedSentence(["copied ✓", "copy", "copied ✓"]),
+    "what became visible is quoted, in order, once each",
+    appearedSentence([text("copied ✓"), text("Saved"), text("copied ✓")]).includes(`${APPEARED} "copied ✓", "Saved".`),
+    appearedSentence([text("copied ✓"), text("Saved"), text("copied ✓")]),
   );
   check(
-    "a brief confirmation is said to count",
-    appearedSentence(["Saved"]).includes("a confirmation shown briefly still counts as shown"),
+    "the sentence claims what was observed and no more: no cause, no 'confirmation'",
+    !/confirmation|because|caused|right after/i.test(appearedSentence([text("Saved"), name("Link copied")])) &&
+      appearedSentence([text("Saved")]).includes("text shown briefly was still shown"),
+    appearedSentence([text("Saved"), name("Link copied")]),
+  );
+  check(
+    "an accessible name is said to be one, apart from text on the page",
+    appearedSentence([name("Link copied")]) === ` ${NAMES} "Link copied".` &&
+      appearedSentence([text("Saved"), name("Link copied")]).includes(`${APPEARED} "Saved".`) &&
+      appearedSentence([text("Saved"), name("Link copied")]).includes(`${NAMES} "Link copied".`),
+    appearedSentence([text("Saved"), name("Link copied")]),
   );
 
   const browser = await launch();
@@ -162,7 +206,11 @@ async function main() {
     {
       const env = await envAt(browser, "/copy");
       const result = await executeTool(env, "click", { role: "button", name: "copy" });
-      check("a label that flips for 300 ms is named in the click's own result", result.includes(APPEARED) && result.includes('"copied ✓"'), result);
+      check(
+        "a label that flips for 300 ms is named in the click's own result — and the label coming back is not news",
+        result.includes(`${APPEARED} "copied ✓".`),
+        result,
+      );
       const after = await executeTool(env, "read_page", {});
       check(
         "…and is gone by the next read (the fixture really is transient — this is what run #294 saw)",
@@ -180,7 +228,68 @@ async function main() {
     {
       const env = await envAt(browser, "/aria");
       const result = await executeTool(env, "click", { role: "button", name: "Copy link" });
-      check("an accessible name that changes is named", result.includes('"Link copied"'), result);
+      check(
+        "an accessible name that changes is named as a name, not as text on the page; the old name coming back is not news",
+        result.includes(`${NAMES} "Link copied".`) && !result.includes(APPEARED),
+        result,
+      );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/sonner");
+      const result = await executeTool(env, "click", { role: "button", name: "Refresh event" });
+      check("a toast positioned out of a list with no height (and no clipping) is seen", result.includes('"Event refreshed"'), result);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/slide");
+      const result = await executeTool(env, "click", { role: "button", name: "Show notice" });
+      check("a notice that was in the page off-screen and slides in is seen", result.includes('"Profile refreshed"'), result);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/data-state");
+      const result = await executeTool(env, "click", { role: "button", name: "Show details" });
+      check("text revealed by a data-state attribute is seen", result.includes('"Details are open"'), result);
+      await env.page.context().close();
+    }
+
+    // --- what nobody saw (cross-review of #242) ---------------------------------
+    {
+      const env = await envAt(browser, "/sr-only");
+      const result = await executeTool(env, "click", { role: "button", name: "Show nothing" });
+      check(
+        "text written for screen readers only — a 1px clipped live region, light DOM or shadow, and one parked off-screen — is not reported as shown",
+        result.startsWith("Clicked") && !result.includes(APPEARED) && !result.includes("Announced") && !result.includes("did not react"),
+        result,
+      );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/next-nav");
+      const result = await executeTool(env, "click", { role: "link", name: "Pricing" });
+      check(
+        "a client-side navigation that writes the new title into a route announcer reports no text for it",
+        result.includes("/next-nav/pricing") && !result.includes("Pricing – Example"),
+        result,
+      );
+      check("…while what the new screen visibly shows is reported", result.includes('"Plans start at nine"'), result);
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/remount");
+      const result = await executeTool(env, "click", { role: "button", name: "Reports" });
+      check(
+        "a component re-mounted with the words it already showed has not said anything new",
+        result.startsWith("Clicked") && !result.includes(APPEARED),
+        result,
+      );
+      await env.page.context().close();
+    }
+    {
+      const env = await envAt(browser, "/below");
+      const result = await executeTool(env, "click", { role: "button", name: "Show more rows" });
+      check("text added below the fold was not seen", result.startsWith("Clicked") && !result.includes(APPEARED), result);
       await env.page.context().close();
     }
     {

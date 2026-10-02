@@ -1112,21 +1112,45 @@ const APPEARED_MAX_ITEMS = 6;
 const appearedMark = (doc: Page | Frame) =>
   doc.evaluate("window.__cmaWatch ? window.__cmaWatch() : 0").then((n) => Number(n) || 0, () => 0);
 
-const appearedAfter = (doc: Page | Frame, mark: number): Promise<string[]> =>
-  doc
-    .evaluate(`(window.__cmaAppeared || []).filter((e) => e.n > ${mark}).map((e) => e.t)`)
-    .then((list) => (Array.isArray(list) ? list.map(String) : []), () => []);
+export interface Appeared {
+  /** The words. */
+  t: string;
+  /** "text" a person could see; "name" an aria-label or title, which is not on the page. */
+  k: "text" | "name";
+}
 
-// What a click made the page say, as one sentence for the model — or "" when
-// it said nothing new. The last few pieces win: a confirmation comes after the
-// spinner that preceded it.
-export function appearedSentence(texts: string[]): string {
-  const unique = texts.filter((t, i) => t && texts.indexOf(t) === i);
-  if (!unique.length) return "";
-  const quoted = unique.slice(-APPEARED_MAX_ITEMS).map((t) => JSON.stringify(t)).join(", ");
+const appearedAfter = (doc: Page | Frame, mark: number): Promise<Appeared[]> =>
+  doc
+    .evaluate(`(window.__cmaAppeared || []).filter((e) => e.n > ${mark}).map((e) => ({ t: e.t, k: e.k }))`)
+    .then(
+      (list) =>
+        Array.isArray(list)
+          ? list.map((e: { t?: unknown; k?: unknown }) => ({ t: String(e?.t ?? ""), k: e?.k === "name" ? ("name" as const) : ("text" as const) }))
+          : [],
+      () => [],
+    );
+
+// What the page showed after a click, for the model — or "" when nothing new
+// was shown. The last few pieces win: a confirmation comes after the spinner
+// that preceded it.
+//
+// The wording claims only what was observed (cross-review of #242): "within a
+// few seconds of", not "because of" — a clock or a rotating banner changes by
+// itself; and never the word "confirmation" — whether the words are one is for
+// the model to read in them.
+export function appearedSentence(entries: Appeared[]): string {
+  const quote = (kind: Appeared["k"], limit: number) => {
+    const texts = entries.filter((e) => e.k === kind && e.t).map((e) => e.t);
+    const unique = texts.filter((t, i) => texts.indexOf(t) === i);
+    return unique.slice(-limit).map((t) => JSON.stringify(t)).join(", ");
+  };
+  const texts = quote("text", APPEARED_MAX_ITEMS);
+  const names = quote("name", 3);
   return (
-    ` Text that appeared on the page right after the click: ${quoted}.` +
-    ` It may be gone again by the next read — a confirmation shown briefly still counts as shown.`
+    (texts
+      ? ` Text that became visible within a few seconds of the click: ${texts}. It may be gone by the next read; text shown briefly was still shown.`
+      : "") +
+    (names ? ` Accessible names (aria-label or title — not text on the page) that changed in that time: ${names}.` : "")
   );
 }
 
@@ -2770,18 +2794,31 @@ async function frameSections(env: ToolEnv, pageUrl: string): Promise<string[]> {
 // carries a running number so a click can ask for what came after it.
 //
 // Text is recorded only while a click is watching (__cmaWatch, a few seconds),
-// and "appeared" means: a text node a person could see now that they could not
-// see when the watch began. The unit is the text node, asked one by one —
-// a visible block can hold a hidden or transparent error beside its "Saved",
-// and a container's own text would name both. Four ways text gets there, all
-// common, each one a way to report a confirmation as missing if left out:
+// and "became visible" means: a text node a person can see now — rendered, with
+// a box, inside the viewport, not cut off by a one-pixel container — whose
+// text they could not read anywhere on the screen when the watch began. The
+// unit is the text node, asked one by one: a visible block can hold a hidden
+// or transparent error beside its "Saved". Ways text gets there, each one a
+// way to report a confirmation as missing if left out:
 //   - a node is added, or its text changes;
 //   - a node that was in the page all along is revealed (hidden removed, a
-//     class or style changed) — hence the list of what was visible at the start;
-//   - a node arrives transparent and fades in — hence the second look;
-//   - an accessible name changes on an icon button.
-// What appeared together (one added block, one revealed block) is one piece,
-// and a piece too long to be a message is a region re-rendering: read_page's.
+//     class, style or data-state changed) — hence the list of what was visible
+//     at the start;
+//   - a node arrives transparent or off-screen and fades or slides in — hence
+//     the second look.
+// And ways to report one that nobody saw, each found in review of #242:
+//   - text for screen readers only (an aria-live announcer in a 1px clipped
+//     box; Next.js writes every new page's title into one, inside an open
+//     shadow root, on every client-side navigation);
+//   - a component re-mounted with the words it already showed;
+//   - an accessible name, which is not text on the page — kept apart ('name').
+// What became visible together is one piece; a piece too long to be a message
+// is a region re-rendering: read_page's.
+//
+// Still not seen, and so still "nothing became visible": a confirmation with
+// no text node (an icon swapped, ::after content), text in a closed shadow
+// root, and text under another layer is not told from text on top. Nothing
+// here says the click CAUSED the text: a clock ticks by itself.
 const MUTATION_COUNTER_SCRIPT = `(() => {
   window.__cmaMutations = 0;
   window.__cmaAppeared = [];
@@ -2789,25 +2826,54 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
   try {
     window.__cmaMutationObserver?.disconnect();
     let watchUntil = 0;
-    let baseline = null;
+    let spent = 0;
+    let nodesAtStart = new WeakSet();
+    let textAtStart = new Set();
+    let namesBefore = new Set();
+    let asked = new WeakSet();
     let later = [];
+    let laterNodes = 0;
     let timer = 0;
-    const visible = (el) => !!el && el.isConnected && !el.closest('script,style,noscript,template') &&
+    const clean = (raw) => String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+    const parentOf = (node) => node.parentElement || (node.parentNode && node.parentNode.host) || null;
+    const rendered = (el) => !!el && el.isConnected && !el.closest('script,style,noscript,template') &&
       (typeof el.checkVisibility !== 'function' || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-    const shown = (textNode) => visible(textNode.parentElement || (textNode.parentNode && textNode.parentNode.host));
-    const note = (raw) => {
-      const text = String(raw == null ? '' : raw).replace(/\\s+/g, ' ').trim();
+    // A box of a pixel that cuts off what is inside it: how text is kept for
+    // screen readers only. (A box with no height that does NOT cut — a toast
+    // list whose toasts are positioned out of it — hides nothing.)
+    const cutOff = (el) => {
+      for (let a = el, depth = 0; a && depth < 12; a = parentOf(a), depth++) {
+        const box = a.getBoundingClientRect();
+        if (box.width > 1 && box.height > 1) continue;
+        const style = getComputedStyle(a);
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible' ||
+            (style.clip && style.clip !== 'auto') || (style.clipPath && style.clipPath !== 'none')) return true;
+      }
+      return false;
+    };
+    const shown = (textNode) => {
+      const el = parentOf(textNode);
+      if (!rendered(el)) return false;
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const box = range.getBoundingClientRect();
+      if (box.width <= 1 || box.height <= 1) return false;
+      if (box.bottom <= 0 || box.right <= 0 || box.top >= window.innerHeight || box.left >= window.innerWidth) return false;
+      return !cutOff(el);
+    };
+    const note = (text, kind) => {
       if (!text || text.length > ${APPEARED_MAX_CHARS}) return;
       const log = window.__cmaAppeared;
-      if (log.length && log[log.length - 1].t === text) return;
-      log.push({ n: ++window.__cmaAppearedSeq, t: text });
+      const last = log[log.length - 1];
+      if (last && last.t === text && last.k === kind) return;
+      log.push({ n: ++window.__cmaAppearedSeq, t: text, k: kind });
       if (log.length > 40) log.splice(0, log.length - 40);
     };
     // Mutations do not cross a shadow boundary, and neither does a tree walk:
     // a copy button inside a web component would change its label unseen and
     // uncounted. Every open shadow root met on a walk is walked too, and
     // watched from then on. (A closed one is closed to us as to any script.)
-    const OPTIONS = { subtree: true, childList: true, attributes: true, characterData: true };
+    const OPTIONS = { subtree: true, childList: true, attributes: true, characterData: true, attributeOldValue: true };
     const watched = new WeakSet();
     const enter = (shadow, limit, found) => {
       if (!watched.has(shadow)) { watched.add(shadow); observer.observe(shadow, OPTIONS); }
@@ -2830,53 +2896,85 @@ const MUTATION_COUNTER_SCRIPT = `(() => {
       walk(root, limit, found);
       return found;
     };
+    // Of a group, what a person can see now and could not read anywhere on the
+    // screen before. → whether the group has shown itself (and is done with).
     const say = (nodes) => {
       const seen = nodes.filter(shown);
-      if (seen.length) note(seen.map((n) => n.data).join(' '));
-      return seen.length > 0;
+      if (!seen.length) return false;
+      note(clean(seen.map((n) => n.data).filter((t) => !textAtStart.has(clean(t))).join(' ')), 'text');
+      return true;
     };
     const consider = (nodes) => {
-      if (nodes.length && !say(nodes) && later.length < 100) later.push(nodes);
+      if (!nodes.length || say(nodes) || laterNodes + nodes.length > 2000) return;
+      later.push(nodes);
+      laterNodes += nodes.length;
+    };
+    // The watch is a guest on the page it is judging. Past its allowance it
+    // stops recording — what it had already seen stays true.
+    const within = (work) => {
+      const began = performance.now();
+      try { work(); } catch (e) {}
+      spent += performance.now() - began;
+      if (spent > 150) { watchUntil = 0; later = []; laterNodes = 0; }
     };
     const lookAgain = () => {
       timer = 0;
-      later = later.filter((nodes) => nodes.some((n) => n.isConnected) && !say(nodes));
-      if (later.length && Date.now() < watchUntil) timer = setTimeout(lookAgain, 250);
-      else later = [];
+      if (Date.now() > watchUntil) { later = []; laterNodes = 0; return; }
+      within(() => {
+        later = later.filter((nodes) => nodes.some((n) => n.isConnected) && !say(nodes));
+        laterNodes = later.reduce((sum, nodes) => sum + nodes.length, 0);
+      });
+      if (later.length) timer = setTimeout(lookAgain, 250);
     };
-    const REVEALS = { class: 1, style: 1, hidden: 1, 'aria-hidden': 1, open: 1 };
+    const REVEALS = /^(class|style|hidden|open|aria-hidden|aria-expanded|data-.+)$/;
     const observer = new MutationObserver((records) => {
       window.__cmaMutations += records.length;
       if (Date.now() > watchUntil) return;
-      for (const r of records) {
-        try {
+      within(() => {
+        // One walk per element per batch, however many of its attributes moved.
+        const revealed = new Set();
+        for (const r of records) {
           if (r.type === 'characterData') consider(textNodes(r.target, 1));
           else if (r.type === 'childList') {
             for (const added of r.addedNodes) consider(textNodes(added, 400));
           } else if (r.attributeName === 'aria-label' || r.attributeName === 'title') {
-            if (visible(r.target)) note(r.target.getAttribute(r.attributeName));
-          } else if (baseline && REVEALS[r.attributeName]) {
-            consider(textNodes(r.target, 4000).filter((n) => !baseline.has(n)));
-          }
-        } catch (e) {}
-      }
+            namesBefore.add(clean(r.oldValue));
+            const name = clean(r.target.getAttribute(r.attributeName));
+            if (name && !namesBefore.has(name) && rendered(r.target)) note(name, 'name');
+          } else if (REVEALS.test(r.attributeName || '')) revealed.add(r.target);
+        }
+        for (const target of revealed) {
+          const fresh = textNodes(target, 4000).filter((n) => !nodesAtStart.has(n) && !asked.has(n));
+          for (const n of fresh) asked.add(n);
+          consider(fresh);
+        }
+      });
       if (later.length && !timer) timer = setTimeout(lookAgain, 120);
     });
     observer.observe(document, OPTIONS);
     window.__cmaMutationObserver = observer;
     window.__cmaWatch = () => {
-      watchUntil = Date.now() + 6000;
+      watchUntil = 0;
+      spent = 0;
       later = [];
-      baseline = null;
+      laterNodes = 0;
+      nodesAtStart = new WeakSet();
+      textAtStart = new Set();
+      namesBefore = new Set();
+      asked = new WeakSet();
       try {
+        const began = performance.now();
         // This walk is also what finds the shadow roots there are now.
         const all = textNodes(document.documentElement, 30000);
-        // A page too large to list is one where "revealed" cannot be told from
-        // "was there": reveals are then not reported at all, rather than wrongly.
-        if (all.length < 30000) {
-          baseline = new WeakSet();
-          for (const node of all) if (shown(node)) baseline.add(node);
+        // A page too large or too slow to list is one where "became visible"
+        // cannot be told from "was there": the watch then stays off and the
+        // click reports nothing of this kind, rather than something wrong.
+        if (all.length >= 30000) return window.__cmaAppearedSeq;
+        for (let i = 0; i < all.length; i++) {
+          if (shown(all[i])) { nodesAtStart.add(all[i]); textAtStart.add(clean(all[i].data)); }
+          if ((i & 127) === 127 && performance.now() - began > 250) return window.__cmaAppearedSeq;
         }
+        watchUntil = Date.now() + 6000;
       } catch (e) {}
       return window.__cmaAppearedSeq;
     };
