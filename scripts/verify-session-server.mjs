@@ -269,11 +269,11 @@ function raw(sessionId, options = {}) {
       socket.once("error", reject);
     }),
     closed: new Promise((resolve) => socket.once("close", resolve)),
-    send(method, params = {}) {
+    send(method, params = {}, sessionId) {
       const id = next++;
       return new Promise((resolve) => {
         waiting.set(id, resolve);
-        socket.send(JSON.stringify({ id, method, params }));
+        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       });
     },
   };
@@ -368,6 +368,20 @@ try {
     assert.equal((await tabs()).length, 2);
     client.socket.terminate();
     await until("the abandoned tab is closed", onlyThePersonsTab);
+  });
+
+  await check("a second tab the check's tab opened, which nobody had reported, is closed with it", async () => {
+    const { sessionId } = (await call("POST", "/lease", { ownerRunId: RUN_A, maxDurationSeconds: 300 })).json;
+    const client = raw(sessionId);
+    await client.opened;
+    // No target discovery on this connection: the server first hears of the
+    // second tab while it is already closing the first.
+    const { result } = await client.send("Target.createTarget", { url: `${SITE}/admin` });
+    const attached = await client.send("Target.attachToTarget", { targetId: result.targetId, flatten: true });
+    await client.send("Runtime.evaluate", { expression: "window.open('/admin?tab=2') && true", userGesture: true }, attached.result.sessionId);
+    await until("the second tab is open", async () => (await tabs()).length === 3);
+    client.socket.terminate();
+    await until("both of the check's tabs are closed", onlyThePersonsTab);
   });
 
   await check("a connection that goes silent is dropped after two missed beats, and its tab with it", async () => {
