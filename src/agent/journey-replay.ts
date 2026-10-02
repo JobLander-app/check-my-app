@@ -24,7 +24,8 @@
 import type { Browser, BrowserContext } from "@cloudflare/playwright";
 import type { AgentEnv } from "./env";
 import { credentialToolEnv } from "./credentials";
-import { executeTool, prepareAgentPage, UNDRIVEN_INSTRUCTION, type RecordedAction, type ToolEnv } from "./tools";
+import { executeTool, NO_FRAME_MATCH, prepareAgentPage, UNDRIVEN_INSTRUCTION, type RecordedAction, type ToolEnv } from "./tools";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 // The stable head of UNDRIVEN_INSTRUCTION — the tool text for a control our own
 // hands could not drive (CHE-214).
@@ -55,7 +56,12 @@ export interface ReplayRun {
   testPasswordEnc?: string | null;
   // CHE-322: Run.testAccounts, so a step recorded as a named account replays as it.
   testAccounts?: string | null;
+  // CHE-372: a replay of a locked store passes its password page as the walk did.
+  storePasswordEnc?: string | null;
   appId?: string | null;
+  // CHE-373: Run.allowedOrigins, so a recorded step on an allowed origin
+  // replays where it was walked instead of being refused as off-target.
+  allowedOrigins?: string | null;
 }
 
 export interface ReplayJourney {
@@ -87,6 +93,9 @@ export function classifyResult(kind: RecordedAction["kind"], result: string): Ac
   // that did not execute, and a replay must count it as one.
   if (result.includes(UNDRIVEN_MARKER)) return "errored";
   if (result.includes("did not react AT ALL")) return "diverged";
+  // CHE-373: the frame the walk acted in is not on the page any more — the app
+  // is not where it was, and nothing was pressed.
+  if (result.startsWith(NO_FRAME_MATCH)) return "diverged";
   // The walk signed in with this credential; the app turning it away now is
   // the replay landing somewhere the walk did not, not a reproduction.
   if (result.includes("was REJECTED")) return "diverged";
@@ -153,10 +162,12 @@ function toolInput(action: RecordedAction): Record<string, unknown> {
   switch (action.kind) {
     case "navigate":
       return { url: action.url };
+    // CHE-373: the frame the walk acted in, so the replay acts there and not on
+    // a control of the same name the page or an earlier frame also has.
     case "click":
-      return { role: action.role, name: action.name, selector: action.selector };
+      return { role: action.role, name: action.name, selector: action.selector, frame: action.frame };
     case "fill":
-      return { label: action.label, selector: action.selector, value: action.value };
+      return { label: action.label, selector: action.selector, value: action.value, frame: action.frame };
   }
 }
 
@@ -213,6 +224,7 @@ export async function replayJourney(
     const toolEnv: ToolEnv = {
       page,
       targetOrigin: originOf(run.targetUrl),
+      allowedOrigins: parseAllowedOrigins(run.allowedOrigins, env.bindings?.SELF_CHECK_HOSTS),
       // CHE-193: lets the click gate know which extra hosts are ours. Optional
       // chaining because verify-replay-actions.ts drives this loop with a bare
       // env (db only); production always has bindings.

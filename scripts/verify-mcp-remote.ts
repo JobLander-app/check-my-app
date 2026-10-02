@@ -71,6 +71,7 @@ const KEY_FREE = "cma_dddddddddddddddddddddddddddddddd";
 const KEY_FREE_LAST = "cma_ffffffffffffffffffffffffffffffff";
 const PRICING = `${ORIGIN}/pricing`;
 const PASSWORD = "hunter2-very-secret";
+const STORE_PASSWORD = "storefront-pw-5531";
 
 const day = (n: number) => new Date(Date.UTC(2026, 8, n, 12));
 
@@ -332,6 +333,32 @@ async function main() {
     const watchAfter = stub.table("watch").find((w) => w.appId === row!.id)!;
     check("update_app: test_password \"\" removes it from the app and its watch",
       cleared.out.ok === true && after.testPasswordEnc === null && watchAfter.testPasswordEnc === null);
+    // CHE-372: the store password of a password-protected store, the same way.
+    const storeCreated = await call(a, "create_app", { url: "https://locked-store.test", store_password: STORE_PASSWORD });
+    const store = stub.table("app").find((x) => x.id === storeCreated.out.app_id);
+    const storeWatch = stub.table("watch").find((w) => w.appId === store?.id);
+    check("create_app: store_password is stored encrypted on the app and its watch",
+      storeCreated.out.ok === true && typeof store?.storePasswordEnc === "string" && store.storePasswordEnc !== STORE_PASSWORD &&
+        decryptSecret(store.storePasswordEnc as string) === STORE_PASSWORD &&
+        decryptSecret(storeWatch?.storePasswordEnc as string) === STORE_PASSWORD,
+      JSON.stringify(storeCreated.out));
+    const storeListed = JSON.stringify((await call(a, "list_apps")).out);
+    const storeEntry = ((JSON.parse(storeListed) as { apps: Array<Record<string, unknown>> }).apps).find((x) => x.app_id === store?.id);
+    check("list_apps: has_store_password says one is stored, and neither it nor its blob is returned",
+      storeEntry?.has_store_password === true && !storeListed.includes(STORE_PASSWORD) &&
+        !storeListed.includes(store?.storePasswordEnc as string) && !storeListed.includes("storePasswordEnc"),
+      JSON.stringify(storeEntry));
+    check("create_app: its reply carries no store password", !JSON.stringify(storeCreated.out).includes(STORE_PASSWORD));
+    const storeCleared = await call(a, "update_app", { app_id: store!.id, store_password: "" });
+    const storeAfter = stub.table("app").find((x) => x.id === store!.id)!;
+    const storeWatchAfter = stub.table("watch").find((w) => w.appId === store!.id)!;
+    check("update_app: store_password \"\" removes it from the app and its watch",
+      storeCleared.out.ok === true && storeAfter.storePasswordEnc === null && storeWatchAfter.storePasswordEnc === null,
+      JSON.stringify({ app: storeAfter.storePasswordEnc, watch: storeWatchAfter.storePasswordEnc }));
+    const storeLog = stub.table("teamEvent").map((e) => String(e.summary)).join(" | ");
+    check("team log: the store password change is named, never the password",
+      storeLog.includes("removed the store password for locked-store.test") && !storeLog.includes(STORE_PASSWORD), storeLog.slice(-200));
+
     const kept = await call(a, "update_app", { app_id: "app_a", notes: "Never delete the test account." });
     const appA = stub.table("app").find((x) => x.id === "app_a")!;
     check("update_app: fields not passed are untouched — the password stays",

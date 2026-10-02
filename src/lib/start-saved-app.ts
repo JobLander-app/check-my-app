@@ -32,7 +32,7 @@ export async function startSavedApp(
   db: PrismaClient,
   owner: { id: string; teamId: string; plan: UserPlan },
   appId: string,
-  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "api" } = {
+  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "action" | "api" } = {
     trigger: triggerRun,
     siteCap: effectiveSiteCap,
     capture: captureServer,
@@ -76,7 +76,11 @@ export async function startSavedApp(
       testEmail: app.testEmail, testPasswordEnc: app.testPasswordEnc,
       // CHE-322: and every named account, as they are right now.
       testAccounts: await snapshotAppAccounts(db, app),
+      // CHE-372: and the store password, for a password-protected store.
+      storePasswordEnc: app.storePasswordEnc,
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
+      // CHE-373: the origins the owner allowed besides the app's own.
+      allowedOrigins: app.allowedOrigins,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
       startedVia: deps.source ?? "ui",
       forceFull: app.targetKind === "extension", status: "queued",

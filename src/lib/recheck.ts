@@ -56,7 +56,8 @@ export async function createRecheckRun(
   prisma: PrismaClient,
   publicId: string,
   // testPassword: typed again for a paid check's owed re-check (CHE-335).
-  opts: { full?: boolean; anonKeyHash?: string | null; testPassword?: string } = {},
+  // storePassword (CHE-372): the same, for a password-protected store.
+  opts: { full?: boolean; anonKeyHash?: string | null; testPassword?: string; storePassword?: string } = {},
   // CHE-263: a caller may override just the authorization half — the recheck
   // route does, so an API key is answered the same way a session is.
   overrides: Partial<RecheckDeps> = {},
@@ -83,9 +84,11 @@ export async function createRecheckRun(
       testEmail: true,
       testPasswordEnc: true,
       testAccounts: true,
+      storePasswordEnc: true,
       scopeHints: true,
       userNotes: true,
       focusAreas: true,
+      allowedOrigins: true,
       notifyEmail: true,
       watchId: true,
       appId: true,
@@ -182,7 +185,7 @@ export async function createRecheckRun(
   // owner's saved extension may supply credentials for the next explicit run.
   const saved = prev.targetKind === "extension" && prev.appId && prev.ownerId
     ? await prisma.app.findFirst({ ...alreadyScoped("the previous run names its own app"), where: { id: prev.appId, ownerId: prev.ownerId, targetKind: "extension", extensionId: prev.extensionId },
-      select: { testEmail: true, testPasswordEnc: true, extensionConfig: true, userNotes: true } }) : null;
+      select: { testEmail: true, testPasswordEnc: true, storePasswordEnc: true, extensionConfig: true, userNotes: true } }) : null;
   // CHE-322: a re-check of a saved website's run signs in as the app does NOW —
   // its default login and every named account. The run being re-checked lost
   // its passwords when it ended (workflow.ts "cleanup") unless a watch kept
@@ -191,7 +194,7 @@ export async function createRecheckRun(
   // app: this run's notes and scope stay the ones it was started with.
   const appLogin = !saved && prev.targetKind !== "extension" && prev.appId && prev.ownerId && prev.teamId
     ? await prisma.app.findFirst({ where: { ...teamOwned(prev.teamId), id: prev.appId },
-      select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true } }) : null;
+      select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true } }) : null;
   const login = saved ?? appLogin ?? prev;
   // CHE-335 (Codex review of #207): a claimed re-check that never got started
   // is still owed — the claim goes back if anything below throws.
@@ -207,9 +210,13 @@ export async function createRecheckRun(
         testEmail: login.testEmail,
         testPasswordEnc: owedRetry && opts.testPassword ? encryptSecret(opts.testPassword) : login.testPasswordEnc,
         testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
+        // CHE-372: the store password comes from where the login does.
+        storePasswordEnc: owedRetry && opts.storePassword ? encryptSecret(opts.storePassword) : login.storePasswordEnc,
         scopeHints: prev.scopeHints,
         userNotes: saved ? saved.userNotes : prev.userNotes,
         focusAreas: prev.focusAreas,
+        // CHE-373: scope, and so the origins it may act on, stay the run's own.
+        allowedOrigins: prev.allowedOrigins,
         notifyEmail: prev.notifyEmail,
         watchId: prev.watchId,
         appId: prev.appId,

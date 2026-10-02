@@ -13,6 +13,8 @@ import { ExtensionBrowser, extensionBrowserFor } from "./extension-browser";
 import { extensionInput, type ExtensionIdentity, type ExtensionTarget, type ExtensionRunnerInput } from "./extension-contract";
 import { persistExtensionPhase } from "./extension-evidence";
 import { ExtensionRuntimeError } from "./extension-error";
+import { unlockStoreGate } from "./store-password";
+import { storeAccessFor } from "./credentials";
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
@@ -105,13 +107,21 @@ export interface SurfaceScanResult {
 export async function surfaceScan(
   env: AgentEnv,
   browser: Browser,
-  targetUrl: string,
+  // CHE-372: the run, so the scan reads a password-protected store and not its
+  // /password page — the store password and its state are loaded here, from
+  // the run. Both fields required, so a caller that drops them does not compile.
+  run: { targetUrl: string; id: string; storePasswordEnc: string | null },
 ): Promise<SurfaceScanResult> {
+  const targetUrl = run.targetUrl;
+  const store = await storeAccessFor(env, run);
   const context = await newAgentContext(browser, targetUrl, env.bindings);
   const page = await context.newPage();
   await applyNameShim(page);
   try {
-    const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    let response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if ((await unlockStoreGate(page, targetUrl, store)) === "unlocked") {
+      response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
     // The signal tables live in lib/tech-signals (CHE-132) so the free page
     // survey reads the same stack off a plain fetch that this scan reads off
     // the browser response.

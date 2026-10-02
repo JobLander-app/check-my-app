@@ -41,10 +41,12 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
+import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
 import { loadKnownMap } from "./known-map";
 import { loadAppKnowledge, type AppKnowledge } from "./knowledge";
 import { walkOneJourney, type WalkRun } from "./execution";
+import { parseAllowedOrigins, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import {
   catalogIsDeduplicated,
   clearUnsupportablePrices,
@@ -55,7 +57,7 @@ import {
 import { orderByFocus } from "./limits";
 import { parseActions, replayJourney, type ReplayResult } from "./journey-replay";
 import { claimedHands, drivenControls, gateFindings } from "./findings-gate";
-import { judgeVerdictIntegrity, type IntegrityResult } from "./verdict-integrity";
+import { checkVerdictIntegrity } from "./verdict-load";
 import { synthesizeVerdict, type SynthesizedFinding } from "./synthesis";
 import { autoFileFindings } from "./autofile";
 import {
@@ -157,9 +159,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           testEmail: true,
           testPasswordEnc: true,
           testAccounts: true,
+          // CHE-372: the store password, for every phase that opens the store.
+          storePasswordEnc: true,
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
+          // CHE-373: the origins the owner allowed besides the target's.
+          allowedOrigins: true,
           notifyEmail: true,
           watchId: true,
           baselineRunId: true,
@@ -172,7 +178,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
-      return r;
+      // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
+      // here, so neither the tools, the evidence rules nor the prompt ever
+      // treat one of our hosts as the customer's product.
+      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
     });
     const isExtension = isExtensionTarget(run);
 
@@ -472,9 +481,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         testEmail: run.testEmail,
         testPasswordEnc: run.testPasswordEnc,
         testAccounts: run.testAccounts,
+        storePasswordEnc: run.storePasswordEnc,
         scopeHints: run.scopeHints,
         userNotes,
         focusAreas: run.focusAreas,
+        allowedOrigins: run.allowedOrigins,
         writeAllowed,
         testMarker: `CheckMyApp test r${run.runNumber}`,
       };
@@ -494,7 +505,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
             return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, extensionIdentity: extension.identity };
           }
-          const r = await surfaceScan(env, browser, run.targetUrl);
+          const r = await surfaceScan(env, browser, run);
           if (r.screenshotUrl) {
             await env.db.run.update({ where: { id: runId }, data: { liveScreenshotUrl: r.screenshotUrl } });
           }
@@ -894,6 +905,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await env.db.journey.findMany({
             where: { runId },
             select: {
+              status: true,
               steps: {
                 orderBy: { order: "asc" },
                 select: {
@@ -908,6 +920,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             },
             orderBy: { order: "asc" },
           }),
+          // CHE-372: a run that only ever reached a store's password page has
+          // no finding to make about the store.
+          { targetUrl: run.targetUrl },
         );
         for (const d of gated.dropped) {
           console.log(`[findings] dropped: ${d.finding.title} — ${d.reason}`);
@@ -1508,34 +1523,9 @@ async function notifyAndRecord(
 }
 
 // ─── Verdict integrity (CHE-42, CHE-365) ─────────────────────────────────────
-// The rules — zero coverage is never a pass, walking only the access gate is
-// zero coverage too, "broken" needs a body — live in ./verdict-integrity.ts,
-// pure so scripts/verify-verdict-integrity.ts tests what runs. This loads what
-// they read.
-
-async function checkVerdictIntegrity(
-  env: AgentEnv,
-  runId: string,
-  synth: { verdict: Verdict; bottomLine: string | null },
-): Promise<IntegrityResult> {
-  const journeys = await env.db.journey.findMany({
-    where: { runId },
-    select: {
-      status: true,
-      steps: { select: { status: true, unverifiedReason: true, actions: true } },
-    },
-  });
-  const findings = await env.db.finding.findMany({
-    where: { runId },
-    select: { category: true, severity: true },
-  });
-  const run = await env.db.run.findUnique({ where: { id: runId }, select: { targetUrl: true } });
-  const checked = judgeVerdictIntegrity(journeys, findings, synth, run?.targetUrl);
-  if (checked.verdict !== synth.verdict) {
-    console.log(`[verdict] run ${runId}: synthesis said ${synth.verdict}, recorded ${checked.verdict}`);
-  }
-  return checked;
-}
+// The rules live in ./verdict-integrity.ts; what they read is loaded by
+// checkVerdictIntegrity in ./verdict-load.ts, which a verify script can drive
+// over a stub database (this module cannot be loaded on plain Node).
 
 // CHE-171: the addresses the survey (CHE-132) reached — both the path it was
 // sent to (a sitemap entry, a homepage link: published by the product) and the
@@ -1724,6 +1714,8 @@ async function persistFindings(env: AgentEnv, runId: string, findings: Synthesiz
         number: number++,
         ...shaped,
         anchor,
+        // CHE-354: the identity recurrence is counted by (src/lib/recurring.ts).
+        signature: run ? findingSignature({ appSlug: run.appSlug, ...shaped, anchor }) : null,
         ...(mark ? { mark } : {}),
         evidence: shot
           ? { create: [{ type: "screenshot", storageUrl: shot.storageUrl, sha256: shot.sha256 }] }

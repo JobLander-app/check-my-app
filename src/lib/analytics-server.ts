@@ -37,10 +37,10 @@ export type ServerAnalyticsEvents = {
   /**
    * CHE-327: a team whose balance was too low was refused a check. `source` is
    * the door it came through: the dashboard (`ui`), the coding agent (`mcp`),
-   * the REST API (`api`), or a watch's scheduled tick (`watch` — once per
-   * window, not once per tick).
+   * the REST API (`api`), our GitHub Action (`action`, CHE-383), or a watch's
+   * scheduled tick (`watch` — once per window, not once per tick).
    */
-  balance_exhausted: { plan: string; source: "ui" | "mcp" | "api" | "watch"; teamId: string };
+  balance_exhausted: { plan: string; source: "ui" | "mcp" | "action" | "api" | "watch"; teamId: string };
   /** CHE-327: Stripe reported a paid top-up of `amountUsd` for the team. */
   balance_topped_up: { plan: string; amountUsd: number; teamId: string };
 };
