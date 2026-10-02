@@ -322,6 +322,21 @@ async function main() {
         check(`nothing walked, below a usual of ${usualJourneys} journeys: the price is not explained by journeys or steps`,
           line === "Below this app's usual $0.40–$0.80." , line);
       }
+      // Check #294 (2026-10-02): "Below this app's usual $0.65–$0.89: more
+      // steps than usual (18 vs 15)". A reason must point the way the price
+      // went, or not be given.
+      const usual = { low: 0.65, high: 0.89 };
+      const line = (price: number, journeys: number, steps: number, usualJourneys: number, usualSteps: number) =>
+        cp.comparePrice({ kind: "walk", price, usual, journeys, steps, usualJourneys, usualSteps }) ?? "";
+      check("below usual with MORE steps: no reason is given (#294)", line(0.46, 5, 18, 5, 15) === "Below this app's usual $0.65–$0.89.", line(0.46, 5, 18, 5, 15));
+      check("below usual with fewer steps: that is the reason", line(0.46, 5, 12, 5, 15) === "Below this app's usual $0.65–$0.89: fewer steps than usual (12 vs 15).", line(0.46, 5, 12, 5, 15));
+      check("above usual with FEWER journeys but more steps: the steps explain it, the journeys do not",
+        line(1.2, 4, 30, 5, 15) === "Above this app's usual $0.65–$0.89: more steps than usual (30 vs 15).", line(1.2, 4, 30, 5, 15));
+      check("above usual with more journeys: that is the reason", line(1.2, 7, 20, 5, 15) === "Above this app's usual $0.65–$0.89: 2 journeys more than usual (7 vs 5).", line(1.2, 7, 20, 5, 15));
+      check("above usual with fewer journeys and fewer steps: no reason is given", line(1.2, 4, 12, 5, 15) === "Above this app's usual $0.65–$0.89.", line(1.2, 4, 12, 5, 15));
+      check("the same journeys and steps as usual: the journeys took longer / were shorter",
+        line(1.2, 5, 15, 5, 15) === "Above this app's usual $0.65–$0.89: the journeys took longer than usual." &&
+          line(0.46, 5, 15, 5, 15) === "Below this app's usual $0.65–$0.89: the journeys were shorter than usual.", `${line(1.2, 5, 15, 5, 15)} / ${line(0.46, 5, 15, 5, 15)}`);
     }
     for (const [name, e] of [["walk", walk], ["quick", quick], ["skipped", none]] as const) {
       const text = JSON.stringify(e);

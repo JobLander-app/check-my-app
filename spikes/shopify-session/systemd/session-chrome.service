@@ -1,23 +1,27 @@
 [Unit]
 Description=Session host Chrome, the profile a human signs into (CHE-378)
-After=session-xvfb.service
-Requires=session-xvfb.service
+After=session-xvfb.service session-firewall.service
+Requires=session-xvfb.service session-firewall.service
 
 [Service]
-User=session-host
-Group=session-host
+# Its own user, shared only with the display it draws on: firewall.nft keeps
+# this user off the host's own ports and the private network (CHE-389). The
+# probe and the session server reach DevTools as session-host.
+User=session-browser
+Group=session-browser
 Environment=DISPLAY=:99
-Environment=HOME=/var/lib/session-host
+Environment=HOME=/var/lib/session-browser
 # The profile is the whole point of this host: a human signs in once and the
 # session lives here. It is never copied off the VM.
 #
-# DevTools is bound to loopback. The hourly probe on this VM connects to it
-# directly; anything off the VM reaches it only through an IAP SSH tunnel.
+# DevTools is bound to loopback. The hourly probe and the session server on
+# this VM connect to it directly; anything off the VM reaches it only through
+# the session server or an IAP SSH tunnel.
 #
 # --password-store=basic: there is no keyring daemon on a headless host, and
 # without this Chrome may block on a keyring prompt nobody can see.
 ExecStart=/usr/bin/google-chrome-stable \
-  --user-data-dir=/var/lib/session-host/profile \
+  --user-data-dir=/var/lib/session-browser/profile \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --no-first-run \
