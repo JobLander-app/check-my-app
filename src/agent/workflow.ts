@@ -38,6 +38,7 @@ import { extensionBrowserFor } from "./extension-browser";
 import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
+import { completeClosedDoor } from "./closed-door";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -503,7 +504,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (extension) {
             await env.db.run.update({ where: { id: runId }, data: { extensionEvidence: JSON.stringify({ identity: extension.identity }) } });
             await appendEvent(env, runId, "surface_scan", { icon: "ok", text: `${extension.identity.name} is ready to explore` });
-            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, extensionIdentity: extension.identity };
+            return { status: null, techSignals: [], internalLinkCount: 0, screenshotUrl: null, door: null, extensionIdentity: extension.identity };
           }
           const r = await surfaceScan(env, browser, run);
           if (r.screenshotUrl) {
@@ -528,6 +529,46 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await closeAgentBrowser(browser, { env, runId, phase: "scan" }).catch(rethrowBudgetNonRetryable);
         }
       });
+
+      // CHE-390: the app's own first page turned us away, twice, and showed
+      // nothing of the product (closed-door.ts). There is nothing to map or
+      // walk and nothing a model could say about it that would be about the
+      // product — run #292 mapped, walked and published "Broken" about a door
+      // it never got through, and charged for it. The run ends here: Not
+      // verified, nothing spent, the gap on our own board. Like the quick-check
+      // branch above, not routed through synthesis or the verdict guards — no
+      // finding can exist, and the bottom line is the fixed sentence.
+      if (scan.door) {
+        const door = scan.door;
+        await step.do("closed-door", async () => {
+          await appendEvent(env, runId, "surface_scan", {
+            icon: "warn",
+            text: "The first page turned the check away before anything loaded — nothing to check this run",
+          });
+          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door);
+        });
+        await step.do("price-closed-door", async () => {
+          await priceRun(env.db, runId);
+        });
+        await step.do("capability-gaps-closed-door", async () => {
+          try {
+            for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [] })) {
+              await appendEvent(env, runId, "writing", note);
+            }
+          } catch (err) {
+            console.warn(`[capability] gap filing failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        });
+        if (run.notifyEmail) {
+          await step.do("notify-closed-door", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
+        }
+        await step.do("cleanup-closed-door", async () => {
+          if (!run.watchId) {
+            await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
+          }
+        });
+        return;
+      }
 
       // Phase 3 — Discovery (LLM), or its partial-mode stand-in. A partial run
       // already knows this app's map: re-mapping it would spend Sonnet tokens to

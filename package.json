@@ -79,6 +79,7 @@
     "verify:paid-retry": "tsx --tsconfig tsconfig.json scripts/verify-paid-retry.ts",
     "verify:frame-tools": "tsx --tsconfig tsconfig.json scripts/verify-frame-tools.ts",
     "verify:app-health": "tsx --tsconfig tsconfig.json scripts/verify-app-health.ts",
+    "verify:closed-door": "tsx --tsconfig tsconfig.json scripts/verify-closed-door.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",
