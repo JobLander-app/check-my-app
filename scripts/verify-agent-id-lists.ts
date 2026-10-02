@@ -86,6 +86,27 @@ export function ownEntries(objectSource: string): Map<string, string> {
   return out;
 }
 
+// The columns an orderBy sorts by: the keys of its object, or of each object in
+// its list — whatever way the direction is written ("asc", 'desc', a constant,
+// `{ sort: "asc", nulls: "last" }`). The first reader looked for a double-quoted
+// direction and saw nothing to check in `{ createdAt: 'desc' }` (Codex on #258).
+// An orderBy that is not written out here (a variable, a call) cannot be read,
+// and is reported as such rather than passed.
+export const UNREADABLE_ORDER = "(an orderBy this guard cannot read)";
+export function sortedColumns(orderSource: string): string[] {
+  const order = orderSource.trim();
+  if (order.startsWith("{")) return [...ownEntries(order).keys()];
+  if (!order.startsWith("[")) return [UNREADABLE_ORDER];
+  const columns: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 1; i < order.length - 1; i++) {
+    if (order[i] === "{" && depth++ === 0) start = i;
+    else if (order[i] === "}" && --depth === 0) columns.push(...ownEntries(order.slice(start, i + 1)).keys());
+  }
+  return columns.length ? columns : [UNREADABLE_ORDER];
+}
+
 /** Every findMany / findFirst in a source text that has both a variable `in:` list and an `orderBy`. */
 export function idListQueries(text: string, where: string): IdListQuery[] {
   const found: IdListQuery[] = [];
@@ -95,7 +116,7 @@ export function idListQueries(text: string, where: string): IdListQuery[] {
     const lists = [...(top.get("where") ?? "").matchAll(/(\w+):\s*\{\s*(?:not)?[iI]n:\s*(?![\s[])([^,}\n]+)/g)].map((m) => `${m[1]} in ${m[2].trim()}`);
     const order = top.get("orderBy");
     if (lists.length === 0 || !order) continue;
-    const sortedBy = [...order.matchAll(/(\w+):\s*"(?:asc|desc)"/g)].map((m) => m[1]);
+    const sortedBy = sortedColumns(order);
     // What the query itself returns: every column of the model when it has no
     // select of its own (with or without a top-level include); otherwise the
     // columns its own select sets to true — not what a relation inside selects.
@@ -146,6 +167,21 @@ function main() {
   check("reader: an include of the query's own does return whole rows", unsafe(idListQueries(topInclude, "x")[0]).length === 0);
   check("reader: a column named only in a comment is not selected",
     unsafe(idListQueries(commented, "x")[0]).join() === "order", JSON.stringify(idListQueries(commented, "x")));
+  // The direction can be written any valid way; the column is the key.
+  for (const [how, order] of [
+    ["single quotes", "{ createdAt: 'desc' }"],
+    ["a template literal", "{ createdAt: `desc` }"],
+    ["a constant", "{ createdAt: Prisma.SortOrder.desc }"],
+    ["a variable", "{ createdAt: direction }"],
+    ["the long form", '{ createdAt: { sort: "desc", nulls: "last" } }'],
+    ["a list, single-quoted", "[{ order: 'asc' }, { createdAt: 'desc' }]"],
+  ] as const) {
+    const query = `db.run.findMany({ where: { id: { in: ids } }, orderBy: ${order}, select: { id: true, order: true } })`;
+    check(`reader: a direction written with ${how} still names its column`, unsafe(idListQueries(query, "x")[0]).join() === "createdAt", JSON.stringify(idListQueries(query, "x")));
+  }
+  const variableOrder = `db.run.findMany({ where: { id: { in: ids } }, orderBy: sortFor(view), select: { id: true } })`;
+  check("reader: an orderBy that is not written out cannot be read — reported, not passed",
+    unsafe(idListQueries(variableOrder, "x")[0]).join() === UNREADABLE_ORDER, JSON.stringify(idListQueries(variableOrder, "x")));
   check("reader: an object's own entries, with nesting, strings and calls in the values",
     JSON.stringify([...ownEntries(`{ a: { in: f(x, { y: 1 }) }, b: "c: d, e", g: [1, 2], h: true }`)]) ===
       JSON.stringify([["a", "{ in: f(x, { y: 1 }) }"], ["b", '"c: d, e"'], ["g", "[1, 2]"], ["h", "true"]]),
