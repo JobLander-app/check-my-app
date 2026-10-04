@@ -66,15 +66,14 @@ property does not slip past); `react/no-danger` is an ESLint error.
 
 ### R4. No inline scripts
 
-No `<script>` element in a `.tsx` under `src/app` or `src/components`, with or
-without a body. Behaviour that must run in the browser is a client component
-(R1) or a module file; a third-party snippet goes through `next/script` from a
-file in `public/`.
+No `<script>` element in any `.tsx` under `src/`, with or without a body.
+Behaviour that must run in the browser is a client component (R1) or a module
+file; a third-party snippet goes through `next/script` from a file in `public/`.
 **Why:** an inline script is R3 by another name — unreviewable text executed
 in the customer's browser — and it defeats any content-security policy the app
 adopts later.
 **Mechanism:** `scripts/verify-code-standards.ts` fails on a JSX element
-named `script` in those directories.
+named `script` anywhere under `src/`.
 
 ### R5. Mutations are server actions; redirects happen on the server
 
@@ -128,8 +127,9 @@ which on this product are the verdict and the price. What is hidden is not
 shown; what is not shown was not built.
 **Mechanism:** `scripts/verify-code-standards.ts` fails on `overflow-x-auto`,
 `overflow-x-scroll`, `overflow-auto` or `overflow-scroll` — under any Tailwind
-variant (`md:`, `!`) — on a `<table>` or any JSX element above it, in `src/app`
-and `src/components`. A `<pre>` or a filmstrip may scroll; a table may not.
+variant (`md:`, `!`) — on a `<table>` or any JSX element above it, anywhere
+under `src/`, the className read through the constants and imports it refers
+to. A `<pre>` or a filmstrip may scroll; a table may not.
 
 ### R9. Every page is looked at, at 390, 1000, 1200 and 1440
 

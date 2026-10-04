@@ -5,16 +5,17 @@
 //
 //   R3  no `dangerouslySetInnerHTML` anywhere under src/ — owner rule,
 //       2026-10-04, after an inline <script> through it passed a review round;
-//   R4  no <script> element in a .tsx under src/app or src/components;
+//   R4  no <script> element in any .tsx under src/;
 //   R8  no `overflow-x-auto` / `overflow-x-scroll` (nor `overflow-auto` /
 //       `overflow-scroll`, under any Tailwind variant) on an element that wraps
-//       a <table> there — a table that scrolls sideways hides the columns that
-//       did not fit (owner rule, 2026-10-04).
+//       a <table> — a table that scrolls sideways hides the columns that did
+//       not fit (owner rule, 2026-10-04).
 //
 // Read from each file's syntax tree, not from its text (the way
 // scripts/verify-lens-flags.ts reads the client graph): a comment that names
-// the prop is not a use of it, a string that spells it is, and "the element
-// that wraps a table" is a question about JSX parents, which text cannot
+// the prop is not a use of it, a string that spells it is, "the element that
+// wraps a table" is a question about JSX parents, and a className is read
+// through the constants and imports it refers to — none of which text can
 // answer. The reader is run on a fixture of each offence first — written,
 // caught, removed — so the day one of them stops being caught, this script is
 // what goes red.
@@ -46,8 +47,6 @@ const FORBIDDEN_PROP = "dangerouslySetInnerHTML";
 // exactly the width the variant names (Codex on #264).
 const SIDEWAYS_TOKEN = /(?:^|:)!?overflow-(?:x-)?(?:auto|scroll)$/;
 const sidewaysIn = (classes: string): string | undefined => classes.split(/\s+/).find((t) => SIDEWAYS_TOKEN.test(t));
-// Where a page is: the directories whose .tsx files render for the customer.
-const PAGE_DIRS = ["src/app", "src/components"];
 
 function sourceFiles(dir: string): string[] {
   if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return [];
@@ -72,48 +71,133 @@ function tagOf(node: ts.Node): string | null {
   return opening && ts.isIdentifier(opening.tagName) ? opening.tagName.text : null;
 }
 
-/** Every string the element's `className` is made of: a literal, or each literal inside clsx(...), a template, a conditional. */
-function classNames(node: ts.Node): string[] {
+// ─── Reading a className ────────────────────────────────────────────────────
+//
+// The strings a className is made of are not always written in the attribute:
+// this codebase keeps cell styles in constants (`const TD = "…"`,
+// `className={\`${TD} text-right\`}`) and shares them between files. So a
+// className is read through what it refers to — a constant in the same file,
+// a property of a constant object, a named import from a module under src/
+// (Codex on #264) — each resolved from the syntax tree of the file that holds
+// it. What cannot be read (a function parameter, a call's result, a package)
+// is left alone: the guard reads what is written, and says nothing about the
+// rest.
+
+type Resolved = { files: Map<string, ts.SourceFile>; root: string };
+
+function fileSet(root: string): Set<string> {
+  return new Set(sourceFiles(join(root, "src")));
+}
+
+function resolveModule(root: string, from: string, spec: string, files: Set<string>): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = join(root, "src", spec.slice(2));
+  else if (spec.startsWith(".")) base = join(from, "..", spec);
+  else return null;
+  const bare = base.replace(/\.(js|jsx|mjs)$/, "");
+  const candidates = [base, ...[bare, base].flatMap((b) => [".ts", ".tsx"].map((e) => b + e)), ...["ts", "tsx"].map((e) => join(base, `index.${e}`))];
+  return candidates.find((c) => files.has(c)) ?? null;
+}
+
+/** The declaration a name refers to in this file: its own `const`, or the module it is imported from. */
+function declarationOf(file: ts.SourceFile, name: string): { init: ts.Expression } | { from: string; imported: string } | null {
+  let found: { init: ts.Expression } | { from: string; imported: string } | null = null;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && n.initializer) found = { init: n.initializer };
+    else if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier) && n.importClause?.namedBindings && ts.isNamedImports(n.importClause.namedBindings)) {
+      const el = n.importClause.namedBindings.elements.find((e) => e.name.text === name);
+      if (el) found = { from: n.moduleSpecifier.text, imported: (el.propertyName ?? el.name).text };
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/** What a name is initialised with, following a named import to the module under src/ that exports it. */
+function initializerOf(name: string, file: ts.SourceFile, ctx: Resolved, files: Set<string>): { init: ts.Expression; file: ts.SourceFile } | null {
+  const decl = declarationOf(file, name);
+  if (!decl) return null;
+  if ("init" in decl) return { init: decl.init, file };
+  const target = resolveModule(ctx.root, file.fileName, decl.from, files);
+  if (!target) return null;
+  const other = ctx.files.get(target) ?? parse(target);
+  ctx.files.set(target, other);
+  const theirs = declarationOf(other, decl.imported);
+  return theirs && "init" in theirs ? { init: theirs.init, file: other } : null;
+}
+
+/** Every string an expression is made of, through the names it refers to. */
+function stringsOf(expr: ts.Node, file: ts.SourceFile, ctx: Resolved, files: Set<string>, seen: Set<string>, out: string[]): void {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return void out.push(expr.text);
+  if (ts.isTemplateExpression(expr)) {
+    out.push(expr.head.text, ...expr.templateSpans.map((s) => s.literal.text));
+    for (const s of expr.templateSpans) stringsOf(s.expression, file, ctx, files, seen, out);
+    return;
+  }
+  if (ts.isIdentifier(expr)) {
+    const key = `${file.fileName}#${expr.text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const found = initializerOf(expr.text, file, ctx, files);
+    if (found) stringsOf(found.init, found.file, ctx, files, seen, out);
+    return;
+  }
+  // `STYLES.cell`: the property of a constant object, when the object is written out — here or in the module it comes from.
+  if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
+    const found = initializerOf(expr.expression.text, file, ctx, files);
+    if (!found) return;
+    const objects: ts.ObjectLiteralExpression[] = [];
+    const collect = (n: ts.Node) => (ts.isObjectLiteralExpression(n) ? objects.push(n) : ts.forEachChild(n, collect));
+    collect(found.init);
+    for (const o of objects) {
+      const p = o.properties.find((p): p is ts.PropertyAssignment => ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === expr.name.text);
+      if (p) stringsOf(p.initializer, found.file, ctx, files, seen, out);
+    }
+    return;
+  }
+  ts.forEachChild(expr, (child) => stringsOf(child, file, ctx, files, seen, out));
+}
+
+/** Every string the element's `className` is made of, through constants, object properties and imports. */
+function classNames(node: ts.Node, file: ts.SourceFile, ctx: Resolved, files: Set<string>): string[] {
   const opening = ts.isJsxElement(node) ? node.openingElement : ts.isJsxSelfClosingElement(node) ? node : null;
   if (!opening) return [];
   const attr = opening.attributes.properties.find((p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && ts.isIdentifier(p.name) && p.name.text === "className");
   if (!attr?.initializer) return [];
   const out: string[] = [];
-  const visit = (n: ts.Node): void => {
-    if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) out.push(n.text);
-    else if (ts.isTemplateExpression(n)) out.push(n.head.text, ...n.templateSpans.map((s) => s.literal.text));
-    ts.forEachChild(n, visit);
-  };
-  visit(attr.initializer);
+  stringsOf(attr.initializer, file, ctx, files, new Set(), out);
   return out;
 }
 
 /** What in a tree of source files breaks R3, R4 or R8, each as "path:line  what". */
 export function offenders(root: string): string[] {
   const out: string[] = [];
-  const pageDirs = PAGE_DIRS.map((d) => join(root, d) + sep);
-  for (const path of sourceFiles(join(root, "src"))) {
-    const file = parse(path);
-    const isPage = path.endsWith(".tsx") && pageDirs.some((d) => path.startsWith(d));
+  const files = fileSet(root);
+  const ctx: Resolved = { files: new Map(), root };
+  for (const path of files) {
+    const file = ctx.files.get(path) ?? parse(path);
+    ctx.files.set(path, file);
     const visit = (node: ts.Node): void => {
       // R3: the identifier (a JSX attribute, a property, a destructured name)
       // or the string (props["dangerouslySetInnerHTML"]) — the prop under any spelling.
       if ((ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text === FORBIDDEN_PROP) {
         out.push(`${where(file, node, root)}  ${FORBIDDEN_PROP} (R3)`);
       }
-      if (isPage) {
-        const tag = tagOf(node);
-        // R4: a <script> element, with a body or self-closing.
-        if (tag === "script") out.push(`${where(file, node, root)}  <script> element (R4)`);
-        // R8: a <table>, or any JSX element above it, that scrolls sideways.
-        if (tag === "table") {
-          for (let up: ts.Node | undefined = node; up; up = up.parent) {
-            if (!ts.isJsxElement(up) && !ts.isJsxSelfClosingElement(up)) continue;
-            const sideways = classNames(up).map(sidewaysIn).find((t) => t !== undefined);
-            if (sideways) {
-              out.push(`${where(file, up, root)}  <${tagOf(up) ?? "element"} className="…${sideways}…"> wraps the <table> at ${where(file, node, root)} (R8)`);
-              break;
-            }
+      // R4 and R8 are about JSX, wherever under src/ it is written: a component
+      // in src/lib is rendered by a page all the same (Codex on #264).
+      const tag = tagOf(node);
+      // R4: a <script> element, with a body or self-closing.
+      if (tag === "script") out.push(`${where(file, node, root)}  <script> element (R4)`);
+      // R8: a <table>, or any JSX element above it, that scrolls sideways.
+      if (tag === "table") {
+        for (let up: ts.Node | undefined = node; up; up = up.parent) {
+          if (!ts.isJsxElement(up) && !ts.isJsxSelfClosingElement(up)) continue;
+          const sideways = classNames(up, file, ctx, files).map(sidewaysIn).find((t) => t !== undefined);
+          if (sideways) {
+            out.push(`${where(file, up, root)}  <${tagOf(up) ?? "element"} className="…${sideways}…"> wraps the <table> at ${where(file, node, root)} (R8)`);
+            break;
           }
         }
       }
@@ -178,11 +262,40 @@ function fixtureChecks(): void {
       check(`fixture: ${name} is caught`, found.some((o) => expected.test(o)) && after.length === 0, found.join("; ") || "nothing caught");
     }
 
-    // Outside the page directories, a <script> element and a scrolling table are not this guard's
-    // (an e-mail template in src/lib renders no page) — stated, so a move there is a decision.
-    write("src/lib/mail.tsx", `export const M = () => <div className="overflow-x-auto"><table /><script /></div>;\n`);
-    const lib = offenders(root);
-    check("fixture: a .tsx outside src/app and src/components is not read for R4/R8", lib.length === 0, lib.join("; "));
+    // A className read through what it refers to (Codex on #264).
+    write("src/lib/styles.ts", `export const CARD = "card overflow-x-auto";\nexport const CELLS = { wrap: "min-w-0 overflow-x-scroll", cell: "px-3" };\nexport const PLAIN = "card";\n`);
+    const resolved: [string, string, string, RegExp][] = [
+      ["a constant in the same file", "src/app/s.tsx", `const WRAP = "card overflow-x-auto";\nexport const S = () => <div className={WRAP}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
+      ["a constant inside a template", "src/app/t.tsx", `const WRAP = "md:overflow-x-auto";\nexport const T = () => <div className={\`\${WRAP} p-4\`}><table /></div>;\n`, /<div className="…md:overflow-x-auto…"> wraps the <table>/],
+      ["a constant built from another constant", "src/app/u.tsx", `const BASE = "overflow-x-scroll";\nconst WRAP = \`card \${BASE}\`;\nexport const U = () => <div className={WRAP}><table /></div>;\n`, /<div className="…overflow-x-scroll…"> wraps the <table>/],
+      ["a property of a constant object", "src/app/v.tsx", `const S = { wrap: "overflow-x-auto", cell: "px-3" };\nexport const V = () => <div className={S.wrap}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
+      ["a constant imported by @/ path", "src/app/w.tsx", `import { CARD } from "@/lib/styles";\nexport const W = () => <div className={CARD}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
+      ["an imported object's property, by relative path", "src/app/x.tsx", `import { CELLS } from "../lib/styles";\nexport const X = () => <div className={CELLS.wrap}><table /></div>;\n`, /<div className="…overflow-x-scroll…"> wraps the <table>/],
+      ["a renamed import (import { CARD as C })", "src/app/y.tsx", `import { CARD as C } from "@/lib/styles";\nexport const Y = () => <div className={C}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
+      ["a constant passed to clsx with a literal", "src/app/z.tsx", `declare const clsx: (...a: string[]) => string;\nconst WRAP = "overflow-auto";\nexport const Z = () => <div className={clsx("card", WRAP)}><table /></div>;\n`, /<div className="…overflow-auto…"> wraps the <table>/],
+      ["a <script> element or a scrolling table in src/lib — a component a page renders", "src/lib/mail.tsx", `export const M = () => <div className="overflow-x-auto"><table /><script /></div>;\n`, /mail\.tsx:1 {2}<script> element \(R4\)/],
+    ];
+    for (const [name, rel, text, expected] of resolved) {
+      write(rel, text);
+      const found = offenders(root);
+      rmSync(join(root, rel));
+      const after = offenders(root);
+      check(`fixture: ${name} is caught`, found.some((o) => expected.test(o)) && after.length === 0, found.join("; ") || "nothing caught");
+    }
+    // What refers to nothing readable, or to something harmless, is not an offence.
+    write("src/app/quiet.tsx", [
+      `import { PLAIN } from "@/lib/styles";`,
+      `const CELL = "px-3 text-right";`,
+      `export const Q = ({ wrap }: { wrap: string }) => (`,
+      `  <div className={wrap}><table className={\`\${CELL} \${PLAIN}\`}><tbody /></table></div>`,
+      `);`,
+    ].join("\n"));
+    const quiet = offenders(root);
+    check("fixture: a className from a parameter, a harmless constant and a harmless import is fine", quiet.length === 0, quiet.join("; "));
+    // A constant that refers to itself must not loop.
+    write("src/app/loop.tsx", `const A: string = \`\${B} x\`;\nconst B: string = \`\${A} y\`;\nexport const L = () => <div className={A}><table /></div>;\n`);
+    const loop = offenders(root);
+    check("fixture: two constants that refer to each other end, and are no offence", loop.length === 0, loop.join("; "));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
