@@ -50,10 +50,11 @@ eq("tracker: no expiry on record", trackerHealth({ refreshTokenEnc: null, tokenE
 // ── 2. One section, one write ───────────────────────────────────────────────
 const actions = read("src/app/dashboard/actions.ts");
 const action = actions.slice(actions.indexOf("export async function updateAppSettings"), actions.indexOf("\nexport ", actions.indexOf("export async function updateAppSettings") + 1));
+// "Who hears about it" has no field of the app: its one form is
+// setAppNotifiers (CHE-413 removed the escalation address).
 const SECTION_FIELDS: Record<string, string[]> = {
   scope: ["focusAreas", "writeMode", "scopeHints", "userNotes", "extension"],
   accounts: ["testEmail", "testPassword", "testAccounts"],
-  notifications: ["notifyEmail"],
   integrations: ["pickupLabels", "repoLabel", "urgentJourneys"],
 };
 for (const [section, fields] of Object.entries(SECTION_FIELDS)) {
@@ -67,6 +68,7 @@ for (const [section, fields] of Object.entries(SECTION_FIELDS)) {
 }
 check("the section comes bound from the page, never from the form", /export async function updateAppSettings\(appId: string, section: string, formData: FormData\)/.test(action) && !/formData\.get\("section"\)/.test(action));
 check("an unknown section writes nothing", /if \(!patch\) throw new Error\("unknown settings section"\)/.test(action));
+check("the action reads no escalation address: 'Who hears about it' is the team's list alone", !/notif/i.test(action));
 check("a refusal goes back to the section as a sentence; a save says so",
   /if \("error" in result\) redirect\(`\$\{back\}\?error=\$\{encodeURIComponent\(result\.error\)\}`\)/.test(action) && /redirect\(`\$\{back\}\?saved=1`\)/.test(action) && !/throw new Error\(result\.error\)/.test(action));
 check("the schedule is not a field of any form: its controls apply at once", !/frequency/.test(action));
@@ -81,30 +83,26 @@ async function keeps() {
         id: "a", teamId: "t", ownerId: "u", appSlug: "a.test", targetUrl: "https://a.test", targetKind: "website",
         focusAreas: "Checkout must never break.", writeMode: "create_cleanup", scopeHints: "Not /admin", userNotes: "note",
         testEmail: "t@a.test", testPasswordEnc: "enc",
-        watch: { create: { appSlug: "a.test", targetUrl: "https://a.test", teamId: "t", ownerId: "u", frequency: "every_6h", notifyEmail: "me@a.test", testEmail: "t@a.test", testPasswordEnc: "enc" } },
+        watch: { create: { appSlug: "a.test", targetUrl: "https://a.test", teamId: "t", ownerId: "u", frequency: "every_6h", testEmail: "t@a.test", testPasswordEnc: "enc" } },
         policy: { create: { pickupLabels: JSON.stringify(["monitor"]), repoLabel: "repo: a", priorityRule: JSON.stringify({ urgent: ["login"] }) } },
       } as never,
     });
     const actor = { userId: "u", teamId: "t", plan: "business" as const };
     const state = async () => {
       const a = await real.db.app.findUniqueOrThrow({ where: { id: "a" }, include: { watch: true, policy: true } });
-      return [a.focusAreas, a.writeMode, a.scopeHints, a.userNotes, a.testEmail, a.testPasswordEnc, a.watch?.frequency, a.watch?.notifyEmail, a.policy?.pickupLabels, a.policy?.repoLabel, a.policy?.priorityRule].join(" | ");
+      return [a.focusAreas, a.writeMode, a.scopeHints, a.userNotes, a.testEmail, a.testPasswordEnc, a.watch?.frequency, a.policy?.pickupLabels, a.policy?.repoLabel, a.policy?.priorityRule].join(" | ");
     };
     const before = await state();
 
     // "What we check", saved with one field changed and the rest as they were.
     await updateAppForTeam(real.db, actor, "a", { focusAreas: "Sign-in must work.", writeMode: "create_cleanup", scopeHints: "Not /admin", userNotes: "note" });
-    eq("real D1: saving What we check changes its field and leaves accounts, schedule, notifications and the contract as they were",
+    eq("real D1: saving What we check changes its field and leaves accounts, schedule and the contract as they were",
       await state(), before.replace("Checkout must never break.", "Sign-in must work."));
     // "Test accounts", with the password box left blank.
     await updateAppForTeam(real.db, actor, "a", { testEmail: "new@a.test", testPassword: undefined, testAccounts: { set: [], remove: [] } });
     const afterAccounts = await state();
     check("real D1: saving Test accounts with a blank password keeps the password, the worries and write mode",
-      afterAccounts.includes("new@a.test | enc") && afterAccounts.includes("Sign-in must work. | create_cleanup") && afterAccounts.includes("every_6h | me@a.test"), afterAccounts);
-    // "Who hears about it": the address alone.
-    await updateAppForTeam(real.db, actor, "a", { notifyEmail: "" });
-    const afterNotify = await state();
-    check("real D1: clearing the escalation email clears it and nothing else", afterNotify.includes("every_6h | ") && !afterNotify.includes("me@a.test") && afterNotify.includes("new@a.test | enc") && afterNotify.includes('["monitor"] | repo: a'), afterNotify);
+      afterAccounts.includes("new@a.test | enc") && afterAccounts.includes("Sign-in must work. | create_cleanup") && afterAccounts.includes("| every_6h |"), afterAccounts);
     // "Integrations": the ticket contract.
     await updateAppForTeam(real.db, actor, "a", { pickupLabels: ["monitor", "p1"], repoLabel: "repo: a", urgentJourneys: [] });
     const afterContract = await state();
@@ -120,14 +118,16 @@ const page = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx
 const root = read("src/app/(app)/health/apps/[appId]/settings/page.tsx");
 const layout = read("src/app/(app)/health/apps/[appId]/settings/layout.tsx");
 // Every field name the one long form carried (settings page before CHE-359),
-// plus the two it reached by other actions.
+// plus the two it reached by other actions — less the escalation address,
+// which CHE-413 removed outright.
 const OLD_FIELDS = [
-  "focusAreas", "testEmail", "testPassword", "writeMode", "scopeHints", "userNotes", "notifyEmail",
+  "focusAreas", "testEmail", "testPassword", "writeMode", "scopeHints", "userNotes",
   "pickupLabels", "repoLabel", "urgentJourneys", "newAccount:label", "newAccount:email", "newAccount:password",
   "webhookUrl", "webhookSecret", "slackWebhookUrl", "notifier",
 ];
 const missing = OLD_FIELDS.filter((f) => !page.includes(`name="${f}"`));
 check("every field of the old form is in a section", missing.length === 0, missing.join(", "));
+check("…and the escalation address is gone from it", !page.includes("notifyEmail") && !/scalation/.test(page));
 check("…the named accounts' rows too", ["label", "email", "password", "remove"].every((f) => page.includes("name={`account:${account.id}:" + f + "`}")));
 check("…the frequency, pause and cancel are the schedule's own controls", /<WatchSettings\s+slug=\{watch\.appSlug\}/.test(page) && /frequency: watch\.frequency/.test(page));
 check("…and the pieces with their own actions: tracker team, analytics project, extension options, removal",
@@ -140,8 +140,9 @@ for (const m of page.matchAll(/<form\b|<\/form>/g)) {
   depth += m[0] === "</form>" ? -1 : 1;
   if (depth > 1) nested = true;
 }
-check("no form is nested in another", !nested && depth === 0 && (page.match(/<form\b/g) ?? []).length >= 6, `${(page.match(/<form\b/g) ?? []).length} forms`);
-check("each section's form is saved by the action bound to that section", /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 4);
+check("no form is nested in another", !nested && depth === 0 && (page.match(/<form\b/g) ?? []).length >= 5, `${(page.match(/<form\b/g) ?? []).length} forms`);
+check("each section's form is saved by the action bound to that section (three sections write a field of the app; who hears about it and webhooks have their own actions)",
+  /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 3 && /<form action=\{setAppNotifiers\.bind\(null, appId\)\}/.test(page));
 check("a section the app does not have opens the first one; an address that is no section is not found",
   /if \(!sectionsFor\(app\)\.some\(\(s\) => s\.key === section\)\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(page) && /if \(!section\) notFound\(\)/.test(page));
 // CHE-412: the other-team state is an ordinary page of the app (breadcrumb,

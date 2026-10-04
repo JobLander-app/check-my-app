@@ -316,8 +316,17 @@ export function createStubDb(seed: Record<string, Row[]> = {}) {
     };
   }
 
+  // Raw SQL has no table here. The one reader that reaches it through these
+  // tools is the review's priority (CHE-413: get_review → recurrencesAsOf,
+  // src/lib/recurring.ts), and an empty history is the honest answer of a
+  // database with no journeys or steps in it — every finding is then judged
+  // on its own check, as the review does for a run no history holds.
+  const raw = async () => {
+    calls.push("$queryRaw");
+    return [];
+  };
   const db = new Proxy({} as Record<string, unknown>, {
-    get: (_t, prop: string) => model(prop),
+    get: (_t, prop: string) => (prop === "$queryRaw" || prop === "$queryRawUnsafe" ? raw : model(prop)),
   }) as unknown as PrismaClient;
 
   return { db, tables, table, calls };

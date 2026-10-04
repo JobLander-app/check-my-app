@@ -153,7 +153,6 @@ export const toolSchemas = {
       .max(500)
       .optional()
       .describe("For a password-protected store (Shopify's 'Enter store password' page): the store password. Stored encrypted and never returned"),
-    notify_email: z.string().email().optional().describe("Where verdict emails go"),
     frequency: frequency.optional().describe("How often it is checked; default daily"),
   },
   update_app: {
@@ -181,7 +180,6 @@ export const toolSchemas = {
       .max(500)
       .optional()
       .describe("New store password of a password-protected store. Stored encrypted and never returned; \"\" removes it"),
-    notify_email: z.string().email().or(z.literal("")).optional().describe("Verdict email; \"\" clears it"),
   },
   start_check: {
     app_id: z
@@ -460,7 +458,6 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       test_accounts?: { label: string; email: string; password: string }[];
       allowed_origins?: string[];
       store_password?: string;
-      notify_email?: string;
       frequency?: WatchFrequency;
     }): Promise<ToolResult> {
       const denied = deny("app.settings.write");
@@ -480,7 +477,6 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           testAccounts: accounts.named,
           allowedOrigins: args.allowed_origins,
           storePassword: args.store_password || null,
-          notifyEmail: args.notify_email,
           frequency: args.frequency,
         },
       );
@@ -536,7 +532,6 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       remove_test_accounts?: string[];
       allowed_origins?: string[];
       store_password?: string;
-      notify_email?: string;
     }): Promise<ToolResult> {
       const denied = deny("app.settings.write");
       if (denied) return denied;
@@ -561,7 +556,6 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         allowedOrigins: args.allowed_origins,
         // CHE-372: like test_password — "" removes it from the app and its watch.
         storePassword: args.store_password === undefined ? undefined : args.store_password || null,
-        notifyEmail: args.notify_email,
       });
       if ("error" in result) {
         return result.code === "not_found"
@@ -599,7 +593,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         if (args.ephemeral || args.scope_hints || args.notify_email) {
           return fail(
             "invalid_input",
-            "ephemeral, scope_hints and notify_email apply to a url check. A saved app uses its own settings — change them with update_app.",
+            "ephemeral, scope_hints and notify_email apply to a url check. A saved app uses its own settings — its limits change with update_app; its verdicts go to the team members chosen in its settings on the site.",
           );
         }
         const started = await startSavedApp(

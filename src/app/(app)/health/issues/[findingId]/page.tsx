@@ -4,7 +4,8 @@ import { requireUser } from "@/lib/auth";
 import { appPath } from "@/lib/app-shell";
 import { shellData } from "@/lib/shell-data";
 import { issueOf } from "@/lib/issue-load";
-import { VIEW_CLASS, VIEW_LABEL, issueView, issuesHref, seenLine, ticketLabel } from "@/lib/issues-page";
+import { VIEW_CLASS, VIEW_LABEL, issuePriorityOf, issueView, issuesHref, seenLine, ticketLabel } from "@/lib/issues-page";
+import { PRIORITY_META } from "@/lib/issue-priority";
 import { SEVERITY_META, STEP_STATUS_META } from "@/lib/status";
 import { THUMB_WIDTH } from "@/lib/storage";
 import { IssueMarks } from "@/components/issue-marks";
@@ -31,6 +32,11 @@ export default async function IssuePage({ params }: { params: Promise<{ findingI
   const severity = r?.issue.severity ?? issue.finding.severity;
   const category = r?.issue.category ?? issue.finding.category;
   const { detail } = issue.finding;
+  // The priority (CHE-413), the list's own: from the problem's history when the
+  // finding is part of one; a finding no problem holds is judged on its own.
+  const priority = r
+    ? issuePriorityOf(r.issue)
+    : issuePriorityOf({ category, severity, where: detail.where ?? null, timesSeen: 1, audience: "unknown" });
   // The route's own rule (PATCH /api/findings/{id}): the person whose check
   // found it answers it. Anyone else reads the state.
   const mayMark = issue.answer.ownerId === null || issue.answer.ownerId === user.id;
@@ -54,9 +60,14 @@ export default async function IssuePage({ params }: { params: Promise<{ findingI
           </Link>
         </nav>
         <h1 className="text-[26px] font-semibold leading-tight tracking-tight">{title}</h1>
-        {/* The problem in one line. CHE-413 puts its P0–P3 priority first on
-            this line, before the severity. */}
+        {/* The problem in one line: its priority first (the legend is on the list), then its state and severity. */}
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-fg-muted">
+          <span
+            className={`inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded-md border px-1.5 font-mono text-xs font-semibold ${PRIORITY_META[priority].className}`}
+            title={PRIORITY_META[priority].meaning}
+          >
+            {priority}
+          </span>
           {view && (
             <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${VIEW_CLASS[view]}`}>
               {VIEW_LABEL[view]}

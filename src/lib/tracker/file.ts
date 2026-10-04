@@ -12,7 +12,9 @@
 import { buildTicketDraft } from "./ticket";
 import { decideTicketAction } from "./decision";
 import type { Tracker, TicketDraft } from "./types";
-import { dedupKey, requestSignature } from "@/lib/dedup";
+import { dedupKeyForFinding } from "./dedup-key";
+import { findingPriority, type PriorityHistory } from "@/lib/finding-priority";
+import { PRIORITY_META, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
 import type { FindingDetail } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -22,6 +24,9 @@ import { alreadyScoped } from "@/lib/tenant-db";
 // caller can pass its own query result.
 export interface TicketFinding {
   anchor?: string | null;
+  // CHE-413: the priority as the caller knows it. Absent, fileFindingTicket
+  // reads it from the finding's own evidence (ticketPriority).
+  priority?: Priority;
   // CHE-103: recorded on the link so the finding is found by pointer, not by
   // re-hashing prose that a later cleanup may rewrite. Optional because the
   // tickets we file against ourselves have no Finding row behind them.
@@ -54,39 +59,24 @@ export interface TicketPolicyFields {
   escalateAfterRuns: number;
 }
 
-// One IssueLink row per (app, regression signature). Deliberately NOT keyed by
-// run: the same broken checkout seen on ten daily watch runs must land on one
-// ticket that counts to ten, which is the whole point of comment-and-count and
-// the escalation threshold. Built from the same three fields the ticket draft
-// describes the regression with, via the CHE-32 hash.
-// Param is the minimal subset the key actually hashes, so reconcile (CHE-61)
-// can re-key findings it loads without the evidence join.
-export function dedupKeyForFinding(
-  finding: Pick<TicketFinding, "title" | "category" | "severity" | "detail" | "anchor">,
-  run: Pick<TicketRun, "appSlug">,
-): string {
-  const errorSignature = parseJson<{ errorSignature?: string }>(finding.anchor)?.errorSignature;
-  if (run.appSlug.startsWith("extension:") && typeof errorSignature === "string" && /^[a-f0-9]{64}$/.test(errorSignature)) {
-    return dedupKey({ journeyTitle: run.appSlug, stepLabel: errorSignature, failureSignature: "extension-alert" });
-  }
-  const detail = parseJson<FindingDetail>(finding.detail) ?? {};
-  // CHE-59: machine facts first. A finding that names a failing request keys on
-  // (app, METHOD path status) — category/severity/prose all drift run-to-run,
-  // the broken endpoint doesn't. Prose key stays as the fallback for pure-UX
-  // findings with no request to point at.
-  const sig = requestSignature([detail.where, finding.title, detail.whatHappened]);
-  if (sig) {
-    return dedupKey({ journeyTitle: run.appSlug, stepLabel: sig, failureSignature: "request" });
-  }
-  return dedupKey({
-    journeyTitle: detail.where ?? run.appSlug,
-    stepLabel: finding.title,
-    failureSignature: `${finding.category}/${finding.severity}`,
-  });
+// The dedup key lives in ./dedup-key.ts (recurrence reads it too); the callers
+// that always imported it from here keep doing so.
+export { dedupKeyForFinding };
+
+// The priority on the ticket (CHE-413): the one rule every surface calls
+// (src/lib/finding-priority.ts — Issues' own answer when the app's history
+// holds the finding, the finding's own check otherwise). A caller that
+// already knows the priority is believed.
+export async function ticketPriority(
+  db: PrismaClient,
+  finding: Pick<TicketFinding, "id" | "runId" | "category" | "severity" | "detail" | "anchor" | "priority">,
+  history: PriorityHistory | null,
+): Promise<Priority> {
+  return finding.priority ?? findingPriority(db, finding, history);
 }
 
 export function draftForFinding(
-  finding: TicketFinding,
+  finding: TicketFinding & { priority: Priority },
   run: TicketRun,
   policy: TicketPolicyFields | null,
   verdictUrl: string,
@@ -97,6 +87,7 @@ export function draftForFinding(
 
   return buildTicketDraft(
     {
+      priority: finding.priority,
       journeyTitle: detail.where ?? run.appSlug,
       failingStep: finding.title,
       failureSignature: `${finding.category}/${finding.severity}: ${finding.title}`,
@@ -145,7 +136,6 @@ export async function fileFindingTicket(opts: {
   recurrenceDetail?: string;
 }): Promise<FilingOutcome> {
   const { db, tracker, appId, finding, run, policy, ownerId } = opts;
-  const draft = draftForFinding(finding, run, policy, opts.verdictUrl);
   const key = dedupKeyForFinding(finding, run);
   // CHE-256: which team's settlements these are. A settlement outlives the App
   // row it came from (CHE-101), so it is stored with both — the team because
@@ -186,10 +176,16 @@ export async function fileFindingTicket(opts: {
     return { kind: "suppressed", identifier: existing.externalIssueId };
   }
 
+  // CHE-413: the priority as Issues computes it, from the app's history as of
+  // this check — a problem seen three checks in a row is P0 on the ticket too.
+  const priority = await ticketPriority(db, finding, app?.teamId ? { teamId: app.teamId, appId, runNumber: run.runNumber } : null);
+  const draft = draftForFinding({ ...finding, priority }, run, policy, opts.verdictUrl);
+
   if (action.kind === "comment" && existing) {
     const occurrences = existing.occurrences + 1;
     const body = [
       `Re-filed from CheckMyApp — still present in run #${run.runNumber} (${draft.title}).`,
+      `\n**Priority:** ${priority} — ${PRIORITY_META[priority].meaning}`,
       action.escalate
         ? `\nEscalating: this is occurrence ${occurrences} and the issue is still open — ` +
           `past the ${policy?.escalateAfterRuns ?? 3}-run threshold this app was configured with.`

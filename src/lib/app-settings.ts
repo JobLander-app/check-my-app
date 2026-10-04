@@ -58,7 +58,6 @@ export interface CreateAppInput {
   userNotes?: string | null;
   // CHE-373: https origins a check may act on besides the app's own.
   allowedOrigins?: string[];
-  notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
   repoLabel?: string | null;
@@ -143,7 +142,6 @@ export async function createAppForTeam(
             appSlug,
             targetUrl,
             frequency,
-            notifyEmail: input.notifyEmail?.trim() || null,
             ownerId: actor.userId,
             teamId: actor.teamId,
             testEmail,
@@ -199,7 +197,6 @@ export interface AppSettingsPatch {
   userNotes?: string | null;
   // CHE-373: replaces the list; [] clears it.
   allowedOrigins?: string[];
-  notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
   repoLabel?: string | null;
@@ -282,12 +279,12 @@ export async function updateAppForTeam(
     },
   });
 
-  // Watch — cadence + notify email; test creds mirrored here exactly as
-  // onboarding's nested create does (recurring runs read them off the Watch).
+  // Watch — cadence; test creds mirrored here exactly as onboarding's nested
+  // create does (recurring runs read them off the Watch).
   if (app.watch) {
     await db.watch.update({ ...alreadyScoped("already read in this request"),
       where: { id: app.watch.id },
-      data: { frequency: patch.frequency, notifyEmail: orNull(patch.notifyEmail), testEmail, ...passwordUpdate, ...storeUpdate },
+      data: { frequency: patch.frequency, testEmail, ...passwordUpdate, ...storeUpdate },
     });
   }
 

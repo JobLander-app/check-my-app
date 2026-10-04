@@ -5,7 +5,8 @@ import { getOptionalUser } from "@/lib/auth";
 import { LinearTracker } from "@/lib/tracker/linear";
 import { freshLinearToken } from "@/lib/tracker/token";
 import { decideTicketAction } from "@/lib/tracker/decision";
-import { draftForFinding, dedupKeyForFinding } from "@/lib/tracker/file";
+import { draftForFinding, dedupKeyForFinding, ticketPriority } from "@/lib/tracker/file";
+import { PRIORITY_META } from "@/lib/issue-priority";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 import { alreadyScoped } from "@/lib/tenant-db";
 
@@ -49,14 +50,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   const policy = app.policy;
-  // Same draft the agent's auto-file pass builds (CHE-50) — one ticket shape,
-  // one dedup namespace, whether the owner clicked or the Watch found it.
-  const draft = draftForFinding(
-    finding,
-    finding.run,
-    policy,
-    `${new URL(_req.url).origin}/verdict/${finding.run.publicId}`,
-  );
 
   const cfEnv = getCloudflareContext().env as Record<string, string | undefined>;
   const tracker = new LinearTracker(
@@ -82,11 +75,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         : null,
       policy?.escalateAfterRuns ?? 3,
     );
+    // Same draft the agent's auto-file pass builds (CHE-50) — one ticket shape,
+    // one dedup namespace, one priority (CHE-413, from the app's history as of
+    // this check) — whether the owner clicked or the Watch found it.
+    const priority = await ticketPriority(prisma, finding, app.teamId ? { teamId: app.teamId, appId: app.id, runNumber: finding.run.runNumber } : null);
+    const draft = draftForFinding({ ...finding, priority }, finding.run, policy, `${new URL(_req.url).origin}/verdict/${finding.run.publicId}`);
 
     if (action.kind === "comment" && existing) {
       await tracker.addComment(
         existing.externalIssueId,
-        `Re-filed from CheckMyApp — still present in run #${finding.run.runNumber} (${draft.title}).`,
+        `Re-filed from CheckMyApp — still present in run #${finding.run.runNumber} (${draft.title}).\n` +
+          `**Priority:** ${priority} — ${PRIORITY_META[priority].meaning}`,
       );
       await prisma.issueLink.update({
         where: { id: existing.id },

@@ -435,7 +435,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // Same notification contract as a full run: a notifyOnChangeOnly watch
         // stays quiet, because the verdict we just carried forward is by
         // definition the baseline's — unless a metric moved (CHE-241).
-        if (run.notifyEmail) {
+        // Who is told: an address submitted with the check, or — a run of a
+        // saved app — the team members chosen for it (CHE-413; the Watch
+        // carries no address any more).
+        if (run.notifyEmail || run.appId) {
           await step.do("replay-notify", () =>
             notifyAndRecord(env, this.env, runId, run, smoke.verdict),
           );
@@ -603,7 +606,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
           return told.told;
         });
-        if (run.notifyEmail) {
+        if (run.notifyEmail || run.appId) {
           await step.do("notify-signed-out", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
         }
         await step.do("cleanup-signed-out", async () => {
@@ -644,7 +647,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             console.warn(`[capability] gap filing failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         });
-        if (run.notifyEmail) {
+        if (run.notifyEmail || run.appId) {
           await step.do("notify-closed-door", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
         }
         await step.do("cleanup-closed-door", async () => {
@@ -1336,10 +1339,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       }
 
       // Verdict-ready email (CHE: the home-page form promises it). Non-fatal: a
-      // notification failure must never fail a completed run. Watch runs arrive
-      // here too — the scheduler copies notifyEmail onto the run — but a
-      // notifyOnChangeOnly watch stays quiet while the verdict holds steady.
-      if (run.notifyEmail) {
+      // notification failure must never fail a completed run. A run of a saved
+      // app carries no address — its team's chosen members hear about it
+      // (src/lib/recipients.ts, CHE-413) — and a notifyOnChangeOnly watch stays
+      // quiet while the verdict holds steady.
+      if (run.notifyEmail || run.appId) {
         await step.do("notify", () => notifyAndRecord(env, this.env, runId, run, verdict));
       }
 
@@ -1635,14 +1639,14 @@ async function notifyAndRecord(
       // the ticket, where the next person to look needs them.
       await appendEvent(env, runId, "writing", {
         icon: "warn",
-        text: `We couldn't deliver this verdict to ${run.notifyEmail}. That's on us — it's on our board.`,
+        text: `We couldn't deliver this verdict${run.notifyEmail ? ` to ${run.notifyEmail}` : ""}. That's on us — it's on our board.`,
       });
       await appendEvent(
         env,
         runId,
         "writing",
         await fileDeliveryGap(env, runId, {
-          address: run.notifyEmail ?? "(no address)",
+          address: run.notifyEmail ?? "(the app's recipients)",
           error: outcome.error,
         }),
       );
