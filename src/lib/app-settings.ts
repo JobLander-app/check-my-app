@@ -119,6 +119,17 @@ export async function createAppForTeam(
   });
   if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
 
+  // Who hears about the app's first verdict (src/lib/recipients.ts): the team's
+  // admins, unless somebody was chosen. A member who is not an admin and adds
+  // an app is told "you'll get an email" — and would get nothing, since no row
+  // chooses them (Codex on #263). So the person who asked is chosen for their
+  // own app; an admin already hears by the floor rule, and a row for them would
+  // silence the other admins.
+  const admin = await db.membership.findFirst({
+    where: { teamId: actor.teamId, userId: actor.userId, scope: "admin" },
+    select: { id: true },
+  });
+
   try {
     const app = await db.app.create({ ...alreadyScoped("created with its team"),
       data: {
@@ -160,6 +171,7 @@ export async function createAppForTeam(
             priorityRule: JSON.stringify({ urgent: input.urgentJourneys ?? [] }),
           },
         },
+        notifiers: admin ? undefined : { create: { userId: actor.userId } },
       },
       select: { id: true, appSlug: true },
     });

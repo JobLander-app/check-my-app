@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { toolSchemas } from "../src/lib/mcp/tools";
 import { createAppForTeam, updateAppForTeam } from "../src/lib/app-settings";
 import { enableWatchForRun } from "../src/lib/watch-enable";
+import { recipientsForApp } from "../src/lib/recipients";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -110,6 +111,18 @@ async function realRows() {
     const appId = "ok" in created ? created.app.id : "";
     const watchOf = async () => real.db.watch.findUnique({ where: { appId }, select: { notifyEmail: true, frequency: true } });
     check("real D1: the new watch carries no address", (await watchOf())?.notifyEmail === null, JSON.stringify(await watchOf()));
+
+    // Who hears about it, with no address to copy (Codex on #263): an admin
+    // hears by the floor rule and chooses nobody; a member who is not an admin
+    // is chosen for the app they added — Today tells them "you'll get an
+    // email", and before this they got nothing.
+    const adminHears = await recipientsForApp(real.db, appId);
+    check("real D1: an app an admin added mails the admins, with no row chosen", adminHears.to.join() === "owner@example.test" && adminHears.via.join() === "team admins" && (await real.db.appNotifier.count({ where: { appId } })) === 0, JSON.stringify(adminHears));
+    await real.db.user.create({ data: { id: "m", clerkUserId: "ck_m", email: "member@example.test" } });
+    await real.db.membership.create({ data: { teamId: "t", userId: "m", scope: "member" } as never });
+    const byMember = await createAppForTeam(real.db, { userId: "m", teamId: "t", plan: "business" }, { targetUrl: "https://m.test", frequency: "daily" });
+    const memberHears = "ok" in byMember ? await recipientsForApp(real.db, byMember.app.id) : null;
+    check("real D1: an app a member added mails that member — they were told it would", memberHears?.to.join() === "member@example.test" && memberHears?.via.join() === "chosen", JSON.stringify(byMember) + " " + JSON.stringify(memberHears));
 
     // A stray address in a patch — an old client, a hand-written request — is
     // not a field and writes nothing.
