@@ -278,8 +278,21 @@ await check("inside its own tab a check does what a page can do, and nothing tha
     "Storage.clearDataForOrigin", "Storage.clearDataForStorageKey", "Storage.getUsageAndQuota", "IndexedDB.deleteDatabase", "IndexedDB.clearObjectStore",
     "DOMStorage.clear", "DOMStorage.setDOMStorageItem", "DOMStorage.removeDOMStorageItem", "CacheStorage.deleteCache", "Network.clearBrowserCache",
     // the browser
-    "Browser.close", "Browser.crash", "Browser.setWindowBounds", "Browser.grantPermissions", "Browser.setDownloadBehavior",
+    "Browser.close", "Browser.crash", "Browser.grantPermissions", "Browser.setDownloadBehavior", "Browser.setPermission", "Browser.setContentsSize",
   ]) assert.equal(on(method), "refuse", method);
+});
+
+await check("the window is the person's: a check's request to size it is answered done and never passed on", () => {
+  // @cloudflare/playwright sizes the window as part of opening any page; a
+  // refusal fails newPage() itself (run #299, the first live one).
+  const gate = gateWithATab();
+  const bounds = { windowId: 1, bounds: { width: 1366, height: 900 } };
+  assert.equal(gate.outgoing({ id: 5, sessionId: "S1", method: "Browser.setWindowBounds", params: bounds }), "acknowledge");
+  assert.equal(gate.outgoing({ id: 6, sessionId: "S1", method: "Browser.setWindowBounds", params: { windowId: 1, bounds: { windowState: "minimized" } } }), "acknowledge");
+  // From the browser's own level it stays what it was: not a check's to say.
+  assert.equal(gate.outgoing({ id: 7, method: "Browser.setWindowBounds", params: bounds }), "refuse");
+  // And a session the check was never given is still nothing.
+  assert.equal(gate.outgoing({ id: 8, sessionId: "NOT-MINE", method: "Browser.setWindowBounds", params: bounds }), "refuse");
 });
 
 await check("an address a check asks the browser to open must be the web's: no chrome://, no file://, no about: but blank", () => {
@@ -736,6 +749,30 @@ try {
     assert.equal(personTab.url(), `${SITE}/signin`, "the person's tab was moved");
     await personStillSignedIn();
     personsView.socket.close();
+  });
+
+  await check("a check that sizes the window from its tab is told it is done, and the window is as it was", async () => {
+    // What @cloudflare/playwright does inside newPage(): ask which window the
+    // tab is in, then size that window to the viewport. Refused, the tab never
+    // opens (run #299); passed on, the person's window changes under them.
+    const client = raw(await lease());
+    await client.opened;
+    const tab = await client.openTab(`${SITE}/admin`);
+    const personsView = await direct();
+    const windowOf = async () => (await personsView.send("Browser.getWindowForTarget", { targetId: tab.targetId })).result;
+    const before = await windowOf();
+    const asked = await client.send("Browser.getWindowForTarget", {}, tab.sessionId);
+    assert.equal(asked.result?.windowId, before.windowId, "a tab may ask which window it is in");
+    const sized = await client.send("Browser.setWindowBounds", { windowId: before.windowId, bounds: { width: before.bounds.width - 137, height: before.bounds.height - 91 } }, tab.sessionId);
+    assert.deepEqual(sized.result, {}, `answered done, not refused: ${JSON.stringify(sized.error ?? null)}`);
+    const viewport = await client.send("Emulation.setDeviceMetricsOverride", { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false }, tab.sessionId);
+    assert.deepEqual(viewport.result, {}, "the check's own viewport is the page's to set");
+    assert.deepEqual((await windowOf()).bounds, before.bounds, "the window must be as it was");
+    assert.match((await client.send("Browser.setWindowBounds", { windowId: before.windowId, bounds: { width: 640, height: 480 } })).error?.message ?? "", NOT_ALLOWED, "from the browser's own level it is still refused");
+    personsView.socket.close();
+    client.socket.close();
+    await client.closed;
+    await until("its tab is closed", onlyThePersonsTab);
   });
 
   await check("Browser.close from a check disconnects the check and closes nothing but its tabs", async () => {

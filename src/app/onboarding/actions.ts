@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { requireActionScope } from "@/lib/team-auth";
+import { refuseSelfCheck } from "@/lib/self-check-action";
 import { createAppForTeam } from "@/lib/app-settings";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { parseExtensionLink } from "@/lib/extension-target";
@@ -36,6 +37,9 @@ export async function createApp(
   _prevState: CreateAppResult,
   formData: FormData,
 ): Promise<CreateAppResult> {
+  // CHE-194: our own checker registers nothing. Run #304 pressed this form's
+  // button and left an app with a daily watch in the self-check account.
+  await refuseSelfCheck("/onboarding");
   const { user, db, team } = await requireActionScope("app.settings.write");
 
   const targetUrl = String(formData.get("targetUrl") ?? "");

@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { isSelfCheckRequest, selfCheckRedirectPath } from "@/lib/self-check";
+import { refuseSelfCheck } from "@/lib/self-check-action";
 import { requireUser } from "@/lib/auth";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
@@ -24,6 +25,7 @@ import { appPath } from "@/lib/app-shell";
 // at connect time is the first team; JobLander must target the JobLander team,
 // not whatever happens to be first.
 export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -48,6 +50,7 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
 // secret is write-only: blank keeps the current one, and it's dropped with the
 // webhook URL so a disabled endpoint leaves no secret behind.
 export async function setIntegrationEndpoints(appId: string, formData: FormData) {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -89,6 +92,7 @@ export async function setIntegrationEndpoints(appId: string, formData: FormData)
 // Revocation is attempted first but cannot block deletion. If PostHog is down,
 // the person still asked us to stop reading their analytics, and we stop.
 export async function disconnectPostHog(): Promise<void> {
+  await refuseSelfCheck("/dashboard");
   const { user, db, team } = await requireActionScope("integration.connect");
   const row = await db.postHogIntegration.findFirst({ where: { ...teamOwned(team.id) } });
   if (!row) return;
@@ -128,6 +132,7 @@ export async function createApiKey(
   name: string,
   keyScope: string = "member",
 ): Promise<{ id: string; name: string; rawKey: string }> {
+  await refuseSelfCheck("/dashboard");
   // CHE-253: the plan is the team's, and so is the key — a CI hook does not
   // stop working because the person who minted it left. Who minted it stays on
   // ownerId as attribution.
@@ -164,6 +169,7 @@ export async function createApiKey(
 // Revoke = delete the row; the key stops resolving on the next request.
 // deleteMany scoped to the owner so one tenant can't revoke another's key.
 export async function revokeApiKey(id: string): Promise<void> {
+  await refuseSelfCheck("/dashboard");
   const { user, db, team } = await requireActionScope("apikey.manage");
   await db.apiKey.deleteMany({ where: { ...teamOwned(team.id), id, ownerId: user.id } });
   await recordTeamEvent(db, {
@@ -197,6 +203,7 @@ export async function revokeApiKey(id: string): Promise<void> {
 // the section as a sentence, where the form is — it used to be thrown, and the
 // reader got an error page.
 export async function updateAppSettings(appId: string, section: string, formData: FormData) {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("app.settings.write");
   const text = (name: string) => String(formData.get(name) ?? "");
   const list = (name: string) =>
@@ -252,6 +259,7 @@ export async function deleteApp(
   _prev: DeleteAppResult,
   formData: FormData,
 ): Promise<DeleteAppResult> {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("app.delete");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -317,6 +325,7 @@ export async function runSavedApp(appId: string, _previous: { error: string } | 
 // Clearing it is a first-class option, not an omission: an app with no project
 // keeps our own estimate, which is a legitimate state to return to.
 export async function setAppPosthogProject(appId: string, formData: FormData): Promise<void> {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("app.settings.write");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
@@ -362,6 +371,7 @@ export async function setAppPosthogProject(appId: string, formData: FormData): P
 }
 
 export async function setAppNotifiers(appId: string, formData: FormData): Promise<void> {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("app.settings.write");
   const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { id: true } });
   if (!app) throw new Error("App not found.");
@@ -390,6 +400,7 @@ export async function setAppNotifiers(appId: string, formData: FormData): Promis
 
 // The self-service half: any scope, your own subscription only.
 export async function toggleOwnNotifications(appId: string): Promise<void> {
+  await refuseSelfCheck(`/dashboard/${appId}`);
   const { user, db, team } = await requireActionScope("read");
   const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { id: true } });
   if (!app) throw new Error("App not found.");

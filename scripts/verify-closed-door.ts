@@ -196,6 +196,20 @@ async function main() {
     check(`end, ${door}: the check is priced $0 (run #292 was charged $0.28)`, price === 0 && priced?.priceUsd === 0, `price=${price}`);
   }
   check("price: a check that cost nothing is free on every plan", USER_PLANS.every((p) => priceForCost(p, 0) === 0));
+  // A retry that finds the journey written and the step not (CHE-389 review):
+  // the step carries the gap to our board, and is still owed.
+  {
+    const stub = createStubDb({
+      run: [{ id: "run_half", status: "surface_scan", verdict: null, bottomLine: null, costUsd: null, completedAt: null }],
+      journey: [{ id: "j_half", runId: "run_half", order: 0, title: DOOR_JOURNEY_TITLE, status: "skipped", summary: doorObserved("forbidden") }],
+    });
+    await completeClosedDoor({ db: stub.db } as unknown as AgentEnv, { id: "run_half", targetUrl: TARGET }, "forbidden");
+    const journeys = await stub.db.journey.findMany({ where: { runId: "run_half" } });
+    const steps = await stub.db.step.findMany({ where: { journeyId: "j_half" } });
+    check("end: a retry after the journey was written and the step was not writes the step — and no second journey",
+      journeys.length === 1 && steps.length === 1 && steps[0].unverifiedReason === "our_capability" && steps[0].gapClass === "target_door",
+      `${journeys.length} journeys, ${steps.length} steps`);
+  }
 
   // ── 4 — the gap on our board ─────────────────────────────────────────────
   check("gap: target_door is a class with its own label (its own ticket)",

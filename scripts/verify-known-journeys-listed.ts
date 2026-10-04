@@ -442,6 +442,53 @@ async function main() {
     // carries no rows, and must not pass for a walk of the whole app.
     check("…and is reported omitted, so the run is not read as covering the app", got.omitted.join() === "b", JSON.stringify(got.omitted));
   }
+
+  // CHE-403: the walk rows are found with two id lists that grow with the app.
+  // Past D1's bound-parameter cap Prisma splits such a query, and the merge
+  // aborts the engine when the query sorts by a column it does not select — so
+  // this one does not sort in the database at all. The order it needs is put
+  // back from the rows; what the database hands over first decides nothing.
+  console.log("\nThe walk rows are put in order here, not by the database");
+  {
+    const { db: db3, tables: t3 } = makeDb();
+    const asked: Array<{ orderBy?: unknown; select?: Record<string, unknown> }> = [];
+    const find = db3.journey.findMany;
+    db3.journey.findMany = (async (args: { where?: Row; orderBy?: Record<string, "asc" | "desc">; select?: Record<string, unknown> }) => {
+      asked.push({ orderBy: args.orderBy, select: args.select });
+      return find(args);
+    }) as typeof find;
+    t3.run.push({ id: "r1", runNumber: 1, completedAt: day("2026-09-20") }, { id: "r9", runNumber: 9, completedAt: day("2026-09-28") });
+    t3.appJourney.push({ id: "aj-a", appId: "A", key: "a", title: "a", aliases: "[]", plan: "[]", status: "ok", lastWalkedAt: day("2026-09-20"), lastWalkedRunId: "r1", consecutiveBad: 0, retiredAt: null });
+    // The same journey walked twice in one run; the later slot is stored first.
+    t3.journey.push(
+      { id: "late", runId: "r1", order: 7, title: "a", status: "ok", appJourneyId: "aj-a", carriedFromRunId: null },
+      { id: "early", runId: "r1", order: 2, title: "a", status: "ok", appJourneyId: "aj-a", carriedFromRunId: null },
+    );
+    const got = await planKnownJourneys({ db: db3 }, { runId: "r9", appId: "A", startOrder: 0 });
+    check("of two walks of a journey in one run, the earlier slot is the one shown — whatever order the rows arrive in",
+      got.listed.length === 1 && got.listed[0].sourceJourneyId === "early", JSON.stringify(got.listed));
+    // The walk-row query is the one that asks for the run each row belongs to.
+    const walkQuery = asked.find((a) => a.select && "runId" in a.select);
+    check("the walk-row query does not sort in the database, and brings the column back to sort by",
+      walkQuery !== undefined && walkQuery.orderBy === undefined && walkQuery.select?.order === true, JSON.stringify(walkQuery));
+  }
+  {
+    // An app with a long history: 131 known journeys, each last walked in a run
+    // of its own — the size at which the split-and-merge was measured to abort.
+    const { db: db4, tables: t4 } = makeDb();
+    const N = 131;
+    t4.run.push({ id: "now", runNumber: 500, completedAt: day("2026-10-02") });
+    for (let i = 0; i < N; i++) {
+      t4.run.push({ id: `r${i}`, runNumber: i + 1, completedAt: day("2026-09-01") });
+      t4.appJourney.push({ id: `aj${i}`, appId: "BIG", key: `k${i}`, title: `journey ${i}`, aliases: "[]", plan: "[]", status: "ok", lastWalkedAt: new Date(Date.UTC(2026, 8, 1, 0, i)), lastWalkedRunId: `r${i}`, consecutiveBad: 0, retiredAt: null });
+      t4.journey.push({ id: `w${i}`, runId: `r${i}`, order: i % 5, title: `journey ${i}`, status: "ok", appJourneyId: `aj${i}`, carriedFromRunId: null });
+    }
+    const got = await planKnownJourneys({ db: db4 }, { runId: "now", appId: "BIG", startOrder: 3 });
+    check(`an app with ${N} known journeys, each from a run of its own, lists every one with its own walk`,
+      got.listed.length === N && got.omitted.length === 0 && got.listed.every((g) => g.sourceJourneyId === `w${String(g.title).split(" ")[1]}`) &&
+        new Set(got.listed.map((g) => g.order)).size === N,
+      `${got.listed.length} listed, ${got.omitted.length} omitted`);
+  }
 }
 
 void main().then(() => {

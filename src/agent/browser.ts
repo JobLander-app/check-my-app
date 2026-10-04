@@ -4,7 +4,7 @@
 // CHE-20). Surface scan is deterministic (no LLM): load, detect stack, count
 // links, first screenshot for the live screen.
 
-import { launch } from "@cloudflare/playwright";
+import { connect, launch } from "@cloudflare/playwright";
 import type { Browser, BrowserContext, Page } from "@cloudflare/playwright";
 import { detectTech } from "@/lib/tech-signals";
 import { putScreenshot, type AgentBindings, type AgentEnv } from "./env";
@@ -16,8 +16,16 @@ import { ExtensionRuntimeError } from "./extension-error";
 import { unlockStoreGate } from "./store-password";
 import { storeAccessFor } from "./credentials";
 import { closedDoor, deepAddresses, opensBehindDoor, DOOR_DEEP_TRIES, DOOR_RETRY_WAIT_MS, type ClosedDoor } from "./closed-door";
+import { isSessionTarget, SessionBrowser, sessionBrowserFor, sessionHost, type SessionConnect } from "./session-browser";
+import { landedOutside, whereItSettled } from "./signed-out";
+import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
+  // CHE-389: an app checked inside a signed-in session runs in the session
+  // host's browser. One lease per run, renewed by every phase.
+  if (target && isSessionTarget(target.run)) {
+    return (await SessionBrowser.open(sessionHost(env.bindings), target.run.id, connect as unknown as SessionConnect)).browser;
+  }
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
   if (input) {
     try { return (await ExtensionBrowser.open(env, input, target?.expected)).browser; }
@@ -27,6 +35,11 @@ export async function launchAgentBrowser(env: AgentEnv, target?: { run: Extensio
 }
 
 export async function closeAgentBrowser(browser: Browser, evidence?: { env: AgentEnv; runId: string; phase: string }): Promise<void> {
+  const session = sessionBrowserFor(browser);
+  if (session) {
+    await session.close();
+    return;
+  }
   const extension = extensionBrowserFor(browser);
   if (extension) {
     let failure: unknown;
@@ -40,10 +53,21 @@ export async function closeAgentBrowser(browser: Browser, evidence?: { env: Agen
 }
 
 export async function newAgentPage(browser: Browser, context: BrowserContext): Promise<Page> {
+  // CHE-389: in a signed-in session the context is the person's; a run gets a
+  // tab of its own and never one that was already there.
+  const session = sessionBrowserFor(browser);
+  if (session) return session.newPage();
   return extensionBrowserFor(browser)?.page ?? context.newPage();
 }
 
 export async function closeAgentContext(browser: Browser, context: BrowserContext): Promise<void> {
+  // CHE-389: the person's context is never closed — only the tabs this run
+  // opened in it.
+  const session = sessionBrowserFor(browser);
+  if (session) {
+    await session.closePages();
+    return;
+  }
   // Closing the persistent profile before the runner's Stop sequence would
   // destroy the only surface capable of ending its paid application session.
   if (!extensionBrowserFor(browser)) await context.close();
@@ -86,6 +110,10 @@ export async function newAgentContext(
   targetUrl: string,
   bindings: Pick<AgentBindings, "SELF_CHECK_HOSTS">,
 ): Promise<BrowserContext> {
+  // CHE-389: the signed-in profile's own context — no options of ours on it,
+  // and no self-check announcement (our own hosts are never checked this way).
+  const session = sessionBrowserFor(browser);
+  if (session) return session.context();
   if (extensionBrowserFor(browser)) return browser.contexts()[0];
   const context = await browser.newContext(agentContextOptions(browser));
   // The routing itself lives in self-hosts.ts (pure, Playwright-free), so the
@@ -105,6 +133,12 @@ export interface SurfaceScanResult {
   screenshotUrl: string | null;
   /** CHE-390: the first page turned us away, twice, and showed nothing of the product. */
   door: ClosedDoor | null;
+  /**
+   * CHE-389: in a signed-in session, the app's address led somewhere that is
+   * not the app — the host it led to. The sign-in has ended (signed-out.ts).
+   * Null for every other run, and for a session run that reached the app.
+   */
+  signedOut: string | null;
 }
 
 export async function surfaceScan(
@@ -113,7 +147,9 @@ export async function surfaceScan(
   // CHE-372: the run, so the scan reads a password-protected store and not its
   // /password page — the store password and its state are loaded here, from
   // the run. Both fields required, so a caller that drops them does not compile.
-  run: { targetUrl: string; id: string; storePasswordEnc: string | null },
+  // CHE-389: and the origins allowed for it, so a session run that ends on one
+  // of them is not taken for a sign-in that has ended.
+  run: { targetUrl: string; id: string; storePasswordEnc: string | null; allowedOrigins?: string | null },
   // CHE-390: addresses the app is already known to have (the survey's pages),
   // tried before its first page is called a closed door.
   known: string[] = [],
@@ -121,12 +157,32 @@ export async function surfaceScan(
   const targetUrl = run.targetUrl;
   const store = await storeAccessFor(env, run);
   const context = await newAgentContext(browser, targetUrl, env.bindings);
-  const page = await context.newPage();
+  // CHE-389: through the same door as every other phase, so a run inside a
+  // signed-in session scans in a tab of its own (for an extension run this
+  // function is not called at all).
+  const inSession = Boolean(sessionBrowserFor(browser));
+  const page = inSession ? await newAgentPage(browser, context) : await context.newPage();
   await applyNameShim(page);
   try {
     let response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     if ((await unlockStoreGate(page, targetUrl, store)) === "unlocked") {
       response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
+    // CHE-389: where the address ended up, once the page has had its say — a
+    // product may send a visitor who is not signed in to its sign-in from a
+    // script, after the first document has loaded. Decided here, before a model
+    // sees anything; the caller ends the run on it.
+    let signedOut: string | null = null;
+    if (inSession) {
+      const allowed = parseAllowedOrigins(run.allowedOrigins, env.bindings.SELF_CHECK_HOSTS);
+      // "Loaded" is not the end of it, and neither is the first address that
+      // is not the app: the address is watched until it has stayed put
+      // (whereItSettled, signed-out.ts).
+      signedOut = await whereItSettled(
+        () => page.url(),
+        (url) => landedOutside(url, targetUrl, allowed),
+        (ms) => page.waitForTimeout(ms),
+      );
     }
     // The signal tables live in lib/tech-signals (CHE-132) so the free page
     // survey reads the same stack off a plain fetch that this scan reads off
@@ -191,9 +247,11 @@ export async function surfaceScan(
       techSignals: signals,
       internalLinkCount,
       screenshotUrl,
-      door,
+      // A sign-in that ended is not a closed door: it is access, not a gap.
+      door: signedOut ? null : door,
+      signedOut,
     };
   } finally {
-    await context.close();
+    await closeAgentContext(browser, context);
   }
 }

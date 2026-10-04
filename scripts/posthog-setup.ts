@@ -32,45 +32,50 @@
 // pre-existing flag by `feature_flag_key`; insights carry a `query`
 // (InsightVizNode → FunnelsQuery | TrendsQuery).
 //
+// Everything setup does is `runSetup`, and every request it makes goes through
+// `makeApi` (CHE-386): scripts/verify-lens-flags.ts runs both, as they are,
+// against a fake PostHog and reads every write. A flag write added here outside
+// reconcileFlag, or a rewrite of a request on its way out, is then a red guard
+// instead of something only `--live` finds after the bad write. The few lines
+// at the bottom that run when this file is executed hold no request of their own.
+//
 // Usage: npm run posthog:setup [-- --launch]
 
-import "dotenv/config";
 import { DECLARED_FLAGS, reconcileFlag } from "./posthog-flags";
 
 const PROJECT_ID = 595090;
 const APP_HOST = "https://us.posthog.com";
-const API = `${APP_HOST}/api/projects/${PROJECT_ID}`;
+export const API = `${APP_HOST}/api/projects/${PROJECT_ID}`;
 const FLAG_KEY = "landing-variant";
 const EXPERIMENT_NAME = "Landing headline A/B";
-const LAUNCH = process.argv.includes("--launch");
 
-const key = process.env.POSTHOG_PERSONAL_API_KEY;
-if (!key) {
-  console.error("POSTHOG_PERSONAL_API_KEY is not set (put it in .env; it is gitignored).");
-  process.exit(2);
-}
+type Api = <T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Promise<T>;
 
-async function api<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${method} ${path} → HTTP ${res.status}: ${text.slice(0, 600)}`);
-  return JSON.parse(text) as T;
+/** The one way setup talks to PostHog: the request as given, nothing added or changed on the way. */
+export function makeApi(fetchImpl: typeof fetch, key: string): Api {
+  return async <T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> => {
+    const res = await fetchImpl(`${API}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${method} ${path} → HTTP ${res.status}: ${text.slice(0, 600)}`);
+    return JSON.parse(text) as T;
+  };
 }
 
 type Listed<T> = { results: T[] };
+type Log = (line: string) => void;
 
 // ─── 1. Feature flag ────────────────────────────────────────────────────────
 
 type Flag = { id: number; key: string; active: boolean; filters: { multivariate?: { variants: { key: string; rollout_percentage: number }[] } } };
 
-async function ensureFlag(): Promise<Flag> {
+async function ensureFlag(api: Api, log: Log): Promise<Flag> {
   const found = (await api<Listed<Flag>>("GET", `/feature_flags/?search=${FLAG_KEY}&limit=50`)).results.find((f) => f.key === FLAG_KEY);
   if (found) {
-    console.log(`flag        exists  id=${found.id} key=${found.key} active=${found.active} variants=${JSON.stringify(found.filters.multivariate?.variants ?? [])}`);
+    log(`flag        exists  id=${found.id} key=${found.key} active=${found.active} variants=${JSON.stringify(found.filters.multivariate?.variants ?? [])}`);
     return found;
   }
   const created = await api<Flag>("POST", "/feature_flags/", {
@@ -87,7 +92,7 @@ async function ensureFlag(): Promise<Flag> {
       },
     },
   });
-  console.log(`flag        created id=${created.id} key=${created.key} active=${created.active}`);
+  log(`flag        created id=${created.id} key=${created.key} active=${created.active}`);
   return created;
 }
 
@@ -125,15 +130,15 @@ function funnelMetric(name: string, event: string): unknown {
   };
 }
 
-async function ensureExperiment(): Promise<Experiment> {
+async function ensureExperiment(api: Api, log: Log, launch: boolean): Promise<Experiment> {
   const found = (await api<Listed<Experiment>>("GET", `/experiments/?search=${encodeURIComponent(EXPERIMENT_NAME)}&limit=50`)).results.find(
     (e) => e.name === EXPERIMENT_NAME,
   );
   if (found) {
-    console.log(`experiment  exists  id=${found.id} flag=${found.feature_flag_key} start_date=${found.start_date ?? "draft"}`);
-    if (LAUNCH && !found.start_date) {
+    log(`experiment  exists  id=${found.id} flag=${found.feature_flag_key} start_date=${found.start_date ?? "draft"}`);
+    if (launch && !found.start_date) {
       const launched = await api<Experiment>("PATCH", `/experiments/${found.id}/`, { start_date: new Date().toISOString() });
-      console.log(`experiment  launched start_date=${launched.start_date}`);
+      log(`experiment  launched start_date=${launched.start_date}`);
       return launched;
     }
     return found;
@@ -147,7 +152,7 @@ async function ensureExperiment(): Promise<Experiment> {
     // variant keyed "control"); ours is code-driven, which PostHog calls
     // "product".
     type: "product",
-    start_date: LAUNCH ? new Date().toISOString() : null,
+    start_date: launch ? new Date().toISOString() : null,
     metrics: [funnelMetric("Landing → check submitted", "check_submitted")],
     metrics_secondary: [
       funnelMetric("Landing → sign-in clicked", "sign_in_clicked"),
@@ -161,7 +166,7 @@ async function ensureExperiment(): Promise<Experiment> {
     // names for us, which is the better default.
     allow_unknown_events: true,
   });
-  console.log(`experiment  created id=${created.id} flag=${created.feature_flag_key} start_date=${created.start_date ?? "draft"}`);
+  log(`experiment  created id=${created.id} flag=${created.feature_flag_key} start_date=${created.start_date ?? "draft"}`);
   return created;
 }
 
@@ -230,12 +235,12 @@ function insightUrl(i: Insight): string {
   return `${APP_HOST}/project/${PROJECT_ID}/insights/${i.short_id}`;
 }
 
-async function ensureInsight(spec: (typeof INSIGHTS)[number]): Promise<Insight> {
+async function ensureInsight(api: Api, log: Log, spec: (typeof INSIGHTS)[number]): Promise<Insight> {
   const found = (await api<Listed<Insight>>("GET", `/insights/?search=${encodeURIComponent(spec.name)}&saved=true&limit=50`)).results.find(
     (i) => i.name === spec.name,
   );
   if (found) {
-    console.log(`insight     exists  id=${found.id} ${insightUrl(found)}  ${found.name}`);
+    log(`insight     exists  id=${found.id} ${insightUrl(found)}  ${found.name}`);
     return found;
   }
   const created = await api<Insight>("POST", "/insights/", {
@@ -244,30 +249,43 @@ async function ensureInsight(spec: (typeof INSIGHTS)[number]): Promise<Insight> 
     saved: true,
     query: { kind: "InsightVizNode", source: spec.source },
   });
-  console.log(`insight     created id=${created.id} ${insightUrl(created)}  ${created.name}`);
+  log(`insight     created id=${created.id} ${insightUrl(created)}  ${created.name}`);
   return created;
 }
 
 // ─── Run ────────────────────────────────────────────────────────────────────
 
-async function main() {
-  const flag = await ensureFlag();
+export async function runSetup(api: Api, opts: { launch: boolean; log?: Log }): Promise<void> {
+  const log = opts.log ?? console.log;
+  const flag = await ensureFlag(api, log);
   const serverFlags: { id: number; key: string }[] = [];
-  for (const declared of DECLARED_FLAGS) serverFlags.push(await reconcileFlag(api, declared));
-  const experiment = await ensureExperiment();
+  for (const declared of DECLARED_FLAGS) serverFlags.push(await reconcileFlag(api, declared, log));
+  const experiment = await ensureExperiment(api, log, opts.launch);
   const insights: Insight[] = [];
-  for (const spec of INSIGHTS) insights.push(await ensureInsight(spec));
+  for (const spec of INSIGHTS) insights.push(await ensureInsight(api, log, spec));
 
-  console.log("\nsummary");
-  console.log(`  flag        ${flag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${flag.id}`);
-  for (const f of serverFlags) console.log(`  flag        ${f.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${f.id}  (${f.key})`);
-  console.log(
+  log("\nsummary");
+  log(`  flag        ${flag.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${flag.id}`);
+  for (const f of serverFlags) log(`  flag        ${f.id}  ${APP_HOST}/project/${PROJECT_ID}/feature_flags/${f.id}  (${f.key})`);
+  log(
     `  experiment  ${experiment.id}  ${APP_HOST}/project/${PROJECT_ID}/experiments/${experiment.id}  (${experiment.start_date ? "running" : "draft — run with --launch when variant B ships"})`,
   );
-  for (const i of insights) console.log(`  insight     ${i.id}  ${insightUrl(i)}  ${i.name}`);
+  for (const i of insights) log(`  insight     ${i.id}  ${insightUrl(i)}  ${i.name}`);
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Run as a script (`npm run posthog:setup`), not when the guard imports it —
+// which is also why the environment is read here and not at the top.
+if (require.main === module) {
+  void (async () => {
+    await import("dotenv/config");
+    const key = process.env.POSTHOG_PERSONAL_API_KEY;
+    if (!key) {
+      console.error("POSTHOG_PERSONAL_API_KEY is not set (put it in .env; it is gitignored).");
+      process.exit(2);
+    }
+    await runSetup(makeApi(fetch, key), { launch: process.argv.includes("--launch") });
+  })().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

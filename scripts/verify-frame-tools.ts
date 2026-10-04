@@ -437,9 +437,16 @@ async function main() {
       check("read_page: a bot-protection frame is never read", !digest.includes("Verify you are human") && !digest.includes("I am human"));
 
       // A bot-protection widget stays out of reach, named or searched for.
-      const challengeByName = await executeTool(env, "fill", { label: "I am human", value: "x", frame: "challenge" });
+      // Two locks on it. Asked for in words that say what it is, the control is
+      // refused before any frame is looked for (CHE-401, verify-human-check)…
+      const challengeByWords = await executeTool(env, "fill", { label: "I am human", value: "x", frame: "challenge" });
+      check("challenge: refused by what it is called, before any frame is picked", challengeByWords.startsWith("Refused:") && /human-verification challenge/.test(challengeByWords), challengeByWords);
+      const challengeClickByWords = await executeTool(env, "click", { role: "checkbox", name: "I am human", frame: "4" });
+      check("challenge: the same for a click", challengeClickByWords.startsWith("Refused:") && /human-verification challenge/.test(challengeClickByWords), challengeClickByWords);
+      // …and asked for in words that say nothing, its frame still cannot be picked.
+      const challengeByName = await executeTool(env, "fill", { selector: "#cb", value: "x", frame: "challenge" });
       check("challenge frame: cannot be picked by name", challengeByName.startsWith('No frame matches "challenge"'), challengeByName);
-      const challengeByNumber = await executeTool(env, "click", { role: "checkbox", name: "I am human", frame: "4" });
+      const challengeByNumber = await executeTool(env, "click", { selector: "input", frame: "4" });
       check("challenge frame: cannot be picked by number", challengeByNumber.startsWith('No frame matches "4"'), challengeByNumber);
       const challengeFrame = env.page.frames().find((f) => f.url().startsWith(CHALLENGE))!;
       check("challenge frame: untouched", (await challengeFrame.evaluate(() => document.body.dataset.touched ?? "no")) === "no");

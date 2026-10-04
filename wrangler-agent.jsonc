@@ -20,10 +20,22 @@
   // EMAIL_REPLY_TO is a mailbox somebody reads: hello@ is routed by Cloudflare
   // Email Routing to the owner (enabled 2026-09-29; before that the domain had
   // no MX and every reply bounced).
+  // SESSION_HOST_URL (CHE-389): the session host's server, for apps checked
+  // inside a browser a person signed in to. Its three credentials are secrets:
+  // SESSION_ACCESS_CLIENT_ID, SESSION_ACCESS_CLIENT_SECRET (the Cloudflare
+  // Access service token) and SESSION_SERVER_TOKEN (the server's own bearer) —
+  // `wrangler secret put <NAME> --config wrangler-agent.jsonc`, values in GCP
+  // Secret Manager (spikes/shopify-session/README.md).
+  // SESSION_SIGN_IN_URL: where a person signs in on that host. When the
+  // sign-in there has ended, the run says so and the person is told once, in
+  // the owner's chat — which needs two more secrets, TELEGRAM_BOT_TOKEN and
+  // OWNER_TELEGRAM_CHAT_ID. Without them nothing is sent (signed-out.ts).
   "vars": {
     "APP_URL": "https://checkmyapp.dev",
     "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>",
-    "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>"
+    "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>",
+    "SESSION_HOST_URL": "https://session-api.checkmyapp.dev",
+    "SESSION_SIGN_IN_URL": "https://session.checkmyapp.dev"
   },
   "browser": {
     "binding": "MYBROWSER"

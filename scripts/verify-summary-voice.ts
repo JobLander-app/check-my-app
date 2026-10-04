@@ -203,6 +203,57 @@ const TOOLS: Array<[string, string | null]> = [
   ["The link check ran through verify_links and every link resolved.", null],
 ];
 
+// ─── Our click, speaking (CHE-392) ────────────────────────────────────────────
+// Since CHE-392 a click tells the model what text became visible after it, and
+// the model began to say where it had heard that. Run cmuqei9b… on our own
+// site, 2026-10-02, the first run after that change, published the first
+// sentence below in a step's `observed`. The clause goes; what the product did
+// stays.
+const CLICK_VOICE: Array<[string, string | null]> = [
+  [
+    "The disclosure expanded and revealed Test email, Test password, a free-text notes box and a 'Where to email the result?' field; the click reported the newly visible text.",
+    "The disclosure expanded and revealed Test email, Test password, a free-text notes box and a 'Where to email the result?' field.",
+  ],
+  [
+    "The button's label changed to \"copied ✓\" for a moment, as the click's result listed.",
+    "The button's label changed to \"copied ✓\" for a moment.",
+  ],
+  [
+    "The label switched to 'Saved' — the click itself returned that text, and it was gone by the next read.",
+    "The label switched to 'Saved'.",
+  ],
+  ["The click reported the text 'Saved'.", null],
+  ["The settings form closed after saving, and the click returned the newly visible text 'Draft stored'.", "The settings form closed after saving."],
+  ["The badge read 'Saved' but had reverted to 'Save' by the next read.", null],
+];
+// The product's own clicks are not ours.
+const CLICK_PRODUCT = [
+  "Clicking 'copy' changes the button's label to 'copied ✓' for about a second.",
+  "The click-through report lists 12 campaigns and the click count updates on refresh.",
+  "A click on the row opens the detail panel, which showed the order's status.",
+  "The dashboard's 'Next read' badge shows the article queued after this one.",
+  // Cross-review of #244: a click is also what the PRODUCT reacts to, and the
+  // verbs "returned", "showed", "recorded" are its reaction as often as our
+  // tool's voice. Cutting these removes the finding's own evidence — worse
+  // than the leak. And a click is some products' own object.
+  "The click returned a 500 from /api/save and the form stayed as it was.",
+  "The click showed a toast reading 'Saved'.",
+  "The click shows a spinner and then nothing.",
+  "The click showed the message 'Invalid email' under the field.",
+  "The dashboard shows the click recorded a minute ago.",
+  "The click showed up in the report after a refresh.",
+  "The counter stays stale until the next read from the API.",
+  // Round 2 of Codex on #244: the click as an object is the product's, and
+  // "itself" does not make a product's reaction ours.
+  "The audit log recorded the click itself, but no save event appeared.",
+  "The click itself returned a 500 and the page stayed as it was.",
+  "The export shows the click's result in a column named 'Outcome'.",
+  // Round 3: a participle after "the click" is not its verb.
+  "The export shows the click's result listed in the Outcome column.",
+  "The click reported by the audit log had no matching save event.",
+  "The click noted in the activity feed is dated a day earlier than the order.",
+];
+
 // A scripted model: any call is the summary call (finalizeJson sends no
 // tools); counts them and answers `reply`.
 function scriptedLlm(reply: string) {
@@ -297,6 +348,17 @@ async function main() {
     const out = stripNarration(s, "");
     check(`tools: ${JSON.stringify(s)}`, out === (after ?? ""), out);
     check(`  … no tool named in what remains`, !MACHINERY_TERMS.test(out), out);
+  }
+
+  // 5b — our click, speaking: the clause it speaks in is cut, the product's
+  // half of the sentence stays; the product's own "click" is untouched.
+  for (const [s, after] of CLICK_VOICE) {
+    const out = productProse(s);
+    check(`click voice: ${JSON.stringify(s)}`, out === after, out ?? "(null)");
+    check(`  … hasNarration sees it`, hasNarration(s));
+  }
+  for (const s of CLICK_PRODUCT) {
+    check(`the product's click: ${JSON.stringify(s)}`, productProse(s, 0) === s && !hasNarration(s), productProse(s, 0) ?? "(null)");
   }
 
   // 6 — summarizeWalk: the envelope alone is not a summary, so the walk asks

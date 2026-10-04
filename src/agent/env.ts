@@ -79,6 +79,24 @@ export interface AgentBindings {
   // the self-check of 2026-09-05 (run #146) created two real runs on a
   // stranger's app and graded a stranger's verdict. Unset → production only.
   SELF_CHECK_HOSTS?: string;
+  // CHE-389: the session host — a browser a person signed in to, for products
+  // whose sign-in we cannot perform (the Shopify admin's has a captcha). A run
+  // of an app whose kind is "session" works there, through the host's session
+  // server: its address, the Cloudflare Access service token that lets the
+  // request reach it, and the server's own bearer token. All four or the kind
+  // cannot run (session-browser.ts).
+  SESSION_HOST_URL?: string;
+  SESSION_ACCESS_CLIENT_ID?: string;
+  SESSION_ACCESS_CLIENT_SECRET?: string;
+  SESSION_SERVER_TOKEN?: string;
+  // CHE-389: when the sign-in on the session host has ended, the person who
+  // signs in is told — once per ended sign-in (signed-out.ts) — in the owner's
+  // chat (CHE-375): the bot's token and the chat, both secrets, and the address
+  // to sign in at (a var). Without the token or the chat nothing is sent; the
+  // run still ends Not verified and says why.
+  TELEGRAM_BOT_TOKEN?: string;
+  OWNER_TELEGRAM_CHAT_ID?: string;
+  SESSION_SIGN_IN_URL?: string;
 }
 
 export interface AgentEnv {

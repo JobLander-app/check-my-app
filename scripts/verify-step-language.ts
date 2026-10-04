@@ -38,7 +38,9 @@ import {
   MACHINERY_TERMS,
   NOT_DEFECT_FALLBACK,
   PROBLEM_FALLBACK,
+  productName,
   productProse,
+  productStepLabel,
   UNVERIFIABLE_FALLBACK,
 } from "@/lib/verdict-language";
 
@@ -313,6 +315,136 @@ async function main() {
   check("productProse: 'agent' and 'test environment' are dropped",
     productProse("The pricing page lists three plans with prices. The agent could not click in the test environment.") ===
       "The pricing page lists three plans with prices.");
+
+  // ── CHE-396: a name is not prose ──
+  // Run cmuqfizeu… (our own guide page, 2026-10-02): five steps named "Check
+  // this part of the product" and the journey "Connect a coding agent for
+  // automated checks" listed as "A journey". A name is one sentence, so a name
+  // holding agent / model / browser / environment / screenshot / automation /
+  // checker / tooling was dropped whole.
+  const NAMES = [
+    "Connect a coding agent for automated checks",
+    "Open the Connect-your-agent guide",
+    "Follow the Connect-Your-Agent guide and copy the integration snippets",
+    "Choose a model for the assistant",
+    "Install the browser extension",
+    "Switch the environment to staging",
+    "Block visitors by browser and device",
+    "Review the Automation rules",
+    "Upload a screenshot of the receipt",
+    "Extract text from the screenshot",
+    "Ask the agent a billing question",
+    // a product with a test mode
+    "Open the test environment settings",
+    "Switch the workspace to the test environment",
+    "Create the test agent",
+    "The agent replies to a customer question",
+    // labels prod has stored (Step.label, runs #20–#179), found by the
+    // cross-review: the product's, and until now blanked
+    "Open agent transcript JSON",
+    "View the agent transcript JSON",
+    "Click Pricing in nav → view pricing model",
+    "User installs extension into Chrome browser",
+    "Install the extension in the browser",
+    "Scroll through specialist agent tabs (Signals, Scouts, Inbox, Pull requests)",
+    "Read FAQ answers about agent checks, source code, and free tier limits",
+    "Open screenshot evidence link",
+    "Verify run artifacts (screenshots and test specs)",
+    "Expand an agent step to see sub-actions",
+    "Open /practice and observe agent selection",
+  ];
+  for (const s of NAMES) {
+    check(`a name keeps its words: ${JSON.stringify(s)}`, productStepLabel(s) === s && productName(s) === s, productStepLabel(s));
+  }
+  check("…every one of them is dropped by the prose gate (what happened to them until now)", NAMES.every((s) => productProse(s, 0) === null));
+  check("a name still loses our side: the phrase gate", productStepLabel("Upload a file. Done in our test browser.") === "Upload a file.", productStepLabel("Upload a file. Done in our test browser."));
+  check("a name still loses our side: headless, harness, a tool's name",
+    productName("Checked in the headless harness") === null && productName("Ran read_page on the pricing page") === null);
+  check("a name that was only ours gets the placeholder", productStepLabel("Our headless browser.") === "Check this part of the product");
+  // The walk speaking in a name is caught by shape (cross-review of #246): the
+  // noun as the one acting, our determiner, our evidence.
+  const WALK_VOICE = [
+    "The agent tried to sign in but the form never submitted.",
+    "The agent attempted to click Save and nothing happened.",
+    "The agent was blocked by a CAPTCHA on the sign-up page.",
+    "The agent got stuck on the login form.",
+    "The agent never reached the dashboard.",
+    "The agent ran out of steps before checkout.",
+    "The automated browser could not play the video.",
+    "This may be an artifact of automation rather than a real defect.",
+    "Automated browsers are often blocked by this kind of protection.",
+    "This could not be confirmed in an automated environment.",
+    "Playback is unavailable in the testing environment.",
+    "In the current environment, microphone access is denied.",
+    "The final screenshot shows an empty cart.",
+    "Screenshots show the page blank after submit.",
+    "A later screenshot showed the spinner still running.",
+    "The Save button could not be clicked by the agent.",
+    "The checker saw a blank page.",
+    "The agent waited for the page to load.",
+    "The agent was redirected to the login page.",
+    "The agent received a 403 on the dashboard.",
+    "The agent's session expired midway.",
+    "The agent hit a rate limit.",
+    "The agent had no credentials for this step.",
+    "The agent skipped this step.",
+    "The agent could not be signed in.",
+    "Agent could not click the button.",
+    "The agent's click did nothing.",
+    "The click was performed by the model.",
+    "The browser was closed before the upload finished.",
+    "The browser crashed during checkout.",
+    "The browser session has no microphone.",
+    "The browser used for this check blocks third-party cookies.",
+    "The environment has no camera.",
+    "The environment blocked the popup.",
+    "The model could not determine whether the payment went through.",
+    "The model was not sure the toast appeared.",
+    "According to the model, the page looked fine.",
+    "No screenshot was captured for this step.",
+    "Automation was detected and the form was disabled.",
+    "The automation triggered bot protection.",
+    "In the agent's browser the video did not autoplay.",
+    "The agent is not a real user, so the consent banner was dismissed.",
+    "The model could not click the Save button.",
+    "The model got stuck on the login form.",
+    "The agent tried clicking the Save button.",
+    "Screenshot shows the checkout page after Save was clicked.",
+    "The screenshot did not show the modal after Save was clicked.",
+    "This environment blocked camera access.",
+    // five labels prod has stored that are the walk's voice (runs #32–#140)
+    "Capture full-page screenshot",
+    "Capture screenshot as evidence of static page",
+    "Confirm static page layout via screenshot",
+    "Screenshot + agent transcript + action buttons (via page digest & network log)",
+    "Browser navigates to Chrome Web Store listing",
+    // the same two shapes and their neighbours, invented
+    "Agent clicks Sign in",
+    "Take a screenshot of the dashboard",
+    "No screenshot captured",
+    "Waiting for the agent",
+    "Let the agent sign in",
+    "Resume the agent after the CAPTCHA",
+    "Ask the model whether the toast appeared",
+    "Launch browser and open the home page",
+    "Retry in a fresh browser context",
+    "Agent: open the dashboard",
+  ];
+  for (const s of WALK_VOICE) {
+    check(`the walk speaking, as a name: ${JSON.stringify(s)}`, productName(s) === null, productName(s) ?? "(null)");
+  }
+  // Prose is not touched by this ticket: every sentence above is dropped by
+  // the prose gate exactly as on main — nothing here opens the list for prose.
+  for (const s of WALK_VOICE) {
+    check(`the walk speaking, as prose (unchanged): ${JSON.stringify(s)}`, productProse(s) === null, productProse(s) ?? "(null)");
+  }
+  {
+    const s: ReportedStep = { label: "Connect a coding agent for automated checks", status: "ok", attempted: "Asked the agent a question.", observed: "The agent replied with a link." };
+    productizeStep(s);
+    check("report_step: the label is written as reported; the prose about an agent is still dropped",
+      s.label === "Connect a coding agent for automated checks" && s.attempted === s.label && s.observed === NOT_DEFECT_FALLBACK,
+      `${s.label} / ${s.attempted} / ${s.observed}`);
+  }
 
   // The live progress note carries the stripped label.
   {

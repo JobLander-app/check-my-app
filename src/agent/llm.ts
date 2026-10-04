@@ -10,6 +10,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentBindings } from "./env";
+import { inOwnWords } from "@/lib/model-text";
 import RECOMMENDED_TIER from "./model-tier.recommended.json";
 
 export interface LlmConfig {
@@ -224,7 +225,10 @@ export async function createOnRoutes(
   for (let i = 0; i < routes.length; i += 1) {
     const route = routes[i];
     try {
-      const message = await route.client.messages.create({ ...params, model: route.model });
+      // CHE-402: the verdict's own model answers through here, not through
+      // createWithRetry — its words lose the model's "&amp;" all the same,
+      // before a finding or a bottom line is read out of them.
+      const message = inOwnWords(await route.client.messages.create({ ...params, model: route.model }));
       for (const r of refusals) r.answeredBy = route.model;
       return { message, model: route.model, refusals };
     } catch (err) {
