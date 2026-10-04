@@ -7,7 +7,7 @@ import { useIssueMark } from "@/components/issue-marks";
 // The owner's answer on an Issues row (CHE-413): the answer given so far as
 // text, and one "Actions" button whose menu holds the four answers. Choosing
 // the current one again withdraws it. The write is the one the problem's own
-// page makes (useIssueMark — PATCH /api/findings/{id} on the finding of the
+// page makes (useIssueMark — the markFinding action on the finding of the
 // latest sighting, then a refresh).
 //
 // The menu is positioned from the button's own box at the moment it opens and
@@ -34,7 +34,7 @@ export function IssueActions({ findingId, mark: initial }: { findingId: string; 
 
   function choose(next: IssueMark) {
     close();
-    void set(next);
+    set(next);
   }
 
   return (
