@@ -3,8 +3,10 @@
 // The Linear and PostHog flows bounce back with `?integration=<outcome>`. Every
 // branch either route can take ends on one of these sentences, because a person
 // who pressed Connect and was told nothing will press it again. Shared by the
-// pages the flows return to (Today for Linear, Integrations for PostHog).
+// pages the flows return to (the app's Integrations section for Linear, Today
+// when the app is not known yet, Integrations for PostHog).
 const NOTICES: Record<string, { text: string; ok: boolean }> = {
+  linear_connected: { text: "Linear is connected — problems found on this app go to its board.", ok: true },
   linear_unconfigured: { text: "Linear isn't connected yet — the integration is being set up.", ok: false },
   linear_failed: { text: "Couldn't connect Linear — please try again.", ok: false },
   posthog_connected: { text: "PostHog is connected — we can read your funnels, and only read them.", ok: true },

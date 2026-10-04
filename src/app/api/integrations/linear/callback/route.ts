@@ -8,15 +8,19 @@ import { requireUser } from "@/lib/auth";
 import { exchangeCode, fetchFirstTeam } from "@/lib/tracker/linear-oauth";
 import { encryptSecret } from "@/lib/crypto";
 import { alreadyScoped } from "@/lib/tenant-db";
+import { appPath } from "@/lib/app-shell";
 
-function back(req: NextRequest, status: string) {
-  return NextResponse.redirect(new URL(`/home?linear=${status}`, req.nextUrl.origin));
+// Every exit lands on a sentence from src/lib/integration-notice.ts (CHE-67):
+// on the app's Integrations section, where Connect was pressed, once the app is
+// known from the state; on Today before that — never a raw JSON error or an
+// opaque status code.
+function back(req: NextRequest, outcome: "linear_connected" | "linear_failed", appId?: string) {
+  const page = appId ? appPath.section(appId, "integrations") : "/home";
+  return NextResponse.redirect(new URL(`${page}?integration=${outcome}`, req.nextUrl.origin));
 }
 
-// Any error along the OAuth callback lands the user on a friendly notice on
-// Today (CHE-67) rather than a raw JSON error or an opaque status code.
-function fail(req: NextRequest) {
-  return NextResponse.redirect(new URL("/home?integration=linear_failed", req.nextUrl.origin));
+function fail(req: NextRequest, appId?: string) {
+  return back(req, "linear_failed", appId);
 }
 
 export async function GET(req: NextRequest) {
@@ -45,7 +49,7 @@ export async function GET(req: NextRequest) {
 
   const { env } = getCloudflareContext();
   const e = env as Record<string, string | undefined>;
-  if (!e.LINEAR_CLIENT_ID || !e.LINEAR_CLIENT_SECRET) return fail(req);
+  if (!e.LINEAR_CLIENT_ID || !e.LINEAR_CLIENT_SECRET) return fail(req, app.id);
 
   let token;
   try {
@@ -56,7 +60,7 @@ export async function GET(req: NextRequest) {
       clientSecret: e.LINEAR_CLIENT_SECRET,
     });
   } catch {
-    return fail(req);
+    return fail(req, app.id);
   }
 
   const expiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000) : null;
@@ -93,5 +97,5 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return back(req, "connected");
+  return back(req, "linear_connected", app.id);
 }

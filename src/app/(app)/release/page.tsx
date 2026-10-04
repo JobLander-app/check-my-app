@@ -4,13 +4,13 @@ import { requireUser } from "@/lib/auth";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { teamOwned } from "@/lib/tenant-db";
 import { VERDICT_META } from "@/lib/status";
-import { usd } from "@/lib/plans";
 import { appPath, checkHref } from "@/lib/app-shell";
 import { shellData } from "@/lib/shell-data";
 import { releasesByTeam } from "@/lib/releases";
 import { commitHref, envLabel, releasesHref, releasesLine, shortSha } from "@/lib/release-page";
 import { dayLabel, hhmm } from "@/lib/today";
 import { ReleaseDelta } from "@/components/release-delta";
+import { CheckPrice } from "@/components/check-price";
 
 const DAYS = 90;
 
@@ -111,7 +111,16 @@ export default async function ReleasesPage({ searchParams }: { searchParams: Pro
                       <Link href={checkHref(r)} className="font-mono text-[13px] text-accent hover:underline">
                         #{r.runNumber}
                       </Link>
-                      {r.priceUsd !== null && <span className="ml-auto font-mono text-sm">{usd(r.priceUsd)}</span>}
+                      {r.priceUsd !== null && (
+                        <CheckPrice
+                          publicId={r.publicId}
+                          priceUsd={r.priceUsd}
+                          checkHref={checkHref(r)}
+                          label={null}
+                          title={`${nameOf.get(r.appId ?? "") ?? r.appSlug}, check #${r.runNumber}`}
+                          className="ml-auto"
+                        />
+                      )}
                     </div>
                     <ReleaseDelta release={r} />
                   </article>

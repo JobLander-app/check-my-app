@@ -18,6 +18,7 @@ import { projectChoicesFor } from "@/lib/posthog/choices";
 import { fetchTeams } from "@/lib/tracker/linear-oauth";
 import { freshLinearToken } from "@/lib/tracker/token";
 import { appRunsTheAction } from "@/lib/release-action";
+import { integrationNotice } from "@/lib/integration-notice";
 import { setAppNotifiers, setIntegrationEndpoints, updateAppSettings } from "@/app/dashboard/actions";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,13 +44,15 @@ export default async function AppSettingsSection({
   searchParams,
 }: {
   params: Promise<{ appId: string; section: string }>;
-  // What a save bounces back: that it was saved, or the sentence it was refused with.
-  searchParams: Promise<{ saved?: string; error?: string }>;
+  // What a save bounces back: that it was saved, or the sentence it was refused
+  // with. What the Linear flow bounces back: its outcome (src/lib/integration-notice.ts).
+  searchParams: Promise<{ saved?: string; error?: string; integration?: string }>;
 }) {
   const { appId, section: raw } = await params;
-  const { saved, error } = await searchParams;
+  const { saved, error, integration } = await searchParams;
   const section = settingsSection(raw);
   if (!section) notFound();
+  const notice = integrationNotice(integration);
 
   const { user, db, team } = await requireUser();
   const app = await db.app.findFirst({
@@ -78,6 +81,18 @@ export default async function AppSettingsSection({
       {error && (
         <p role="alert" className="rounded-lg border border-status-broken/40 bg-status-broken/10 px-4 py-2.5 text-sm text-status-broken">
           Not saved: {error}
+        </p>
+      )}
+      {notice && (
+        <p
+          role={notice.ok ? "status" : "alert"}
+          className={
+            notice.ok
+              ? "rounded-lg border border-status-ok/40 bg-status-ok/5 px-4 py-2.5 text-sm text-status-ok"
+              : "rounded-lg border border-status-confusing/40 bg-status-confusing/10 px-4 py-2.5 text-sm text-status-confusing"
+          }
+        >
+          {notice.text}
         </p>
       )}
 
