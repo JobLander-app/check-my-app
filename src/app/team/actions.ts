@@ -45,7 +45,7 @@ async function membersOf(db: PrismaClient, teamId: string): Promise<MemberRow[]>
 }
 
 export async function inviteMemberAction(formData: FormData): Promise<void> {
-  await refuseSelfCheck("/team");
+  await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("member.invite");
   const parsed = checkInviteRequest({
     email: String(formData.get("email") ?? ""),
@@ -94,7 +94,7 @@ export async function inviteMemberAction(formData: FormData): Promise<void> {
 }
 
 export async function revokeInviteAction(inviteId: string): Promise<void> {
-  await refuseSelfCheck("/team");
+  await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("member.invite");
   const invite = await db.teamInvite.findFirst({
     where: { id: inviteId, teamId: team.id },
@@ -118,7 +118,7 @@ export async function revokeInviteAction(inviteId: string): Promise<void> {
 }
 
 export async function changeScopeAction(userId: string, formData: FormData): Promise<void> {
-  await refuseSelfCheck("/team");
+  await refuseSelfCheck("/settings/team");
   const scope = String(formData.get("scope") ?? "");
   const { user, db, team } = await requireActionScope("member.scope.change");
   const members = await membersOf(db, team.id);
@@ -146,7 +146,7 @@ export async function changeScopeAction(userId: string, formData: FormData): Pro
 }
 
 export async function removeMemberAction(userId: string): Promise<void> {
-  await refuseSelfCheck("/team");
+  await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("member.remove");
   const members = await membersOf(db, team.id);
   const decision = decideRemoval(members, userId, user.id);
@@ -167,7 +167,7 @@ export async function removeMemberAction(userId: string): Promise<void> {
 }
 
 export async function leaveTeamAction(): Promise<void> {
-  await refuseSelfCheck("/team");
+  await refuseSelfCheck("/settings/team");
   // Leaving is not an admin action: any member may do it, so the scope asked
   // for is the one everybody has.
   const { user, db, team } = await requireActionScope("read");
