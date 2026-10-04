@@ -20,23 +20,32 @@ export function CheckPrice({ explanation, label = "This check", open = false }: 
         <span className="text-fg-muted">{money(e.price_usd)}</span>
         <span className="underline decoration-dotted underline-offset-2">why?</span>
       </summary>
-      <div className="mt-2 min-w-64 max-w-md space-y-2 rounded-md border border-ink-700 bg-ink-850 p-3 text-left font-sans text-xs leading-5 text-fg-muted">
-        <p className="text-fg">{e.work}.</p>
-        {e.comparison && <p>{e.comparison}</p>}
-        {e.parts.length > 0 && (
-          <ul className="space-y-0.5">
-            {e.parts.map((p) => (
-              <li key={p.label} className="flex justify-between gap-4">
-                <span className="min-w-0 truncate">
-                  {p.label}
-                  {p.steps !== undefined && <span className="text-fg-faint"> · {p.steps} step{p.steps === 1 ? "" : "s"}</span>}
-                </span>
-                <span className="font-mono">{money(p.price_usd)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <PriceReason explanation={e} className="mt-2 min-w-64 max-w-md" />
     </details>
+  );
+}
+
+// The reason on its own — for a place that has already shown the price and
+// has room of its own for the answer (a row under a table's row, CHE-412),
+// where a box that insists on its minimum width would run past the edge.
+export function PriceReason({ explanation: e, className = "" }: { explanation: PriceExplanation; className?: string }) {
+  return (
+    <div className={`space-y-2 rounded-md border border-ink-700 bg-ink-850 p-3 text-left font-sans text-xs leading-5 text-fg-muted ${className}`}>
+      <p className="text-fg">{e.work}.</p>
+      {e.comparison && <p>{e.comparison}</p>}
+      {e.parts.length > 0 && (
+        <ul className="space-y-0.5">
+          {e.parts.map((p) => (
+            <li key={p.label} className="flex justify-between gap-4">
+              <span className="min-w-0 truncate">
+                {p.label}
+                {p.steps !== undefined && <span className="text-fg-faint"> · {p.steps} step{p.steps === 1 ? "" : "s"}</span>}
+              </span>
+              <span className="font-mono">{money(p.price_usd)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

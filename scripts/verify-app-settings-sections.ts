@@ -144,8 +144,17 @@ check("no form is nested in another", !nested && depth === 0 && (page.match(/<fo
 check("each section's form is saved by the action bound to that section", /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 4);
 check("a section the app does not have opens the first one; an address that is no section is not found",
   /if \(!sectionsFor\(app\)\.some\(\(s\) => s\.key === section\)\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(page) && /if \(!section\) notFound\(\)/.test(page));
+// CHE-412: the other-team state is an ordinary page of the app (breadcrumb,
+// title, the card with the switch), one component for the settings, the
+// check and the app's page.
+const otherTeam = read("src/components/other-team-app.tsx");
 check("the settings address opens the first section, and still answers for an app of another team of yours",
-  /if \(app\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(root) && /memberOfRows\(user\.id\)/.test(root) && /switchTeamAction\.bind/.test(root));
+  /if \(app\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(root) && /memberOfRows\(user\.id\)/.test(root) && /<OtherTeamApp/.test(root) && /switchTeamAction\.bind\(null, app\.teamId, to\)/.test(otherTeam));
+check("…as do the check page and the app's page, each landing back on itself after the switch",
+  /<OtherTeamApp[^>]*to=\{appPath\.check\(appId, runNumber\)\}/.test(read("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")) &&
+    /<OtherTeamApp[^>]*to=\{appPath\.page\(appId\)\}/.test(read("src/app/(app)/health/apps/[appId]/page.tsx")) &&
+    /<OtherTeamApp[^>]*to=\{appPath\.settings\(appId\)\}/.test(root));
+check("…with the breadcrumb and the app's name as the title", /aria-label="Breadcrumb"/.test(otherTeam) && /All apps/.test(otherTeam) && /<h1[^>]*>\{name\}<\/h1>/.test(otherTeam));
 check("the frame reads the team's app and steps aside when it is not the team's", /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(layout) && /if \(!app\) return <>\{children\}<\/>/.test(layout));
 check("what a save bounced back is shown: saved, or the sentence it was refused with", /role="status"/.test(page) && /Not saved: \{error\}/.test(page));
 check("the sub-navigation holds no effect", !/useEffect/.test(read("src/components/app-settings/settings-nav.tsx")));

@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { teamOwned } from "@/lib/tenant-db";
@@ -10,10 +11,12 @@ import { appHealth, teamSpend } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { explainPrice } from "@/lib/check-price";
 import { BY_SCHEDULE, ON_REQUEST } from "@/lib/started-via";
-import { CheckPrice } from "@/components/check-price";
+import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
+import { PriceReason } from "@/components/check-price";
 import {
   CHECKS_PAGE,
   STARTED_FILTERS,
+  type Outcome,
   checksHref,
   checksLine,
   outcome,
@@ -25,6 +28,43 @@ import {
 
 const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-[18px] last:pr-[18px]";
 const TD = "border-b border-ink-800 px-3 py-3 align-top first:pl-[18px] last:pr-[18px]";
+
+// The pieces a row and a card share, so the two cannot say different things.
+function AppName({ ownApp, label }: { ownApp: string | null; label: string }) {
+  return ownApp ? (
+    <Link href={appPath.page(ownApp)} className="text-fg hover:underline">
+      {label}
+    </Link>
+  ) : (
+    <span className="text-fg-muted">{label}</span>
+  );
+}
+
+function Result({ result, meta }: { result: Outcome; meta: (typeof VERDICT_META)[string] | null }) {
+  return result.kind === "verdict" ? (
+    <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${meta?.pillClassName ?? "border-ink-600 text-fg-faint"}`}>
+      {meta?.label ?? result.verdict}
+    </span>
+  ) : (
+    <span className="text-[13px] text-fg-muted">{result.kind === "running" ? "Running" : "Did not finish"}</span>
+  );
+}
+
+// A check that did not finish is ours and is not charged (CLAUDE.md §4): it
+// says so, whether its price was never written or written as zero. The opened
+// price (?why=) is marked; its reason is drawn under the row, where there is
+// room for it (a box in the price column ran past the card's edge).
+function Price({ run, result, opened, href }: { run: { priceUsd: number | null }; result: Outcome; opened: boolean; href: string }) {
+  if (run.priceUsd === null || (result.kind === "unfinished" && run.priceUsd === 0)) {
+    return <span className="text-[13px] text-fg-faint">{result.kind === "unfinished" ? "not charged" : "—"}</span>;
+  }
+  if (opened) return <span aria-current="true" className="whitespace-nowrap font-mono text-accent">{usd(run.priceUsd)}</span>;
+  return (
+    <Link href={href} className="whitespace-nowrap font-mono text-fg underline decoration-dotted underline-offset-2 hover:text-accent">
+      {usd(run.priceUsd)}
+    </Link>
+  );
+}
 
 // Health → Checks (CHE-360, direction C): every check of the team, newest
 // first — number, app, when, what started it, how it came out, its price — by
@@ -83,6 +123,14 @@ export default async function ChecksPage({
 
   const mine = app ? health?.apps.find((a) => a.appId === app.id) : undefined;
   const windowDays = health?.windowDays ?? totals?.windowDays ?? 30;
+  const rows = runs.map((run) => {
+    const result = outcome(run, LIVE_RUN_STATUSES);
+    const ownApp = run.appId ?? onlyAppOf.get(run.appSlug) ?? null;
+    // A finished check opens inside the app; one that is running or did not
+    // finish has its own page, which says where it stands.
+    const href = result.kind === "verdict" ? checkHref({ appId: ownApp, runNumber: run.runNumber, publicId: run.publicId }) : `/run/${run.publicId}`;
+    return { run, result, ownApp, meta: result.kind === "verdict" ? VERDICT_META[result.verdict] : null, href };
+  });
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
@@ -138,77 +186,87 @@ export default async function ChecksPage({
       {runs.length === 0 ? (
         <p className="card p-6 text-sm text-fg-muted">{before ? "No earlier checks." : "No checks here yet."}</p>
       ) : (
-        // The table scrolls inside its card; the page never scrolls sideways.
-        <section className="card overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th className={TH}>Check</th>
-                <th className={TH}>App</th>
-                <th className={TH}>When</th>
-                <th className={TH}>Started</th>
-                <th className={TH}>Result</th>
-                <th className={`${TH} text-right`}>Price</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => {
-                const result = outcome(run, LIVE_RUN_STATUSES);
-                const ownApp = run.appId ?? onlyAppOf.get(run.appSlug) ?? null;
-                const meta = result.kind === "verdict" ? VERDICT_META[result.verdict] : null;
-                // A finished check opens inside the app; one that is running or
-                // did not finish has its own page, which says where it stands.
-                const href = result.kind === "verdict" ? checkHref({ appId: ownApp, runNumber: run.runNumber, publicId: run.publicId }) : `/run/${run.publicId}`;
-                return (
-                  <tr key={run.id} id={`c${run.runNumber}`} className="scroll-mt-6">
-                    <td className={`${TD} whitespace-nowrap font-mono`}>
-                      <Link href={href} className="text-accent hover:underline">
-                        #{run.runNumber}
-                      </Link>
-                    </td>
-                    <td className={`${TD} max-w-[260px] truncate font-mono text-[13px]`}>
-                      {ownApp ? (
-                        <Link href={appPath.page(ownApp)} className="text-fg hover:underline">
-                          {nameOf.get(ownApp) ?? run.appSlug}
+        // The table fits the work area at every width (src/lib/table-fold.ts):
+        // who started the check is a column on a wide screen and a line under
+        // when it ran until then; below the sidebar's width each check is a card.
+        <>
+          <section className={`card ${FOLD.tableClassName}`}>
+            <table className={TABLE_CLASS}>
+              <thead>
+                <tr>
+                  <th className={`${TH} w-[86px]`}>Check</th>
+                  <th className={TH}>App</th>
+                  <th className={`${TH} w-[132px]`}>When</th>
+                  <th className={`${TH} w-[140px] ${FOLD.wideColumnClassName}`}>Started</th>
+                  <th className={`${TH} w-[150px]`}>Result</th>
+                  <th className={`${TH} w-[112px] text-right`}>Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ run, result, ownApp, meta, href }) => (
+                  <Fragment key={run.id}>
+                    <tr id={`c${run.runNumber}`} className="scroll-mt-6">
+                      <td className={`${TD} whitespace-nowrap font-mono`}>
+                        <Link href={href} className="text-accent hover:underline">
+                          #{run.runNumber}
                         </Link>
-                      ) : (
-                        <span className="text-fg-muted">{run.appSlug}</span>
-                      )}
-                    </td>
-                    <td className={`${TD} whitespace-nowrap text-[13px] text-fg-muted`}>{whenLine(run.completedAt ?? run.createdAt)}</td>
-                    <td className={`${TD} whitespace-nowrap text-[13px] text-fg-muted`}>{startedLabel(run)}</td>
-                    <td className={`${TD} whitespace-nowrap`}>
-                      {result.kind === "verdict" ? (
-                        <span className={`inline-flex h-6 items-center rounded-full border px-2.5 text-xs font-medium ${meta?.pillClassName ?? "border-ink-600 text-fg-faint"}`}>
-                          {meta?.label ?? result.verdict}
-                        </span>
-                      ) : (
-                        <span className="text-[13px] text-fg-muted">{result.kind === "running" ? "Running" : "Did not finish"}</span>
-                      )}
-                    </td>
-                    <td className={`${TD} text-right`}>
-                      {/* A check that did not finish is ours and is not charged
-                          (CLAUDE.md §4): it says so, whether its price was
-                          never written or written as zero. */}
-                      {run.priceUsd === null || (result.kind === "unfinished" && run.priceUsd === 0) ? (
-                        <span className="text-[13px] text-fg-faint">{result.kind === "unfinished" ? "not charged" : "—"}</span>
-                      ) : opened?.id === run.id && reason ? (
-                        <CheckPrice explanation={reason} label={null} open />
-                      ) : (
-                        <Link
-                          href={checksHref({ app: appId, started, before, why: run.runNumber })}
-                          className="whitespace-nowrap font-mono text-fg underline decoration-dotted underline-offset-2 hover:text-accent"
-                        >
-                          {usd(run.priceUsd)}
-                        </Link>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </section>
+                      </td>
+                      <td className={`${TD} truncate font-mono text-[13px]`}>
+                        <AppName ownApp={ownApp} label={ownApp ? nameOf.get(ownApp) ?? run.appSlug : run.appSlug} />
+                      </td>
+                      <td className={`${TD} whitespace-nowrap text-[13px] text-fg-muted`}>
+                        {whenLine(run.completedAt ?? run.createdAt)}
+                        <span className={`block text-xs text-fg-faint ${FOLD.foldedClassName}`}>{startedLabel(run)}</span>
+                      </td>
+                      <td className={`${TD} whitespace-nowrap text-[13px] text-fg-muted ${FOLD.wideColumnClassName}`}>{startedLabel(run)}</td>
+                      <td className={`${TD} whitespace-nowrap`}>
+                        <Result result={result} meta={meta} />
+                      </td>
+                      <td className={`${TD} text-right`}>
+                        <Price run={run} result={result} opened={opened?.id === run.id} href={checksHref({ app: appId, started, before, why: run.runNumber })} />
+                      </td>
+                    </tr>
+                    {opened?.id === run.id && reason && (
+                      // Under the first three columns, which are always drawn.
+                      // A span over the folded "Started" column would give that
+                      // column width again, with nothing in it.
+                      <tr>
+                        <td colSpan={3} className={`${TD} pt-0`}>
+                          <PriceReason explanation={reason} className="max-w-md" />
+                        </td>
+                        <td className={`${TD} ${FOLD.wideColumnClassName}`} />
+                        <td colSpan={2} className={TD} />
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </section>
+          <ul className={FOLD.cardsClassName}>
+            {rows.map(({ run, result, ownApp, meta, href }) => (
+              <li key={run.id} className="card flex flex-col gap-2 px-4 py-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono text-[13px]">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Link href={href} className="text-accent hover:underline">
+                      #{run.runNumber}
+                    </Link>
+                    <span className="truncate">
+                      <AppName ownApp={ownApp} label={ownApp ? nameOf.get(ownApp) ?? run.appSlug : run.appSlug} />
+                    </span>
+                  </span>
+                  <Price run={run} result={result} opened={opened?.id === run.id} href={checksHref({ app: appId, started, before, why: run.runNumber })} />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-muted">
+                  <Result result={result} meta={meta} />
+                  <span>{whenLine(run.completedAt ?? run.createdAt)}</span>
+                  <span className="text-fg-faint">{startedLabel(run)}</span>
+                </div>
+                {opened?.id === run.id && reason && <PriceReason explanation={reason} />}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {(older || before) && (

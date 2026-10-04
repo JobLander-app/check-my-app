@@ -115,6 +115,18 @@ export function issuesHref(filter: IssuesFilter, appId?: string | null): string 
   return s ? `/health/issues?${s}` : "/health/issues";
 }
 
+/**
+ * A problem's own page (CHE-412). Its address is the id of its latest sighting
+ * — the finding the marks are written to — because a problem has no row of its
+ * own: it is computed from the app's history, and its signature is not an
+ * address (a bucket's key holds "~" and a finding id of its own). An older
+ * sighting's id opens the same page: the loader finds the problem any of its
+ * sightings belongs to.
+ */
+export function issueHref(findingId: string): string {
+  return `/health/issues/${findingId}`;
+}
+
 const problems = (n: number) => `${n} problem${n === 1 ? "" : "s"}`;
 
 /** The header's two sentences: what the latest checks hold, and what was found earlier and not looked at since. */
