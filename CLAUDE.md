@@ -4,6 +4,9 @@ Non-negotiable rules for anyone (human or agent) working on this codebase.
 They exist because each one was violated in production and cost the owner
 trust. Prompt tweaks are not enough: every rule below must have a
 **deterministic mechanism** behind it, not just an instruction to a model.
+How the code itself is written so these hold — for whoever builds it and
+whoever reviews it — is `docs/CODE_STANDARDS.md` (CHE-415), the same way:
+each rule with its why, and `scripts/verify-code-standards.ts` behind it.
 
 ## 1. The verdict is the product. Our machinery is invisible.
 

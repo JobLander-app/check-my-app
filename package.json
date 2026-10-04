@@ -130,6 +130,7 @@
     "verify:agent-id-lists": "tsx --tsconfig tsconfig.json scripts/verify-agent-id-lists.ts",
     "verify:hands-off": "tsx --tsconfig tsconfig.json scripts/verify-hands-off.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
+    "verify:code-standards": "tsx --tsconfig tsconfig.json scripts/verify-code-standards.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {
