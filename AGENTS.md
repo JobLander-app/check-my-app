@@ -48,6 +48,26 @@ fails on it (CHE-183). A tool that needs inputs is a `replay-*`, not a
 - Never edit `.github/workflows/` unless the ticket names it.
 - Never put a real secret anywhere, including as a placeholder that looks real.
 
+## Code standards
+
+`docs/CODE_STANDARDS.md` is binding for whoever writes code here and whoever
+reviews it, including Codex and CodeRabbit. Each rule there has its why and its
+mechanism; `npm run verify:code-standards` holds the mechanical ones. The five
+a review must never let through:
+
+- **No `dangerouslySetInnerHTML`, no inline `<script>`** — anywhere in `src/`
+  (owner, 2026-10-04; R3, R4).
+- **`useEffect` is the last resort** — event logic in the handler, reactions
+  where state changes, derived values in render, subscriptions through the hook
+  that exists; a new effect lists the alternatives tried (owner, 2026-09-22; R2).
+- **No table scrolls sideways** — fit the width or change the layout; never
+  `overflow-x-auto` around a `<table>` (owner, 2026-10-04; R8).
+- **Every tenant query declares whose rows it may see; a raw statement binds
+  the team and never a list; an `in` list that sorts selects every column it
+  sorts by** (R12, R14).
+- **"It was like that before me" is not an argument** — what is on the screen
+  after the merge is the author's decision (R22).
+
 ## Conventions that are not style
 
 These are the ones worth stating, because guessing them wrongly is expensive.
