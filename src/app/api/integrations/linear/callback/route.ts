@@ -5,6 +5,7 @@ import { can, refusal } from "@/lib/scopes";
 import { cookies } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
+import { activeTeamContext } from "@/lib/teams";
 import { exchangeCode, fetchFirstTeam } from "@/lib/tracker/linear-oauth";
 import { encryptSecret } from "@/lib/crypto";
 import { teamOwned } from "@/lib/tenant-db";
@@ -29,23 +30,32 @@ export async function GET(req: NextRequest) {
   if (!code || !state) return fail(req);
 
   let appId: string;
+  let teamId: string;
   let nonce: string;
   try {
-    ({ appId, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
+    ({ appId, teamId, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
   } catch {
     return fail(req);
   }
+  if (typeof appId !== "string" || typeof teamId !== "string" || typeof nonce !== "string") return fail(req);
 
   const jar = await cookies();
   if (jar.get("linear_oauth_nonce")?.value !== nonce) return fail(req);
   jar.delete("linear_oauth_nonce");
 
-  const { db, team: ours, scope } = await requireUser();
-  if (!can(scope, "integration.connect")) {
-    return NextResponse.json({ error: refusal(scope, "integration.connect") }, { status: 403 });
+  // The team is the one the connect was started for (in the state), not the
+  // one active now — a switch in another tab while Linear asks for consent
+  // must not turn a valid authorization into "failed" (CHE-417). The caller's
+  // scope is read in that team: activeTeamContext falls back to another team
+  // for a non-member, so the id is compared, not assumed.
+  const { user, db } = await requireUser();
+  const context = await activeTeamContext(db, user, teamId);
+  if (context.team.id !== teamId) return fail(req);
+  if (!can(context.scope, "integration.connect")) {
+    return NextResponse.json({ error: refusal(context.scope, "integration.connect") }, { status: 403 });
   }
   // CHE-417: the team's app, whoever added it — the scope gate above decided.
-  const app = await db.app.findFirst({ where: { ...teamOwned(ours.id), id: appId } });
+  const app = await db.app.findFirst({ where: { ...teamOwned(teamId), id: appId } });
   if (!app) return fail(req);
 
   const { env } = getCloudflareContext();

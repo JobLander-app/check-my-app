@@ -13,9 +13,9 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
+import { settingsActionFor, updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
-import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
+import { TEAM_SCOPES, can, mintRefusal, refusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
@@ -209,7 +209,7 @@ export async function revokeApiKey(id: string): Promise<void> {
 // (CHE-413 removed the escalation address that used to be the app's field).
 export async function updateAppSettings(appId: string, section: string, formData: FormData) {
   await refuseSelfCheck(appPath.page(appId));
-  const { user, db, team } = await requireActionScope("app.settings.write");
+  const { user, db, team, scope } = await requireActionScope("app.settings.write");
   const text = (name: string) => String(formData.get(name) ?? "");
   const list = (name: string) =>
     text(name)
@@ -237,9 +237,15 @@ export async function updateAppSettings(appId: string, section: string, formData
           ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
           : null;
   if (!patch) throw new Error("unknown settings section");
+  const back = appPath.section(appId, section);
+
+  // A login is a credentials write — an admin's (src/lib/scopes.ts). A member
+  // who reaches the Accounts form is told so where the form is, not on an
+  // error page.
+  const action = settingsActionFor(patch);
+  if (!can(scope, action)) redirect(`${back}?error=${encodeURIComponent(refusal(scope, action) ?? "Not allowed")}`);
 
   const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, patch);
-  const back = appPath.section(appId, section);
   if ("error" in result) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
 
   revalidatePath("/home");

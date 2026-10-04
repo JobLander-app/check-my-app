@@ -30,7 +30,7 @@ import { createStubDb } from "./fixtures/mcp-db";
 import { hashApiKey } from "@/lib/apiKeys";
 import { handleMcpRequest } from "@/lib/mcp/handler";
 import type { McpDeps } from "@/lib/mcp/tools";
-import { createAppForTeam, updateAppForTeam } from "@/lib/app-settings";
+import { createAppForTeam, settingsActionFor, updateAppForTeam } from "@/lib/app-settings";
 import { enableWatchForApp } from "@/lib/watch-enable";
 import { can } from "@/lib/scopes";
 
@@ -79,6 +79,13 @@ async function realRows() {
     const again = await createAppForTeam(real.db, bob, { targetUrl: "https://shared.test", frequency: "daily" });
     const rows = await real.db.app.count({ where: { teamId: "team_a", appSlug: "shared.test" } });
     check("real D1: a member adding an address the team already has is told so, and no second row appears", "error" in again && again.code === "duplicate" && rows === 1, JSON.stringify(again) + ` rows=${rows}`);
+
+    // Codex on #273: a Free team at its one watch, adding the address it has,
+    // hears "you already have this app" — the duplicate is asked before the cap.
+    await real.db.team.update({ where: { id: "team_a" }, data: { plan: "free" } });
+    const onFree = await createAppForTeam(real.db, { ...bob, plan: "free" }, { targetUrl: "https://shared.test", frequency: "daily" });
+    check("real D1: on a Free team at its cap, the address the team has is a duplicate, not a plan refusal", "error" in onFree && onFree.code === "duplicate", JSON.stringify(onFree));
+    await real.db.team.update({ where: { id: "team_a" }, data: { plan: "business" } });
 
     const byZed = await updateAppForTeam(real.db, zed, appId, { scopeHints: "Zed was here" });
     const zedWatch = await enableWatchForApp(real.db, { id: "zed", teamId: "team_z", plan: "business" }, appId, { frequency: "daily" });
@@ -141,6 +148,34 @@ async function mcpDoor() {
   }
   const active = () => stub.table("watch").find((w) => w.id === "w_0")?.active;
 
+  // Codex on #273: with the app the team's, a login is still an admin's to set
+  // (app.credentials.write) — a member's update_app may change what is checked,
+  // not whom the check signs in as.
+  async function update(who: keyof typeof KEYS, args: Record<string, unknown>) {
+    const res = await handleMcpRequest(
+      new Request(`${ORIGIN}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${KEYS[who]}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name: "update_app", arguments: { app_id: "app_0", ...args } } }),
+      }),
+      deps,
+    );
+    const body = (await res.json()) as { result?: { isError?: boolean; content?: Array<{ text?: string }> } };
+    return { out: JSON.parse(body.result?.content?.[0]?.text ?? "{}") as { ok?: boolean; code?: string }, isError: body.result?.isError === true };
+  }
+  const bobScope = await update("bob", { limits: "Bob's limit" });
+  check("MCP update_app: a member changes what is checked on a teammate's app", bobScope.out.ok === true && stub.table("app").find((a) => a.id === "app_0")?.scopeHints === "Bob's limit", JSON.stringify(bobScope.out));
+  const bobLogin = await update("bob", { test_email: "bob@app.test", test_password: "hunter2" });
+  check("MCP update_app: a member may not set the login — refused by the credentials gate, nothing stored",
+    bobLogin.isError && bobLogin.out.code === "forbidden" && stub.table("app").find((a) => a.id === "app_0")?.testPasswordEnc == null, JSON.stringify(bobLogin.out));
+  const annLogin = await update("ann", { test_email: "ann@app.test", test_password: "hunter2" });
+  check("MCP update_app: an admin sets the login", annLogin.out.ok === true && stub.table("app").find((a) => a.id === "app_0")?.testEmail === "ann@app.test", JSON.stringify(annLogin.out));
+  check("the scope table: a login is an admin's to write", can("admin", "app.credentials.write") && !can("member", "app.credentials.write") && can("member", "app.settings.write"));
+  check("settingsActionFor: a login in the patch asks for the credentials scope, anything else the settings scope",
+    settingsActionFor({ testPassword: "x" }) === "app.credentials.write" && settingsActionFor({ testEmail: "" }) === "app.credentials.write" &&
+      settingsActionFor({ storePassword: null }) === "app.credentials.write" && settingsActionFor({ testAccounts: { remove: ["qa"] } }) === "app.credentials.write" &&
+      settingsActionFor({ scopeHints: "x", frequency: "daily", allowedOrigins: [] }) === "app.settings.write" && settingsActionFor({ testAccounts: { set: [] } }) === "app.settings.write");
+
   const zed = await disable("zed");
   check("MCP disable_watch: another team's admin is told the app is not found, and the watch runs on", zed.isError && zed.out.code === "not_found" && active() === true, JSON.stringify(zed.out));
   const rae = await disable("rae");
@@ -160,7 +195,7 @@ const DOORS: Array<{ file: string; fn: string; gate: RegExp; lookup: RegExp }> =
   { file: "src/app/dashboard/actions.ts", fn: "setIntegrationEndpoints", gate: /requireActionScope\("integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
   { file: "src/app/dashboard/actions.ts", fn: "deleteApp", gate: /requireActionScope\("app\.delete"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
   { file: "src/app/api/integrations/linear/start/route.ts", fn: "GET", gate: /can\(scope, "integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
-  { file: "src/app/api/integrations/linear/callback/route.ts", fn: "GET", gate: /can\(scope, "integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(ours\.id\), id: appId \}/ },
+  { file: "src/app/api/integrations/linear/callback/route.ts", fn: "GET", gate: /can\(context\.scope, "integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(teamId\), id: appId \}/ },
   { file: "src/app/api/watch/[slug]/route.ts", fn: "ownWatch", gate: /requireScope\(db, req, "watch\.configure"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), appSlug: slug \}/ },
   { file: "src/app/api/status/[slug]/route.ts", fn: "GET", gate: /^/, lookup: /where: \{ \.\.\.teamOwned\(context\.team\.id\), appSlug: \(await params\)\.slug \}/ },
   { file: "src/lib/mcp/tools.ts", fn: "disable_watch", gate: /deny\("watch\.configure"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: args\.app_id \}/ },
@@ -186,6 +221,22 @@ function sourceChecks() {
   }
   const page = read("src/app/(app)/health/apps/[appId]/page.tsx");
   check("the app page offers Run and Connect by scope alone", /const mayRun = can\(scope, "run\.start"\);/.test(page) && !/app\.ownerId === user\.id/.test(page));
+  // Codex on #273: the Linear callback binds to the team the connect was
+  // started for — the state carries it, the callback compares it.
+  const start = read("src/app/api/integrations/linear/start/route.ts");
+  const callback = read("src/app/api/integrations/linear/callback/route.ts");
+  check("the Linear state names the team the connect was started for, and the callback acts in that team, not the active one",
+    /JSON\.stringify\(\{ appId, teamId: team\.id, nonce \}\)/.test(start) &&
+      /const context = await activeTeamContext\(db, user, teamId\);\s*if \(context\.team\.id !== teamId\) return fail\(req\);/.test(callback));
+  // The settings form and MCP update_app ask the credentials scope of the same patch.
+  const actions = read("src/app/dashboard/actions.ts");
+  const update = fnBody(actions, "updateAppSettings");
+  check("the settings form asks the scope the patch needs before writing, and answers a refusal where the form is",
+    /const action = settingsActionFor\(patch\);\s*if \(!can\(scope, action\)\) redirect\(`\$\{back\}\?error=/.test(update) && update.indexOf("settingsActionFor(patch)") < update.indexOf("updateAppForTeam("));
+  const tools = fnBody(read("src/lib/mcp/tools.ts"), "update_app");
+  check("MCP update_app asks the same of the same patch", /deny\(settingsActionFor\(patch\)\)/.test(tools) && tools.indexOf("settingsActionFor(patch)") < tools.indexOf("updateAppForTeam("));
+  const sectionPage = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
+  check("the Accounts section shows a member a sentence, not a form that would refuse them", /can\(scope, "app\.credentials\.write"\) \? \(\s*<Accounts/.test(sectionPage) && /Test logins are set by an admin of the team\./.test(sectionPage));
   // The dupe check at create time is the team's, so no second row for an address the team has.
   const settings = read("src/lib/app-settings.ts");
   check("createAppForTeam refuses an address the team already has, whoever added it", /const dupe = await db\.app\.findFirst\(\{\s*where: \{ \.\.\.teamOwned\(actor\.teamId\), appSlug \}/.test(settings));

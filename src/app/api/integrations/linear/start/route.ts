@@ -35,9 +35,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL("/home?integration=linear_unconfigured", req.url));
   }
 
-  // CSRF: random nonce in an httpOnly cookie; appId travels in the signed-ish state.
+  // CSRF: random nonce in an httpOnly cookie; the app and the team the connect
+  // was started for travel in the state, so the callback binds to that team
+  // and not to whichever team is active when Linear comes back (CHE-417).
   const nonce = crypto.randomUUID();
-  const state = Buffer.from(JSON.stringify({ appId, nonce })).toString("base64url");
+  const state = Buffer.from(JSON.stringify({ appId, teamId: team.id, nonce })).toString("base64url");
   const jar = await cookies();
   jar.set("linear_oauth_nonce", nonce, {
     httpOnly: true,
