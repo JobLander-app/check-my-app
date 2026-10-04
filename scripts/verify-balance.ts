@@ -376,6 +376,11 @@ async function main() {
     // counted as walked.
     check("a journey with ledger entries and no step is a journey part with 0 steps, outside the walked count",
       none !== null && none.parts.some((p) => p.section === "journeys" && p.steps === 0 && p.price_usd > 0) && none.journeys_walked === 0, JSON.stringify(none?.parts));
+    // Codex r2 on #267: n1–n4 have no step and nothing in the ledger — never
+    // set out on. A part for each would read as four attempts that did not
+    // happen ("Started, not walked"). Only n0, with its walking call, is one.
+    check("a journey with no step and nothing in the ledger is not a part of the price",
+      none !== null && none.parts.filter((p) => p.section === "journeys").map((p) => p.label).join() === "A", JSON.stringify(none?.parts));
     for (const [name, e] of [["walk", walk], ["quick", quick], ["skipped", none]] as const) {
       check(`${name}: the parts total the price to the cent`,
         e !== null && (e.parts.length === 0 || Math.round(e.parts.reduce((s, p) => s + p.price_usd * 100, 0)) === Math.round(e.price_usd * 100)));

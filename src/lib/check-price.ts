@@ -176,9 +176,17 @@ export async function explainPrice(
   }
   // Nothing walked: the price paid for what was done instead.
   const workLine = work ?? (mapping > 0 ? "Mapped the app; no journey was walked" : "No journey was walked");
+  // A journey is a part of the price when something was spent on it: a step
+  // walked, or a call in the ledger under its id (a walk that was started and
+  // reported no step — #290's second "Connect a coding agent"). A journey row
+  // with neither — listed by the plan, never set out on, nothing in the
+  // ledger — is not a part of the price, and a row for it would claim an
+  // attempt that did not happen (Codex on #267).
   const parts = splitByCost(run.priceUsd, [
     ...(mapping > 0 ? [{ label: "Mapping the app", section: "before" as const, cost: mapping }] : []),
-    ...journeys.map((j) => ({ label: j.title, section: "journeys" as const, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
+    ...journeys
+      .filter((j) => j._count.steps > 0 || (byJourney.get(j.id) ?? 0) > 0)
+      .map((j) => ({ label: j.title, section: "journeys" as const, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
     ...(writing > 0 ? [{ label: "Writing the verdict", section: "after" as const, cost: writing }] : []),
   ]);
 

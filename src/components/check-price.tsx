@@ -149,6 +149,8 @@ function Breakdown({ e }: { e: PriceExplanation }) {
   const before = e.parts.filter((p) => p.section === "before");
   const journeys = e.parts.filter((p) => p.section === "journeys");
   const walked = journeys.filter((p) => (p.steps ?? 0) > 0);
+  // A journey part exists only for a journey something was spent on
+  // (src/lib/check-price.ts), so one with no step was set out on and given up.
   const notWalked = journeys.filter((p) => (p.steps ?? 0) === 0);
   const after = e.parts.filter((p) => p.section === "after");
   const steps = walked.reduce((s, p) => s + (p.steps ?? 0), 0);
