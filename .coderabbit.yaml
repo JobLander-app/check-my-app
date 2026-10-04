@@ -44,8 +44,10 @@ reviews:
             instead of a server action; a `redirect()` inside a try block.
         R7  Any explicit `any`; any generic helper wrapping Prisma arguments
             (the compiler goes quiet).
-        R8  `overflow-x-auto` or `overflow-x-scroll` on a `<table>` or on any
-            element wrapping one. A table fits the width or changes layout.
+        R8  `overflow-x-auto`, `overflow-x-scroll`, `overflow-auto` or
+            `overflow-scroll` — under any Tailwind variant (`md:`, `!`) — on a
+            `<table>` or on any element wrapping one. A table fits the width
+            or changes layout.
         R12 A query on App, Run, Watch, ApiKey, SettledSignature or TestAccount
             in src/app or src/lib without one of the declarations from
             src/lib/tenant-db.ts spread into it (teamOwned, alreadyScoped,

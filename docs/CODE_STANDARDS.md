@@ -126,8 +126,9 @@ screens — never `overflow-x-auto` around a `<table>`.
 **Why:** a table that scrolls sideways hides the columns that did not fit,
 which on this product are the verdict and the price. What is hidden is not
 shown; what is not shown was not built.
-**Mechanism:** `scripts/verify-code-standards.ts` fails on `overflow-x-auto` /
-`overflow-x-scroll` on a `<table>` or any JSX element above it, in `src/app`
+**Mechanism:** `scripts/verify-code-standards.ts` fails on `overflow-x-auto`,
+`overflow-x-scroll`, `overflow-auto` or `overflow-scroll` — under any Tailwind
+variant (`md:`, `!`) — on a `<table>` or any JSX element above it, in `src/app`
 and `src/components`. A `<pre>` or a filmstrip may scroll; a table may not.
 
 ### R9. Every page is looked at, at 390, 1000, 1200 and 1440

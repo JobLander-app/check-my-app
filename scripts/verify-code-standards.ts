@@ -6,8 +6,9 @@
 //   R3  no `dangerouslySetInnerHTML` anywhere under src/ — owner rule,
 //       2026-10-04, after an inline <script> through it passed a review round;
 //   R4  no <script> element in a .tsx under src/app or src/components;
-//   R8  no `overflow-x-auto` / `overflow-x-scroll` on an element that wraps a
-//       <table> there — a table that scrolls sideways hides the columns that
+//   R8  no `overflow-x-auto` / `overflow-x-scroll` (nor `overflow-auto` /
+//       `overflow-scroll`, under any Tailwind variant) on an element that wraps
+//       a <table> there — a table that scrolls sideways hides the columns that
 //       did not fit (owner rule, 2026-10-04).
 //
 // Read from each file's syntax tree, not from its text (the way
@@ -38,7 +39,13 @@ function check(name: string, ok: boolean, detail = ""): void {
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOC = "docs/CODE_STANDARDS.md";
 const FORBIDDEN_PROP = "dangerouslySetInnerHTML";
-const SIDEWAYS = /(?:^|\s)overflow-x-(?:auto|scroll)(?:\s|$)/;
+// A class token that scrolls sideways at some width: `overflow-x-auto`,
+// `overflow-auto` (both axes), their `scroll` forms, each behind any Tailwind
+// variants (`md:`, `max-lg:`, `supports-[…]:`) and the `!` important mark. A
+// variant does not make the rule hold less — it makes the table scroll at
+// exactly the width the variant names (Codex on #264).
+const SIDEWAYS_TOKEN = /(?:^|:)!?overflow-(?:x-)?(?:auto|scroll)$/;
+const sidewaysIn = (classes: string): string | undefined => classes.split(/\s+/).find((t) => SIDEWAYS_TOKEN.test(t));
 // Where a page is: the directories whose .tsx files render for the customer.
 const PAGE_DIRS = ["src/app", "src/components"];
 
@@ -102,9 +109,9 @@ export function offenders(root: string): string[] {
         if (tag === "table") {
           for (let up: ts.Node | undefined = node; up; up = up.parent) {
             if (!ts.isJsxElement(up) && !ts.isJsxSelfClosingElement(up)) continue;
-            const sideways = classNames(up).find((c) => SIDEWAYS.test(c));
+            const sideways = classNames(up).map(sidewaysIn).find((t) => t !== undefined);
             if (sideways) {
-              out.push(`${where(file, up, root)}  <${tagOf(up) ?? "element"} className="…${sideways.match(SIDEWAYS)![0].trim()}…"> wraps the <table> at ${where(file, node, root)} (R8)`);
+              out.push(`${where(file, up, root)}  <${tagOf(up) ?? "element"} className="…${sideways}…"> wraps the <table> at ${where(file, node, root)} (R8)`);
               break;
             }
           }
@@ -133,14 +140,14 @@ function fixtureChecks(): void {
       `  <section className="card">`,
       `    {/* dangerouslySetInnerHTML is forbidden here (R3) */}`,
       `    <pre className="overflow-x-auto">code</pre>`,
-      `    <div className="overflow-y-auto"><table className="w-full"><tbody /></table></div>`,
+      `    <div className="overflow-y-auto md:overflow-hidden overflow-x-hidden"><table className="w-full"><tbody /></table></div>`,
       `  </section>`,
       `);`,
     ].join("\n"));
     write("src/agent/scan.ts", `export const INLINE = /<script[^>]*>/g; export const name = "script";\n`);
     write("src/generated/prisma/client.ts", `export const x = { dangerouslySetInnerHTML: 1 };\n`);
     const clean = offenders(root);
-    check("fixture: a scrolling <pre>, an unscrolled table, a comment naming the prop, a regex in src/agent and src/generated are all fine", clean.length === 0, clean.join("; "));
+    check("fixture: a scrolling <pre>, a table that scrolls only vertically or hides overflow, a comment naming the prop, a regex in src/agent and src/generated are all fine", clean.length === 0, clean.join("; "));
 
     const offences: [string, string, string, RegExp][] = [
       ["dangerouslySetInnerHTML as a JSX attribute", "src/app/a.tsx", `export const A = () => <div dangerouslySetInnerHTML={{ __html: "x" }} />;\n`, /dangerouslySetInnerHTML \(R3\)/],
@@ -154,6 +161,14 @@ function fixtureChecks(): void {
       ["overflow-x-auto inside clsx(...) on the wrapper", "src/app/i.tsx", `declare const clsx: (...a: string[]) => string;\nexport const I = () => <div className={clsx("card", "overflow-x-auto")}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
       ["overflow-x-auto in a template on the wrapper", "src/app/j.tsx", `export const J = (w: string) => <div className={\`\${w} overflow-x-auto\`}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
       ["overflow-x-auto on the table itself", "src/components/k.tsx", `export const K = () => <table className="overflow-x-auto" />;\n`, /<table className="…overflow-x-auto…"> wraps the <table>/],
+      // Codex on #264: a variant scrolls the table at the width it names.
+      ["md:overflow-x-auto on the wrapper", "src/app/l.tsx", `export const L = () => <div className="card md:overflow-x-auto"><table /></div>;\n`, /<div className="…md:overflow-x-auto…"> wraps the <table>/],
+      ["max-lg:overflow-x-scroll on the wrapper", "src/app/m.tsx", `export const M = () => <div className="max-lg:overflow-x-scroll"><table /></div>;\n`, /<div className="…max-lg:overflow-x-scroll…"> wraps the <table>/],
+      ["supports-[display:grid]:overflow-x-auto on the wrapper", "src/app/n.tsx", `export const N = () => <div className="supports-[display:grid]:overflow-x-auto"><table /></div>;\n`, /<div className="…supports-\[display:grid\]:overflow-x-auto…"> wraps the <table>/],
+      ["!overflow-x-auto (important) on the wrapper", "src/app/o.tsx", `export const O = () => <div className="!overflow-x-auto"><table /></div>;\n`, /<div className="…!overflow-x-auto…"> wraps the <table>/],
+      ["md:!overflow-x-scroll on the wrapper", "src/app/p.tsx", `export const P = () => <div className="md:!overflow-x-scroll"><table /></div>;\n`, /<div className="…md:!overflow-x-scroll…"> wraps the <table>/],
+      ["overflow-auto (both axes) on the wrapper", "src/app/q.tsx", `export const Q = () => <div className="overflow-auto"><table /></div>;\n`, /<div className="…overflow-auto…"> wraps the <table>/],
+      ["lg:overflow-scroll on the wrapper", "src/app/r.tsx", `export const R = () => <div className="lg:overflow-scroll"><table /></div>;\n`, /<div className="…lg:overflow-scroll…"> wraps the <table>/],
     ];
     for (const [name, rel, text, expected] of offences) {
       write(rel, text);
