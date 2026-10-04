@@ -124,21 +124,25 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
   expect(slug).toBe("example.com");
 
   try {
-    await page.goto(`${BASE}/dashboard`);
-    const card = page.locator("li", { hasText: slug }).first();
+    // The app's card on Health → All apps (CHE-348 moved the apps off the old
+    // dashboard; /dashboard now redirects to /home, which lists no cards). The
+    // card is the <article> whose name link is the slug — not the first
+    // element that happens to contain the slug: the balance block's spend
+    // list said "example.com · 7 checks" and the old `li` locator read that
+    // for two nights (2026-10-03, -04).
+    await page.goto(`${BASE}/health/apps?view=cards`);
+    const card = page.locator("article", { has: page.getByRole("link", { name: slug, exact: true }) }).first();
     await expect(card).toBeVisible();
+    await expect(card.getByRole("link", { name: "Settings" })).toBeVisible();
     const text = (await card.innerText()).toLowerCase();
 
-    if (text.includes("trial")) {
-      // Free plan: the watch carries trialEndsAt, and the card says so. Either
-      // wording is legitimate — a re-run of this spec reuses a watch created
-      // more than WATCH_TRIAL_DAYS ago, whose trial has since run out.
-      expect(text).toMatch(/free trial · \d+ days? left|trial ended — daily watch paused/);
-    } else {
-      // Paid plan (the Stripe downgrade hasn't landed yet): no trial is stamped,
-      // and the watch just runs.
-      expect(text).toContain("watching · daily");
-    }
+    // The schedule label (src/lib/all-apps.ts scheduleLabel): a fresh watch on
+    // Free is "Daily" while its trial runs and "Trial ended" after it — a re-run
+    // of this spec may reuse a watch created more than WATCH_TRIAL_DAYS ago.
+    // On a paid plan it is "Daily" too. Anything else means the watch the API
+    // just created is not the one the page shows.
+    expect(text).toMatch(/\bdaily\b|trial ended/);
+    expect(text).not.toMatch(/not scheduled|\bpaused\b/);
   } finally {
     // Never leave a recurring daily agent run behind on the dogfood account.
     const removed = await page.request.delete(`${BASE}/api/watch/${slug}`);
