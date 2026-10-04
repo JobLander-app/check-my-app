@@ -355,8 +355,35 @@ async function main() {
       /price_usd: p\.price_usd,\s*journeys_walked[\s\S]{0,80}steps_walked[\s\S]{0,40}price_explanation/.test(tools));
     // CHE-371: the verdict's body is one component, rendered by the permalink and inside the app.
     const verdict = read("src/components/verdict-view.tsx");
-    check("verdict page: the price is a disclosure over the explanation, for the team only",
-      /<CheckPrice explanation=/.test(verdict) && /viewerTeam\.team\.id === run\.teamId/.test(verdict) && /<details/.test(read("src/components/check-price.tsx")));
+    const modal = read("src/components/check-price.tsx");
+    check("verdict page: the price opens the explanation, for the team only",
+      /<CheckPrice explanation=/.test(verdict) && /viewerTeam\.team\.id === run\.teamId/.test(verdict) && /<dialog/.test(modal));
+
+    // CHE-411: the reason is one modal with three sections, and the rows under
+    // "Journeys walked (N)" are exactly N. Check #290 read "Walked 5 journeys"
+    // over 7 rows (mapping and writing the verdict were rows among them).
+    check("every part says which section of the check it belongs to",
+      [walk, none].every((e) => e !== null && e.parts.every((p) => ["before", "journeys", "after"].includes(p.section))));
+    check("mapping is before the walk, each journey is a journey, writing the verdict is after",
+      walk !== null && walk.parts.filter((p) => p.section === "before").map((p) => p.label).join() === "Mapping the app" &&
+        walk.parts.filter((p) => p.section === "journeys").map((p) => p.label).join() === "Sign in,Checkout" &&
+        walk.parts.filter((p) => p.section === "after").map((p) => p.label).join() === "Writing the verdict", JSON.stringify(walk?.parts));
+    check("the journey rows are the journeys the work line counts, with the steps it counts",
+      walk !== null && walk.parts.filter((p) => p.section === "journeys" && (p.steps ?? 0) > 0).length === walk.journeys_walked &&
+        walk.parts.filter((p) => p.section === "journeys").reduce((s, p) => s + (p.steps ?? 0), 0) === walk.steps_walked);
+    // #290's $0.10 row: a journey set out on (its attempt is in the ledger)
+    // that reported no step. It stays, with steps 0 — not hidden, and not
+    // counted as walked.
+    check("a journey with ledger entries and no step is a journey part with 0 steps, outside the walked count",
+      none !== null && none.parts.some((p) => p.section === "journeys" && p.steps === 0 && p.price_usd > 0) && none.journeys_walked === 0, JSON.stringify(none?.parts));
+    for (const [name, e] of [["walk", walk], ["quick", quick], ["skipped", none]] as const) {
+      check(`${name}: the parts total the price to the cent`,
+        e !== null && (e.parts.length === 0 || Math.round(e.parts.reduce((s, p) => s + p.price_usd * 100, 0)) === Math.round(e.price_usd * 100)));
+    }
+    check("the modal has the three sections and a total, and watches nothing with an effect",
+      /Before the walk/.test(modal) && /Journeys walked \(/.test(modal) && /After the walk/.test(modal) && /Total/.test(modal) && /showModal\(\)/.test(modal) && !/useEffect/.test(modal));
+    check("a journey part with no step is shown in its own group, named for what it was",
+      /Started, not walked/.test(modal) && /\(p\.steps \?\? 0\) === 0/.test(modal));
   }
 
   // ─── 8. Customer surfaces ────────────────────────────────────────────────

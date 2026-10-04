@@ -10,6 +10,7 @@ import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
 import { appsCostLine, balanceLine, countLine, daysToNextMonth, outsideApps, pace, sharePercent } from "@/lib/billing-page";
 import { TopUpCta } from "@/components/topup-cta";
 import { ManageBillingButton } from "@/components/manage-billing-button";
+import { CheckPrice } from "@/components/check-price";
 
 const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-[18px] last:pr-[18px]";
 const TD = "border-b border-ink-800 px-3 py-3.5 align-middle first:pl-[18px] last:pr-[18px]";
@@ -21,20 +22,20 @@ const Tile = ({ label, children }: { label: string; children: React.ReactNode })
   </div>
 );
 
-// The last check's price, which opens into what that check did (?check=),
-// with the check's number: under the price in a row, beside it in a card.
-function LastCheck({ app, opened, inline = false }: { app: AppHealth; opened: boolean; inline?: boolean }) {
+// The last check's price, which opens what that check did in the price modal
+// (CHE-411), with the check's number, which opens the check: under the price
+// in a row, beside it in a card.
+function LastCheck({ app, name, inline = false }: { app: AppHealth; name: string; inline?: boolean }) {
   if (!app.latest) return <span className="text-xs text-fg-faint">no check yet</span>;
   return (
     <>
+      <CheckPrice explanation={app.latest.price} label={null} title={`${name}, check #${app.latest.runNumber}`} />
       <Link
-        href={`/settings/billing?check=${app.appId}#check`}
-        aria-current={opened ? "true" : undefined}
-        className={`font-mono underline decoration-dotted underline-offset-2 ${opened ? "text-accent" : "text-fg hover:text-accent"}`}
+        href={appPath.check(app.appId, app.latest.runNumber)}
+        className={`font-mono text-xs text-fg-muted hover:text-accent hover:underline ${inline ? "" : "mt-0.5 block"}`}
       >
-        {usd(app.latest.priceUsd)}
+        #{app.latest.runNumber}
       </Link>
-      <span className={`font-mono text-xs text-fg-muted ${inline ? "" : "mt-0.5 block"}`}>#{app.latest.runNumber}</span>
     </>
   );
 }
@@ -42,14 +43,14 @@ function LastCheck({ app, opened, inline = false }: { app: AppHealth; opened: bo
 // Billing (CHE-355, direction C): what the apps cost a month, the balance, and
 // how the two relate; then each app — its 30 days, a day, who started the
 // checks, its share — and its last check's price, which opens into what that
-// check did for it (?check=<appId>, rendered on the server: a link, no script).
-// Top-ups, invoices and the plan are below. Prices only (CLAUDE.md §10).
+// check did for it (the price modal, CHE-411). Top-ups, invoices and the plan
+// are below. Prices only (CLAUDE.md §10).
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ topped_up?: string; check?: string }>;
+  searchParams: Promise<{ topped_up?: string }>;
 }) {
-  const { topped_up: toppedUp, check } = await searchParams;
+  const { topped_up: toppedUp } = await searchParams;
   const { db, team, scope } = await requireUser();
   const plan = team.plan as UserPlan;
   const [balance, health, shell] = await Promise.all([
@@ -63,9 +64,6 @@ export default async function BillingPage({
   // What was paid for outside the apps (a PR preview, an address never saved):
   // in the total, in no app — so it gets its own row.
   const outside = outsideApps({ usd: health.totalSpendUsd, checks: health.totalChecks }, apps);
-  const withCheck = apps.filter((a) => a.latest);
-  // The opened check: the one the address names, else the first app's.
-  const opened = withCheck.find((a) => a.appId === check) ?? withCheck[0];
   const atThisPace = pace({
     creditUsd: balance.creditUsd,
     renews: balance.renewsOn !== null,
@@ -178,7 +176,7 @@ export default async function BillingPage({
                       </span>
                     </td>
                     <td className={`${TD} whitespace-nowrap text-right`}>
-                      <LastCheck app={app} opened={opened?.appId === app.appId} />
+                      <LastCheck app={app} name={nameOf.get(app.appId) ?? app.appSlug} />
                     </td>
                   </tr>
                 ))}
@@ -235,7 +233,7 @@ export default async function BillingPage({
                 </div>
                 <div className="flex items-baseline gap-2 text-xs text-fg-muted">
                   Last check
-                  <LastCheck app={app} opened={opened?.appId === app.appId} inline />
+                  <LastCheck app={app} name={nameOf.get(app.appId) ?? app.appSlug} inline />
                 </div>
               </li>
             ))}
@@ -254,37 +252,6 @@ export default async function BillingPage({
               </li>
             )}
           </ul>
-        </section>
-      )}
-
-      {opened?.latest && (
-        <section id="check" className="card flex scroll-mt-6 flex-col gap-3.5 p-5">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <h2 className="text-[17px] font-semibold">
-              {nameOf.get(opened.appId) ?? opened.appSlug}, check #{opened.latest.runNumber}:{" "}
-              <span className="font-mono">{usd(opened.latest.priceUsd)}</span>
-            </h2>
-            <Link href={appPath.check(opened.appId, opened.latest.runNumber)} className="text-sm text-accent hover:underline">
-              Open review
-            </Link>
-          </div>
-          <p className="text-[15px]">
-            {opened.latest.price.work}.{" "}
-            {opened.latest.price.comparison && <span className="text-fg-muted">{opened.latest.price.comparison}</span>}
-          </p>
-          {opened.latest.price.parts.length > 0 && (
-            <ul className="flex flex-col">
-              {opened.latest.price.parts.map((p) => (
-                <li key={p.label} className="flex justify-between gap-4 border-b border-ink-800 py-2 text-sm last:border-b-0">
-                  <span className="min-w-0">
-                    {p.label}
-                    {p.steps !== undefined && <span className="text-[13px] text-fg-muted"> {p.steps} step{p.steps === 1 ? "" : "s"}</span>}
-                  </span>
-                  <span className="font-mono">{usd(p.price_usd)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
         </section>
       )}
 

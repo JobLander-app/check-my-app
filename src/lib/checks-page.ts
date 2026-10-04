@@ -61,14 +61,13 @@ export function outcome(run: { status: string; verdict: string | null }, live: r
   return { kind: "unfinished" };
 }
 
-export function checksHref(q: { app?: string | null; started?: StartedFilter; before?: number | null; why?: number | null }): string {
+export function checksHref(q: { app?: string | null; started?: StartedFilter; before?: number | null }): string {
   const p = new URLSearchParams();
   if (q.app) p.set("app", q.app);
   if (q.started && q.started !== "all") p.set("started", q.started);
   if (q.before) p.set("before", String(q.before));
-  if (q.why) p.set("why", String(q.why));
   const s = p.toString();
-  return `${s ? `/health/checks?${s}` : "/health/checks"}${q.why ? `#c${q.why}` : ""}`;
+  return s ? `/health/checks?${s}` : "/health/checks";
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

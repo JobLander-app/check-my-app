@@ -83,8 +83,7 @@ function Card({ app, days }: { app: Row; days: number }) {
       <div className="col-span-2 flex min-w-0 flex-col gap-1.5 sm:col-span-4 lg:col-span-1">
         <VerdictStrip verdicts={app.verdicts} />
         <span className="text-xs text-fg-muted">{stripStory(app.verdicts.map((v) => v.verdict))}</span>
-        {/* Under the strip, where the reason has room to open. */}
-        {app.latest && <CheckPrice explanation={app.latest.price} label="Last check" />}
+        {app.latest && <CheckPrice explanation={app.latest.price} label="Last check" title={`${app.name}, check #${app.latest.runNumber}`} />}
       </div>
       <Figure label={`${days} days`} value={usd(app.spendUsd)}>
         <div className="text-xs text-fg-muted">{usd(app.perDayUsd)} a day</div>
