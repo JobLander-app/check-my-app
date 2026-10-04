@@ -146,5 +146,19 @@ const allApps = read("src/app/(app)/health/apps/page.tsx");
 check("All apps' header is the apps' own spending, as the sidebar's figure is",
   /usd\(health\.apps\.reduce\(\(sum, a\) => sum \+ a\.spendUsd, 0\)\)\} in the last/.test(allApps) && !/usd\(health\.totalSpendUsd\)/.test(allApps));
 
+// CHE-418: our own check of this page reported the journey rows and the step
+// cards as unreadable toggles — a 10px glyph, no state a reader could see or a
+// screen reader could read. Each disclosure now says what it is and which way
+// it is: the state on the control, the panel it controls, a word next to it.
+const strip = read("src/components/journey-strip.tsx");
+check("a journey row is a disclosure: aria-expanded on the button, the panel it controls named",
+  /aria-expanded=\{open\}\s*aria-controls=\{panelId\}/.test(strip) && /id=\{panelId\} role="region" aria-label=\{`Steps of \$\{journey\.title\}`\}/.test(strip));
+check("…with a word that says which way it goes, and a chevron that turns",
+  /\{open \? "Hide steps" : `Show \$\{journey\.steps\.length\} step/.test(strip) && /transition-transform duration-200 \$\{open \? "rotate-90" : ""\}/.test(strip));
+check("a step card says which step it is, how it went, and whether its evidence is open",
+  /aria-expanded=\{isSelected\}\s*aria-label=\{`Step \$\{i \+ 1\}, \$\{s\.label\}: \$\{step\.label\}\. \$\{isSelected \? "Hide" : "Show"\} what we tried and what happened`\}/.test(strip));
+check("the problem lines that open a step carry the same state", /aria-expanded=\{selected\?\.id === p\.id\}/.test(strip));
+check("every disclosure is reachable by keyboard with a visible focus ring", (strip.match(/focus-visible:ring-2 focus-visible:ring-(?:inset focus-visible:ring-)?accent/g) ?? []).length >= 2);
+
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);
