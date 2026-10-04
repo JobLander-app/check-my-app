@@ -176,9 +176,9 @@ export default async function IssuePage({ params }: { params: Promise<{ findingI
             </ul>
           </>
         ) : (
-          // No problem of the app stands on this finding: a restatement on a
-          // journey carried from an earlier check, or a note about our own
-          // leftovers. The check it is in is the whole story.
+          // No problem of the app holds this finding: a note about our own
+          // leftovers, or a restatement of something no check saw itself. The
+          // check it is in is the whole story.
           <p className="text-sm text-fg-muted">
             In{" "}
             <Link href={appPath.check(issue.appId, issue.finding.runNumber)} className="font-mono text-accent hover:underline">

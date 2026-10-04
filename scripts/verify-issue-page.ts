@@ -100,8 +100,15 @@ async function loader() {
       data: [
         finding("f1", "r1", 1, "Sign in button stays disabled", { signature: "text:v1:signin", anchor: anchor(0, 1) }),
         finding("f2", "r2", 1, "Sign-in button stays disabled after the press", { signature: "text:v1:signin", anchor: anchor(0, 1), detail, mark: "watch" }),
-        // A restatement on the carried journey: not a sighting of any problem.
-        finding("f3", "r3", 1, "Paying by card fails", { signature: "text:v1:pay", anchor: anchor(1, 0) }),
+        // Seen in #2; #3 restates it on the carried journey (not a sighting).
+        finding("f8", "r2", 2, "Paying by card fails", { signature: "text:v1:pay", anchor: anchor(1, 0), mark: "known" }),
+        finding("f3", "r3", 1, "Paying by card still fails", { signature: "text:v1:pay", anchor: anchor(1, 0) }),
+        // Seen in #1, gone by #2 (which walked the step again), back in #3: two
+        // streaks, and only the latest is the problem's history.
+        finding("f6", "r1", 2, "The sign-in page is slow to open", { signature: "text:v1:slow", anchor: anchor(0, 0) }),
+        finding("f7", "r3", 2, "The sign-in page opens slowly", { signature: "text:v1:slow", anchor: anchor(0, 0) }),
+        // No sighting anywhere: a restatement of something no check saw itself.
+        finding("f9", "r3", 3, "Checkout is missing", { signature: "text:v1:checkout", anchor: anchor(1, 0) }),
         finding("f4", "r4", 1, "Sign-in page does not open", { signature: "text:v1:open", anchor: anchor(0, 0) }),
         finding("f5", "r5", 1, "Of no app", { signature: "text:v1:none" }),
         finding("fy", "y1", 1, "Their login is broken", { signature: "text:v1:theirs", anchor: anchor(0, 0) }),
@@ -124,8 +131,14 @@ async function loader() {
     eq("real D1: …with its own words and step, and the answer still on the latest sighting", `${older?.finding.title} / #${older?.step?.walkedInRunNumber} / ${older?.answer.findingId} ${older?.answer.mark}`, "Sign in button stays disabled / #1 / f2 watch");
 
     const carried = await issueOf(db, "t", "f3");
-    eq("real D1: a restatement on a carried journey is no problem of its own; its step names the check that walked it", `${carried?.recurrence} / ${carried?.step?.label} in #${carried?.step?.walkedInRunNumber} / ${carried?.answer.findingId}`, "null / Pay by card in #2 / f3");
+    eq("real D1: a restatement on a carried journey opens the problem it restates; its step names the check that walked it; the answer stands on the sighting (Codex P2 on #265)",
+      `${carried?.recurrence?.sightings.map((s) => `#${s.runNumber} ${s.findingId}`).join(",")} / ${carried?.step?.label} in #${carried?.step?.walkedInRunNumber} / ${carried?.answer.findingId} ${carried?.answer.mark}`, "#2 f8 / Pay by card in #2 / f8 known");
     eq("real D1: an address that is not a content-addressed screenshot is not shown as a picture", carried?.step?.shot, null);
+    const earlier = await issueOf(db, "t", "f6");
+    eq("real D1: a finding from before the problem went away and came back opens the problem's current streak (Codex P2 on #265)",
+      `${earlier?.recurrence?.sightings.map((s) => `#${s.runNumber} ${s.findingId}`).join(",")} / ${earlier?.recurrence?.issue.state} by #${earlier?.recurrence?.goneSinceRunNumber} / ${earlier?.answer.findingId}`, "#3 f7 / gone by #4 / f7");
+    eq("real D1: …while its own words and step are its own", `${earlier?.finding.title} / #${earlier?.step?.walkedInRunNumber}`, "The sign-in page is slow to open / #1");
+    eq("real D1: a restatement of something no check saw itself has no problem to open; the finding stands alone", `${(await issueOf(db, "t", "f9"))?.recurrence} ${(await issueOf(db, "t", "f9"))?.answer.findingId}`, "null f9");
 
     const before = await issueOf(db, "t", "f4");
     eq("real D1: a check made before the app was saved is the app's (the only one of that address)", `${before?.appId} ${before?.recurrence?.issue.state}`, "a new");

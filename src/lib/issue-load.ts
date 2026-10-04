@@ -6,8 +6,9 @@
 // A problem has no row of its own. It is computed from the app's history by
 // recurrence (src/lib/recurring.ts), and the Issues list keys each one by the
 // finding of its latest sighting — the finding the owner's answer is written
-// to. So the address is a finding id, and the page is the problem that finding
-// is a sighting of: an older sighting's id opens the same page.
+// to. So the address is a finding id, and the page is the problem whose
+// history holds that finding: an older sighting's id, one from before the
+// problem went away and came back, a restatement — each opens the same page.
 //
 // Read flat, like the journeys page: the finding through its check (the
 // team's), the app the check belongs to (appHealth's rule: attached, or the
@@ -48,9 +49,9 @@ export interface IssuePage {
     detail: FindingDetail;
     runNumber: number;
   };
-  // Null when the finding is no sighting of a problem: a restatement on a
-  // carried journey, or the one finding that is about us (recurrence leaves
-  // both out). The page then shows the finding alone, as the check saw it.
+  // Null when no problem of the app holds the finding: the one finding that is
+  // about us (recurrence leaves it out), or a restatement whose problem has no
+  // sighting at all. The page then shows the finding alone, as the check saw it.
   recurrence: Recurrence | null;
   // The owner's answer is written to the problem's latest sighting, as the
   // Issues list writes it (PATCH /api/findings/{id}) — whichever sighting's
@@ -97,7 +98,10 @@ export async function issueOf(db: PrismaClient, teamId: string, findingId: strin
       select: { id: true, title: true, carriedFromRunId: true },
     }),
   ]);
-  const recurrence = recurrences.find((r) => r.sightings.some((s) => s.findingId === finding.id)) ?? null;
+  // By the problem's whole history, not its current streak alone: a finding
+  // from before the problem went away and came back, or a restatement on a
+  // carried journey, is the same problem (Codex P2 on #265).
+  const recurrence = recurrences.find((r) => r.findingIds.includes(finding.id)) ?? null;
   const latestId = recurrence?.sightings.at(-1)?.findingId ?? finding.id;
 
   const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor)?.stepRef;
