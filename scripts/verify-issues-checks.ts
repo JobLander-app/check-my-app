@@ -181,9 +181,16 @@ check("an app from the address that is not the team's is no filter", /appParam &
 check("a problem opens its own page (CHE-412), or — with no sighting to key it by — the check that last saw it, inside the app",
   /href: findingId \? issueHref\(findingId\) : appPath\.check\(i\.appId, i\.lastSeenRunNumber\)/.test(issues));
 check("a mark is offered to whom the route would let set it", /finding\.run\.ownerId === null \|\| finding\.run\.ownerId === user\.id/.test(issues));
-check("a mark is written the way the check's page writes it: PATCH /api/findings/{id}",
-  /fetch\(`\/api\/findings\/\$\{findingId\}`, \{\s*method: "PATCH"/.test(marks) && /JSON\.stringify\(\{ mark: next \}\)/.test(marks) &&
-    /fetch\(`\/api\/findings\/\$\{finding\.id\}`, \{\s*method: "PATCH"/.test(read("src/components/findings-list.tsx")));
+// R5 (Codex on #263): the write is a server action in a transition, not a
+// fetch to our own route — the control is live from the first HTML.
+const markAction = read("src/app/(app)/health/issues/actions.ts");
+check("a mark is written by the markFinding server action, in a transition, with no fetch of our own route",
+  /startTransition\(async \(\) => \{\s*const result = await markFinding\(findingId, next\)/.test(marks) && !/fetch\(/.test(marks) &&
+    /^"use server";/.test(markAction) && /export async function markFinding\(findingId: string, mark: string\)/.test(markAction));
+check("…the action refuses our own checker first, then asks the scope table, then writes the team's finding only",
+  /await refuseSelfCheck\("\/health\/issues"\);\s*const \{ user, db, team \} = await requireActionScope\("finding\.mark"\)/.test(markAction) &&
+    /run: \{ OR: \[\{ teamId: team\.id \}, \{ ownerId: user\.id \}\] \}/.test(markAction) && /markFindingSchema\.safeParse/.test(markAction) &&
+    /"src\/app\/\(app\)\/health\/issues\/actions\.ts#markFinding": \{ kind: "team", action: "finding\.mark" \}/.test(read("src/lib/route-scopes.ts")));
 check("…the four marks the check's page has, no fifth — one list, read by the links and by the menu", ISSUE_MARKS.length === 4 && /ISSUE_MARKS\.map\(/.test(marks) && /ISSUE_MARKS\.map\(/.test(actions) && !/\{ mark: "/.test(marks) && !/\{ mark: "/.test(actions));
 check("the mark buttons hold no effect: they act on the click", !/useEffect/.test(marks));
 
