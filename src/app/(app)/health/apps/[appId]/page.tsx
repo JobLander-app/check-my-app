@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
-import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { alreadyScoped, memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { VERDICT_META } from "@/lib/status";
 import { can } from "@/lib/scopes";
 import { PLAN_LIMITS, shouldSkipWatch, usd } from "@/lib/plans";
@@ -17,6 +17,7 @@ import { RunSavedApp } from "@/components/run-saved-app";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
+import { OtherTeamApp } from "@/components/other-team-app";
 
 const TIMELINE = 12;
 const FINISHED = ["completed", "partial"];
@@ -46,10 +47,17 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       watch: { select: { active: true, frequency: true, trialEndsAt: true } },
     },
   });
-  // Not in the team you are acting as. The settings page answers that case —
-  // it offers the switch when the app is in another team of yours, and 404s
-  // otherwise (CHE-261) — so it is said in one place.
-  if (!app) redirect(appPath.settings(appId));
+  // Not in the team you are acting as — but possibly in another of your teams:
+  // the page says so and offers the switch, landing back here (CHE-261).
+  // Nobody's is 404.
+  if (!app) {
+    const elsewhere = await db.app.findFirst({
+      where: { ...memberOfRows(user.id), id: appId },
+      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+    });
+    if (!elsewhere?.teamId) notFound();
+    return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.page(appId)} />;
+  }
 
   // Which checks are this app's is appHealth's rule, here as there: the ones
   // attached to it, and — when it is the team's only app with this address —

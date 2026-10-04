@@ -139,6 +139,20 @@ export function stripStory(verdicts: string[]): string {
   return `${allBroken ? "Broken" : "Needs attention or broken"} ${streak} checks in a row.`;
 }
 
+/**
+ * The small strip's tooltip (the list view, where a bar is too thin to point
+ * at): the story, then what its greys are — only when it has any. A grey bar is
+ * a check that verified nothing; a darker slot is no check at all, an app
+ * younger than the strip.
+ */
+export function stripTitle(verdicts: string[], slots = 21): string {
+  const shown = verdicts.slice(-slots);
+  const parts = [stripStory(shown)];
+  if (shown.some((v) => !FINE.has(v) && !TROUBLE.has(v))) parts.push("Grey bars: checks that verified nothing.");
+  if (shown.length < slots) parts.push(`Dark slots: no check yet (${shown.length} of ${slots}).`);
+  return parts.join(" ");
+}
+
 /** "12 min ago", "3 h ago", "5 days ago", then the date ("12 Sep"). */
 export function checkedWhen(at: Date, now: Date = new Date()): string {
   const min = Math.max(0, Math.round((now.getTime() - at.getTime()) / 60_000));

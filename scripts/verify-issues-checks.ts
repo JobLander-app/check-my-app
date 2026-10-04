@@ -138,7 +138,8 @@ check("…and takes the app's latest check from the sidebar's own data, so 'in t
 check("the findings and tickets read by id are read among the team's rows only",
   /where: \{ id: \{ in: ids \}, run: \{ teamId: team\.id \} \}/.test(issues) && /where: \{ id: \{ in: ids \}, app: \{ teamId: team\.id \} \}/.test(issues));
 check("an app from the address that is not the team's is no filter", /appParam && nameOf\.has\(appParam\) \? appParam : null/.test(issues) && /const app = shell\.apps\.find\(\(a\) => a\.id === sp\.app\) \?\? null;/.test(checks));
-check("a problem opens the check that last saw it, inside the app", /appPath\.check\(i\.appId, i\.lastSeenRunNumber\)/.test(issues));
+check("a problem opens its own page (CHE-412), or — with no sighting to key it by — the check that last saw it, inside the app",
+  /href: findingId \? issueHref\(findingId\) : appPath\.check\(i\.appId, i\.lastSeenRunNumber\)/.test(issues));
 check("a mark is offered to whom the route would let set it", /finding\.run\.ownerId === null \|\| finding\.run\.ownerId === user\.id/.test(issues));
 check("a mark is written the way the check's page writes it: PATCH /api/findings/{id}",
   /fetch\(`\/api\/findings\/\$\{findingId\}`, \{\s*method: "PATCH"/.test(marks) && /JSON\.stringify\(\{ mark: next \}\)/.test(marks) &&
@@ -161,7 +162,8 @@ check("a finished check opens inside the app, one that is running or did not fin
 check("a check that did not finish says it was not charged", /result\.kind === "unfinished" \? "not charged" : "—"/.test(checks));
 for (const [name, src] of [["Issues", issues], ["Checks", checks]] as const) {
   check(`${name}: prices only — no cost, token or margin field`, !/costUsd|cost_usd|tokens|multiplier|margin/i.test(src));
-  check(`${name}: the table scrolls inside its card`, /className="card overflow-x-auto"/.test(src));
+  // CHE-412: no table scrolls; the rows fold to cards (scripts/verify-table-fold.ts).
+  check(`${name}: the table never scrolls inside its card`, !/overflow-x-auto/.test(src) && /FOLD\.tableClassName/.test(src));
 }
 const shellSrc = read("src/lib/shell-data.ts");
 check("the sidebar's count leaves out the one finding that is about us", /f\.detail NOT LIKE \$\{OUR_LEFTOVERS\}/.test(shellSrc) && /OUR_LEFTOVERS = `%"where":"\$\{OUR_LEFTOVERS_WHERE\}"%`/.test(shellSrc));

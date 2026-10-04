@@ -131,6 +131,10 @@ export interface Recurrence {
   // The findings of the current streak, oldest first — what "seen N times"
   // counts, so a page can link each one and a reader can check the grouping.
   sightings: Array<{ runNumber: number; findingId: string; title: string }>;
+  // Every finding the problem's whole history folds — earlier streaks and
+  // restatements on carried journeys too, oldest first — so a page opened by
+  // any of them finds the problem (CHE-412), not only by the current streak.
+  findingIds: string[];
 }
 
 type SignatureOf = (f: RecurrenceFinding, appSlug: string) => string;
@@ -370,6 +374,7 @@ export function recurrence(
       },
       goneSinceRunNumber: again?.runNumber ?? null,
       sightings: streak.map((s) => ({ runNumber: s.run.runNumber, findingId: s.finding.id, title: s.finding.title })),
+      findingIds: triaged.map((s) => s.finding.id),
     });
   }
   return out.sort((a, b) => b.issue.lastSeenRunNumber - a.issue.lastSeenRunNumber);
