@@ -101,6 +101,7 @@ import { clearedCredentials } from "@/lib/test-accounts";
 import type { TranscriptEntry } from "./core";
 import {
   consoleSetAsideLine,
+  quickCheckBottomLine,
   shortLabel,
   smokeOutcomeLine,
   smokeReplay,
@@ -391,15 +392,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               verdict: smoke.verdict,
               // CHE-179: a page that did not answer is said, never counted
               // as healthy, and never a reason to spend on a full run.
-              bottomLine:
-                `Daily smoke pass: ${smoke.healthy} page${smoke.healthy === 1 ? "" : "s"} ` +
-                `healthy` +
-                (smoke.unreached.length > 0
-                  ? `, ${smoke.unreached.length} did not answer in time`
-                  : "") +
-                `, nothing changed since Run #${smoke.fullRunNumber} — full agent check ` +
-                `skipped (replay-first). This confirms your app is up and its known pages still ` +
-                `serve; it does not re-verify the journeys.`,
+              // CHE-377: the wording lives in smoke.ts, under verify-smoke-gate.
+              bottomLine: quickCheckBottomLine(smoke),
               // Carried from the last full run so the verdict page still describes
               // the app instead of rendering a near-empty shell.
               appLens: smoke.appLens,

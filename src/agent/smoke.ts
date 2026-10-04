@@ -486,7 +486,10 @@ export interface SmokeSummary {
   healthy: number;
   unreached: string[];
   failures: string[];
-  baselineRunNumber: number;
+  // The run that last walked the journeys — not the baseline, which after a
+  // quick check is that quick check, with no journey results of its own
+  // (Codex on #219).
+  fullRunNumber: number;
 }
 
 /**
@@ -524,7 +527,25 @@ export function smokeOutcomeLine(smoke: SmokeSummary, targetUrl: string): string
       ? `, ${k} did not answer in time (${smoke.unreached.map((u) => shortLabel(u, targetUrl)).join(", ")})`
       : ", no uncaught errors";
   return (
-    `All ${n} page${n === 1 ? "" : "s"} healthy${silent} — carrying Run ` +
-    `#${smoke.baselineRunNumber}'s verdict forward and skipping the full agent check`
+    `All ${n} page${n === 1 ? "" : "s"} healthy${silent} — the journey results are ` +
+    `Run #${smoke.fullRunNumber}'s`
+  );
+}
+
+// The bottom line of a quick check: the one verdict sentence that is written
+// here rather than by synthesis, so no language gate sees it on the way to
+// the verdict page, the email, the MCP tools and a CI job summary. CHE-377:
+// it said "full agent check skipped (replay-first)" on 28 verdicts —
+// verify-smoke-gate now holds it to the same words gate as everything else.
+// Coverage is still said (CLAUDE.md §2), as where the journey results come
+// from, never as what we did or did not do this time.
+export function quickCheckBottomLine(smoke: { healthy: number; unreached: string[]; fullRunNumber: number }): string {
+  const n = smoke.healthy;
+  const k = smoke.unreached.length;
+  return (
+    `Quick check: ${n} page${n === 1 ? "" : "s"} healthy` +
+    (k > 0 ? `, ${k} did not answer in time` : "") +
+    `, nothing changed since Run #${smoke.fullRunNumber}. Your app is up and its known pages ` +
+    `still serve; the journey results are from Run #${smoke.fullRunNumber}.`
   );
 }

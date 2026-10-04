@@ -74,7 +74,7 @@ import {
 
 // workflow.ts reads these off the replay module; the pure half lives in smoke.ts
 // so scripts/verify-smoke-gate.ts can drive it without Browser Rendering.
-export { consoleSetAsideLine, shortLabel, smokeOutcomeLine, type PageProbe } from "./smoke";
+export { consoleSetAsideLine, quickCheckBottomLine, shortLabel, smokeOutcomeLine, type PageProbe } from "./smoke";
 
 // Browser-time only — no tokens are spent on a smoke pass. Recorded so a run's
 // cost column is never a lie by omission and the ledger still sums correctly.
