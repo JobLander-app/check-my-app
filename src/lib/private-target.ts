@@ -80,7 +80,6 @@ export function holdsPrivateTarget(row: { targetUrl: string; extensionConfig?: s
 }
 
 // What the person who pasted it is told — on the form, in the API's answer and
-// to a coding agent over MCP. For now the sentence the form already says for an
-// address it cannot use; one that says what to paste instead is PR #235 and
-// waits for the owner's word on its wording.
-export const PRIVATE_TARGET_MESSAGE = "Doesn't look like a working URL";
+// to a coding agent over MCP. It says what to paste instead.
+export const PRIVATE_TARGET_MESSAGE =
+  "That address only works inside your own network. Paste the public address of your app — the one your users open.";

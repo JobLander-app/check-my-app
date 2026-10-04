@@ -95,7 +95,7 @@ const refusal = (url: string) => {
 };
 check("the schema refuses run #292's address as it was pasted, with the sentence", refusal("https://192.168.0.197:53317") === PRIVATE_TARGET_MESSAGE, String(refusal("https://192.168.0.197:53317")));
 check("…and without a scheme, as people paste it", refusal("192.168.0.197:53317") === PRIVATE_TARGET_MESSAGE, String(refusal("192.168.0.197:53317")));
-check("localhost:3000 is refused by this rule",refusal("localhost:3000") === PRIVATE_TARGET_MESSAGE, String(refusal("localhost:3000")));
+check("localhost:3000 is told why, not that it is no URL", refusal("localhost:3000") === PRIVATE_TARGET_MESSAGE && PRIVATE_TARGET_MESSAGE !== "Doesn't look like a working URL", String(refusal("localhost:3000")));
 check("a public address still passes", refusal("checkmyapp.dev") === null && refusal("https://8.8.8.8") === null);
 check("a word that is no address keeps its own message", refusal("hello") === "Doesn't look like a working URL", String(refusal("hello")));
 check("the url shape other doors reuse refuses it too (app settings, onboarding)",
@@ -111,8 +111,8 @@ check("an extension's companion page on a private address is refused with the sa
   companion("https://192.168.1.2:3000") === PRIVATE_TARGET_MESSAGE, String(companion("https://192.168.1.2:3000")));
 check("…and a public companion page still passes", companion("https://example.com/app") === null, String(companion("https://example.com/app")));
 
-check("the sentence names none of our machinery",
-  !/\b(browser|server|cloud|bot|crawler|our|we)\b/i.test(PRIVATE_TARGET_MESSAGE), PRIVATE_TARGET_MESSAGE);
+check("the sentence says what to paste and names none of our machinery",
+  /Paste the public address/.test(PRIVATE_TARGET_MESSAGE) && !/\b(browser|server|cloud|bot|crawler|our|we)\b/i.test(PRIVATE_TARGET_MESSAGE), PRIVATE_TARGET_MESSAGE);
 
 // Every door that takes a target goes through the schema: nothing in src
 // starts a check from a raw address.
