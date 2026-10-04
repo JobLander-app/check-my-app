@@ -110,11 +110,12 @@ export async function createAppForTeam(
   });
   if (!gate.ok) return { error: gate.reason, code: "plan_limit" };
 
-  // One App per (owner, slug). Pre-check for a clear message, and catch the
-  // unique-constraint race (D1 has no transactions, so a double-submit can slip
-  // past the check) rather than surfacing a raw 500.
-  const dupe = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
-    where: { ownerId_appSlug: { ownerId: actor.userId, appSlug } },
+  // One App per (team, slug) — CHE-417: an address a teammate already added is
+  // the team's app, not a second row beside it. Pre-check for a clear message;
+  // the (owner, slug) unique key still catches the double-submit race (D1 has
+  // no transactions) rather than surfacing a raw 500.
+  const dupe = await db.app.findFirst({
+    where: { ...teamOwned(actor.teamId), appSlug },
     select: { id: true },
   });
   if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
@@ -224,8 +225,11 @@ export async function updateAppForTeam(
   appId: string,
   patch: AppSettingsPatch,
 ): Promise<{ ok: true; app: { id: string; appSlug: string } } | AppRefusal> {
+  // CHE-417: the app is the team's, whoever added it. Who may write its
+  // settings is the scope table's answer (app.settings.write), asked by every
+  // caller before this; ownerId is attribution, not access.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(actor.teamId), id: appId, ownerId: actor.userId },
+    where: { ...teamOwned(actor.teamId), id: appId },
     include: { watch: true, policy: true },
   });
   if (!app) return { error: "app not found", code: "not_found" };

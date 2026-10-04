@@ -831,8 +831,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     async disable_watch(args: { app_id: string }): Promise<ToolResult> {
       const denied = deny("watch.configure");
       if (denied) return denied;
+      // CHE-417: the team's app, whoever added it — the scope gate above decided.
       const app = await db.app.findFirst({
-        where: { ...teamOwned(team.id), id: args.app_id, ownerId: caller.user.id },
+        where: { ...teamOwned(team.id), id: args.app_id },
         select: { id: true, appSlug: true, watch: { select: { id: true, active: true, frequency: true } } },
       });
       if (!app) return fail("not_found", "App not found", HINTS.not_found);

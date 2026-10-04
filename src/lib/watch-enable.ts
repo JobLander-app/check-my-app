@@ -227,7 +227,8 @@ async function upsertWatch(
 
 // Enable (or resume) the watch of an app the caller already has — the MCP
 // enable_watch tool (CHE-315). Same App lookup as the dashboard's settings:
-// the team's app, added by this person.
+// the team's app, whoever added it (CHE-417); the caller asked the scope
+// table (watch.configure) first.
 export async function enableWatchForApp(
   db: PrismaClient,
   user: { id: string; teamId: string; plan: string },
@@ -235,7 +236,7 @@ export async function enableWatchForApp(
   opts: { frequency: WatchFrequency; notifyOnChangeOnly?: boolean; now?: Date },
 ): Promise<EnableWatchResult> {
   const app = await db.app.findFirst({
-    where: { ...teamOwned(user.teamId), id: appId, ownerId: user.id },
+    where: { ...teamOwned(user.teamId), id: appId },
     select: { id: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true },
   });
   if (!app) return { kind: "not_found" };

@@ -27,8 +27,10 @@ import { appPath } from "@/lib/app-shell";
 export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
+  // CHE-417: the app is the team's, whoever added it — the scope table above
+  // decided who may act; ownerId is attribution, not access.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     include: { tracker: true },
   });
   if (!app?.tracker) throw new Error("tracker not connected");
@@ -51,9 +53,9 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
 // webhook URL so a disabled endpoint leaves no secret behind.
 export async function setIntegrationEndpoints(appId: string, formData: FormData) {
   await refuseSelfCheck(appPath.page(appId));
-  const { user, db, team } = await requireActionScope("integration.connect");
+  const { db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     select: { id: true },
   });
   if (!app) throw new Error("app not found");
@@ -262,8 +264,9 @@ export async function deleteApp(
 ): Promise<DeleteAppResult> {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.delete");
+  // CHE-417: an admin removes any app of the team, not only the ones they added.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     select: { id: true, appSlug: true },
   });
   if (!app) return { error: "App not found." };

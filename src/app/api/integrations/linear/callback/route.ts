@@ -7,7 +7,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
 import { exchangeCode, fetchFirstTeam } from "@/lib/tracker/linear-oauth";
 import { encryptSecret } from "@/lib/crypto";
-import { alreadyScoped } from "@/lib/tenant-db";
+import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 
 // Every exit lands on a sentence from src/lib/integration-notice.ts (CHE-67):
@@ -40,11 +40,12 @@ export async function GET(req: NextRequest) {
   if (jar.get("linear_oauth_nonce")?.value !== nonce) return fail(req);
   jar.delete("linear_oauth_nonce");
 
-  const { user, db, scope } = await requireUser();
+  const { db, team: ours, scope } = await requireUser();
   if (!can(scope, "integration.connect")) {
     return NextResponse.json({ error: refusal(scope, "integration.connect") }, { status: 403 });
   }
-  const app = await db.app.findFirst({ ...alreadyScoped("the unique key names the owner"), where: { id: appId, ownerId: user.id } });
+  // CHE-417: the team's app, whoever added it — the scope gate above decided.
+  const app = await db.app.findFirst({ where: { ...teamOwned(ours.id), id: appId } });
   if (!app) return fail(req);
 
   const { env } = getCloudflareContext();
