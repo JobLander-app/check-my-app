@@ -164,8 +164,10 @@ Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
   nothing.
   Finished runs also carry their **price**: `price_usd`, `journeys_walked`,
   `steps_walked` and `price_explanation` (`work`, `comparison` with the app's
-  usual price, `usual_price_usd`, and `parts` — what each journey's share of
-  the price was, summing to `price_usd`). The same fields are on
+  usual price, `usual_price_usd`, and `parts` — what each part's share of the
+  price was, summing to `price_usd`; each part has a `section`, `before` the
+  walk (mapping the app), `journeys` (one per journey, with its `steps`) or
+  `after` it (writing the verdict)). The same fields are on
   `wait_for_review`, `get_review` and each app in `latest_results`; `list_apps`
   and the connection instructions carry the team's balance and each app's
   `usual_price_usd`.

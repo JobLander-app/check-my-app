@@ -278,7 +278,7 @@ export async function VerdictView({
                 {isAdmin && run.deploySha &&
                   ` · deploy ${run.deploySha.slice(0, 7)}${run.deployEnv ? ` (${run.deployEnv})` : ""}`}
               </p>
-              {priceExplanation && <CheckPrice explanation={priceExplanation} />}
+              {priceExplanation && <CheckPrice explanation={priceExplanation} title={`${run.appSlug}, check #${run.runNumber}`} />}
               {isAdmin && totalTokens > 0 && (
                 <p className="mt-0.5 font-mono text-xs text-fg-faint">
                   {fmtTok(totalTokens)} tokens

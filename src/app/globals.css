@@ -2,15 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-}
+/* The colour tokens themselves (--ink-*, --fg*, --accent*, --status-*,
+   --shadow-*, the --clerk-color-* set Clerk's components read, color-scheme)
+   are emitted into the base layer by tailwind.config.ts, once per theme: :root
+   is dark, :root[data-theme="light"] and the prefers-color-scheme fallback are
+   light (CHE-414). Nothing below names a colour of its own. */
 
 body {
   @apply bg-ink-950 text-fg antialiased;
   background-image:
-    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(79, 140, 255, 0.07), transparent),
-    radial-gradient(ellipse 60% 40% at 90% 110%, rgba(176, 107, 255, 0.04), transparent);
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgb(var(--accent) / 0.07), transparent),
+    radial-gradient(ellipse 60% 40% at 90% 110%, rgb(var(--status-exposed) / 0.04), transparent);
   background-attachment: fixed;
 }
 
@@ -21,7 +23,7 @@ body::before {
   inset: 0;
   pointer-events: none;
   z-index: 50;
-  opacity: 0.5;
+  opacity: var(--grain-opacity);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.025 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -56,9 +58,9 @@ body::before {
   background: linear-gradient(
     90deg,
     theme("colors.accent.DEFAULT") 0%,
-    #7db0ff 25%,
+    theme("colors.accent.soft") 25%,
     theme("colors.accent.DEFAULT") 50%,
-    #7db0ff 75%,
+    theme("colors.accent.soft") 75%,
     theme("colors.accent.DEFAULT") 100%
   );
   background-size: 200% 100%;

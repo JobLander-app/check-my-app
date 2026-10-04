@@ -134,12 +134,12 @@ check(
   "/watch/[slug] looks the app up and sends it to its schedule",
   /redirect\(appPath\.schedule\(/.test(watch) && pageFor("/health/apps/:appId/settings/schedule") !== null,
 );
+// CHE-411: /home carried an inline script to send /dashboard#balance on to
+// Billing; Next 16 never ran it and logged an error for it. Every top-up link
+// we hand out is BALANCE_PATH, a page of its own; /home runs no script of its own.
 const home = read("src/app/(app)/home/page.tsx");
-check(
-  "/dashboard#balance arrives on /home and is sent on to Billing",
-  /location\.hash==="#balance"\)location\.replace\(\$\{JSON\.stringify\(BALANCE_PATH\)\}\)/.test(home) && pageFor(BALANCE_PATH) !== null,
-  BALANCE_PATH,
-);
+check("the top-up link is a page that exists", pageFor(BALANCE_PATH) !== null, BALANCE_PATH);
+check("/home has no inline script for the old #balance fragment", !/<script|#balance/.test(home));
 
 // ── 3. Nothing links to an old address ──────────────────────────────────────
 

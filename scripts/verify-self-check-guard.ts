@@ -282,6 +282,7 @@ const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/api/checks/today/route.ts": "reads",
   "src/app/api/evidence/[...path]/route.ts": "reads",
   "src/app/api/runs/[id]/review/route.ts": "reads",
+  "src/app/api/runs/[id]/price/route.ts": "reads",
   "src/app/api/runs/[id]/route.ts": "reads",
   "src/app/api/runs/[id]/stream/route.ts": "reads",
   "src/app/api/runs/[id]/verdict/route.ts": "reads",
