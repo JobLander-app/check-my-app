@@ -27,6 +27,7 @@ import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib
 import { ephemeralExpiry, ephemeralGate } from "@/lib/ephemeral";
 import { latestResults } from "@/lib/latest-results";
 import { assertCanStartRun, watchTrialState } from "@/lib/plans";
+import { releaseActionHint, teamRunsTheAction } from "@/lib/release-action";
 import { loadReview } from "@/lib/review";
 import { loadRunStatus, loadVerdict, type RunStatusPayload } from "@/lib/run-read";
 import { can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
@@ -588,6 +589,11 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return fail("invalid_input", "Pass app_id (a saved app) or url (a one-off check), not both and not neither.");
       }
       const deploy = args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env ?? null } : null;
+      // CHE-370: a deploy named by hand is the moment to say it can be automatic.
+      const releaseAction = releaseActionHint({
+        deploySha: args.deploy_sha,
+        teamRunsAction: args.deploy_sha ? await teamRunsTheAction(db, team.id) : false,
+      });
 
       if (args.app_id) {
         if (args.ephemeral || args.scope_hints || args.notify_email) {
@@ -618,6 +624,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           hint: started.alreadyRunning
             ? "A check of this app was already running; this is that run. It is not bound to your deploy_sha."
             : "Call wait_for_run (or wait_for_review) until it finishes, or poll get_check_status.",
+          ...(releaseAction ? { every_release: releaseAction } : {}),
         });
       }
 
@@ -668,6 +675,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         expires_at: expiresAt,
         ...urls(run.publicId),
         hint: "Call wait_for_run (or wait_for_review) until it finishes, or poll get_check_status.",
+        ...(releaseAction ? { every_release: releaseAction } : {}),
       });
     },
 

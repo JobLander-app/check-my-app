@@ -55,6 +55,8 @@ const FREE_CREDIT = PLAN_LIMITS.free.creditUsd ?? 0;
 const BUY = "https://checkmyapp.dev/settings/billing";
 import type { UserPlan } from "@/lib/enums";
 import ConnectAgentGuide from "@/app/guides/connect-your-agent/page";
+import CheckEveryReleaseGuide from "@/app/guides/check-every-release/page";
+import { ACTION_MARKETPLACE_URL, ACTION_SECRET, ACTION_USES } from "@/lib/release-action";
 import { createStubDb } from "./fixtures/mcp-db";
 
 let failures = 0;
@@ -263,6 +265,9 @@ async function main() {
     const quiet = b.getInstructions() ?? "";
     check("instructions: team B hears only about its own app, and that nothing is new",
       quiet.includes("secret-b.test") && !quiet.includes("shop-a.test") && /Nothing new/.test(quiet), quiet);
+    // CHE-370: the agent offers the GitHub Action to a team that does not run it.
+    check("instructions: a team that does not run the GitHub Action is offered it, with its listing",
+      text.includes(ACTION_MARKETPLACE_URL) && /after the deploy job/.test(text), text.slice(-260));
   }
 
   // 4 — team scoping.
@@ -381,6 +386,9 @@ async function main() {
       run?.deploySha === "abc1234" && run?.deployEnv === "production" &&
         run?.userNotes === "Never delete the test account.\n\nPR #9 changed checkout",
       JSON.stringify({ sha: run?.deploySha, notes: run?.userNotes }));
+    // CHE-370: a deploy named by hand is told it can be automatic.
+    check("start_check with deploy_sha: says the same check can run on every deploy, with the listing",
+      String(started.out.every_release ?? "").includes(ACTION_MARKETPLACE_URL), JSON.stringify(started.out));
     const again = await call(a, "start_check", { app_id: "app_a", deploy_sha: "def5678" });
     check("start_check {app_id}: while it runs, a second start returns that run, marked, not bound to the new sha",
       again.out.run_id === started.out.run_id && again.out.already_running === true && again.out.deploy === null,
@@ -559,6 +567,34 @@ async function main() {
     check("create_app on a balance that covers a check: the scheduled-automatically hint, no top-up links",
       paid.out.ok === true && /scheduled automatically/.test(String(paid.out.hint)) && !("buy_url" in paid.out),
       JSON.stringify(paid.out));
+  }
+
+  // 11 — the GitHub Action (CHE-370): recommended once, never to a team that
+  // already runs it, and the site says what the agent says. Last, because it
+  // starts a check for team B and marks it as the Action's.
+  {
+    const noDeploy = await call(b, "start_check", { app_id: "app_b" });
+    check("start_check without deploy_sha: no word about the Action", !("every_release" in noDeploy.out), JSON.stringify(noDeploy.out));
+    const runB = stub.table("run").find((r) => r.publicId === noDeploy.out.run_id);
+    if (runB) runB.startedVia = "action";
+    const b2 = await connect(KEY_B);
+    const told = b2.getInstructions() ?? "";
+    check("instructions: a team whose checks already come from the Action is not offered it again",
+      told.includes("secret-b.test") && !told.includes(ACTION_MARKETPLACE_URL), told.slice(-260));
+    const withDeploy = await call(b2, "start_check", { app_id: "app_b", deploy_sha: "abc1234" });
+    check("start_check with deploy_sha for that team: no word about the Action either",
+      withDeploy.out.ok === true && !("every_release" in withDeploy.out), JSON.stringify(withDeploy.out));
+    await b2.close();
+
+    const guide = renderToStaticMarkup(createElement(CheckEveryReleaseGuide));
+    check("guide: /guides/check-every-release links the same listing the agent is given",
+      guide.includes(`href="${ACTION_MARKETPLACE_URL}"`));
+    check("guide: its workflow step is the Action's own `uses:` line and secret",
+      guide.includes(ACTION_USES) && guide.includes(`secrets.${ACTION_SECRET}`));
+    // In its own words, not only through the "other guides" list every guide carries.
+    check("guide: /guides/connect-your-agent says how to have every deploy checked, and links it",
+      /To have every deploy checked[\s\S]{0,80}href="\/guides\/check-every-release"/.test(
+        renderToStaticMarkup(createElement(ConnectAgentGuide))));
   }
 
   for (const c of [a, b, reader, free, last]) await c.close();
