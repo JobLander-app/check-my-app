@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { checkDelta, deltaLine } from "../src/lib/check-delta";
 import { appPath, checkHref } from "../src/lib/app-shell";
 import type { Recurrence } from "../src/lib/recurring";
+import { disclosureWord } from "../src/components/journey-strip";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -154,7 +155,10 @@ const strip = read("src/components/journey-strip.tsx");
 check("a journey row is a disclosure: aria-expanded on the button, the panel it controls named",
   /aria-expanded=\{open\}\s*aria-controls=\{panelId\}/.test(strip) && /id=\{panelId\} role="region" aria-label=\{`Steps of \$\{journey\.title\}`\}/.test(strip));
 check("…with a word that says which way it goes, and a chevron that turns",
-  /\{open \? "Hide steps" : `Show \$\{journey\.steps\.length\} step/.test(strip) && /transition-transform duration-200 \$\{open \? "rotate-90" : ""\}/.test(strip));
+  /\{disclosureWord\(open, journey\.steps\.length\)\}/.test(strip) && /transition-transform duration-200 \$\{open \? "rotate-90" : ""\}/.test(strip));
+check("the word: closed says how many steps open, open says hide; a journey without steps has details, not 0 steps",
+  disclosureWord(false, 7) === "Show 7 steps" && disclosureWord(false, 1) === "Show 1 step" && disclosureWord(true, 7) === "Hide steps" &&
+    disclosureWord(false, 0) === "Show details" && disclosureWord(true, 0) === "Hide details");
 check("a step card says which step it is, how it went, and whether its evidence is open",
   /aria-expanded=\{isSelected\}\s*aria-label=\{`Step \$\{i \+ 1\}, \$\{s\.label\}: \$\{step\.label\}\. \$\{isSelected \? "Hide" : "Show"\} what we tried and what happened`\}/.test(strip));
 check("the problem lines that open a step carry the same state", /aria-expanded=\{selected\?\.id === p\.id\}/.test(strip));

@@ -80,6 +80,14 @@ export function JourneyStrips({
 // evidence, not a problem — the strip already dims it.
 const PROBLEM_STATUSES = new Set(["risky", "confusing", "broken", "exposed"]);
 
+// CHE-418: the word beside a journey row that says which way it goes. A
+// journey with no steps (carried without its walk, or stopped before one) has
+// its summary and numbers to show, not "0 steps".
+export function disclosureWord(open: boolean, steps: number): string {
+  if (steps === 0) return open ? "Hide details" : "Show details";
+  return open ? "Hide steps" : `Show ${steps} step${steps === 1 ? "" : "s"}`;
+}
+
 function JourneyCard({
   journey,
   collapsedByDefault,
@@ -128,7 +136,7 @@ function JourneyCard({
           </span>
         </h3>
         <span className="flex flex-wrap items-center gap-2 whitespace-nowrap sm:shrink-0 sm:flex-nowrap">
-          <span className="font-mono text-xs text-fg-faint">{open ? "Hide steps" : `Show ${journey.steps.length} step${journey.steps.length === 1 ? "" : "s"}`}</span>
+          <span className="font-mono text-xs text-fg-faint">{disclosureWord(open, journey.steps.length)}</span>
           {/* CHE-57: this journey was not walked this run — it was copied
               forward from the run that did walk it. The status pill next to it
               is therefore a statement about that run, and this chip is the only
