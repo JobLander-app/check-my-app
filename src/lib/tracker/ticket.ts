@@ -1,9 +1,13 @@
 import type { TicketDraft } from "./types";
+import { PRIORITY_META, type Priority } from "@/lib/issue-priority";
 
 // What the watch-diff (CHE-25, agent worker) must hand us for each 🔴 regression.
 // Kept minimal and mapped onto the existing Finding/Journey/Step shapes — this is
 // the producer↔ticket contract; CHE-25 fills it.
 export interface Regression {
+  // CHE-413: the one scale the customer sees everywhere (Issues, the review,
+  // this ticket's first line) — src/lib/issue-priority.ts.
+  priority: Priority;
   journeyTitle: string;
   failingStep: string; // exact failing step, e.g. "step 4 'Start session' is a no-op"
   failureSignature: string; // observed error / console / status — drives dedup
@@ -39,6 +43,7 @@ export function buildTicketDraft(r: Regression, ctx: TicketContext): TicketDraft
   );
 
   const description = [
+    `**Priority:** ${r.priority} — ${PRIORITY_META[r.priority].meaning}`,
     `**Origin:** CheckMyApp Daily Watch — run #${ctx.runNumber} (${ctx.runPublicId}) at ${ctx.startedAtIso}`,
     `**Surface / repo:** ${ctx.appSlug}${ctx.repoLabel ? ` / ${ctx.repoLabel.replace(/^repo:\s*/, "")}` : ""}`,
     "",

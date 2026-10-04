@@ -70,6 +70,7 @@ import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { findingSignature, sameProblem, signatureKind, titleSimilarity, SAME_PROBLEM } from "@/lib/finding-signature";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
+import { audienceOf, type Audience, type StepFill } from "@/lib/audience";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
@@ -84,6 +85,12 @@ export interface RecurringIssue {
   timesSeen: number;
   state: "new" | "recurring" | "gone" | "known" | "not_a_bug";
   issueLinkId: string | null;
+  // Of the latest sighting, for the priority (src/lib/issue-priority.ts):
+  // where it was seen (Finding.detail.where) and who would have hit it
+  // (audienceOf — unknown when its walk recorded no actions, or the finding
+  // is not anchored to a step).
+  where: string | null;
+  audience: Audience;
 }
 
 export interface RecurrenceFinding {
@@ -103,6 +110,10 @@ export interface RecurrenceJourney {
   carried: boolean;
   // Step statuses in step order ("ok", "broken", "skipped", …).
   steps: string[];
+  // What each step's actions recorded, in the same order (src/lib/audience.ts
+  // stepFill). Absent from a caller that has no actions: the audience is then
+  // unknown.
+  fills?: StepFill[];
 }
 
 export interface RecurrenceRun {
@@ -371,6 +382,8 @@ export function recurrence(
         timesSeen: checks.length,
         state,
         issueLinkId: link?.id ?? null,
+        where: parseJson<{ where?: string }>(last.finding.detail)?.where?.trim() || null,
+        audience: audienceOfSighting(last),
       },
       goneSinceRunNumber: again?.runNumber ?? null,
       sightings: streak.map((s) => ({ runNumber: s.run.runNumber, findingId: s.finding.id, title: s.finding.title })),
@@ -378,6 +391,15 @@ export function recurrence(
     });
   }
   return out.sort((a, b) => b.issue.lastSeenRunNumber - a.issue.lastSeenRunNumber);
+}
+
+// Who would have hit the problem at this sighting — the Release lens's rule
+// (audienceOf), over the fills the loader carried. A finding anchored to no
+// step, or a journey whose fills nobody loaded, is unknown — never a guess.
+function audienceOfSighting(s: Sighting): Audience {
+  if (!s.journey || s.stepIndex === null || !s.journey.fills) return "unknown";
+  const steps = s.journey.steps.map((status, i) => ({ status, fill: s.journey!.fills![i] ?? ("unrecorded" as const) }));
+  return audienceOf(steps, s.stepIndex);
 }
 
 // A "page" or "req" signature is a bucket, not an identity. A page holds many
@@ -451,8 +473,14 @@ async function teamHistory(db: PrismaClient, teamId: string, only?: string): Pro
       Prisma.sql`SELECT j.id, j.runId, j.appJourneyId, j.journeyKey, j.title, j.carriedFromRunId
         FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${finishedChecksOf(teamRows(teamId), only)} ORDER BY j.runId, j."order"`,
     ),
-    db.$queryRaw<{ journeyId: string; status: string }[]>(
-      Prisma.sql`SELECT s.journeyId, s.status
+    // The step's actions reduced to one word in the database (stepFill's three
+    // answers — src/lib/audience.ts): a team's history is thousands of steps,
+    // and the recorded actions of each are the heaviest column on the row.
+    db.$queryRaw<{ journeyId: string; status: string; fill: StepFill }[]>(
+      Prisma.sql`SELECT s.journeyId, s.status,
+          CASE WHEN s.actions IS NULL THEN 'unrecorded'
+               WHEN instr(s.actions, '{{TEST_EMAIL') > 0 OR instr(s.actions, '{{TEST_PASSWORD') > 0 THEN 'credential'
+               ELSE 'none' END AS fill
         FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
         WHERE ${finishedChecksOf(teamRows(teamId), only)} ORDER BY s.journeyId, s."order"`,
     ),
@@ -466,8 +494,8 @@ async function teamHistory(db: PrismaClient, teamId: string, only?: string): Pro
     if (list) list.push(v);
     else m.set(k, [v]);
   };
-  const stepsOf = new Map<string, Array<{ status: string }>>();
-  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status });
+  const stepsOf = new Map<string, Array<{ status: string; fill: StepFill }>>();
+  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status, fill: s.fill });
   const journeysOf = new Map<string, HistoryRun["journeys"]>();
   for (const j of journeys) push(journeysOf, j.runId, { ...j, steps: stepsOf.get(j.id) ?? [] });
   const findingsOf = new Map<string, RecurrenceFinding[]>();
@@ -628,7 +656,9 @@ export interface RecurrenceRunRow {
     journeyKey: string | null;
     title: string;
     carriedFromRunId: string | null;
-    steps: Array<{ status: string }>;
+    // `fill` when the caller has the step's actions (the team loader above);
+    // a row without it answers "unknown" for who hit the problem.
+    steps: Array<{ status: string; fill?: StepFill }>;
   }>;
   findings: RecurrenceFinding[];
 }
@@ -640,6 +670,7 @@ export function toRecurrenceRun(run: RecurrenceRunRow): RecurrenceRun {
       identity: j.appJourneyId ?? j.journeyKey ?? j.title,
       carried: j.carriedFromRunId !== null,
       steps: j.steps.map((s) => s.status),
+      ...(j.steps.every((s) => s.fill !== undefined) ? { fills: j.steps.map((s) => s.fill!) } : {}),
     })),
     findings: run.findings,
   };

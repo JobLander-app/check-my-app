@@ -13,6 +13,7 @@ import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
+import { recipientsForApp } from "@/lib/recipients";
 import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
@@ -93,7 +94,6 @@ export async function runDueWatches(
       appSlug: true,
       targetUrl: true,
       frequency: true,
-      notifyEmail: true,
       testEmail: true,
       testPasswordEnc: true,
       // CHE-372: mirrored onto the watch like the test login.
@@ -201,7 +201,6 @@ export type DueWatch = {
   id: string;
   appSlug: string;
   targetUrl: string;
-  notifyEmail: string | null;
   testEmail: string | null;
   testPasswordEnc: string | null;
   storePasswordEnc: string | null;
@@ -246,7 +245,8 @@ export async function createWatchRun(
         teamId: watch.teamId,
         targetKind: watch.app?.targetKind,
       }),
-      notifyEmail: watch.notifyEmail,
+      // No address on a scheduled run: who hears about it is the app's list
+      // of team members (src/lib/recipients.ts), read when the verdict is out.
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
       focusAreas: watch.app?.focusAreas ?? null,
@@ -269,14 +269,15 @@ export async function createWatchRun(
 // plan's next credit runs it. The team hears it once per window
 // (balanceNoticeSentAt), not once per tick — by mail, because a watch that
 // quietly stops is the one nobody notices until the thing it was watching
-// breaks.
+// breaks. It goes to the people who hear the app's verdicts (CHE-413: the
+// same list, not a second address).
 async function pauseBalanceUsedUp(
   env: AgentEnv,
   bindings: AgentBindings,
   watch: {
     id: string;
     appSlug: string;
-    notifyEmail: string | null;
+    appId: string | null;
     ownerId: string | null;
     teamId: string;
     plan: UserPlan;
@@ -307,9 +308,9 @@ async function pauseBalanceUsedUp(
       plan: watch.plan,
       source: "watch",
     });
-    if (watch.notifyEmail) {
+    for (const to of (await recipientsForApp(env.db, watch.appId)).to) {
       await sendBalanceUsedUp({
-        to: watch.notifyEmail,
+        to,
         appSlug: watch.appSlug,
         reason: watch.reason,
         apiKey: bindings.EMAIL_API_KEY,
@@ -337,7 +338,7 @@ async function pauseExpiredTrial(
   watch: {
     id: string;
     appSlug: string;
-    notifyEmail: string | null;
+    appId: string | null;
     trialNoticeSentAt: Date | null;
   },
   now: Date,
@@ -349,17 +350,23 @@ async function pauseExpiredTrial(
     data: { nextRunAt: new Date(now.getTime() + TRIAL_RECHECK_HOURS * 60 * 60 * 1000) },
   });
 
-  if (watch.trialNoticeSentAt || !watch.notifyEmail) return;
+  if (watch.trialNoticeSentAt) return;
+  // The people who hear the app's verdicts (CHE-413). Nobody at all is left
+  // unstamped, so the first person added hears it on the next tick.
+  const recipients = (await recipientsForApp(env.db, watch.appId)).to;
+  if (recipients.length === 0) return;
 
   try {
-    await sendWatchTrialPaused({
-      to: watch.notifyEmail,
-      appSlug: watch.appSlug,
-      apiKey: bindings.EMAIL_API_KEY,
-      from: bindings.EMAIL_FROM,
-      replyTo: bindings.EMAIL_REPLY_TO,
-      baseUrl: bindings.APP_URL,
-    });
+    for (const to of recipients) {
+      await sendWatchTrialPaused({
+        to,
+        appSlug: watch.appSlug,
+        apiKey: bindings.EMAIL_API_KEY,
+        from: bindings.EMAIL_FROM,
+        replyTo: bindings.EMAIL_REPLY_TO,
+        baseUrl: bindings.APP_URL,
+      });
+    }
     // Stamped only after a successful send, so a transient Resend failure costs
     // a retry on the next tick rather than the notice itself.
     await env.db.watch.update({

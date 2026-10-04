@@ -17,6 +17,7 @@ import { readExtensionOptions } from "@/lib/extension-target";
 import { projectChoicesFor } from "@/lib/posthog/choices";
 import { fetchTeams } from "@/lib/tracker/linear-oauth";
 import { freshLinearToken } from "@/lib/tracker/token";
+import { appRunsTheAction } from "@/lib/release-action";
 import { setAppNotifiers, setIntegrationEndpoints, updateAppSettings } from "@/app/dashboard/actions";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { ExtensionSettings } from "@/components/extension-fields";
 import { WatchSettings } from "@/components/watch-settings";
 import { AnalyticsProject } from "@/components/analytics-project";
+import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
 import { DeleteAppSection } from "@/components/delete-app";
 
@@ -52,7 +54,7 @@ export default async function AppSettingsSection({
   const { user, db, team } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
-    include: { watch: { include: { runs: { orderBy: { startedAt: "desc" }, take: 10 } } }, policy: true, tracker: true, repo: true },
+    include: { watch: { include: { runs: { orderBy: { startedAt: "desc" }, take: 10 } } }, policy: true, tracker: true },
   });
   // Another team of yours, or nobody's: the settings address says which (CHE-261).
   if (!app) redirect(appPath.settings(appId));
@@ -140,7 +142,7 @@ export default async function AppSettingsSection({
 
       {section === "schedule" && <Schedule app={app} plan={team.plan as UserPlan} teamId={team.id} />}
 
-      {section === "notifications" && <Notifications appId={app.id} teamId={team.id} userId={user.id} notifyEmail={app.watch ? (app.watch.notifyEmail ?? "") : null} save={save} />}
+      {section === "notifications" && <Notifications appId={app.id} teamId={team.id} userId={user.id} />}
 
       {section === "integrations" && <Integrations app={app} teamId={team.id} save={save} />}
 
@@ -293,10 +295,10 @@ async function Schedule({ app, plan, teamId }: { app: AppWithWatch; plan: UserPl
   );
 }
 
-// Who is told (CHE-262): the people on the team, and — for an app on a
-// schedule — the address a regression is escalated to. Two forms: the list is
-// its own action, the address is a field of the app.
-async function Notifications({ appId, teamId, userId, notifyEmail, save }: { appId: string; teamId: string; userId: string; notifyEmail: string | null; save: Save }) {
+// Who is told (CHE-262): the people on the team, one form with its own action.
+// Every verdict of the app goes to them — there is no second, outside address
+// (CHE-413): one list, so nobody wonders which of two it went to.
+async function Notifications({ appId, teamId, userId }: { appId: string; teamId: string; userId: string }) {
   const { db } = await requireUser();
   const [teamMembers, notifiers] = await Promise.all([
     db.membership.findMany({ where: { teamId }, select: { userId: true, scope: true, user: { select: { email: true, name: true } } }, orderBy: { createdAt: "asc" } }),
@@ -304,49 +306,41 @@ async function Notifications({ appId, teamId, userId, notifyEmail, save }: { app
   ]);
   const chosen = new Set(notifiers.map((n) => n.userId));
   return (
-    <div className="flex flex-col gap-5">
-      <form action={setAppNotifiers.bind(null, appId)} className="card space-y-3 p-5">
-        {/* No chosen recipients means the team's admins — said, not left to be inferred from an empty list. */}
-        <p className="text-sm text-fg-muted">
-          {chosen.size === 0
-            ? "Nobody chosen yet, so verdicts go to the team's admins. Pick people and they go to them instead."
-            : "Verdicts for this app go to the people ticked here."}
-        </p>
-        {teamMembers.map((m) => (
-          <label key={m.userId} className="flex items-center gap-3 text-sm">
-            <input type="checkbox" name="notifier" value={m.userId} defaultChecked={chosen.has(m.userId)} />
-            <span>
-              {m.user.name?.trim() || m.user.email}
-              <span className="text-fg-muted"> · {m.scope}</span>
-              {m.userId === userId && <span className="text-fg-muted"> · you</span>}
-            </span>
-          </label>
-        ))}
-        <Button type="submit" variant="outline">
-          Save who hears about it
-        </Button>
-      </form>
-
-      {notifyEmail !== null && (
-        <form action={save} className="card space-y-3 p-5">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium text-fg">Escalation email</span>
-            <span className="block text-xs text-fg-faint">One more address that hears when a scheduled check finds a regression.</span>
-            <Input name="notifyEmail" type="email" placeholder="you@email.com" defaultValue={notifyEmail} className="max-w-md" />
-          </label>
-          <Button type="submit" variant="outline" className="px-3 py-1.5 text-xs">
-            Save escalation email
-          </Button>
-        </form>
-      )}
-    </div>
+    <form action={setAppNotifiers.bind(null, appId)} className="card space-y-3 p-5">
+      {/* No chosen recipients means the team's admins — said, not left to be inferred from an empty list. */}
+      <p className="text-sm text-fg-muted">
+        {chosen.size === 0
+          ? "Nobody chosen yet, so verdicts go to the team's admins. Pick people and they go to them instead."
+          : "Verdicts for this app go to the people ticked here."}
+      </p>
+      {teamMembers.map((m) => (
+        <label key={m.userId} className="flex items-center gap-3 text-sm">
+          <input type="checkbox" name="notifier" value={m.userId} defaultChecked={chosen.has(m.userId)} />
+          <span>
+            {m.user.name?.trim() || m.user.email}
+            <span className="text-fg-muted"> · {m.scope}</span>
+            {m.userId === userId && <span className="text-fg-muted"> · you</span>}
+          </span>
+        </label>
+      ))}
+      <p className="text-xs text-fg-faint">
+        Someone who should hear about it but is not on the team?{" "}
+        <Link href="/settings/team" className="text-accent hover:underline">
+          Invite them
+        </Link>
+        .
+      </p>
+      <Button type="submit" variant="outline">
+        Save who hears about it
+      </Button>
+    </form>
   );
 }
 
-type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; tracker: true; repo: true } }>;
+type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; tracker: true } }>;
 
-// Where problems go besides this page: one row per integration, each with its
-// state and its own action.
+// Where problems go besides this page, and where checks come from: one card
+// per integration, each with its state and its own action.
 async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; teamId: string; save: Save }) {
   const { db } = await requireUser();
   const tracker = app.tracker;
@@ -361,11 +355,14 @@ async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; t
     : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
-  const projectChoices = await projectChoicesFor(db, {
-    teamId,
-    appUrl: app.targetUrl,
-    clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
-  });
+  const [projectChoices, fromAction] = await Promise.all([
+    projectChoicesFor(db, {
+      teamId,
+      appUrl: app.targetUrl,
+      clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
+    }),
+    appRunsTheAction(db, teamId, app.id),
+  ]);
 
   const pickupLabels = (JSON.parse(app.policy?.pickupLabels ?? "[]") as string[]).join(", ");
   const urgentJourneys = (() => {
@@ -444,24 +441,8 @@ async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; t
         />
       </div>
 
-      {/* GitHub — spec export target */}
-      <div className="card flex items-start justify-between gap-4 p-5">
-        <div className="space-y-1">
-          <p className="text-sm font-medium text-fg">
-            GitHub <span className="text-xs font-normal text-fg-faint">· e2e spec export</span>
-          </p>
-          {app.repo ? (
-            <p className="text-xs text-status-ok">
-              ✓ {app.repo.repoFullName} · base branch {app.repo.defaultBranch}
-            </p>
-          ) : (
-            <p className="text-xs text-fg-faint">
-              Not connected — use &ldquo;Export to GitHub&rdquo; on any check&apos;s page to link a repo with a
-              fine-grained PAT.
-            </p>
-          )}
-        </div>
-      </div>
+      {/* GitHub — where a release is checked from (CHE-413). */}
+      <GitHubCard connected={fromAction} />
 
       {/* Outbound webhooks + Slack (CHE-53). */}
       <div className="card space-y-3 p-5">

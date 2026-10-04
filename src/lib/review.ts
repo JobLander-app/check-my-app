@@ -26,7 +26,9 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { normalizeAnatomy } from "@/lib/anatomy";
 import { unreachedPages } from "@/lib/coverage";
+import { issuePriority, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
+import { audienceAt } from "@/lib/audience";
 import type { FindingDetail } from "@/lib/types";
 import { productName, productProse, splitSentences } from "@/lib/verdict-language";
 import { publicRow } from "@/lib/tenant-db";
@@ -61,6 +63,10 @@ export interface ReviewFinding {
   title: string;
   category: string;
   severity: string;
+  // CHE-413: the one scale Health → Issues and the tickets we file use
+  // (src/lib/issue-priority.ts). From this check alone: its category, where
+  // it happens and who hit it; the Issues page adds how long it has been there.
+  priority: Priority;
   mark: string;
   where: string | null;
   what_we_tried: string[];
@@ -118,6 +124,10 @@ export interface ReviewSourceStep {
   observed: string | null;
   unverifiedReason: string | null;
   networkLog: string | null;
+  // The recorded actions (CHE-129), read only for who hit a finding — a
+  // credential filled before the step makes it an existing user's. Never in
+  // the payload.
+  actions?: string | null;
 }
 
 export interface ReviewSourceJourney {
@@ -135,6 +145,8 @@ export interface ReviewSourceFinding {
   severity: string;
   mark: string;
   detail: string | null;
+  // Finding.anchor.stepRef — which journey and step saw it, for who hit it.
+  anchor?: string | null;
   evidence: { type: string; storageUrl: string }[];
 }
 
@@ -155,7 +167,9 @@ export interface ReviewSource {
 
 // The one query behind the route. `select` rather than `include` so the
 // payload carries nothing it does not show — no credentials columns, no cost,
-// no transcript (those are ours; CHE-108).
+// no transcript (those are ours; CHE-108). Two columns are read and not shown:
+// a step's recorded actions and a finding's anchor, which together say who
+// would have hit the finding (its priority).
 export const REVIEW_SELECT = {
   targetKind: true,
   publicId: true,
@@ -185,6 +199,7 @@ export const REVIEW_SELECT = {
           observed: true,
           unverifiedReason: true,
           networkLog: true,
+          actions: true,
         },
       },
     },
@@ -198,6 +213,7 @@ export const REVIEW_SELECT = {
       severity: true,
       mark: true,
       detail: true,
+      anchor: true,
       evidence: { select: { type: true, storageUrl: true } },
     },
   },
@@ -274,6 +290,31 @@ export function nextActionFor(
   return { finding: finding.number, symptom, how_to_know_it_is_gone: gone };
 }
 
+// A finding's priority from this check alone (src/lib/issue-priority.ts): who
+// hit it is read from the journey its anchor names, the way the Release lens
+// reads it — a credential filled before the step makes it an existing user's;
+// a finding with no anchor, or a walk that recorded no actions, is unknown and
+// is never promoted. One check has no streak, so "seen three checks in a row"
+// is the Issues page's to add.
+export function reviewPriority(
+  run: Pick<ReviewSource, "journeys">,
+  finding: Pick<ReviewSourceFinding, "category" | "severity" | "detail" | "anchor">,
+): Priority {
+  const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
+  const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] : undefined;
+  const audience =
+    journey && typeof ref?.stepIndex === "number"
+      ? audienceAt(journey.steps.map((s) => ({ status: s.status, actions: s.actions ?? null })), ref.stepIndex)
+      : "unknown";
+  return issuePriority({
+    category: finding.category,
+    severity: finding.severity,
+    where: (parseJson<FindingDetail>(finding.detail) ?? {}).where,
+    timesSeen: 1,
+    audience,
+  });
+}
+
 export function buildReview(run: ReviewSource, origin: string): Review {
   const base = origin.replace(/\/+$/, "");
 
@@ -299,6 +340,7 @@ export function buildReview(run: ReviewSource, origin: string): Review {
       title: f.title,
       category: f.category,
       severity: f.severity,
+      priority: reviewPriority(run, f),
       mark: f.mark,
       where: detail.where ?? null,
       what_we_tried: detail.whatWeTried ?? [],

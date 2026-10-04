@@ -15,6 +15,7 @@ import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLab
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
 import { releaseLensFor } from "@/lib/viewer-flags";
+import { appRunsTheAction } from "@/lib/release-action";
 import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { OtherTeamApp } from "@/components/other-team-app";
@@ -43,7 +44,6 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       id: true, ownerId: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
       posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
       tracker: { select: { id: true } },
-      repo: { select: { id: true } },
       watch: { select: { active: true, frequency: true, trialEndsAt: true } },
     },
   });
@@ -64,7 +64,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // the ones made before it was saved (no appId). Otherwise the header could
   // name a check the timeline does not have.
   const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
-  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount] = await Promise.all([
+  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction] = await Promise.all([
     // This app's entries alone: the page's work follows one app's history,
     // not the team's whole portfolio.
     appHealth(db, team.id, { only: app.id }),
@@ -98,6 +98,9 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
         deploySha: { not: null }, status: { in: FINISHED },
       },
     }),
+    // GitHub in the Integrations row means a release check has arrived from
+    // the app's CI — the same fact its Integrations card states (CHE-413).
+    appRunsTheAction(db, team.id, app.id),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
@@ -242,7 +245,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             value={integrationsLabel({
               tracker: app.tracker !== null,
               analyticsProject: app.posthogProjectName,
-              repo: app.repo !== null,
+              github: fromAction,
               webhook: Boolean(app.webhookUrl),
               slack: Boolean(app.slackWebhookUrl),
             })}

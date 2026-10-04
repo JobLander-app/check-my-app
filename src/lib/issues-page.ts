@@ -12,8 +12,19 @@
 // calls the second what it is: not checked again.
 
 import type { Recurrence, RecurringIssue } from "@/lib/recurring";
+import { isPriority, issuePriority, priorityRank, type Priority } from "@/lib/issue-priority";
 
 export type IssuesFilter = "latest" | "stale" | "recurring" | "answered" | "gone" | "all";
+
+/** The row's priority (CHE-413), from what recurrence recorded of the problem's latest sighting. */
+export function issuePriorityOf(issue: Pick<RecurringIssue, "category" | "severity" | "where" | "timesSeen" | "audience">): Priority {
+  return issuePriority({ category: issue.category, severity: issue.severity, where: issue.where, timesSeen: issue.timesSeen, audience: issue.audience });
+}
+
+/** `?p=P1` narrows the page to one priority; anything else is no filter. */
+export function priorityFilter(raw: string | undefined): Priority | null {
+  return isPriority(raw) ? raw : null;
+}
 
 export const ISSUES_FILTERS: { key: IssuesFilter; label: string }[] = [
   { key: "latest", label: "In the latest checks" },
@@ -96,21 +107,29 @@ export function seenLine(r: Pick<Recurrence, "goneSinceRunNumber"> & { issue: Pi
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 const VIEW_ORDER: IssueView[] = ["fresh_recurring", "fresh_new", "stale", "known", "not_a_bug", "gone"];
 
-/** What keeps coming back first, then the new; inside a kind the most severe, then the most recently seen. */
-export function sortIssues<T extends { view: IssueView; issue: Pick<RecurringIssue, "severity" | "lastSeenRunNumber"> }>(rows: T[]): T[] {
+// A problem that is settled — gone, or ruled not a bug — sits below every one
+// that is not, whatever its priority: a P0 that went away is history, and
+// history does not outrank a P1 that is there today.
+const settled = (view: IssueView) => view === "gone" || view === "not_a_bug";
+
+/** What is still there before what is settled; the most urgent first; at one priority what keeps coming back, then the new; then the most severe, then the most recently seen. */
+export function sortIssues<T extends { priority: Priority; view: IssueView; issue: Pick<RecurringIssue, "severity" | "lastSeenRunNumber"> }>(rows: T[]): T[] {
   const rank = (list: readonly string[], v: string) => (list.indexOf(v) === -1 ? list.length : list.indexOf(v));
   return [...rows].sort(
     (a, b) =>
+      Number(settled(a.view)) - Number(settled(b.view)) ||
+      priorityRank(a.priority) - priorityRank(b.priority) ||
       rank(VIEW_ORDER, a.view) - rank(VIEW_ORDER, b.view) ||
       rank(SEVERITY_ORDER, a.issue.severity) - rank(SEVERITY_ORDER, b.issue.severity) ||
       b.issue.lastSeenRunNumber - a.issue.lastSeenRunNumber,
   );
 }
 
-export function issuesHref(filter: IssuesFilter, appId?: string | null): string {
+export function issuesHref(filter: IssuesFilter, appId?: string | null, priority?: Priority | null): string {
   const q = new URLSearchParams();
   if (filter !== "latest") q.set("show", filter);
   if (appId) q.set("app", appId);
+  if (priority) q.set("p", priority);
   const s = q.toString();
   return s ? `/health/issues?${s}` : "/health/issues";
 }
@@ -141,6 +160,23 @@ export function portions<T>(ids: T[], size = 80): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
   return out;
+}
+
+// The owner's four answers to a problem — the same four the check's own page
+// sets (src/components/findings-list.tsx), under the words the Issues row
+// shows. "none" is no answer yet.
+export const ISSUE_MARKS = [
+  { mark: "known", label: "That's fine" },
+  { mark: "watch", label: "Watch it" },
+  { mark: "fixed", label: "Mark as fixed" },
+  { mark: "false_positive", label: "Dispute" },
+] as const;
+
+export type IssueMark = (typeof ISSUE_MARKS)[number]["mark"] | "none";
+
+/** The answer as the row prints it; null when none was given. */
+export function markLabel(mark: string): string | null {
+  return ISSUE_MARKS.find((m) => m.mark === mark)?.label ?? null;
 }
 
 /** A tracker ticket as the row names it: its key when it has one ("JOB-123"), else that one was filed. */

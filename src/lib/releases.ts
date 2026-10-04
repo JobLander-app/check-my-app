@@ -27,18 +27,19 @@
 //
 // Every item says who would have hit it — the owner's question, from the
 // Goran call (2026-10-01, 24:45): «it's kinda tricky that it doesn't break for
-// the existing customers». See audienceAt.
+// the existing customers». See audienceAt (src/lib/audience.ts).
 //
 // Price only (Run.priceUsd), never what the check cost us (CLAUDE.md §10).
 
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
+import { audienceAt, type Audience } from "@/lib/audience";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { findingSignature, signatureKind, titleSimilarity } from "@/lib/finding-signature";
 import { parseJson } from "@/lib/json";
 import { lookedAgainAt, positionsSeen, sameIssue, type RecurrenceFinding, type RecurrenceJourney } from "@/lib/recurring";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
-export type Audience = "existing_users" | "new_visitors" | "unknown";
+export type { Audience } from "@/lib/audience";
 
 interface StepInput {
   status: string;
@@ -107,26 +108,10 @@ export function releaseEnv(run: { deployEnv: string | null; ephemeral: boolean }
   return env;
 }
 
-// Who would have hit a problem seen on a given step: an existing, signed-in
-// user, or a new visitor. Read from what the walk DID, not from what the model
-// named the journey: on checkmyapp.dev the walker signs in during "signup" and
-// "start-free-land" journeys too (#261, #264, #266), and AppJourney.surface is
-// free text ("/public", "/authenticated", "app", "/both") or empty (every
-// meetbashar.com journey but two). Each journey runs in a fresh browser
-// (src/agent/workflow.ts), so a session is signed in only if this journey
-// filled a test credential — and the walk records that fill as the
-// {{TEST_EMAIL}} / {{TEST_EMAIL:<label>}} placeholder in Step.actions (CHE-129).
-//   existing_users — a non-skipped step up to and including this one filled it;
-//   new_visitors   — none did, and the journey recorded its actions;
-//   unknown        — the journey recorded no actions at all (before CHE-129),
-//                    so a sign-in could have happened unrecorded.
-export function audienceAt(steps: StepInput[], index: number): Audience {
-  const upTo = steps.slice(0, index + 1);
-  if (upTo.some((s) => s.status !== "skipped" && /\{\{TEST_(EMAIL|PASSWORD)(:[^}]*)?\}\}/.test(s.actions ?? ""))) {
-    return "existing_users";
-  }
-  return steps.some((s) => s.actions !== null) ? "new_visitors" : "unknown";
-}
+// Who would have hit a problem seen on a given step — the rule is
+// src/lib/audience.ts; re-exported because the verify script and the page
+// read it from here.
+export { audienceAt };
 
 interface Seen {
   finding: RecurrenceFinding;

@@ -97,6 +97,8 @@
     "verify:click-shows-what-appeared": "tsx --tsconfig tsconfig.json scripts/verify-click-shows-what-appeared.ts",
     "verify:table-fold": "tsx --tsconfig tsconfig.json scripts/verify-table-fold.ts",
     "verify:issue-page": "tsx --tsconfig tsconfig.json scripts/verify-issue-page.ts",
+    "verify:no-escalation-email": "tsx --tsconfig tsconfig.json scripts/verify-no-escalation-email.ts",
+    "verify:issue-priority": "tsx --tsconfig tsconfig.json scripts/verify-issue-priority.ts",
     "mcp:smoke": "tsx --tsconfig tsconfig.json scripts/mcp-smoke.ts",
     "build:channel": "node scripts/build-channel.mjs",
     "verify:extension-lifecycle": "node scripts/verify-extension-lifecycle.mjs",

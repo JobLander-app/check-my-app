@@ -13,6 +13,7 @@ import { buildTicketDraft } from "./ticket";
 import { decideTicketAction } from "./decision";
 import type { Tracker, TicketDraft } from "./types";
 import { dedupKey, requestSignature } from "@/lib/dedup";
+import { issuePriority, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
 import type { FindingDetail } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -22,6 +23,9 @@ import { alreadyScoped } from "@/lib/tenant-db";
 // caller can pass its own query result.
 export interface TicketFinding {
   anchor?: string | null;
+  // CHE-413: the priority as the caller knows it (Issues knows the streak and
+  // who hit it). Absent, it is computed from the finding alone.
+  priority?: Priority;
   // CHE-103: recorded on the link so the finding is found by pointer, not by
   // re-hashing prose that a later cleanup may rewrite. Optional because the
   // tickets we file against ourselves have no Finding row behind them.
@@ -97,6 +101,9 @@ export function draftForFinding(
 
   return buildTicketDraft(
     {
+      priority:
+        finding.priority ??
+        issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen: 1, audience: "unknown" }),
       journeyTitle: detail.where ?? run.appSlug,
       failingStep: finding.title,
       failureSignature: `${finding.category}/${finding.severity}: ${finding.title}`,

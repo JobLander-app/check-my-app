@@ -43,12 +43,12 @@ export function accountsLabel(hasDefault: boolean, named: number): string {
   return n === 0 ? "None" : `${n} account${n === 1 ? "" : "s"}`;
 }
 
-/** What the app is connected to, by name; "None" when nothing is. */
-export function integrationsLabel(i: { tracker: boolean; analyticsProject: string | null; repo: boolean; webhook: boolean; slack: boolean }): string {
+/** What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413). */
+export function integrationsLabel(i: { tracker: boolean; analyticsProject: string | null; github: boolean; webhook: boolean; slack: boolean }): string {
   const names = [
     i.tracker ? "Linear" : null,
     i.analyticsProject !== null ? "PostHog" : null,
-    i.repo ? "GitHub" : null,
+    i.github ? "GitHub" : null,
     i.slack ? "Slack" : null,
     i.webhook ? "Webhook" : null,
   ].filter(Boolean);

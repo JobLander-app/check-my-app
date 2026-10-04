@@ -33,6 +33,32 @@ export async function teamRunsTheAction(db: PrismaClient, teamId: string): Promi
   return run !== null;
 }
 
+/**
+ * The same question of one app: has a check of it ever arrived from the
+ * Action? What the GitHub card on the app's Integrations section states
+ * (CHE-413) — GitHub is where a release is checked from, nothing else.
+ */
+export async function appRunsTheAction(db: PrismaClient, teamId: string, appId: string): Promise<boolean> {
+  const run = await db.run.findFirst({
+    where: { ...teamOwned(teamId), appId, startedVia: ACTION_STARTED_VIA },
+    select: { id: true },
+  });
+  return run !== null;
+}
+
+/** The team's apps a check has arrived for that way, for a list that labels each app once. */
+export async function appsRunningTheAction(db: PrismaClient, teamId: string): Promise<Set<string>> {
+  const runs = await db.run.findMany({
+    where: { ...teamOwned(teamId), startedVia: ACTION_STARTED_VIA, appId: { not: null } },
+    select: { appId: true },
+    distinct: ["appId"],
+  });
+  return new Set(runs.map((r) => r.appId).filter((id): id is string => id !== null));
+}
+
+/** The guide every GitHub card points at. */
+export const RELEASE_GUIDE_PATH = "/guides/check-every-release";
+
 /** What the connecting agent is told, once, in the MCP instructions. */
 export const RELEASE_ACTION_INSTRUCTION =
   "If their project deploys through GitHub Actions, offer to add the CheckMyApp Action after the deploy job, " +
