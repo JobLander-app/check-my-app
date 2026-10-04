@@ -1,12 +1,13 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
-import { teamOwned } from "@/lib/tenant-db";
+import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { recurrencesAsOf } from "@/lib/recurring";
 import { checkDelta, deltaLine } from "@/lib/check-delta";
 import { VerdictView } from "@/components/verdict-view";
+import { OtherTeamApp } from "@/components/other-team-app";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { releasesByTeam } from "@/lib/releases";
 import { envLabel, releasesHref, shortSha } from "@/lib/release-page";
@@ -43,9 +44,17 @@ export default async function CheckPage({
     where: { ...teamOwned(team.id), id: appId },
     select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
   });
-  // Not in the team you are acting as: the app's settings page answers that
-  // case in one place (it offers the switch, or 404s — CHE-261).
-  if (!app) redirect(appPath.settings(appId));
+  // Not in the team you are acting as — but possibly in another of your teams:
+  // the page says so and offers the switch, landing back on this check
+  // (CHE-261). Nobody's is 404.
+  if (!app) {
+    const elsewhere = await db.app.findFirst({
+      where: { ...memberOfRows(user.id), id: appId },
+      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+    });
+    if (!elsewhere?.teamId) notFound();
+    return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.check(appId, runNumber)} />;
+  }
 
   // Which checks are this app's is appHealth's rule, as on the app's page: the
   // ones attached to it, and — when it is the team's only app with this

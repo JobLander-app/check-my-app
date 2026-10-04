@@ -21,8 +21,10 @@ import {
   inFilter,
   scheduleLabel,
   stripStory,
+  stripTitle,
   type WatchState,
 } from "@/lib/all-apps";
+import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
 import { AppsViewToggle } from "@/components/apps-view-toggle";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { CheckPrice } from "@/components/check-price";
@@ -37,20 +39,23 @@ import { CheckPrice } from "@/components/check-price";
 // "what keeps coming back because nobody fixes it".
 type Row = AppHealth & { name: string; watch: WatchState; newestVerdict: string | null; recurring: number };
 
-function Latest({ app }: { app: Row }) {
+// The latest check: its verdict, and "#294 · 2 days ago" as one piece — the
+// number is the way to the check, the age is written beside it, never under
+// it. In a card the two halves may wrap; in a row they stay on one line.
+function Latest({ app, wrap }: { app: Row; wrap: boolean }) {
   const meta = app.latest?.verdict ? VERDICT_META[app.latest.verdict] : null;
   if (!app.latest || !meta) return <span className="text-xs text-fg-faint">No check yet</span>;
   return (
-    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+    <span className={`flex items-center gap-x-2 ${wrap ? "flex-wrap gap-y-1" : "whitespace-nowrap"}`}>
       <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${meta.pillClassName}`}>
         {meta.label}
       </span>
-      <Link href={appPath.check(app.appId, app.latest.runNumber)} className="font-mono text-[13px] text-accent hover:underline">
-        #{app.latest.runNumber}
-      </Link>
-      {app.latest.completedAt && (
-        <span className="text-xs text-fg-faint">{checkedWhen(app.latest.completedAt)}</span>
-      )}
+      <span className="whitespace-nowrap font-mono text-[13px] text-fg-faint">
+        <Link href={appPath.check(app.appId, app.latest.runNumber)} className="text-accent hover:underline">
+          #{app.latest.runNumber}
+        </Link>
+        {app.latest.completedAt && ` · ${checkedWhen(app.latest.completedAt)}`}
+      </span>
     </span>
   );
 }
@@ -65,14 +70,17 @@ const Figure = ({ label, value, children }: { label: string; value: string; chil
 
 function Card({ app, days }: { app: Row; days: number }) {
   return (
-    <article className="card grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-[18px] lg:grid-cols-[220px_minmax(0,1fr)_110px_190px_120px_auto] lg:items-center">
-      <div className="col-span-2 flex min-w-0 flex-col gap-1.5 lg:col-span-1">
+    // On a phone the figures sit two to a row; from a tablet up, all three and
+    // Settings share one row under the strip; on a wide screen the card is one
+    // row.
+    <article className="card grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-[18px] sm:grid-cols-4 lg:grid-cols-[220px_minmax(0,1fr)_110px_190px_120px_auto] lg:items-center">
+      <div className="col-span-2 flex min-w-0 flex-col gap-1.5 sm:col-span-4 lg:col-span-1">
         <Link href={appPath.page(app.appId)} className="truncate font-mono text-[15px] text-fg hover:underline">
           {app.name}
         </Link>
-        <Latest app={app} />
+        <Latest app={app} wrap />
       </div>
-      <div className="col-span-2 flex min-w-0 flex-col gap-1.5 lg:col-span-1">
+      <div className="col-span-2 flex min-w-0 flex-col gap-1.5 sm:col-span-4 lg:col-span-1">
         <VerdictStrip verdicts={app.verdicts} />
         <span className="text-xs text-fg-muted">{stripStory(app.verdicts.map((v) => v.verdict))}</span>
         {/* Under the strip, where the reason has room to open. */}
@@ -102,75 +110,72 @@ function Card({ app, days }: { app: Row; days: number }) {
 const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-4 last:pr-4";
 const TD = "border-b border-ink-800 px-3 py-3.5 align-middle first:pl-4 last:pr-4";
 
+// The list (CHE-412): one line per app — the app, its latest check, the strip,
+// what it cost over the window, its schedule, its settings. The figures that
+// used to follow (a day, the last check's price, how many checks and who
+// started them, what keeps coming back) are the app's page's; a row that
+// carried them all was cut off at the right on an ordinary laptop. The table
+// fits the work area at every width (src/lib/table-fold.ts): the schedule is a
+// column on a wide screen and a line under the app's name until then, and
+// below the sidebar's width the list is the cards.
 function List({ apps, days }: { apps: Row[]; days: number }) {
   return (
-    // The table scrolls inside its card; the page never scrolls sideways.
-    <section className="card overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr>
-            <th className={TH}>App</th>
-            <th className={TH}>Latest</th>
-            <th className={TH}>Last 21 checks</th>
-            <th className={`${TH} text-right`}>{days} days</th>
-            <th className={`${TH} text-right`}>A day</th>
-            <th className={`${TH} text-right`}>Last check</th>
-            <th className={`${TH} text-right`}>Checks</th>
-            <th className={`${TH} text-right`}>Scheduled · on request</th>
-            <th className={`${TH} text-right`}>Recurring</th>
-            <th className={TH}>Schedule</th>
-            <th className={TH} />
-          </tr>
-        </thead>
-        <tbody>
-          {apps.map((app) => (
-            <tr key={app.appId}>
-              <td className={`${TD} font-mono`}>
-                <Link href={appPath.page(app.appId)} className="whitespace-nowrap text-fg hover:underline">
-                  {app.name}
-                </Link>
-              </td>
-              <td className={`${TD} whitespace-nowrap`}>
-                <Latest app={app} />
-              </td>
-              {/* The same strip as the card, small; its one line is the tooltip. */}
-              <td className={TD}>
-                <VerdictStrip verdicts={app.verdicts} className="h-4 w-[132px]" summary={stripStory(app.verdicts.map((v) => v.verdict))} />
-              </td>
-              <td className={`${TD} text-right font-mono`}>{usd(app.spendUsd)}</td>
-              <td className={`${TD} text-right font-mono`}>{usd(app.perDayUsd)}</td>
-              <td className={`${TD} text-right font-mono`}>
-                {app.latest ? <CheckPrice explanation={app.latest.price} label={null} /> : "—"}
-              </td>
-              <td className={`${TD} text-right font-mono`}>{app.checks}</td>
-              <td className={`${TD} whitespace-nowrap text-right font-mono`}>
-                {app.scheduled.count} · {app.onRequest.count}
-              </td>
-              <td
-                className={`${TD} text-right font-mono ${app.recurring > 0 ? "text-status-risky" : "text-fg-muted"}`}
-                title={recurringLine(app.recurring)}
-              >
-                {app.recurring}
-              </td>
-              <td className={`${TD} whitespace-nowrap`}>{scheduleLabel(app.watch)}</td>
-              <td className={`${TD} text-right`}>
-                <Link href={appPath.settings(app.appId)} className="text-[13px] text-accent hover:underline">
-                  Settings
-                </Link>
-              </td>
+    <>
+      <section className={`card ${FOLD.tableClassName}`}>
+        <table className={TABLE_CLASS}>
+          <thead>
+            <tr>
+              <th className={TH}>App</th>
+              <th className={`${TH} w-[262px]`}>Latest</th>
+              <th className={`${TH} w-[132px] xl:w-[220px]`}>Last 21 checks</th>
+              <th className={`${TH} w-[84px] text-right`}>{days} days</th>
+              <th className={`${TH} w-[130px] ${FOLD.wideColumnClassName}`}>Schedule</th>
+              <th className={`${TH} w-[84px]`} />
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+          </thead>
+          <tbody>
+            {apps.map((app) => (
+              <tr key={app.appId}>
+                <td className={`${TD} font-mono`}>
+                  <Link href={appPath.page(app.appId)} title={app.name} className="block truncate text-fg hover:underline">
+                    {app.name}
+                  </Link>
+                  <span className={`block truncate font-sans text-xs text-fg-muted ${FOLD.foldedClassName}`}>{scheduleLabel(app.watch)}</span>
+                </td>
+                <td className={TD}>
+                  <Latest app={app} wrap={false} />
+                </td>
+                {/* The same strip as the card, small: the whole strip answers with one tooltip. */}
+                <td className={TD}>
+                  <VerdictStrip verdicts={app.verdicts} className="h-4 w-[108px] xl:w-[196px]" summary={stripTitle(app.verdicts.map((v) => v.verdict))} />
+                </td>
+                <td className={`${TD} text-right font-mono`}>{usd(app.spendUsd)}</td>
+                <td className={`${TD} truncate ${FOLD.wideColumnClassName}`}>{scheduleLabel(app.watch)}</td>
+                <td className={`${TD} text-right`}>
+                  <Link href={appPath.settings(app.appId)} className="text-[13px] text-accent hover:underline">
+                    Settings
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+      <div className={FOLD.cardsClassName}>
+        {apps.map((app) => (
+          <Card key={app.appId} app={app} days={days} />
+        ))}
+      </div>
+    </>
   );
 }
 
 // Health → All apps (CHE-357, direction C): per app, the latest verdict with the
 // way to its review, the strip of its last 21 checks and what the strip says,
-// what the app cost over the window and a day, the latest check's price with
-// its reason, how many checks that was and who started them, the schedule, and
-// one click to its settings. Cards or a list (?view=), all or a part (?show=).
+// what the app cost over the window, the schedule, and one click to its
+// settings — and in a card, besides, what it cost a day, the latest check's
+// price with its reason, how many checks that was and who started them. Cards
+// or a list (?view=), all or a part (?show=).
 export default async function AllAppsPage({
   searchParams,
 }: {
