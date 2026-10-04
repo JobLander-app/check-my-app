@@ -71,7 +71,7 @@ import { findingSignature, sameProblem, signatureKind, titleSimilarity, SAME_PRO
 import { extensionReportPublished } from "@/lib/extension-target";
 import { parseJson } from "@/lib/json";
 import { audienceOf, type Audience, type StepFill } from "@/lib/audience";
-import { dedupKeyForFinding } from "@/lib/tracker/file";
+import { dedupKeyForFinding } from "@/lib/tracker/dedup-key";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 export interface RecurringIssue {

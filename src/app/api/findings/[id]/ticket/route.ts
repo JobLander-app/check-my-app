@@ -76,9 +76,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       policy?.escalateAfterRuns ?? 3,
     );
     // Same draft the agent's auto-file pass builds (CHE-50) — one ticket shape,
-    // one dedup namespace, one priority (CHE-413, this occurrence counted) —
-    // whether the owner clicked or the Watch found it.
-    const priority = await ticketPriority(prisma, finding, action.kind === "comment" && existing ? existing.occurrences + 1 : 1);
+    // one dedup namespace, one priority (CHE-413, from the app's history as of
+    // this check) — whether the owner clicked or the Watch found it.
+    const priority = await ticketPriority(prisma, finding, app.teamId ? { teamId: app.teamId, appId: app.id, runNumber: finding.run.runNumber } : null);
     const draft = draftForFinding({ ...finding, priority }, finding.run, policy, `${new URL(_req.url).origin}/verdict/${finding.run.publicId}`);
 
     if (action.kind === "comment" && existing) {

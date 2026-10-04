@@ -12,10 +12,11 @@
 import { buildTicketDraft } from "./ticket";
 import { decideTicketAction } from "./decision";
 import type { Tracker, TicketDraft } from "./types";
+import { dedupKeyForFinding } from "./dedup-key";
 import { audienceAt, type Audience } from "@/lib/audience";
-import { dedupKey, requestSignature } from "@/lib/dedup";
 import { PRIORITY_META, issuePriority, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
+import { recurrencesAsOf } from "@/lib/recurring";
 import type { FindingDetail } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { alreadyScoped } from "@/lib/tenant-db";
@@ -59,50 +60,38 @@ export interface TicketPolicyFields {
   escalateAfterRuns: number;
 }
 
-// One IssueLink row per (app, regression signature). Deliberately NOT keyed by
-// run: the same broken checkout seen on ten daily watch runs must land on one
-// ticket that counts to ten, which is the whole point of comment-and-count and
-// the escalation threshold. Built from the same three fields the ticket draft
-// describes the regression with, via the CHE-32 hash.
-// Param is the minimal subset the key actually hashes, so reconcile (CHE-61)
-// can re-key findings it loads without the evidence join.
-export function dedupKeyForFinding(
-  finding: Pick<TicketFinding, "title" | "category" | "severity" | "detail" | "anchor">,
-  run: Pick<TicketRun, "appSlug">,
-): string {
-  const errorSignature = parseJson<{ errorSignature?: string }>(finding.anchor)?.errorSignature;
-  if (run.appSlug.startsWith("extension:") && typeof errorSignature === "string" && /^[a-f0-9]{64}$/.test(errorSignature)) {
-    return dedupKey({ journeyTitle: run.appSlug, stepLabel: errorSignature, failureSignature: "extension-alert" });
-  }
-  const detail = parseJson<FindingDetail>(finding.detail) ?? {};
-  // CHE-59: machine facts first. A finding that names a failing request keys on
-  // (app, METHOD path status) — category/severity/prose all drift run-to-run,
-  // the broken endpoint doesn't. Prose key stays as the fallback for pure-UX
-  // findings with no request to point at.
-  const sig = requestSignature([detail.where, finding.title, detail.whatHappened]);
-  if (sig) {
-    return dedupKey({ journeyTitle: run.appSlug, stepLabel: sig, failureSignature: "request" });
-  }
-  return dedupKey({
-    journeyTitle: detail.where ?? run.appSlug,
-    stepLabel: finding.title,
-    failureSignature: `${finding.category}/${finding.severity}`,
-  });
-}
+// The dedup key lives in ./dedup-key.ts (recurrence reads it too); the callers
+// that always imported it from here keep doing so.
+export { dedupKeyForFinding };
 
-// The priority on the ticket (CHE-413), the same rule as Issues and the
-// review, from what this finding's own check recorded: who hit it from the
-// step its anchor names (a credential filled before it makes it an existing
-// user's), and how many checks in a row have seen it — the ticket's own
-// count, this occurrence included. A caller that already knows the priority
-// passes it; nobody else guesses.
+// The priority on the ticket (CHE-413): the very answer Health → Issues gives,
+// when the finding is one the app's history holds — recurrence as of this
+// check says how many checks in a row have seen the problem and who hit it at
+// its latest sighting. A finding outside any history (a ticket on our own
+// board, an app not yet saved) is judged on its own: who hit it from the step
+// its anchor names, seen once. A caller that already knows the priority is
+// believed; nobody else guesses.
 export async function ticketPriority(
   db: PrismaClient,
-  finding: Pick<TicketFinding, "runId" | "category" | "severity" | "detail" | "anchor" | "priority">,
-  timesSeen: number,
+  finding: Pick<TicketFinding, "id" | "runId" | "category" | "severity" | "detail" | "anchor" | "priority">,
+  // The app whose history to read, and the check to read it as of.
+  history: { teamId: string; appId: string; runNumber: number } | null,
 ): Promise<Priority> {
   if (finding.priority) return finding.priority;
   const detail = parseJson<FindingDetail>(finding.detail) ?? {};
+  if (finding.id && history) {
+    const asOf = await recurrencesAsOf(db, history.teamId, history.appId, history.runNumber);
+    const mine = asOf?.recurrences.find((r) => r.sightings.some((s) => s.findingId === finding.id));
+    if (mine) {
+      return issuePriority({
+        category: finding.category,
+        severity: finding.severity,
+        where: detail.where,
+        timesSeen: mine.issue.timesSeen,
+        audience: mine.issue.audience,
+      });
+    }
+  }
   const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
   let audience: Audience = "unknown";
   if (typeof ref?.journeyIndex === "number" && typeof ref?.stepIndex === "number") {
@@ -115,7 +104,7 @@ export async function ticketPriority(
     });
     if (journey) audience = audienceAt(journey.steps, ref.stepIndex);
   }
-  return issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen, audience });
+  return issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen: 1, audience });
 }
 
 export function draftForFinding(
@@ -219,9 +208,9 @@ export async function fileFindingTicket(opts: {
     return { kind: "suppressed", identifier: existing.externalIssueId };
   }
 
-  // CHE-413: the priority, with this occurrence counted — a problem seen three
-  // checks in a row is P0 on the ticket as on Issues.
-  const priority = await ticketPriority(db, finding, action.kind === "comment" && existing ? existing.occurrences + 1 : 1);
+  // CHE-413: the priority as Issues computes it, from the app's history as of
+  // this check — a problem seen three checks in a row is P0 on the ticket too.
+  const priority = await ticketPriority(db, finding, app?.teamId ? { teamId: app.teamId, appId, runNumber: run.runNumber } : null);
   const draft = draftForFinding({ ...finding, priority }, run, policy, opts.verdictUrl);
 
   if (action.kind === "comment" && existing) {

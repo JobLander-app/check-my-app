@@ -34,26 +34,39 @@ export async function teamRunsTheAction(db: PrismaClient, teamId: string): Promi
 }
 
 /**
- * The same question of one app: has a check of it ever arrived from the
- * Action? What the GitHub card on the app's Integrations section states
- * (CHE-413) — GitHub is where a release is checked from, nothing else.
+ * The team's apps a check has arrived for that way (CHE-413) — what the
+ * GitHub card on an app's Integrations section and the per-app list state:
+ * GitHub is where a release is checked from, nothing else. Which checks are an
+ * app's is appHealth's rule (src/lib/app-health.ts): the ones attached to it,
+ * and the team's checks of its address that carry no app — started before it
+ * was saved, or with a teammate's key — when it is the team's only app with
+ * that address.
  */
-export async function appRunsTheAction(db: PrismaClient, teamId: string, appId: string): Promise<boolean> {
-  const run = await db.run.findFirst({
-    where: { ...teamOwned(teamId), appId, startedVia: ACTION_STARTED_VIA },
-    select: { id: true },
-  });
-  return run !== null;
+export async function appsRunningTheAction(db: PrismaClient, teamId: string): Promise<Set<string>> {
+  const [runs, apps] = await Promise.all([
+    db.run.findMany({
+      where: { ...teamOwned(teamId), startedVia: ACTION_STARTED_VIA },
+      select: { appId: true, appSlug: true },
+      distinct: ["appId", "appSlug"],
+    }),
+    db.app.findMany({ where: { ...teamOwned(teamId) }, select: { id: true, appSlug: true } }),
+  ]);
+  const bySlug = new Map<string, string[]>();
+  for (const a of apps) bySlug.set(a.appSlug, [...(bySlug.get(a.appSlug) ?? []), a.id]);
+  const out = new Set<string>();
+  for (const r of runs) {
+    if (r.appId) out.add(r.appId);
+    else {
+      const only = bySlug.get(r.appSlug);
+      if (only?.length === 1) out.add(only[0]);
+    }
+  }
+  return out;
 }
 
-/** The team's apps a check has arrived for that way, for a list that labels each app once. */
-export async function appsRunningTheAction(db: PrismaClient, teamId: string): Promise<Set<string>> {
-  const runs = await db.run.findMany({
-    where: { ...teamOwned(teamId), startedVia: ACTION_STARTED_VIA, appId: { not: null } },
-    select: { appId: true },
-    distinct: ["appId"],
-  });
-  return new Set(runs.map((r) => r.appId).filter((id): id is string => id !== null));
+/** The same question of one app. */
+export async function appRunsTheAction(db: PrismaClient, teamId: string, appId: string): Promise<boolean> {
+  return (await appsRunningTheAction(db, teamId)).has(appId);
 }
 
 /** The guide every GitHub card points at. */

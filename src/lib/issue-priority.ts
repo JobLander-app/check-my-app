@@ -43,10 +43,12 @@ export interface PriorityInput {
 // a whole path segment, so "/payload" is not money and "/checkout-guide" is a
 // page about it; and a whole word of the prose, so "accountant" and "paying
 // attention" are not either. The prose list is the narrower one — "session",
-// "data" or "settings" as words are everyday words of a product's copy.
+// "data" or "settings" as words are everyday words of a product's copy;
+// "profile" and "export" are not, and name the user's data.
 const SENSITIVE_SEGMENT =
   /(?:^|[/?=&#])(sign-?in|log-?in|login|auth|session|password|checkout|cart|pay|payment|payments|billing|invoice|subscribe|subscription|account|accounts|settings|profile|data|export)(?=$|[/?=&#.\s)])/i;
-const SENSITIVE_WORD = /(?:^|[^\w/-])(sign[- ]?in|log[- ]?in|checkout|cart|pay|payment|payments|billing|invoice|subscribe|subscription|account|password)(?=$|[^\w/-])/i;
+const SENSITIVE_WORD =
+  /(?:^|[^\w/-])(sign[- ]?in|log[- ]?in|checkout|cart|pay|payment|payments|billing|invoice|subscribe|subscription|account|password|profile|export)(?=$|[^\w/-])/i;
 const PATH_TOKEN = /(?:https?:\/\/[^\s/"'”’]+)?\/[A-Za-z0-9_\-.%/?=&#:[\]]*/g;
 
 export function sensitivePlace(where: string | null | undefined): boolean {

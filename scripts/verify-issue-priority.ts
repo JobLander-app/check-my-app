@@ -16,6 +16,8 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-issue-priority.ts
 
+import "./fixtures/wasm-module-loader.mjs";
+import { realD1 } from "./fixtures/real-d1";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,7 +77,7 @@ for (const where of ["/payload", "/accountant-jobs", "/authors", "/blog/paying-a
   check(`not sensitive: ${where}`, !sensitivePlace(where), where);
 }
 // A place named in words, with no path at all (Codex P1 on #266).
-for (const where of ["Checkout → Pay", "Sign-in form", "Log in button", "Account menu → Delete", "Billing tab", "POST payment → 500"]) {
+for (const where of ["Checkout → Pay", "Sign-in form", "Log in button", "Account menu → Delete", "Billing tab", "POST payment → 500", "Profile form", "Data export"]) {
   check(`sensitive, said in words: ${where}`, sensitivePlace(where), where);
 }
 eq("P0: broken for existing users at a checkout named in words", p({ where: "Checkout → Pay", audience: "existing_users" }), "P0");
@@ -112,17 +114,45 @@ eq("the review: the same finding with no anchor knows no audience → P1", revie
 eq("the review: anchored to a journey that recorded no actions → P1", reviewPriority({ journeys: [{ ...journeys[0], steps: journeys[0].steps.map((s) => ({ ...s, actions: null })) }] }, finding), "P1");
 check("the review carries the priority beside the severity", /"severity":"high","priority":"P0"/.test(JSON.stringify(buildReview(source, "https://checkmyapp.dev").findings[0])));
 
-// The ticket reads who hit it from the check's own rows (the journey the
-// anchor names, its steps' actions) and counts this occurrence — a stub
-// database shaped like the query it makes (Codex P1 on #266).
+// The ticket's priority is Issues' own when the finding is in the app's
+// history (recurrencesAsOf: the streak of consecutive checks, who hit it at
+// the latest sighting); outside any history it reads the anchored journey's
+// steps from the check's own rows. A stub database shaped like the queries
+// (Codex P1 ×2 on #266: the ticket must not down-rank a P0, and a count of
+// filings is not a streak of checks).
 const stubDb = (rows: Array<{ runId: string; order: number; steps: Array<{ status: string; actions: string | null }> }>) =>
   ({ journey: { findFirst: async (q: { where: { runId: string; order: number } }) => rows.find((r) => r.runId === q.where.runId && r.order === q.where.order) ?? null } }) as never;
 const signedIn = stubDb([{ runId: "r1", order: 0, steps: journeys[0].steps.map((s) => ({ status: s.status, actions: s.actions })) }]);
-eq("ticketPriority: broken at the checkout, signed in on the anchored journey, first occurrence → P0", await ticketPriority(signedIn, finding, 1), "P0");
-eq("ticketPriority: the same with no anchor → P1 (nothing says who hit it)", await ticketPriority(signedIn, { ...finding, anchor: null }, 1), "P1");
-eq("ticketPriority: a journey the check does not have → P1", await ticketPriority(stubDb([]), finding, 1), "P1");
-eq("ticketPriority: third occurrence of a broken thing anywhere → P0, as on Issues", await ticketPriority(stubDb([]), { ...finding, detail: JSON.stringify({ where: "/about" }) }, 3), "P0");
-eq("ticketPriority: a caller that knows it is believed, and no row is read", await ticketPriority({} as never, { ...finding, priority: "P2" }, 1), "P2");
+eq("ticketPriority, no history: broken at the checkout, signed in on the anchored journey → P0", await ticketPriority(signedIn, finding, null), "P0");
+eq("ticketPriority, no history: the same with no anchor → P1 (nothing says who hit it)", await ticketPriority(signedIn, { ...finding, anchor: null }, null), "P1");
+eq("ticketPriority, no history: a journey the check does not have → P1", await ticketPriority(stubDb([]), finding, null), "P1");
+eq("ticketPriority: a caller that knows it is believed, and no row is read", await ticketPriority({} as never, { ...finding, priority: "P2" }, null), "P2");
+// With a history: a real D1 holding three checks in a row of the same broken
+// thing on a page that is none of money, sign-in or data — P0 by the streak,
+// which no count of filings can say.
+{
+  const real = await realD1();
+  try {
+    await real.db.user.create({ data: { id: "u", clerkUserId: "ck_u", email: "s@example.test" } });
+    await real.db.team.create({ data: { id: "t", name: "T", plan: "business" } });
+    await real.db.app.create({ data: { id: "a", teamId: "t", ownerId: "u", appSlug: "shop.test", targetUrl: "https://shop.test", targetKind: "website" } as never });
+    await real.db.appJourney.create({ data: { id: "aj", appId: "a", key: "about", title: "About" } as never });
+    const seen = async (n: number) => {
+      await real.db.run.create({ data: { id: `r${n}`, publicId: `p${n}`, runNumber: n, appId: "a", teamId: "t", ownerId: "u", appSlug: "shop.test", targetUrl: "https://shop.test", targetKind: "website", status: "completed", verdict: "broken" } as never });
+      await real.db.journey.create({ data: { id: `j${n}`, runId: `r${n}`, order: 0, appJourneyId: "aj", title: "About", status: "broken", steps: { create: [{ order: 0, label: "Open", status: "ok", actions: "[]" }, { order: 1, label: "Read", status: "broken", actions: "[]" }] } } as never });
+      await real.db.finding.create({ data: { id: `f${n}`, runId: `r${n}`, number: 1, title: "The about page shows a server error", category: "broken", severity: "high", detail: JSON.stringify({ where: "/about" }), anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 1 } }) } as never });
+    };
+    await seen(1);
+    await seen(2);
+    const twice = { id: "f2", runId: "r2", number: 1, title: "The about page shows a server error", category: "broken", severity: "high", detail: JSON.stringify({ where: "/about" }), anchor: JSON.stringify({ stepRef: { journeyIndex: 0, stepIndex: 1 } }), evidence: [] };
+    eq("ticketPriority, real D1: the same broken thing in two checks in a row → P1 (new visitors, not yet three)", await ticketPriority(real.db, twice, { teamId: "t", appId: "a", runNumber: 2 }), "P1");
+    await seen(3);
+    eq("ticketPriority, real D1: …in three checks in a row → P0, the Issues page's own answer", await ticketPriority(real.db, { ...twice, id: "f3", runId: "r3" }, { teamId: "t", appId: "a", runNumber: 3 }), "P0");
+    eq("ticketPriority, real D1: asked as of the second check, the third is not counted", await ticketPriority(real.db, twice, { teamId: "t", appId: "a", runNumber: 2 }), "P1");
+  } finally {
+    await real.dispose();
+  }
+}
 const ticket = draftForFinding({ ...finding, priority: "P1" }, { runNumber: 7, publicId: "p", startedAt: new Date("2026-10-04T10:00:00Z"), appSlug: "shop.test" }, null, "https://checkmyapp.dev/verdict/p");
 const firstLine = ticket.description.split("\n")[0];
 eq("the ticket we file opens with the priority and its meaning", firstLine, `**Priority:** P1 — ${PRIORITY_META.P1.meaning}`);
@@ -130,9 +160,10 @@ const told = draftForFinding({ ...finding, priority: "P0" }, { runNumber: 7, pub
 check("…whatever level it was given", told.description.startsWith("**Priority:** P0 — "));
 const fileSrc = readFileSync(path.join(repoRoot, "src/lib/tracker/file.ts"), "utf8");
 const routeSrc = readFileSync(path.join(repoRoot, "src/app/api/findings/[id]/ticket/route.ts"), "utf8");
-check("both filing paths — the agent's and the owner's button — read the priority with this occurrence counted, and the recurrence comment repeats it",
-  /ticketPriority\(db, finding, action\.kind === "comment" && existing \? existing\.occurrences \+ 1 : 1\)/.test(fileSrc) &&
-    /ticketPriority\(prisma, finding, action\.kind === "comment" && existing \? existing\.occurrences \+ 1 : 1\)/.test(routeSrc) &&
+check("both filing paths — the agent's and the owner's button — read the priority from the app's history as of the check, and the recurrence comment repeats it",
+  /ticketPriority\(db, finding, app\?\.teamId \? \{ teamId: app\.teamId, appId, runNumber: run\.runNumber \} : null\)/.test(fileSrc) &&
+    /ticketPriority\(prisma, finding, app\.teamId \? \{ teamId: app\.teamId, appId: app\.id, runNumber: finding\.run\.runNumber \} : null\)/.test(routeSrc) &&
+    !/occurrences \+ 1\)/.test(fileSrc.slice(fileSrc.indexOf("ticketPriority(db"), fileSrc.indexOf("ticketPriority(db") + 200)) &&
     (fileSrc.match(/\*\*Priority:\*\* \$\{priority\}/g) ?? []).length === 1 && /\*\*Priority:\*\* \$\{priority\}/.test(routeSrc));
 
 // Issues: recurrence carries where and who, and three checks in a row lift it.
