@@ -118,7 +118,7 @@ export default async function ReleasesPage({ searchParams }: { searchParams: Pro
                           checkHref={checkHref(r)}
                           label={null}
                           title={`${nameOf.get(r.appId ?? "") ?? r.appSlug}, check #${r.runNumber}`}
-                          className="ml-auto"
+                          className="ml-auto text-sm"
                         />
                       )}
                     </div>
