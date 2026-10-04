@@ -66,7 +66,7 @@ property does not slip past); `react/no-danger` is an ESLint error.
 
 ### R4. No inline scripts
 
-No `<script>` element in any `.tsx` under `src/`, with or without a body.
+No `<script>` element in any JSX under `src/`, with or without a body.
 Behaviour that must run in the browser is a client component (R1) or a module
 file; a third-party snippet goes through `next/script` from a file in `public/`.
 **Why:** an inline script is R3 by another name — unreviewable text executed

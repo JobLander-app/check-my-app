@@ -8,11 +8,12 @@ export default [
   // no explicit `any`. scripts/verify-code-standards.ts holds R3 over the
   // syntax tree as well; the lint rule is the one an editor shows while typing.
   {
+    files: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs"],
+    rules: { "react/no-danger": "error" },
+  },
+  {
     files: ["**/*.ts", "**/*.tsx"],
-    rules: {
-      "react/no-danger": "error",
-      "@typescript-eslint/no-explicit-any": "error",
-    },
+    rules: { "@typescript-eslint/no-explicit-any": "error" },
   },
   // The one file written against CDP's untyped accessibility nodes before the
   // rule; its `any`s come off with a type for the node, not with a switch here.

@@ -48,17 +48,22 @@ const FORBIDDEN_PROP = "dangerouslySetInnerHTML";
 const SIDEWAYS_TOKEN = /(?:^|:)!?overflow-(?:x-)?(?:auto|scroll)$/;
 const sidewaysIn = (classes: string): string | undefined => classes.split(/\s+/).find((t) => SIDEWAYS_TOKEN.test(t));
 
+// Every module the app can run: TypeScript and JavaScript alike —
+// src/lib/moved-routes.mjs is application source that next.config.mjs imports
+// (Codex round 3 on #264).
+const SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+
 function sourceFiles(dir: string): string[] {
   if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return [];
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return name === "generated" ? [] : sourceFiles(path);
-    return /\.(ts|tsx)$/.test(name) ? [path] : [];
+    return SOURCE.test(name) ? [path] : [];
   });
 }
 
 function parse(path: string): ts.SourceFile {
-  const kind = path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const kind = path.endsWith(".tsx") ? ts.ScriptKind.TSX : path.endsWith(".jsx") ? ts.ScriptKind.JSX : /\.(js|mjs|cjs)$/.test(path) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
   return ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, kind);
 }
 
@@ -94,31 +99,49 @@ function resolveModule(root: string, from: string, spec: string, files: Set<stri
   if (spec.startsWith("@/")) base = join(root, "src", spec.slice(2));
   else if (spec.startsWith(".")) base = join(from, "..", spec);
   else return null;
-  const bare = base.replace(/\.(js|jsx|mjs)$/, "");
-  const candidates = [base, ...[bare, base].flatMap((b) => [".ts", ".tsx"].map((e) => b + e)), ...["ts", "tsx"].map((e) => join(base, `index.${e}`))];
+  const bare = base.replace(/\.(js|jsx|mjs|cjs)$/, "");
+  const candidates = [base, ...[bare, base].flatMap((b) => [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].map((e) => b + e)), ...["ts", "tsx", "js", "jsx"].map((e) => join(base, `index.${e}`))];
   return candidates.find((c) => files.has(c)) ?? null;
 }
 
-/** The declaration a name refers to in this file: its own `const`, or the module it is imported from. */
-function declarationOf(file: ts.SourceFile, name: string): { init: ts.Expression } | { from: string; imported: string } | null {
-  let found: { init: ts.Expression } | { from: string; imported: string } | null = null;
-  const visit = (n: ts.Node): void => {
-    if (found) return;
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && n.initializer) found = { init: n.initializer };
-    else if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier) && n.importClause?.namedBindings && ts.isNamedImports(n.importClause.namedBindings)) {
-      const el = n.importClause.namedBindings.elements.find((e) => e.name.text === name);
-      if (el) found = { from: n.moduleSpecifier.text, imported: (el.propertyName ?? el.name).text };
+type Declaration = { init: ts.Expression } | { from: string; imported: string } | { opaque: true };
+
+/** What one scope declares under `name`: a variable with its initializer, a named import, or something whose value is not written (a parameter, a destructured name, a function). */
+function declaredIn(scope: ts.Node, name: string): Declaration | null {
+  const names = (b: ts.BindingName): boolean =>
+    ts.isIdentifier(b) ? b.text === name : b.elements.some((e) => !ts.isOmittedExpression(e) && names(e.name));
+  if (ts.isFunctionLike(scope) && scope.parameters.some((p) => names(p.name))) return { opaque: true };
+  const statements = ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope) ? scope.statements : null;
+  if (!statements) return null;
+  for (const s of statements) {
+    if (ts.isVariableStatement(s)) {
+      for (const d of s.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.name.text === name) return d.initializer ? { init: d.initializer } : { opaque: true };
+        if (!ts.isIdentifier(d.name) && names(d.name)) return { opaque: true };
+      }
+    } else if (ts.isFunctionDeclaration(s) && s.name?.text === name) return { opaque: true };
+    else if (ts.isImportDeclaration(s) && ts.isStringLiteral(s.moduleSpecifier) && s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings)) {
+      const el = s.importClause.namedBindings.elements.find((e) => e.name.text === name);
+      if (el) return { from: s.moduleSpecifier.text, imported: (el.propertyName ?? el.name).text };
     }
-    ts.forEachChild(n, visit);
-  };
-  visit(file);
-  return found;
+  }
+  return null;
+}
+
+/** The declaration a name refers to at `at`: the nearest enclosing scope that declares it (Codex round 3 on #264: an outer constant must not stand in for the one the JSX really reads). Without `at`, the file's top level. */
+function declarationOf(file: ts.SourceFile, name: string, at?: ts.Node): Declaration | null {
+  for (let scope: ts.Node | undefined = at ?? file; scope; scope = scope.parent) {
+    const found = declaredIn(scope, name);
+    if (found) return found;
+    if (ts.isSourceFile(scope)) break;
+  }
+  return null;
 }
 
 /** What a name is initialised with, following a named import to the module under src/ that exports it. */
-function initializerOf(name: string, file: ts.SourceFile, ctx: Resolved, files: Set<string>): { init: ts.Expression; file: ts.SourceFile } | null {
-  const decl = declarationOf(file, name);
-  if (!decl) return null;
+function initializerOf(name: string, at: ts.Node, file: ts.SourceFile, ctx: Resolved, files: Set<string>): { init: ts.Expression; file: ts.SourceFile } | null {
+  const decl = declarationOf(file, name, at);
+  if (!decl || "opaque" in decl) return null;
   if ("init" in decl) return { init: decl.init, file };
   const target = resolveModule(ctx.root, file.fileName, decl.from, files);
   if (!target) return null;
@@ -137,16 +160,16 @@ function stringsOf(expr: ts.Node, file: ts.SourceFile, ctx: Resolved, files: Set
     return;
   }
   if (ts.isIdentifier(expr)) {
-    const key = `${file.fileName}#${expr.text}`;
+    const key = `${file.fileName}#${expr.text}@${expr.pos}`;
     if (seen.has(key)) return;
     seen.add(key);
-    const found = initializerOf(expr.text, file, ctx, files);
+    const found = initializerOf(expr.text, expr, file, ctx, files);
     if (found) stringsOf(found.init, found.file, ctx, files, seen, out);
     return;
   }
   // `STYLES.cell`: the property of a constant object, when the object is written out — here or in the module it comes from.
   if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
-    const found = initializerOf(expr.expression.text, file, ctx, files);
+    const found = initializerOf(expr.expression.text, expr, file, ctx, files);
     if (!found) return;
     const objects: ts.ObjectLiteralExpression[] = [];
     const collect = (n: ts.Node) => (ts.isObjectLiteralExpression(n) ? objects.push(n) : ts.forEachChild(n, collect));
@@ -274,6 +297,13 @@ function fixtureChecks(): void {
       ["a renamed import (import { CARD as C })", "src/app/y.tsx", `import { CARD as C } from "@/lib/styles";\nexport const Y = () => <div className={C}><table /></div>;\n`, /<div className="…overflow-x-auto…"> wraps the <table>/],
       ["a constant passed to clsx with a literal", "src/app/z.tsx", `declare const clsx: (...a: string[]) => string;\nconst WRAP = "overflow-auto";\nexport const Z = () => <div className={clsx("card", WRAP)}><table /></div>;\n`, /<div className="…overflow-auto…"> wraps the <table>/],
       ["a <script> element or a scrolling table in src/lib — a component a page renders", "src/lib/mail.tsx", `export const M = () => <div className="overflow-x-auto"><table /><script /></div>;\n`, /mail\.tsx:1 {2}<script> element \(R4\)/],
+      // Codex round 3 on #264: the declaration the JSX really reads is the nearest one, not the first in the file.
+      ["a local constant shadowing a harmless outer one", "src/app/sh.tsx", `const WRAP = "p-4";\nexport function Sh() {\n  const WRAP = "overflow-x-auto";\n  return <div className={WRAP}><table /></div>;\n}\n`, /sh\.tsx:4 {2}<div className="…overflow-x-auto…"> wraps the <table>/],
+      ["a constant declared in a block the JSX is inside", "src/app/bl.tsx", `export function Bl(on: boolean) {\n  if (on) {\n    const W = "md:overflow-x-scroll";\n    return <div className={W}><table /></div>;\n  }\n  return null;\n}\n`, /bl\.tsx:4 {2}<div className="…md:overflow-x-scroll…"> wraps the <table>/],
+      // Codex round 3 on #264: JavaScript is application source too.
+      ["dangerouslySetInnerHTML in a .mjs module", "src/lib/routes.mjs", `export const props = { dangerouslySetInnerHTML: { __html: "x" } };\n`, /routes\.mjs:1 {2}dangerouslySetInnerHTML \(R3\)/],
+      ["dangerouslySetInnerHTML as a computed key in a .js module", "src/lib/k.js", `export const key = "dangerously" + "SetInnerHTML"; export const p = { ["dangerouslySetInnerHTML"]: 1 };\n`, /k\.js:1 {2}dangerouslySetInnerHTML \(R3\)/],
+      ["a <script> element and a scrolling table in a .jsx component", "src/components/legacy.jsx", `export const L = () => <div className="overflow-x-auto"><table /><script /></div>;\n`, /legacy\.jsx:1 {2}<script> element \(R4\)/],
     ];
     for (const [name, rel, text, expected] of resolved) {
       write(rel, text);
@@ -282,16 +312,21 @@ function fixtureChecks(): void {
       const after = offenders(root);
       check(`fixture: ${name} is caught`, found.some((o) => expected.test(o)) && after.length === 0, found.join("; ") || "nothing caught");
     }
-    // What refers to nothing readable, or to something harmless, is not an offence.
+    // What refers to nothing readable, or to something harmless, is not an offence —
+    // including a name that an inner scope takes away from a scrolling outer constant.
     write("src/app/quiet.tsx", [
       `import { PLAIN } from "@/lib/styles";`,
       `const CELL = "px-3 text-right";`,
+      `const WRAP = "overflow-x-auto";`,
       `export const Q = ({ wrap }: { wrap: string }) => (`,
       `  <div className={wrap}><table className={\`\${CELL} \${PLAIN}\`}><tbody /></table></div>`,
       `);`,
+      `export function Inner() { const WRAP = "card"; return <div className={WRAP}><table /></div>; }`,
+      `export function Param(WRAP: string) { return <div className={WRAP}><table /></div>; }`,
+      `export function Destructured({ WRAP }: { WRAP: string }) { return <div className={WRAP}><table /></div>; }`,
     ].join("\n"));
     const quiet = offenders(root);
-    check("fixture: a className from a parameter, a harmless constant and a harmless import is fine", quiet.length === 0, quiet.join("; "));
+    check("fixture: a className from a parameter, a harmless constant, a harmless import, or a name an inner scope takes from a scrolling outer one is fine", quiet.length === 0, quiet.join("; "));
     // A constant that refers to itself must not loop.
     write("src/app/loop.tsx", `const A: string = \`\${B} x\`;\nconst B: string = \`\${A} y\`;\nexport const L = () => <div className={A}><table /></div>;\n`);
     const loop = offenders(root);

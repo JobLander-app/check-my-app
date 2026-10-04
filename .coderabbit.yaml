@@ -29,8 +29,8 @@ reviews:
 
         R3  Any `dangerouslySetInnerHTML`, under any spelling (JSX attribute,
             spread object, string key). There is no trusted case here.
-        R4  Any `<script>` element in any .tsx under src/, with a body or
-            self-closing. Browser behaviour is a client component or a module
+        R4  Any `<script>` element in any JSX under src/ (.tsx or .jsx),
+            with a body or self-closing. Browser behaviour is a client component or a module
             file loaded through next/script.
         R2  Any new `useEffect`. Owner rule: it is the last resort. Event logic
             belongs in the event handler; a reaction to state belongs where the
