@@ -54,7 +54,6 @@ export async function enableWatchForRun(
       storePasswordEnc: true,
       scopeHints: true,
       userNotes: true,
-      notifyEmail: true,
       ephemeral: true,
     },
   });
@@ -106,7 +105,6 @@ export async function enableWatchForRun(
     frequency: opts.frequency,
     notifyOnChangeOnly: opts.notifyOnChangeOnly,
     seed: {
-      notifyEmail: run.notifyEmail,
       testEmail: login.testEmail,
       testPasswordEnc: login.testPasswordEnc,
       storePasswordEnc: run.storePasswordEnc ?? app.storePasswordEnc,
@@ -162,9 +160,9 @@ async function upsertWatch(
     frequency: WatchFrequency;
     notifyOnChangeOnly?: boolean;
     // What a NEW watch starts with. Enabling from a verdict carries that run's
-    // inputs; enabling an app carries the app's own credentials.
+    // credentials; enabling an app carries the app's own. Who hears about its
+    // checks is the app's list of team members, never a seed (CHE-413).
     seed?: {
-      notifyEmail: string | null;
       testEmail: string | null;
       testPasswordEnc: string | null;
       storePasswordEnc: string | null;
@@ -189,7 +187,6 @@ async function upsertWatch(
   if (!gate.ok) return { ok: false as const, reason: gate.reason };
 
   const seed = opts.seed ?? {
-    notifyEmail: null,
     testEmail: app.testEmail,
     testPasswordEnc: app.testPasswordEnc,
     storePasswordEnc: app.storePasswordEnc,
@@ -204,7 +201,6 @@ async function upsertWatch(
       targetUrl: app.targetUrl,
       frequency: opts.frequency,
       notifyOnChangeOnly: opts.notifyOnChangeOnly ?? true,
-      notifyEmail: seed.notifyEmail,
       testEmail: seed.testEmail,
       testPasswordEnc: seed.testPasswordEnc,
       storePasswordEnc: seed.storePasswordEnc,

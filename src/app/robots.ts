@@ -20,6 +20,10 @@ export default function robots(): MetadataRoute.Robots {
       disallow: [
         "/api/",
         "/dashboard",
+        "/home",
+        "/health",
+        "/release",
+        "/product",
         "/onboarding",
         "/settings",
         "/team",

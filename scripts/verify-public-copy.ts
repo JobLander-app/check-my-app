@@ -35,6 +35,14 @@ const SOURCES = [
   "src/app/run/[id]",
   "src/app/onboarding",
   "src/app/dashboard",
+  // The signed-in app (CHE-348): its pages, and the modules that write their
+  // sentences. Until CHE-371 none of it was read here.
+  "src/app/(app)",
+  "src/lib/today.ts",
+  "src/lib/check-delta.ts",
+  "src/lib/billing-page.ts",
+  "src/lib/all-apps.ts",
+  "src/lib/app-page.ts",
   "src/components",
   "src/lib/email.ts",
 ];

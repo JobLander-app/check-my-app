@@ -158,6 +158,15 @@ async function main() {
   const blog = app("blog.test");
   const ext = app("extension:abc");
 
+  // CHE-358: a page about one app asks for that app alone. Its entry is the
+  // same, the team's totals are still the team's, and no other app is built.
+  const onlyShop = await appHealth(db, "t", { now: NOW, only: shop.appId });
+  check("only: one app is built, identical to its entry in the full report",
+    onlyShop.apps.length === 1 && JSON.stringify(onlyShop.apps[0]) === JSON.stringify(shop), `${onlyShop.apps.length} app(s)`);
+  check("only: the team's totals do not change",
+    onlyShop.totalSpendUsd === report.totalSpendUsd && onlyShop.monthlyRunRateUsd === report.monthlyRunRateUsd && onlyShop.planCoversTimes === report.planCoversTimes);
+  check("only: an id that is not the team's builds nothing", (await appHealth(db, "t", { now: NOW, only: "not-an-app" })).apps.length === 0);
+
   // ─── 1. Spend, per day, scheduled vs on request ──────────────────────────
   check("the window is 30 days by default", report.windowDays === 30);
   check("every app of the team is listed, biggest spend first; no other team's app",
@@ -181,6 +190,11 @@ async function main() {
     blog.spendUsd === 0 && blog.checks === 0 && blog.perDayUsd === 0 && blog.scheduled.count === 0 && blog.onRequest.count === 0);
   check("team: $3.43 in total — the apps' $3.03 plus the PR preview's $0.40", report.totalSpendUsd === 3.43, String(report.totalSpendUsd));
   check("team: $0.11 a day ($3.43 / 30)", report.perDayUsd === 0.11, String(report.perDayUsd));
+  // CHE-355: the checks the total was spent on — the apps' own, plus the PR
+  // preview that belongs to no app. A page that counted only the apps' checks
+  // could show money spent on "no checks".
+  const inApps = report.apps.reduce((n, a) => n + a.checks, 0);
+  check("team: the total counts every check of the window — the apps' and the PR preview's", report.totalChecks === inApps + 1, `${report.totalChecks} vs ${inApps} in apps`);
 
   // ─── 2. The window's edges ───────────────────────────────────────────────
   const daily = shop.daily;

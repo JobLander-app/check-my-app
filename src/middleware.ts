@@ -7,7 +7,18 @@
 // funnel — `/`, `/run/*`, `/verdict/*`, sign-in/up — stays public.
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/onboarding(.*)", "/watch(.*)"]);
+// CHE-351: the signed-in app's own addresses (src/lib/app-shell.ts) are
+// protected here too. The old /dashboard and /team redirect before this runs.
+const isProtectedRoute = createRouteMatcher([
+  "/dashboard(.*)",
+  "/onboarding(.*)",
+  "/watch(.*)",
+  "/home(.*)",
+  "/health(.*)",
+  "/release(.*)",
+  "/product(.*)",
+  "/settings(.*)",
+]);
 
 export default clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req)) await auth.protect();

@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     check(`${name}: the HTML says why this address gets it`, html.includes("You get this because"));
     check(`${name}: so does the text`, (m.text ?? "").includes("You get this because"));
     if (recurring) {
-      check(`${name}: a recurring mail says where to change or stop it`, (m.text ?? "").includes("https://checkmyapp.dev/dashboard"));
+      check(`${name}: a recurring mail says where to change or stop it`, (m.text ?? "").includes("https://checkmyapp.dev/settings/account"));
     }
     check(`${name}: nothing about how we check leaks into the footer`, !/browser|headless|playwright|model|token/i.test(m.text ?? ""));
     check(`${name}: a reply goes to a mailbox somebody reads`, m.reply_to === REPLY_TO, String(m.reply_to));

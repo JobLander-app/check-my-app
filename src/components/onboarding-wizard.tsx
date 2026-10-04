@@ -14,12 +14,10 @@ import { parseExtensionLink, type ExtensionOptions } from "@/lib/extension-targe
 // then persists an App + Watch + TicketPolicy via the createApp server action.
 export function OnboardingWizard({
   prefillUrl,
-  defaultEmail = "",
   initialKind = "website",
   extensionCheck = false,
 }: {
   prefillUrl: string;
-  defaultEmail?: string;
   initialKind?: "website" | "extension";
   /** PostHog flag `home-extension-check`, evaluated by the page (CHE-320). Off: no toggle, no extension mode. */
   extensionCheck?: boolean;
@@ -192,9 +190,9 @@ export function OnboardingWizard({
         <Input name="userNotes" placeholder="Don't delete the test account. OK to create sessions." />
       </section>
 
-      {/* 6 — Cadence & notifications */}
+      {/* 6 — Cadence. Who hears about a verdict is the team's own list, in the app's settings (CHE-262). */}
       {!isExtension && <section className="card space-y-3 p-5">
-        <p className="text-sm font-medium text-fg">6 · Cadence &amp; notifications</p>
+        <p className="text-sm font-medium text-fg">6 · Cadence</p>
         <label className="block space-y-1">
           <span className="text-xs text-fg-muted">Frequency</span>
           <select
@@ -207,15 +205,7 @@ export function OnboardingWizard({
             <option value="manual">Manual only</option>
           </select>
         </label>
-        <label className="block space-y-1">
-          <span className="text-xs text-fg-muted">Escalation email</span>
-          <Input
-            name="notifyEmail"
-            type="email"
-            placeholder="you@email.com"
-            defaultValue={defaultEmail}
-          />
-        </label>
+        <p className="text-xs text-fg-faint">Every verdict goes to your team. Who exactly is set in the app&apos;s settings once it is added.</p>
       </section>}
 
       {state?.error && (

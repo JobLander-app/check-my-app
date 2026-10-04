@@ -207,6 +207,9 @@ model Run {
   @@index([ownerId])
   @@index([teamId])
   @@index([teamId, createdAt])
+  // The sidebar's "latest verdict per app" seeks on this, on every signed-in
+  // page (src/lib/shell-data.ts).
+  @@index([teamId, appId, completedAt])
   @@index([anonKeyHash])
   @@index([ephemeral, expiresAt])
 }

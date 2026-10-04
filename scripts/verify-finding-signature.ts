@@ -122,8 +122,12 @@ check("title is the latest wording (#267)", issue?.issue.title === "Dead YouTube
 
 const CONTRACT: Array<keyof RecurringIssue> = [
   "signature", "appId", "title", "category", "severity", "firstSeenRunNumber", "lastSeenRunNumber", "timesSeen", "state", "issueLinkId",
+  // CHE-413: of the latest sighting, for the priority.
+  "where", "audience",
 ];
 check("RecurringIssue has exactly the contract's fields", JSON.stringify(Object.keys(issue?.issue ?? {}).sort()) === JSON.stringify([...CONTRACT].sort()));
+check("where is the latest sighting's place (#267's detail.where)", issue?.issue.where?.startsWith("/learn/holotope-meditation — ") === true, issue?.issue.where ?? "null");
+check("a fixture whose steps carry no actions knows no audience — unknown, never a guess", issue?.issue.audience === "unknown", issue?.issue.audience);
 
 if (signatureOf) {
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED (expected under CHE354_OLD_KEY)`);

@@ -12,6 +12,7 @@ import { getDb } from "@/lib/db";
 import { requireScope } from "@/lib/team-auth";
 import { BILLING_UNCONFIGURED, getStripe, getStripeEnv } from "@/lib/stripe";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
+import { BALANCE_PATH } from "@/lib/balance-links";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://checkmyapp.dev";
 
@@ -37,7 +38,8 @@ export async function POST(req: Request) {
 
   const session = await stripe.billingPortal.sessions.create({
     customer: team.stripeCustomerId,
-    return_url: `${APP_URL}/team`,
+    // Back to where the portal was opened from (CHE-351: Billing).
+    return_url: `${APP_URL}${BALANCE_PATH}`,
   });
   return NextResponse.json({ url: session.url });
 }

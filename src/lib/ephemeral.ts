@@ -21,7 +21,7 @@
 // every tick, the way it sweeps the self-check account.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import { deleteObjects, evidenceKey } from "@/lib/storage";
+import { deleteObjects, evidenceKey, thumbKeyOf } from "@/lib/storage";
 import { isChromeStoreUrl } from "@/lib/extension-target";
 import { systemWide } from "@/lib/tenant-db";
 
@@ -267,7 +267,11 @@ export async function sweepExpiredEphemeralRuns(
     .filter((u) => !stillUsed.has(u))
     .map((u) => evidenceKey(u))
     .filter((k): k is string => k !== null);
-  await deleteObjects(evidenceBucket, keys);
+  // A screenshot's small copy (CHE-362) goes with it: no row points at the
+  // copy, so nothing else would ever delete it. Counted with its original, not
+  // on its own — it may never have been made.
+  const thumbs = keys.map((k) => thumbKeyOf(k)).filter((k): k is string => k !== null);
+  await deleteObjects(evidenceBucket, [...keys, ...thumbs]);
 
   return { runs: runs.length, evidence: new Set([...extensionKeys, ...keys]).size };
 }

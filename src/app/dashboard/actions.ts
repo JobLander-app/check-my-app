@@ -13,18 +13,19 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { updateAppForTeam } from "@/lib/app-settings";
+import { updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
 import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
-import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { appPath } from "@/lib/app-shell";
 
 // Re-point an app's tracker to a different team (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
 // not whatever happens to be first.
 export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -49,7 +50,7 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
 // secret is write-only: blank keeps the current one, and it's dropped with the
 // webhook URL so a disabled endpoint leaves no secret behind.
 export async function setIntegrationEndpoints(appId: string, formData: FormData) {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -74,7 +75,8 @@ export async function setIntegrationEndpoints(appId: string, formData: FormData)
   else if (webhookSecret) data.webhookSecretEnc = encryptSecret(webhookSecret);
 
   await db.app.update({ ...alreadyScoped("already read in this request"), where: { id: appId }, data });
-  revalidatePath("/dashboard");
+  revalidatePath("/home");
+  revalidatePath(appPath.settings(appId));
 }
 
 // Disconnect analytics (CHE-236). Two things happen, in this order, and the
@@ -90,7 +92,7 @@ export async function setIntegrationEndpoints(appId: string, formData: FormData)
 // Revocation is attempted first but cannot block deletion. If PostHog is down,
 // the person still asked us to stop reading their analytics, and we stop.
 export async function disconnectPostHog(): Promise<void> {
-  await refuseSelfCheck("/dashboard");
+  await refuseSelfCheck("/home");
   const { user, db, team } = await requireActionScope("integration.connect");
   const row = await db.postHogIntegration.findFirst({ where: { ...teamOwned(team.id) } });
   if (!row) return;
@@ -120,7 +122,8 @@ export async function disconnectPostHog(): Promise<void> {
     subject: row.organizationName ?? "PostHog",
     summary: `disconnected PostHog${row.organizationName ? ` (${row.organizationName})` : ""}`,
   });
-  revalidatePath("/dashboard");
+  revalidatePath("/settings/integrations");
+  revalidatePath("/home");
 }
 
 // Owner API keys (CHE-52). The raw key exists only in this return value — the
@@ -129,7 +132,7 @@ export async function createApiKey(
   name: string,
   keyScope: string = "member",
 ): Promise<{ id: string; name: string; rawKey: string }> {
-  await refuseSelfCheck("/dashboard");
+  await refuseSelfCheck("/home");
   // CHE-253: the plan is the team's, and so is the key — a CI hook does not
   // stop working because the person who minted it left. Who minted it stays on
   // ownerId as attribution.
@@ -166,7 +169,7 @@ export async function createApiKey(
 // Revoke = delete the row; the key stops resolving on the next request.
 // deleteMany scoped to the owner so one tenant can't revoke another's key.
 export async function revokeApiKey(id: string): Promise<void> {
-  await refuseSelfCheck("/dashboard");
+  await refuseSelfCheck("/home");
   const { user, db, team } = await requireActionScope("apikey.manage");
   await db.apiKey.deleteMany({ where: { ...teamOwned(team.id), id, ownerId: user.id } });
   await recordTeamEvent(db, {
@@ -181,43 +184,65 @@ export async function revokeApiKey(id: string): Promise<void> {
 // Edit an app's settings after onboarding (CHE-64). Mirrors createApp's field →
 // record mapping EXACTLY so the settings page and onboarding write the same
 // places: creds/scope/notes on App (test creds also mirrored onto Watch, as
-// onboarding does), cadence + notify email on Watch, ticket params on
-// TicketPolicy. The password is write-only: a blank submission leaves
-// testPasswordEnc untouched on both records.
+// onboarding does), cadence on Watch, ticket params on TicketPolicy. The
+// password is write-only: a blank submission leaves testPasswordEnc untouched
+// on both records.
 //
 // CHE-315: the rules are in src/lib/app-settings.ts, shared with the MCP
-// update_app tool; this action reads its form. The form carries every field,
-// so each is passed — a blank box clears its field, as it always did — except
-// the password, whose blank box means "keep" (undefined), never "remove".
-export async function updateAppSettings(appId: string, formData: FormData) {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+// update_app tool; this action reads its form.
+//
+// CHE-359: the settings are sections, each its own form, and a form saves its
+// own section and nothing else. The section is bound into the action by the
+// page (never read from the form), and decides which fields are read at all:
+// a field the patch does not name is kept (updateAppForTeam's rule), so the
+// "What we check" form cannot blank a password and the accounts form cannot
+// untick write mode. Within its section a blank box still clears its field, as
+// it always did — except a password, whose blank box means "keep".
+//
+// A refusal (a cadence the plan does not allow, a bad account) goes back to
+// the section as a sentence, where the form is — it used to be thrown, and the
+// reader got an error page.
+//
+// "Who hears about it" has no field here: its one form is setAppNotifiers
+// (CHE-413 removed the escalation address that used to be the app's field).
+export async function updateAppSettings(appId: string, section: string, formData: FormData) {
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.settings.write");
+  const text = (name: string) => String(formData.get(name) ?? "");
   const list = (name: string) =>
-    String(formData.get(name) ?? "")
+    text(name)
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
-  const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, {
-    testEmail: String(formData.get("testEmail") ?? ""),
-    testPassword: String(formData.get("testPassword") ?? "") || undefined,
-    // CHE-322: the named accounts' rows, saved with everything else.
-    testAccounts: testAccountsFromForm(formData),
-    focusAreas: String(formData.get("focusAreas") ?? ""),
-    writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
-    scopeHints: String(formData.get("scopeHints") ?? ""),
-    userNotes: String(formData.get("userNotes") ?? ""),
-    notifyEmail: String(formData.get("notifyEmail") ?? ""),
-    frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
-    pickupLabels: list("pickupLabels"),
-    repoLabel: String(formData.get("repoLabel") ?? ""),
-    urgentJourneys: list("urgentJourneys"),
-    extension: extensionOptionsFromForm(formData),
-  });
-  if ("error" in result) throw new Error(result.error);
+  const patch: AppSettingsPatch | null =
+    section === "scope"
+      ? {
+          focusAreas: text("focusAreas"),
+          writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
+          scopeHints: text("scopeHints"),
+          userNotes: text("userNotes"),
+          extension: extensionOptionsFromForm(formData),
+        }
+      : section === "accounts"
+        ? {
+            testEmail: text("testEmail"),
+            testPassword: text("testPassword") || undefined,
+            // CHE-322: the named accounts' rows, saved with the default login.
+            testAccounts: testAccountsFromForm(formData),
+          }
+        : section === "integrations"
+          ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
+          : null;
+  if (!patch) throw new Error("unknown settings section");
 
-  revalidatePath("/dashboard");
-  revalidatePath(`/dashboard/${result.app.id}`);
+  const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, patch);
+  const back = appPath.section(appId, section);
+  if ("error" in result) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
+
+  revalidatePath("/home");
+  revalidatePath(appPath.settings(result.app.id), "layout");
+  redirect(`${back}?saved=1`);
 }
 
 // Remove an app the owner no longer wants watched (CHE-95). Our own check
@@ -235,7 +260,7 @@ export async function deleteApp(
   _prev: DeleteAppResult,
   formData: FormData,
 ): Promise<DeleteAppResult> {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.delete");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
@@ -269,12 +294,13 @@ export async function deleteApp(
     summary: `deleted ${app.appSlug} — its verdicts were kept`,
   });
 
-  revalidatePath("/dashboard");
-  redirect(`/dashboard?removed=${encodeURIComponent(app.appSlug)}`);
+  // The app is in the sidebar of every signed-in page, so the whole shell.
+  revalidatePath("/", "layout");
+  redirect(`/home?removed=${encodeURIComponent(app.appSlug)}`);
 }
 
 export async function runSavedApp(appId: string, _previous: { error: string } | null) {
-  if (isSelfCheckRequest(await headers())) redirect(selfCheckRedirectPath(`/dashboard/${appId}`));
+  if (isSelfCheckRequest(await headers())) redirect(selfCheckRedirectPath(appPath.settings(appId)));
   const { user, db, team } = await requireActionScope("run.start");
   const result = await startSavedApp(db, { id: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId);
   if ("error" in result) return result;
@@ -300,7 +326,7 @@ export async function runSavedApp(appId: string, _previous: { error: string } | 
 // Clearing it is a first-class option, not an omission: an app with no project
 // keeps our own estimate, which is a legitimate state to return to.
 export async function setAppPosthogProject(appId: string, formData: FormData): Promise<void> {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.settings.write");
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
@@ -341,11 +367,12 @@ export async function setAppPosthogProject(appId: string, formData: FormData): P
       ? `pointed ${app.appSlug} at the PostHog project "${projectName || projectId}"`
       : `stopped reading a PostHog project for ${app.appSlug}`,
   });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
+  revalidatePath("/home");
 }
 
 export async function setAppNotifiers(appId: string, formData: FormData): Promise<void> {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.settings.write");
   const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { id: true } });
   if (!app) throw new Error("App not found.");
@@ -369,12 +396,12 @@ export async function setAppNotifiers(appId: string, formData: FormData): Promis
       ? `set who hears about this app: ${valid.length} ${valid.length === 1 ? "person" : "people"}`
       : "cleared who hears about this app — verdicts go to the team's admins again",
   });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
 }
 
 // The self-service half: any scope, your own subscription only.
 export async function toggleOwnNotifications(appId: string): Promise<void> {
-  await refuseSelfCheck(`/dashboard/${appId}`);
+  await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("read");
   const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { id: true } });
   if (!app) throw new Error("App not found.");
@@ -382,5 +409,6 @@ export async function toggleOwnNotifications(appId: string): Promise<void> {
   const existing = await db.appNotifier.findFirst({ where: { appId, userId: user.id }, select: { id: true } });
   if (existing) await db.appNotifier.deleteMany({ where: { appId, userId: user.id } });
   else await db.appNotifier.create({ data: { appId, userId: user.id } });
-  revalidatePath(`/dashboard/${appId}`);
+  revalidatePath(appPath.settings(appId));
+  revalidatePath("/settings/account");
 }

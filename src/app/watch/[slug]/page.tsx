@@ -1,98 +1,28 @@
-import { notFound } from "next/navigation";
-import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
-import { VERDICT_META } from "@/lib/status";
-import { WatchSettings } from "@/components/watch-settings";
-import { alreadyScoped } from "@/lib/tenant-db";
+import { memberOfRows, teamOwned } from "@/lib/tenant-db";
+import { appPath } from "@/lib/app-shell";
 
-export const dynamic = "force-dynamic";
-
-const DATE_FMT: Intl.DateTimeFormatOptions = {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-};
-
-// Screen 4 — Watch settings · /watch/{slug}. Set-and-forget: status, recent runs,
-// minimal settings. Only meaningful once a Watch exists for the app.
-export default async function WatchPage({ params }: { params: Promise<{ slug: string }> }) {
-  // Owner-scoped (CHE-33): a watch is managed only by its owner.
-  const { user, db } = await requireUser();
-  const app = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
-    where: { ownerId_appSlug: { ownerId: user.id, appSlug: (await params).slug } },
-    include: {
-      watch: { include: { runs: { orderBy: { startedAt: "desc" }, take: 10 } } },
-    },
-  });
-  if (!app?.watch) notFound();
-  const watch = app.watch;
-
-  return (
-    <main className="mx-auto max-w-2xl px-4 py-10">
-      <div className="stagger space-y-6">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              Daily Watch — <span className="mono text-lg">{watch.appSlug}</span>
-            </h1>
-            <p className="mt-1.5 font-mono text-xs text-fg-faint">
-              <span className={watch.active ? "text-status-ok" : "text-fg-faint"}>
-                {watch.active ? "● Active" : "○ Paused"}
-              </span>
-              {" · "}Last checked{" "}
-              {watch.lastRunAt?.toLocaleString([], DATE_FMT) ?? "never"}
-              {" · "}Next {watch.nextRunAt?.toLocaleString([], DATE_FMT) ?? "—"}
-            </p>
-          </div>
-        </header>
-
-        <section>
-          <h2 className="section-label mb-2.5">Recent runs</h2>
-          <ul className="card divide-y divide-ink-700 overflow-hidden">
-            {watch.runs.map((run) => {
-              const meta = run.verdict ? VERDICT_META[run.verdict] : null;
-              return (
-                <li
-                  key={run.id}
-                  className="flex items-center gap-4 px-4 py-3 text-sm transition-colors hover:bg-ink-800/50"
-                >
-                  <span className="w-16 shrink-0 font-mono text-xs text-fg-faint">
-                    {run.startedAt.toLocaleDateString([], { month: "short", day: "numeric" })}
-                  </span>
-                  <span className="flex-1">
-                    {meta ? (
-                      <span className={`font-mono text-xs ${meta.pillClassName.split(" ").pop()}`}>
-                        {meta.emoji} {meta.label}
-                      </span>
-                    ) : (
-                      <span className="font-mono text-xs text-fg-faint">{run.status}</span>
-                    )}
-                  </span>
-                  <Link
-                    href={`/verdict/${run.publicId}`}
-                    className="font-mono text-xs text-accent underline-offset-2 hover:underline"
-                  >
-                    view verdict
-                  </Link>
-                </li>
-              );
-            })}
-            {watch.runs.length === 0 && (
-              <li className="px-4 py-3 text-sm text-fg-faint">No runs yet.</li>
-            )}
-          </ul>
-        </section>
-
-        <WatchSettings
-          slug={watch.appSlug}
-          initial={{
-            frequency: watch.frequency as "daily" | "every_6h" | "manual",
-            notifyOnChangeOnly: watch.notifyOnChangeOnly,
-            active: watch.active,
-          }}
-        />
-      </div>
-    </main>
+// /watch/{slug} was the watch's own screen. It lives in the app's settings now
+// (CHE-351 → …/settings/schedule), and the old address is in verdict e-mails
+// and enable-watch redirects, so it still lands there. It names an app by its
+// slug, which only a lookup can turn into the app's id — hence a page, not a
+// pattern in next.config.mjs.
+export default async function WatchMoved({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  const { user, db, team } = await requireUser();
+  // The old route named one row: the caller's own app of that slug. A slug can
+  // now be several apps — a teammate's in this team, one in another team of
+  // yours — so the caller's own comes first, as the link meant it.
+  const pickOwn = <T extends { ownerId: string }>(rows: T[]) => rows.find((a) => a.ownerId === user.id) ?? rows[0];
+  const here = pickOwn(
+    await db.app.findMany({ where: { ...teamOwned(team.id), appSlug: slug }, select: { id: true, ownerId: true } }),
   );
+  if (here) redirect(appPath.schedule(here.id));
+  // In another team of yours: the settings page offers the switch (CHE-261).
+  const elsewhere = pickOwn(
+    await db.app.findMany({ where: { ...memberOfRows(user.id), appSlug: slug }, select: { id: true, ownerId: true } }),
+  );
+  if (elsewhere) redirect(appPath.settings(elsewhere.id));
+  notFound();
 }

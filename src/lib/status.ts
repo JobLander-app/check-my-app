@@ -47,31 +47,35 @@ export const STEP_STATUS_META: Record<
 
 export const VERDICT_META: Record<
   string,
-  { emoji: string; label: string; pillClassName: string; textClassName: string }
+  { emoji: string; label: string; pillClassName: string; textClassName: string; dotClassName: string }
 > = {
   all_good: {
     emoji: "🟢",
     label: "All good",
     pillClassName: "border-status-ok/40 bg-status-ok/10 text-status-ok",
     textClassName: "text-status-ok",
+    dotClassName: "bg-status-ok",
   },
   mostly_ok: {
     emoji: "🟡",
     label: "Mostly OK",
     pillClassName: "border-status-confusing/40 bg-status-confusing/10 text-status-confusing",
     textClassName: "text-status-confusing",
+    dotClassName: "bg-status-confusing",
   },
   needs_attention: {
     emoji: "🟠",
     label: "Needs attention",
     pillClassName: "border-status-risky/40 bg-status-risky/10 text-status-risky",
     textClassName: "text-status-risky",
+    dotClassName: "bg-status-risky",
   },
   broken: {
     emoji: "🔴",
     label: "Broken",
     pillClassName: "border-status-broken/40 bg-status-broken/10 text-status-broken",
     textClassName: "text-status-broken",
+    dotClassName: "bg-status-broken",
   },
   // Zero coverage — the run walked nothing, so there is no verdict to give.
   // Deliberately colourless: it must not read as either a pass or a failure.
@@ -80,6 +84,7 @@ export const VERDICT_META: Record<
     label: "Not verified",
     pillClassName: "border-ink-600 bg-ink-800 text-fg-faint",
     textClassName: "text-fg-faint",
+    dotClassName: "bg-ink-600",
   },
 };
 

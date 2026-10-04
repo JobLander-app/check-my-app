@@ -44,7 +44,11 @@ export type PublicReason =
   // Not a signature: the sender echoes a shared secret we gave it (Telegram's
   // X-Telegram-Bot-Api-Secret-Token). Said apart so nobody reads it as stronger.
   | "secret-token-verified webhook"
-  | "public by design — today's checks are readable by anyone";
+  | "public by design — today's checks are readable by anyone"
+  // CHE-414: the theme switch. It writes one cookie in the caller's own
+  // browser and nothing of ours, and a signed-out visitor on the public site
+  // may choose too.
+  | "a preference kept in the caller's own browser — writes nothing of ours";
 
 // Keyed "METHOD /path" with Next's own bracket segments, so an entry can be
 // compared with the filesystem rather than with somebody's memory.
@@ -70,6 +74,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "GET /api/runs/[id]/verdict": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/runs/[id]/stream": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/runs/[id]/review": { kind: "public", why: "addressed by an unguessable id" },
+  // CHE-411: what a check was priced at and why — the team's spending, so a
+  // read of the team that paid, never public like the verdict it belongs to.
+  "GET /api/runs/[id]/price": { kind: "team", action: "read" },
   "GET /api/tests/[id]": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/status/[slug]": { kind: "public", why: "addressed by an unguessable id" },
 
@@ -135,6 +142,9 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // makes you ask twice.
   "src/app/dashboard/actions.ts#toggleOwnNotifications": { kind: "team", action: "read" },
   "src/app/onboarding/actions.ts#createApp": { kind: "team", action: "app.settings.write" },
+  // CHE-360: the four marks on the Issues pages, the same decision as PATCH
+  // /api/findings/[id] for the team the run belongs to.
+  "src/app/(app)/health/issues/actions.ts#markFinding": { kind: "team", action: "finding.mark" },
   "src/app/verdict/actions.ts#recheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "src/app/verdict/actions.ts#fullRecheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   // CHE-329: "Run it again" on a failed run — the same re-check, same gates.
@@ -156,4 +166,8 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // acting as. What decides is membership in the team being switched TO, so the
   // rule lives with the switch itself rather than in the scope table.
   "src/app/team/switch-actions.ts#switchTeamAction": { kind: "row", decidedIn: "src/app/team/switch-actions.ts" },
+  "src/app/(app)/settings/account/actions.ts#setThemeAction": {
+    kind: "public",
+    why: "a preference kept in the caller's own browser — writes nothing of ours",
+  },
 };

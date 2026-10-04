@@ -47,6 +47,12 @@ export const GUIDES: Guide[] = [
     description:
       "Your agent opens a session already knowing what last night's check found — and, in preview, gets new results pushed into a running session.",
   },
+  {
+    slug: "check-every-release",
+    title: "Check every release",
+    description:
+      "Add one step to your GitHub workflow and every deploy is checked the way a real user would use it — a broken release fails the job.",
+  },
 ];
 
 export const GUIDES_PATH = "/guides" as const;

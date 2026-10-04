@@ -15,8 +15,11 @@
 import type { LatestResults } from "@/lib/latest-results";
 import type { PlanStatus } from "@/lib/plan-status";
 import { planLabel, usd } from "@/lib/plans";
+import { RELEASE_ACTION_INSTRUCTION } from "@/lib/release-action";
 
-export const MAX_INSTRUCTIONS_CHARS = 1500;
+// 1800 since CHE-370: the sentence that offers the GitHub Action took the room
+// the app lines had under 1500.
+export const MAX_INSTRUCTIONS_CHARS = 1800;
 
 const VERDICT_WORDS: Record<string, string> = {
   all_good: "all good",
@@ -64,7 +67,14 @@ function planRule(s: PlanStatus): string {
   );
 }
 
-export function buildInstructions(teamName: string, results: LatestResults, plan: PlanStatus): string {
+// CHE-370: `runsReleaseAction` is whether this team's checks already arrive
+// from the GitHub Action — a team that has it is not offered it again.
+export function buildInstructions(
+  teamName: string,
+  results: LatestResults,
+  plan: PlanStatus,
+  runsReleaseAction: boolean,
+): string {
   const head =
     `CheckMyApp checks the deployed apps of team "${teamName}" the way a real user would and reports what is broken. ` +
     "The person you work with manages CheckMyApp entirely through these tools — they should not need to open its dashboard.";
@@ -93,7 +103,8 @@ export function buildInstructions(teamName: string, results: LatestResults, plan
 
   const tail =
     "Use start_check after a deploy (pass app_id, deploy_sha), wait_for_run or get_check_status to follow it, " +
-    "and enable_watch / disable_watch for daily checks.";
+    "and enable_watch / disable_watch for daily checks." +
+    (runsReleaseAction ? "" : ` ${RELEASE_ACTION_INSTRUCTION}`);
 
   const planText = `${planLine(plan)}\n${planRule(plan)}`;
 

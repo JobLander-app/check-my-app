@@ -61,7 +61,7 @@ export default async function OnboardingPage({
           </p>
         </div>
       )}
-      <OnboardingWizard prefillUrl={url ?? ""} defaultEmail={user.email ?? ""} initialKind={kind} extensionCheck={extensionCheck} />
+      <OnboardingWizard prefillUrl={url ?? ""} initialKind={kind} extensionCheck={extensionCheck} />
     </main>
   );
 }

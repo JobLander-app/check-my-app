@@ -13,6 +13,7 @@ import { resolveApiKeyGrant, resolveApiKeyOwner } from "./apiKeys";
 import { can } from "./scopes";
 import { ACTIVE_TEAM_COOKIE, activeTeamContext, type TeamRow } from "./teams";
 import { cookies } from "next/headers";
+import { cache } from "react";
 import type { TeamScope } from "./scopes";
 import type { PrismaClient } from "@/generated/prisma/client";
 
@@ -34,7 +35,12 @@ export async function preferredTeamId(): Promise<string | null> {
   }
 }
 
-export async function requireUser(): Promise<{
+// Once per request (CHE-351): the app shell's layout and the page inside it
+// both need the signed-in person, and each call writes the user mirror. React's
+// cache() hands the second caller the first one's answer.
+export const requireUser = cache(requireUserUncached);
+
+async function requireUserUncached(): Promise<{
   user: NonNullable<Awaited<ReturnType<PrismaClient["user"]["upsert"]>>>;
   db: PrismaClient;
   team: TeamRow;

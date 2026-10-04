@@ -21,8 +21,10 @@
 //   - A check is every run of the app started in the window, whatever became of
 //     it. A failed run counts as a check at $0 (our failure is free, rule 4 —
 //     its price is 0); one still in flight counts at $0 until it is priced.
-//   - Scheduled means a watch started it (watchId set); everything else — the
-//     coding agent, the API, the dashboard's button, a re-check — is on request.
+//   - Scheduled means the schedule started it: the door it came through says
+//     so (startedBySchedule in src/lib/started-via.ts — a run can carry a watch
+//     it was not started by). Everything else — the coding agent, the API, the
+//     app's own button, a re-check — is on request.
 //   - A run belongs to an app by appId. A run with no appId (checked before the
 //     app was saved, or detached from it) belongs to the team's app with the
 //     same host when exactly one has it: the team paid for it, and it checked
@@ -51,6 +53,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { UserPlan } from "@/lib/enums";
 import { explainPrice, type PriceExplanation } from "@/lib/check-price";
 import { planCredit, utcDayStart } from "@/lib/plans";
+import { startedBySchedule } from "@/lib/started-via";
 import { teamOwned } from "@/lib/tenant-db";
 
 export interface AppHealth {
@@ -77,9 +80,19 @@ export interface AppHealth {
 
 export interface AppHealthReport {
   windowDays: number;
+  // Every check of the team in the window, including the ones that belong to
+  // no app (a PR preview, a host the team never saved) — what totalSpendUsd
+  // was spent on. The apps' own counts can add up to less.
+  totalChecks: number;
   totalSpendUsd: number;
   perDayUsd: number;
   monthlyRunRateUsd: number;
+  // What the saved apps cost a month: the run rate of the checks that belong
+  // to an app. `monthlyRunRateUsd` is everything the balance paid for — a PR
+  // preview, an address never saved, an app since removed included — and is
+  // what the plan is measured against. "Your apps cost" is this one: a one-off
+  // check is not what an app costs.
+  appsMonthlyUsd: number;
   planCoversTimes: number | null;
   apps: AppHealth[];
 }
@@ -102,13 +115,11 @@ const toCents = (usd: number | null) => Math.round((usd ?? 0) * 100);
 const fromCents = (c: number) => c / 100;
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
-export async function appHealth(
-  db: PrismaClient,
-  teamId: string,
-  opts: { days?: number; now?: Date } = {},
-): Promise<AppHealthReport> {
-  const days = windowDays(opts.days);
-  const now = opts.now ?? new Date();
+// The window and its edges — one place, for the full report and for the
+// team's totals alone.
+function windowOf(daysOpt: number | undefined, nowOpt: Date | undefined) {
+  const days = windowDays(daysOpt);
+  const now = nowOpt ?? new Date();
   const since = new Date(utcDayStart(now).getTime() - (days - 1) * DAY_MS);
   // Exclusive: the midnight after `now`. A `now` in the past (a report as of a
   // date) or a row stamped ahead of the clock must not land past the series.
@@ -124,6 +135,47 @@ export async function appHealth(
   // spellings: every row of that day sorts at or below it, every row of the
   // next day above.
   const lastInstant = new Date(until.getTime() - 1);
+  return { days, since, inWindow, lastInstant };
+}
+
+// The one pass over the window's money, on the [teamId, createdAt] index. A
+// day of slack at the start, with the exact edge drawn in code (inWindow): a
+// run in the old spelling on the window's first day sorts before its midnight
+// and would silently drop out (Run #137).
+function windowRuns(db: PrismaClient, teamId: string, w: ReturnType<typeof windowOf>) {
+  return db.run.findMany({
+    where: { ...teamOwned(teamId), createdAt: { gte: new Date(w.since.getTime() - DAY_MS), lte: w.lastInstant } },
+    select: { appId: true, appSlug: true, watchId: true, startedVia: true, priceUsd: true, createdAt: true },
+  });
+}
+
+/**
+ * The team's totals over the window and nothing else: how many checks, what
+ * they cost. The same pass and the same edges as appHealth — whose totals
+ * these are — without each app's history and price explanation, for a page
+ * that shows only the totals (Health → Checks; Codex on #249: the full report
+ * cost about six queries per saved app there).
+ */
+export async function teamSpend(
+  db: PrismaClient,
+  teamId: string,
+  opts: { days?: number; now?: Date } = {},
+): Promise<{ windowDays: number; totalChecks: number; totalSpendUsd: number }> {
+  const w = windowOf(opts.days, opts.now);
+  const runs = (await windowRuns(db, teamId, w)).filter((r) => w.inWindow(r.createdAt));
+  return { windowDays: w.days, totalChecks: runs.length, totalSpendUsd: fromCents(runs.reduce((sum, r) => sum + toCents(r.priceUsd), 0)) };
+}
+
+export async function appHealth(
+  db: PrismaClient,
+  teamId: string,
+  // `only`: a page about one app (CHE-358) asks for that app's entry alone —
+  // the team's totals are still the team's, but the per-app history and price
+  // explanation, which cost several queries each, are read for it only.
+  opts: { days?: number; now?: Date; only?: string } = {},
+): Promise<AppHealthReport> {
+  const w = windowOf(opts.days, opts.now);
+  const { days, since, inWindow, lastInstant } = w;
 
   const [team, apps, runs] = await Promise.all([
     db.team.findUnique({ where: { id: teamId }, select: { plan: true } }),
@@ -132,14 +184,7 @@ export async function appHealth(
       orderBy: { createdAt: "asc" },
       select: { id: true, appSlug: true, targetKind: true },
     }),
-    // The one pass over the window's money, on the [teamId, createdAt] index.
-    // A day of slack at the start, with the exact edge drawn in code: a run in
-    // the old spelling on the window's first day sorts before its midnight and
-    // would silently drop out (Run #137).
-    db.run.findMany({
-      where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: lastInstant } },
-      select: { appId: true, appSlug: true, watchId: true, priceUsd: true, createdAt: true },
-    }),
+    windowRuns(db, teamId, w),
   ]);
   const plan = (team?.plan ?? "free") as UserPlan;
 
@@ -156,15 +201,17 @@ export async function appHealth(
     apps.map((a) => [a.id, { cents: 0, scheduled: { count: 0, cents: 0 }, onRequest: { count: 0, cents: 0 }, daily: new Map() }]),
   );
   let totalCents = 0;
+  let totalChecks = 0;
   for (const r of runs) {
     if (!inWindow(r.createdAt)) continue;
     const c = toCents(r.priceUsd);
     totalCents += c;
+    totalChecks++;
     const app = ownerOf(r);
     if (!app) continue;
     const t = tallies.get(app.id)!;
     t.cents += c;
-    const side = r.watchId ? t.scheduled : t.onRequest;
+    const side = startedBySchedule(r) ? t.scheduled : t.onRequest;
     side.count++;
     side.cents += c;
     const day = isoDay(r.createdAt);
@@ -172,7 +219,7 @@ export async function appHealth(
   }
 
   const health = await Promise.all(
-    apps.map(async (app): Promise<AppHealth> => {
+    apps.filter((app) => opts.only === undefined || app.id === opts.only).map(async (app): Promise<AppHealth> => {
       const t = tallies.get(app.id)!;
       const unique = bySlug.get(app.appSlug) === app;
       const where = {
@@ -250,9 +297,11 @@ export async function appHealth(
 
   return {
     windowDays: days,
+    totalChecks,
     totalSpendUsd: fromCents(totalCents),
     perDayUsd: fromCents(Math.round(totalCents / days)),
     monthlyRunRateUsd: fromCents(monthlyCents),
+    appsMonthlyUsd: fromCents(Math.round(([...tallies.values()].reduce((s, t) => s + t.cents, 0) / days) * 30)),
     planCoversTimes,
     apps: health.sort((a, b) => b.spendUsd - a.spendUsd || a.appSlug.localeCompare(b.appSlug)),
   };

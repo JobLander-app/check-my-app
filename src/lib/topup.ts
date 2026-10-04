@@ -15,6 +15,7 @@
 import type Stripe from "stripe";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { isTopUpAmount, type TopUpAmount } from "@/lib/plans";
+import { BALANCE_PATH } from "@/lib/balance-links";
 
 export const TOPUP_KIND = "balance_topup";
 
@@ -61,8 +62,8 @@ export function topUpSessionParams(args: {
     ...(email ? { payment_intent_data: { receipt_email: email } } : {}),
     client_reference_id: userId,
     metadata: topUpMetadata(teamId, amountUsd),
-    success_url: `${appUrl}/dashboard?topped_up=${amountUsd}#balance`,
-    cancel_url: `${appUrl}/dashboard#balance`,
+    success_url: `${appUrl}${BALANCE_PATH}?topped_up=${amountUsd}`,
+    cancel_url: `${appUrl}${BALANCE_PATH}`,
   };
 }
 

@@ -104,15 +104,17 @@ function JourneyCard({
     <div className="card overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-ink-800/50"
+        // On a phone the chips go under the title instead of pushing the card
+        // wider than the screen (a carried journey's two chips are ~300px).
+        className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-4 text-left transition-colors hover:bg-ink-800/50 sm:flex-nowrap"
       >
-        <h3 className="font-medium text-fg">
+        <h3 className="min-w-0 font-medium text-fg">
           <span className={`chevron mr-2 inline-block text-fg-faint ${open ? "rotate-90" : ""}`}>
             ›
           </span>
           {journey.order + 1}. {journey.title}
         </h3>
-        <span className="flex shrink-0 items-center gap-2">
+        <span className="flex flex-wrap items-center gap-2 whitespace-nowrap sm:shrink-0 sm:flex-nowrap">
           {/* CHE-57: this journey was not walked this run — it was copied
               forward from the run that did walk it. The status pill next to it
               is therefore a statement about that run, and this chip is the only
@@ -124,8 +126,11 @@ function JourneyCard({
             </span>
           )}
           <span
-            className={`rounded-full border px-2.5 py-1 font-mono text-xs ${meta.className} border-current/30 bg-current/10`}
-            style={{ borderColor: "color-mix(in srgb, currentColor 30%, transparent)" }}
+            className={`rounded-full border px-2.5 py-1 font-mono text-xs ${meta.className}`}
+            style={{
+              borderColor: "color-mix(in srgb, currentColor 30%, transparent)",
+              backgroundColor: "color-mix(in srgb, currentColor 10%, transparent)",
+            }}
           >
             {meta.emoji} {meta.label}
           </span>
@@ -140,7 +145,8 @@ function JourneyCard({
               down, each line naming the step and quoting what happened. */}
           {problems.length > 0 && (
             <div
-              className={`mb-3 rounded-r-md border-l-2 border-current/50 bg-ink-800/40 py-2 pl-3 pr-3 ${meta.className}`}
+              className={`mb-3 rounded-r-md border-l-2 bg-ink-800/40 py-2 pl-3 pr-3 ${meta.className}`}
+              style={{ borderColor: "color-mix(in srgb, currentColor 50%, transparent)" }}
             >
               <p className="text-sm font-medium">
                 Why this journey is “{meta.label}”:
@@ -253,7 +259,8 @@ function JourneyCard({
                accent in the journey's worst status color — a verdict line,
                not another step caption. */
             <p
-              className={`mt-3 rounded-r-md border-l-2 border-current/50 bg-ink-800/40 py-2 pl-3 pr-3 text-sm text-fg-muted ${meta.className}`}
+              className={`mt-3 rounded-r-md border-l-2 bg-ink-800/40 py-2 pl-3 pr-3 text-sm text-fg-muted ${meta.className}`}
+              style={{ borderColor: "color-mix(in srgb, currentColor 50%, transparent)" }}
             >
               <span className="font-medium">What we found:</span>{" "}
               <span className="text-fg-muted">{journey.summary}</span>

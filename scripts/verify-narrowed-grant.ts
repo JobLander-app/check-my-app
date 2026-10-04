@@ -99,13 +99,14 @@ console.log("\n— both surfaces say it —\n");
 {
   const load = readFileSync(join(import.meta.dirname, "..", "src/lib/journey-numbers-load.ts"), "utf8");
   const card = readFileSync(join(import.meta.dirname, "..", "src/components/analytics-connection.tsx"), "utf8");
-  const page = readFileSync(join(import.meta.dirname, "..", "src/app/dashboard/page.tsx"), "utf8");
+  // CHE-351: the team's analytics connection is on Integrations now.
+  const page = readFileSync(join(import.meta.dirname, "..", "src/app/(app)/settings/integrations/page.tsx"), "utf8");
 
   check("the verdict page reads the granted scope", /scope: true/.test(load));
   check("…and ranks the narrowing above the other absences",
     /narrowed\s*\n?\s*\? "access_narrowed"/.test(load) || /narrowed$/m.test(load),
     "it is the only permanent one and the only one the owner can fix");
-  check("the dashboard reads it too", /missingScopes\(row\.scope\)/.test(page));
+  check("Integrations reads it too", /missingScopes\(row\.scope\)/.test(page));
   check("…and drops the unqualified tick",
     /stranded \|\| narrowed \? "!" : "✓"/.test(card),
     "a ✓ over a connection that can never answer is CHE-269 again");

@@ -227,7 +227,11 @@ export async function createRecheckRun(
         focusAreas: prev.focusAreas,
         // CHE-373: scope, and so the origins it may act on, stay the run's own.
         allowedOrigins: prev.allowedOrigins,
-        notifyEmail: prev.notifyEmail,
+        // A check of a saved app is heard about by the app's team members
+        // (CHE-413); only a check nobody saved keeps the address it was
+        // submitted with. Runs from before CHE-413 carry the old Watch
+        // address, and this is where it stops being copied forward.
+        notifyEmail: prev.appId ? null : prev.notifyEmail,
         watchId: prev.watchId,
         appId: prev.appId,
         ownerId: prev.ownerId,

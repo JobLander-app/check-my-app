@@ -2,9 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Bricolage_Grotesque, IBM_Plex_Mono } from "next/font/google";
 import { ClerkProvider, Show, UserButton } from "@clerk/nextjs";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { HOME_PATH, OG_IMAGE, SITE, TAGLINE } from "@/lib/site-metadata";
+import { htmlTheme, parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { AnalyticsProvider } from "@/components/analytics-provider";
+import { SiteHeaderGate } from "@/components/site-header-gate";
 
 const sans = Bricolage_Grotesque({
   subsets: ["latin"],
@@ -48,17 +51,22 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // CHE-414: the theme is decided here, on the server, from the cookie the
+  // account page sets, and rendered as an attribute — the stylesheet does the
+  // rest (tailwind.config.ts). No attribute means the browser's preference.
+  const theme = htmlTheme(parseTheme((await cookies()).get(THEME_COOKIE)?.value));
   return (
     // Owner 2026-09-28: signing in lands in the workspace, not back on the
     // marketing page. The fallback applies whenever no redirect_url is given;
     // flows that sign in for a purpose (enable a watch on a verdict, export
     // specs) still pass their own and come back to it.
-    <ClerkProvider signInFallbackRedirectUrl="/dashboard" signUpFallbackRedirectUrl="/dashboard">
-      <html lang="en" className={`${sans.variable} ${mono.variable}`}>
+    <ClerkProvider signInFallbackRedirectUrl="/home" signUpFallbackRedirectUrl="/home">
+      <html lang="en" className={`${sans.variable} ${mono.variable}`} data-theme={theme}>
         <body className="min-h-screen">
           {/* Product analytics (PostHog) — renders nothing; see src/lib/analytics.ts. */}
           <AnalyticsProvider />
+          <SiteHeaderGate>
           <header className="border-b border-ink-800">
             <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
               {/* The tagline belongs to the brand, not to the menu (owner,
@@ -128,28 +136,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     Sign in
                   </Link>
                 </Show>
+                {/* CHE-351: the workspace has its own sidebar now, so on the
+                    public pages a signed-in owner needs one way back into it,
+                    not the workspace's menu. Five links and the account
+                    button ran 15–28px past a 390px phone. */}
                 <Show when="signed-in">
-                  <Link
-                    href="/dashboard"
-                    className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
-                  >
-                    Your apps
-                  </Link>
-                  <Link
-                    href="/dashboard/accuracy"
-                    className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
-                  >
-                    Accuracy
-                  </Link>
-                  <Link
-                    href="/"
-                    className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
-                  >
-                    Check a link
-                  </Link>
-                  {/* CHE-318: an owner connecting their agent is signed in, so
-                      the guides belong in the workspace header too. Hidden
-                      on phones, where five links already fill the bar. */}
                   <Link
                     href="/guides"
                     className="hidden font-mono text-[13px] text-fg-muted transition-colors hover:text-fg sm:inline"
@@ -157,16 +148,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     Guides
                   </Link>
                   <Link
-                    href="/settings/team"
+                    href="/home"
                     className="font-mono text-[13px] text-fg-muted transition-colors hover:text-fg"
                   >
-                    Settings
+                    Your apps
                   </Link>
                   <UserButton />
                 </Show>
               </div>
             </div>
           </header>
+          </SiteHeaderGate>
           {children}
         </body>
       </html>

@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       // session created before CHE-253 and paid after it still resolves.
       client_reference_id: user.id,
       metadata: { teamId: team.id, userId: user.id },
-      success_url: `${APP_URL}/dashboard?upgraded=1`,
+      success_url: `${APP_URL}/settings/billing?upgraded=1`,
       cancel_url: `${APP_URL}/pricing`,
     });
 

@@ -24,9 +24,19 @@ async function refuseSelfCheck(publicId: string): Promise<void> {
   }
 }
 
-export async function recheckRunAction(publicId: string): Promise<void> {
+// CHE-371: a check opened inside the app sends its own address with the
+// action, so a refusal is read where the button was pressed and not on the
+// public permalink. A bound argument travels through the browser, so only the
+// app's own check address is taken; anything else — including the FormData a
+// form passes when nothing was bound — is the permalink, as before.
+const IN_APP_CHECK = /^\/health\/apps\/[A-Za-z0-9_-]{1,64}\/checks\/\d{1,9}$/;
+function wayBack(publicId: string, back?: unknown): string {
+  return typeof back === "string" && IN_APP_CHECK.test(back) ? back : `/verdict/${publicId}`;
+}
+
+export async function recheckRunAction(publicId: string, back?: string | FormData): Promise<void> {
   await refuseSelfCheck(publicId);
-  return doRecheck(publicId, false);
+  return doRecheck(publicId, false, wayBack(publicId, back));
 }
 
 // CHE-329: "Run it again" on a check that didn't finish. The same re-check,
@@ -42,15 +52,16 @@ export async function retryFailedRunAction(publicId: string, form?: FormData): P
 }
 
 // CHE-74: walk everything from scratch — partial/smoke skip themselves.
-export async function fullRecheckRunAction(publicId: string): Promise<void> {
+export async function fullRecheckRunAction(publicId: string, back?: string | FormData): Promise<void> {
   await refuseSelfCheck(publicId);
-  return doRecheck(publicId, true);
+  return doRecheck(publicId, true, wayBack(publicId, back));
 }
 
 // CHE-75: Enable Daily Watch, hydration-proof. Same defaults the API route's
 // schema applies (daily, notify on change only).
-export async function enableWatchAction(publicId: string): Promise<void> {
+export async function enableWatchAction(publicId: string, back?: string | FormData): Promise<void> {
   await refuseSelfCheck(publicId);
+  const here = wayBack(publicId, back);
   const prisma = await getDbFromContext();
   const user = await getOptionalUser(prisma);
   const context = await optionalTeamContext(prisma, user);
@@ -65,19 +76,19 @@ export async function enableWatchAction(publicId: string): Promise<void> {
   );
   switch (result.kind) {
     case "unauthenticated":
-      redirect(`/sign-in?redirect_url=${encodeURIComponent(`/verdict/${publicId}`)}`);
+      redirect(`/sign-in?redirect_url=${encodeURIComponent(here)}`);
       break;
     case "not_found":
-      redirect(`/verdict/${publicId}?watch_error=${encodeURIComponent("Run not found.")}`);
+      redirect(`${here}?watch_error=${encodeURIComponent("Run not found.")}`);
       break;
     case "forbidden":
-      redirect(`/verdict/${publicId}?watch_error=${encodeURIComponent("This run belongs to another owner.")}`);
+      redirect(`${here}?watch_error=${encodeURIComponent("This run belongs to another owner.")}`);
       break;
     case "ephemeral":
-      redirect(`/verdict/${publicId}?watch_error=${encodeURIComponent(EPHEMERAL_WATCH_REFUSAL)}`);
+      redirect(`${here}?watch_error=${encodeURIComponent(EPHEMERAL_WATCH_REFUSAL)}`);
       break;
     case "gated":
-      redirect(`/verdict/${publicId}?watch_error=${encodeURIComponent(result.reason)}`);
+      redirect(`${here}?watch_error=${encodeURIComponent(result.reason)}`);
       break;
     case "ok":
       redirect(`/watch/${result.slug}`);

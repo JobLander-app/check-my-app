@@ -207,7 +207,7 @@ check(
 // that, and a query there claiming it would be serving another team's rows
 // behind a login.
 const publicOnPrivate = sites.filter(
-  (s) => s.declared === "publicRow" && /^src\/app\/(dashboard|onboarding|watch)\b/.test(s.file),
+  (s) => s.declared === "publicRow" && /^src\/app\/(\(app\)|dashboard|onboarding|watch)\//.test(s.file),
 );
 check(
   "no signed-in surface claims publicRow",
@@ -218,7 +218,8 @@ check(
 // systemWide is for our own processes. In request-serving code the only honest
 // use is a page that measures the whole product rather than showing one team
 // its rows — the accuracy page. Anywhere else it is a leak wearing a label.
-const SYSTEM_ALLOWED = new Set(["src/lib/ephemeral.ts", "src/app/dashboard/accuracy/page.tsx"]);
+const ACCURACY_PAGE = "src/app/(app)/health/accuracy/page.tsx";
+const SYSTEM_ALLOWED = new Set(["src/lib/ephemeral.ts", ACCURACY_PAGE]);
 const straySystem = sites.filter((s) => s.declared === "systemWide" && !SYSTEM_ALLOWED.has(s.file));
 check(
   "systemWide appears only in our own processes",
@@ -227,11 +228,12 @@ check(
     `${sites.filter((s) => s.declared === "systemWide").length} sites in ${[...SYSTEM_ALLOWED].join(", ")}`,
 );
 
-// The dashboard is the surface where a leak would be invisible: it shows a
+// The signed-in app is the surface where a leak would be invisible: it shows a
 // signed-in person their own apps, so a missing clause shows them somebody
 // else's and looks like a feature. Every query there must be team-scoped or
-// pinned to a row already scoped.
-const dashboard = sites.filter((s) => /^src\/app\/dashboard\//.test(s.file) && s.file !== "src/app/dashboard/accuracy/page.tsx");
+// pinned to a row already scoped. (CHE-351: the app lives in the (app) route
+// group; the actions it posts to stay under src/app/dashboard.)
+const dashboard = sites.filter((s) => /^src\/app\/(\(app\)|dashboard)\//.test(s.file) && s.file !== ACCURACY_PAGE);
 // `memberOfRows` is allowed here for one job only: answering "is this row in a
 // team of yours" so a deep link can offer the switch instead of 404ing a row
 // the person is entitled to see (CHE-261). It grants nothing — the scope that

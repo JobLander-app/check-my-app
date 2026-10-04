@@ -365,7 +365,15 @@ async function main() {
   check(
     "/verdict/{id} of a failed run goes to its run page (the publication gate says no, the page redirects on it)",
     !extensionReportPublished({ targetKind: "website", status: "failed", verdict: "broken" }) &&
-      /if \(!extensionReportPublished\(run\)\) redirect\(`\/run\/\$\{run\.publicId\}`\)/.test(source("src/app/verdict/[id]/page.tsx")),
+      /if \(!extensionReportPublished\(run\)\) redirect\(`\/run\/\$\{run\.publicId\}`\)/.test(source("src/components/verdict-view.tsx")),
+  );
+  // CHE-371: both routes that show a verdict render that one component, so the
+  // redirect holds on each — neither has a body of its own to forget it in.
+  check(
+    "…and both the permalink and the in-app check page render that component and nothing of their own from the run",
+    /<VerdictView id=/.test(source("src/app/verdict/[id]/page.tsx")) &&
+      /<VerdictView\s+id=\{run\.publicId\}/.test(source("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")) &&
+      !/bottomLine|findings|journeys/.test(source("src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx")),
   );
 
   // The promise nobody kept, anywhere in what we ship.

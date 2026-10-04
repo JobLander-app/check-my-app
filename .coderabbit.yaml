@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit reads this file; Codex reads AGENTS.md. Both point at
+# docs/CODE_STANDARDS.md (CHE-415): the rules below are that doc's, restated
+# for the reviewer, not a second set. Keys per the schema above
+# (https://docs.coderabbit.ai/reference/configuration).
+
+language: en-US
+
+# 250 characters at most (schema).
+tone_instructions: >-
+  Report defects and omissions only: what is wrong, where, and what the rule or
+  evidence is. No praise, no summaries of what the change does well, no
+  restating the diff. One finding per comment, with the severity.
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Binding: docs/CODE_STANDARDS.md, CLAUDE.md, AGENTS.md. Flag each of
+        these as a blocking defect, citing the rule:
+
+        R3  Any `dangerouslySetInnerHTML`, under any spelling (JSX attribute,
+            spread object, string key). There is no trusted case here.
+        R4  Any `<script>` element in any JSX under src/ (.tsx or .jsx),
+            with a body or self-closing. Browser behaviour is a client component or a module
+            file loaded through next/script.
+        R2  Any new `useEffect`. Owner rule: it is the last resort. Event logic
+            belongs in the event handler; a reaction to state belongs where the
+            state changes; a derived value is computed in render; a subscription
+            uses the hook that already exists. Ask for the alternatives tried;
+            an effect that watches state in order to react to it is a defect
+            even when marked temporary or diagnostic.
+        R1  A `"use client"` on a component with no state, handler, browser API
+            or hook; a client boundary wider than the interaction.
+        R5  A mutation through a client-side fetch to our own route handler
+            instead of a server action; a `redirect()` inside a try block.
+        R7  Any explicit `any`; any generic helper wrapping Prisma arguments
+            (the compiler goes quiet).
+        R8  `overflow-x-auto`, `overflow-x-scroll`, `overflow-auto` or
+            `overflow-scroll` — under any Tailwind variant (`md:`, `!`) — on a
+            `<table>` or on any element wrapping one. A table fits the width
+            or changes layout.
+        R12 A query on App, Run, Watch, ApiKey, SettledSignature or TestAccount
+            in src/app or src/lib without one of the declarations from
+            src/lib/tenant-db.ts spread into it (teamOwned, alreadyScoped,
+            publicRow, ownerScoped, systemWide, memberOfRows).
+        R14 A raw statement ($queryRaw / $executeRaw) that binds a list
+            (Prisma.join, a spread of ids) or does not bind teamRows(...);
+            any $queryRawUnsafe / $executeRawUnsafe; a model query with a
+            variable `in` list and an `orderBy` on a column it does not
+            select (the wasm engine aborts on D1).
+        R13 A nested select/include over a team's or app's whole history.
+        R16 A migration that drops a column in the same change that removes
+            it from prisma/schema.prisma; any edit to a shipped migration.
+        R18 Customer-facing text (findings, verdicts, journey summaries,
+            e-mails, MCP output, pages) that names our machinery ("browser",
+            "Playwright", "headless", request counts), hands work back
+            ("verify yourself", "confirm manually"), proposes a fix to the
+            customer, or shows our cost, tokens or multiplier (CLAUDE.md
+            §1, §9, §10). Such text must live in a pure module with its own
+            verify script.
+        R17 A named timezone or a local-time Date; dates are UTC.
+
+        Also: a ticket number in a comment for a ticket that does not exist;
+        a comment that says what the code does rather than why.
+    - path: "scripts/**"
+      instructions: |
+        scripts/verify-*.{ts,mjs} is the acceptance registry (AGENTS.md). For
+        a new or changed verify script, flag as a defect:
+        - it needs an argument or an environment variable to pass (CHE-183);
+        - a check that counts, samples or looks for a trace of a symptom
+          instead of enumerating the registry of call sites — the first
+          instance without the trace escapes;
+        - a check that was bound to be green: ask where the PR shows it
+          failing on a fixture or on the pre-fix code first;
+        - source read with regexes where the TypeScript compiler API would
+          answer the question (imports, JSX parents, identifiers);
+        - a fixture that is not removed on every path (no try/finally).
+        A behaviour change in src/ that a user cannot see and that lands
+        without its own verify script is an omission — say so.
+        The same R3/R7/R14/R17 rules as src/** apply to script code.
+
+chat:
+  auto_reply: false

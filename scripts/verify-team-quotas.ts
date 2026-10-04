@@ -63,14 +63,15 @@ check(
 // that must be a TEAM's; a `user.`, `owner.` or `viewer.` id in that position
 // is the bug this ticket exists to prevent, and it is invisible in review.
 
-const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance", "appPriceRange", "spendByApp"];
+const QUOTA_CALLS = ["assertCanStartRun", "assertCanAddWatch", "admitTeamCheck", "teamBalance", "appPriceRange"];
 const CALLERS = [
   "src/app/api/checks/route.ts",
   "src/app/dashboard/actions.ts",
-  "src/app/dashboard/page.tsx",
-  "src/app/dashboard/[appId]/page.tsx",
-  "src/app/settings/team/page.tsx",
+  "src/app/(app)/home/page.tsx",
+  "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx",
+  "src/app/(app)/settings/billing/page.tsx",
   "src/app/verdict/[id]/page.tsx",
+  "src/components/verdict-view.tsx",
   "src/app/onboarding/actions.ts",
   "src/lib/recheck.ts",
   "src/lib/start-saved-app.ts",

@@ -58,7 +58,6 @@ export interface CreateAppInput {
   userNotes?: string | null;
   // CHE-373: https origins a check may act on besides the app's own.
   allowedOrigins?: string[];
-  notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
   repoLabel?: string | null;
@@ -120,6 +119,17 @@ export async function createAppForTeam(
   });
   if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
 
+  // Who hears about the app's first verdict (src/lib/recipients.ts): the team's
+  // admins, unless somebody was chosen. A member who is not an admin and adds
+  // an app is told "you'll get an email" — and would get nothing, since no row
+  // chooses them (Codex on #263). So the person who asked is chosen for their
+  // own app; an admin already hears by the floor rule, and a row for them would
+  // silence the other admins.
+  const admin = await db.membership.findFirst({
+    where: { teamId: actor.teamId, userId: actor.userId, scope: "admin" },
+    select: { id: true },
+  });
+
   try {
     const app = await db.app.create({ ...alreadyScoped("created with its team"),
       data: {
@@ -143,7 +153,6 @@ export async function createAppForTeam(
             appSlug,
             targetUrl,
             frequency,
-            notifyEmail: input.notifyEmail?.trim() || null,
             ownerId: actor.userId,
             teamId: actor.teamId,
             testEmail,
@@ -162,6 +171,7 @@ export async function createAppForTeam(
             priorityRule: JSON.stringify({ urgent: input.urgentJourneys ?? [] }),
           },
         },
+        notifiers: admin ? undefined : { create: { userId: actor.userId } },
       },
       select: { id: true, appSlug: true },
     });
@@ -199,7 +209,6 @@ export interface AppSettingsPatch {
   userNotes?: string | null;
   // CHE-373: replaces the list; [] clears it.
   allowedOrigins?: string[];
-  notifyEmail?: string | null;
   frequency?: WatchFrequency;
   pickupLabels?: string[];
   repoLabel?: string | null;
@@ -282,12 +291,12 @@ export async function updateAppForTeam(
     },
   });
 
-  // Watch — cadence + notify email; test creds mirrored here exactly as
-  // onboarding's nested create does (recurring runs read them off the Watch).
+  // Watch — cadence; test creds mirrored here exactly as onboarding's nested
+  // create does (recurring runs read them off the Watch).
   if (app.watch) {
     await db.watch.update({ ...alreadyScoped("already read in this request"),
       where: { id: app.watch.id },
-      data: { frequency: patch.frequency, notifyEmail: orNull(patch.notifyEmail), testEmail, ...passwordUpdate, ...storeUpdate },
+      data: { frequency: patch.frequency, testEmail, ...passwordUpdate, ...storeUpdate },
     });
   }
 

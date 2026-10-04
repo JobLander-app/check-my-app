@@ -21,9 +21,18 @@ import type { UserPlan } from "@/lib/enums";
 import { SMOKE_COST_USD, appPriceRange, usd } from "@/lib/plans";
 import { teamOwned } from "@/lib/tenant-db";
 
+// Where in the check a part of the price was spent (CHE-411): mapping the app
+// comes before any journey, writing the verdict after the last one. Three
+// sections, so a reader who counts "Walked 5 journeys" against the rows finds
+// 5 under "journeys" — mapping and writing are no longer rows among them.
+export type PriceSection = "before" | "journeys" | "after";
+
 export interface PricePart {
   label: string;
-  // Steps walked, for a journey; absent for the other parts.
+  section: PriceSection;
+  // Steps walked, for a journey; absent for the other parts. A journey with 0
+  // steps was set out on and given up before its first step was reported — its
+  // share is real (the attempt is in the ledger) and is shown as "not walked".
   steps?: number;
   price_usd: number;
 }
@@ -49,7 +58,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 // Pure: split `price` over parts in proportion to their recorded cost, in
 // cents, summing exactly to `price`.
-export function splitByCost(price: number, parts: { label: string; steps?: number; cost: number }[]): PricePart[] {
+export function splitByCost(price: number, parts: { label: string; section: PriceSection; steps?: number; cost: number }[]): PricePart[] {
   const total = parts.reduce((s, p) => s + p.cost, 0);
   if (total <= 0 || parts.length === 0) return [];
   const priceCents = Math.round(price * 100);
@@ -59,8 +68,14 @@ export function splitByCost(price: number, parts: { label: string; steps?: numbe
     const largest = shares.reduce((a, b) => (b.cents > a.cents ? b : a));
     largest.cents += drift;
   }
-  return shares.map((p) => ({ label: p.label, ...(p.steps !== undefined ? { steps: p.steps } : {}), price_usd: p.cents / 100 }));
+  return shares.map((p) => ({ label: p.label, section: p.section, ...(p.steps !== undefined ? { steps: p.steps } : {}), price_usd: p.cents / 100 }));
 }
+
+// What a quick check did, in the words the price explanation uses — exported so
+// a list of checks (the App page's timeline, CHE-358) says the same thing about
+// one, and a place that already shows this line can leave the comparison out.
+export const quickCheckWork = (pages: number) => `Quick check — nothing had changed, ${plural(pages, "page")} opened`;
+export const QUICK_COMPARISON = "Nothing had changed since the last check, so this was only a quick pass.";
 
 // Pure: the comparison line.
 export function comparePrice(input: {
@@ -72,7 +87,7 @@ export function comparePrice(input: {
   usualJourneys: number | null;
   usualSteps: number | null;
 }): string | null {
-  if (input.kind === "quick") return "Nothing had changed since the last check, so this was only a quick pass.";
+  if (input.kind === "quick") return QUICK_COMPARISON;
   const { usual } = input;
   if (!usual) return null;
   const range = `${usd(usual.low)}–${usd(usual.high)}`;
@@ -145,7 +160,7 @@ export async function explainPrice(
   const kind: "quick" | "walk" = journeys.length === 0 && run.quickPagesOpened !== null ? "quick" : "walk";
   const work =
     kind === "quick"
-      ? `Quick check — nothing had changed, ${plural(run.quickPagesOpened ?? 0, "page")} opened`
+      ? quickCheckWork(run.quickPagesOpened ?? 0)
       : walked > 0
         ? `Walked ${plural(walked, "journey")}, ${plural(steps, "step")}`
         : null;
@@ -161,10 +176,18 @@ export async function explainPrice(
   }
   // Nothing walked: the price paid for what was done instead.
   const workLine = work ?? (mapping > 0 ? "Mapped the app; no journey was walked" : "No journey was walked");
+  // A journey is a part of the price when something was spent on it: a step
+  // walked, or a call in the ledger under its id (a walk that was started and
+  // reported no step — #290's second "Connect a coding agent"). A journey row
+  // with neither — listed by the plan, never set out on, nothing in the
+  // ledger — is not a part of the price, and a row for it would claim an
+  // attempt that did not happen (Codex on #267).
   const parts = splitByCost(run.priceUsd, [
-    ...(mapping > 0 ? [{ label: "Mapping the app", cost: mapping }] : []),
-    ...journeys.map((j) => ({ label: j.title, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
-    ...(writing > 0 ? [{ label: "Writing the verdict", cost: writing }] : []),
+    ...(mapping > 0 ? [{ label: "Mapping the app", section: "before" as const, cost: mapping }] : []),
+    ...journeys
+      .filter((j) => j._count.steps > 0 || (byJourney.get(j.id) ?? 0) > 0)
+      .map((j) => ({ label: j.title, section: "journeys" as const, steps: j._count.steps, cost: byJourney.get(j.id) ?? 0 })),
+    ...(writing > 0 ? [{ label: "Writing the verdict", section: "after" as const, cost: writing }] : []),
   ]);
 
   // The app's usual: its recent walking checks, other than this one.

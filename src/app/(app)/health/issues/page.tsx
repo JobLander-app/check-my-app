@@ -1,0 +1,325 @@
+import Link from "next/link";
+import { requireUser } from "@/lib/auth";
+import { appPath } from "@/lib/app-shell";
+import { shellData } from "@/lib/shell-data";
+import { teamRecurrences } from "@/lib/recurring";
+import { SEVERITY_META } from "@/lib/status";
+import {
+  ISSUES_FILTERS,
+  VIEW_CLASS,
+  VIEW_LABEL,
+  type IssueView,
+  type IssuesFilter,
+  inIssuesFilter,
+  issueHref,
+  issuePriorityOf,
+  issueView,
+  issuesFilter,
+  issuesHref,
+  issuesLine,
+  markLabel,
+  portions,
+  priorityFilter,
+  seenLine,
+  sortIssues,
+  ticketLabel,
+} from "@/lib/issues-page";
+import { PRIORITIES, PRIORITY_META, type Priority } from "@/lib/issue-priority";
+import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
+import { IssueActions } from "@/components/issue-actions";
+
+const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-[18px] last:pr-[18px]";
+const TD = "border-b border-ink-800 px-3 py-3.5 align-top first:pl-[18px] last:pr-[18px]";
+const CHIP = "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs";
+const chipTone = (on: boolean) => (on ? "border-ink-600 bg-ink-800 text-fg" : "border-ink-700 text-fg-muted hover:text-fg");
+
+function AppLink({ appId, name }: { appId: string; name: string }) {
+  return (
+    <Link href={appPath.page(appId)} className="font-mono text-fg-muted hover:text-fg hover:underline">
+      {name}
+    </Link>
+  );
+}
+
+function StatePill({ view }: { view: IssueView }) {
+  return (
+    <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${VIEW_CLASS[view]}`}>
+      {VIEW_LABEL[view]}
+    </span>
+  );
+}
+
+// The priority, P0–P3 (CHE-413): red, orange, yellow, grey. The same badge
+// leads every row and every card, and sits in the legend.
+function PriorityBadge({ priority }: { priority: Priority }) {
+  return (
+    <span
+      className={`inline-flex h-6 min-w-[2.5rem] shrink-0 items-center justify-center rounded-md border px-1.5 font-mono text-xs font-semibold ${PRIORITY_META[priority].className}`}
+      title={PRIORITY_META[priority].meaning}
+    >
+      {priority}
+    </span>
+  );
+}
+
+// The answer given, when the viewer may not change it.
+function AnswerText({ mark }: { mark: string | null }) {
+  const label = mark ? markLabel(mark) : null;
+  return <span className={`text-xs ${label ? "text-fg" : "text-fg-faint"}`}>{label ?? "—"}</span>;
+}
+
+// Health → Issues (CHE-360, direction C): every problem across the team's
+// apps, one row per problem — its priority, the latest wording, the app, its
+// state, the checks that saw it, its tracker ticket — with the owner's answer
+// one click away. The grouping and the states are recurrence's (CHE-354), the
+// same source as All apps' "Recurring" column and each app's "Keeps coming
+// back"; the priority is computed from them (src/lib/issue-priority.ts,
+// CHE-413) and the legend under the table says what each level means. It
+// opens on what the apps' latest checks hold — the number beside Issues in the
+// menu — and keeps apart what was found earlier in a place no check has walked
+// since (src/lib/issues-page.ts says why).
+export default async function IssuesPage({ searchParams }: { searchParams: Promise<{ show?: string; app?: string; p?: string }> }) {
+  const { show, app: appParam, p } = await searchParams;
+  const filter = issuesFilter(show);
+  const priority = priorityFilter(p);
+  const { user, db, team } = await requireUser();
+  const [shell, byApp] = await Promise.all([shellData(db, team.id), teamRecurrences(db, team.id)]);
+  const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
+  // An app that is not the team's is no filter at all.
+  const appId = appParam && nameOf.has(appParam) ? appParam : null;
+
+  // The app's latest check is the sidebar's (the check its dot and its count
+  // come from), so "in the latest checks" means the same check on both.
+  const latestOf = new Map(shell.apps.map((a) => [a.id, a.latestRunNumber]));
+  const all = sortIssues(
+    [...byApp.values()].flat().map((r) => ({ ...r, view: issueView(r, latestOf.get(r.issue.appId) ?? null), priority: issuePriorityOf(r.issue) })),
+  );
+  const ofApp = all.filter((r) => appId === null || r.issue.appId === appId);
+  const ofKind = ofApp.filter((r) => inIssuesFilter(filter, r.view, r.issue.state));
+  const rows = ofKind.filter((r) => priority === null || r.priority === priority);
+  // The kind chips count within the chosen priority and the priority chips
+  // within the chosen kind, so every number is what clicking it would show.
+  const count = (f: IssuesFilter) => ofApp.filter((r) => inIssuesFilter(f, r.view, r.issue.state) && (priority === null || r.priority === priority)).length;
+  const countAt = (pr: Priority) => ofKind.filter((r) => r.priority === pr).length;
+  const inLatest = (f: IssuesFilter) => all.filter((r) => inIssuesFilter(f, r.view, r.issue.state)).length;
+
+  // The finding a mark is written to is the problem's latest sighting, and its
+  // tracker ticket is the one recurrence tied to it. Both are read by ids that
+  // came out of the team's own history, and again only among the team's rows.
+  const latestFinding = new Map(rows.map((r) => [r.issue.signature + r.issue.appId, r.sightings.at(-1)?.findingId ?? null]));
+  const findingIds = [...latestFinding.values()].filter((id): id is string => id !== null);
+  const linkIds = rows.map((r) => r.issue.issueLinkId).filter((id): id is string => id !== null);
+  // D1 binds at most a hundred values a statement, and "All" on a team with a
+  // long history is more problems than that: the ids go in portions.
+  const [findings, links] = await Promise.all([
+    Promise.all(
+      portions(findingIds).map((ids) =>
+        db.finding.findMany({
+          where: { id: { in: ids }, run: { teamId: team.id } },
+          select: { id: true, mark: true, run: { select: { ownerId: true } } },
+        }),
+      ),
+    ).then((parts) => parts.flat()),
+    Promise.all(
+      portions(linkIds).map((ids) =>
+        db.issueLink.findMany({
+          where: { id: { in: ids }, app: { teamId: team.id } },
+          select: { id: true, externalIssueId: true, status: true },
+        }),
+      ),
+    ).then((parts) => parts.flat()),
+  ]);
+  const findingOf = new Map(findings.map((f) => [f.id, f]));
+  const linkOf = new Map(links.map((l) => [l.id, l]));
+  // What a row says, decided once for the table and the cards.
+  const shown = rows.map((r) => {
+    const i = r.issue;
+    const findingId = latestFinding.get(i.signature + i.appId) ?? null;
+    const finding = findingId ? findingOf.get(findingId) : undefined;
+    const link = i.issueLinkId ? linkOf.get(i.issueLinkId) : undefined;
+    // The route's own rule (PATCH /api/findings/{id}): the person whose check
+    // found it answers it. Anyone else reads the answer given.
+    const mayMark = finding !== undefined && (finding.run.ownerId === null || finding.run.ownerId === user.id);
+    return {
+      key: i.appId + i.signature,
+      issue: i,
+      view: r.view,
+      priority: r.priority,
+      // The problem's own page (CHE-412), keyed by its latest sighting; a
+      // problem with none to key by opens the check that last saw it.
+      href: findingId ? issueHref(findingId) : appPath.check(i.appId, i.lastSeenRunNumber),
+      kind: `${SEVERITY_META[i.severity]?.label ?? i.severity} · ${i.category}`,
+      app: nameOf.get(i.appId) ?? i.appId,
+      seen: seenLine(r),
+      ticket: link ? ticketLabel(link) : null,
+      mark: finding?.mark ?? null,
+      marks: mayMark && findingId ? { findingId, mark: finding.mark } : null,
+    };
+  });
+
+  return (
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
+      <header>
+        <h1 className="text-[30px] font-semibold leading-tight tracking-tight">Issues</h1>
+        <p className="mt-1.5 max-w-3xl text-sm text-fg-muted">{issuesLine(inLatest("latest"), inLatest("stale"))}</p>
+      </header>
+
+      {all.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <nav aria-label="Which problems" className="flex flex-wrap gap-1.5">
+              {ISSUES_FILTERS.map((f) => (
+                <Link key={f.key} href={issuesHref(f.key, appId, priority)} aria-current={filter === f.key ? "true" : undefined} className={`${CHIP} ${chipTone(filter === f.key)}`}>
+                  {f.label}
+                  <span className="font-mono text-fg-faint">{count(f.key)}</span>
+                </Link>
+              ))}
+            </nav>
+            {shell.apps.length > 1 && (
+              <nav aria-label="Which app" className="flex flex-wrap gap-1.5">
+                {[{ id: null as string | null, label: "All apps" }, ...shell.apps.map((a) => ({ id: a.id as string | null, label: a.label }))].map((a) => (
+                  <Link key={a.id ?? "all"} href={issuesHref(filter, a.id, priority)} aria-current={appId === a.id ? "true" : undefined} className={`${CHIP} font-mono ${chipTone(appId === a.id)}`}>
+                    {a.label}
+                  </Link>
+                ))}
+              </nav>
+            )}
+          </div>
+          <nav aria-label="Which priority" className="flex flex-wrap items-center gap-1.5">
+            <Link href={issuesHref(filter, appId, null)} aria-current={priority === null ? "true" : undefined} className={`${CHIP} ${chipTone(priority === null)}`}>
+              Any priority
+            </Link>
+            {PRIORITIES.map((pr) => (
+              <Link
+                key={pr}
+                href={issuesHref(filter, appId, pr)}
+                aria-current={priority === pr ? "true" : undefined}
+                title={PRIORITY_META[pr].meaning}
+                className={`${CHIP} font-mono ${chipTone(priority === pr)}`}
+              >
+                {pr}
+                <span className="font-mono text-fg-faint">{countAt(pr)}</span>
+              </Link>
+            ))}
+          </nav>
+        </div>
+      )}
+
+      {rows.length === 0 ? (
+        <p className="card p-6 text-sm text-fg-muted">
+          {all.length === 0
+            ? "Nothing has been found in your apps yet."
+            : priority !== null && ofKind.length > 0
+              ? `Nothing at ${priority} here.`
+              : filter === "latest"
+                ? "Nothing open in the latest checks here."
+                : filter === "stale"
+                  ? "Nothing here is waiting to be checked again."
+                  : filter === "recurring"
+                    ? "Nothing keeps coming back here."
+                    : filter === "gone"
+                      ? "No problem has been seen to go away here yet."
+                      : filter === "answered"
+                        ? "You have not answered any problem here."
+                        : "No problems here."}
+        </p>
+      ) : (
+        // The table fits the work area at every width (src/lib/table-fold.ts):
+        // the app and the ticket are columns on a wide screen and lines under
+        // the problem and under "seen" until then; below the sidebar's width
+        // each problem is a card.
+        <>
+          <section className={`card ${FOLD.tableClassName}`}>
+            <table className={TABLE_CLASS}>
+              <thead>
+                <tr>
+                  <th className={TH}>Problem</th>
+                  <th className={`${TH} w-[160px] ${FOLD.wideColumnClassName}`}>App</th>
+                  <th className={`${TH} w-[158px]`}>State</th>
+                  <th className={`${TH} w-[190px]`}>Seen</th>
+                  <th className={`${TH} w-[130px] ${FOLD.wideColumnClassName}`}>Ticket</th>
+                  <th className={`${TH} w-[150px] xl:w-[210px]`}>Your answer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((p) => (
+                  <tr key={p.key}>
+                    {/* The priority leads the row, inside the problem's cell. */}
+                    <td className={TD}>
+                      <div className="flex items-start gap-3">
+                        <PriorityBadge priority={p.priority} />
+                        <div className="min-w-0">
+                          <Link href={p.href} className="text-fg hover:underline">
+                            {p.issue.title}
+                          </Link>
+                          <span className="mt-0.5 block text-xs text-fg-faint">
+                            {p.kind}
+                            <span className={FOLD.foldedClassName}>
+                              {" · "}
+                              <AppLink appId={p.issue.appId} name={p.app} />
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className={`${TD} truncate font-mono text-[13px] ${FOLD.wideColumnClassName}`}>
+                      <AppLink appId={p.issue.appId} name={p.app} />
+                    </td>
+                    <td className={`${TD} whitespace-nowrap`}>
+                      <StatePill view={p.view} />
+                    </td>
+                    <td className={`${TD} text-[13px] text-fg-muted`}>
+                      {p.seen}
+                      <span className={`block text-xs text-fg-faint ${FOLD.foldedClassName}`}>{p.ticket ?? "No ticket"}</span>
+                    </td>
+                    <td className={`${TD} truncate text-[13px] text-fg-muted ${FOLD.wideColumnClassName}`}>{p.ticket ?? "—"}</td>
+                    <td className={TD}>{p.marks ? <IssueActions findingId={p.marks.findingId} mark={p.marks.mark} /> : <AnswerText mark={p.mark} />}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+          <ul className={FOLD.cardsClassName}>
+            {shown.map((p) => (
+              <li key={p.key} className="card flex flex-col gap-2.5 px-4 py-3.5">
+                <div className="flex items-start gap-3">
+                  <PriorityBadge priority={p.priority} />
+                  <div className="min-w-0">
+                    <Link href={p.href} className="text-[15px] text-fg hover:underline">
+                      {p.issue.title}
+                    </Link>
+                    <span className="mt-0.5 block text-xs text-fg-faint">
+                      {p.kind} · <AppLink appId={p.issue.appId} name={p.app} />
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-muted">
+                  <StatePill view={p.view} />
+                  <span>{p.seen}</span>
+                  {p.ticket && <span className="text-fg-faint">{p.ticket}</span>}
+                </div>
+                {p.marks ? <IssueActions findingId={p.marks.findingId} mark={p.marks.mark} /> : <AnswerText mark={p.mark} />}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {all.length > 0 && (
+        <section aria-label="What the priorities mean" className="card p-5">
+          <h2 className="text-sm font-medium text-fg">What the priorities mean</h2>
+          <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2.5 text-[13px]">
+            {PRIORITIES.map((pr) => (
+              <div key={pr} className="contents">
+                <dt>
+                  <PriorityBadge priority={pr} />
+                </dt>
+                <dd className="text-fg-muted">{PRIORITY_META[pr].meaning}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
+    </main>
+  );
+}

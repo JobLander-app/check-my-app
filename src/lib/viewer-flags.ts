@@ -3,6 +3,7 @@
 // from the same places every page already uses: Clerk for the session, the
 // D1 mirror for the e-mail and the test-account mark.
 
+import { cache } from "react";
 import { getOptionalUser } from "./auth";
 import { getDbFromContext } from "./db";
 import {
@@ -15,11 +16,16 @@ import {
 
 type FlagUser = { clerkUserId: string; email: string; isTestAccount: boolean };
 
+// One answer per flag per person per request (CHE-367): the layout asks for the
+// sidebar, and a page under it may ask again for its own content — the second
+// ask must not be a second round trip. Keyed by plain values, since two reads
+// of the same person are two objects.
+const flagOnce = cache((key: string, distinctId: string, email: string, isTestAccount: boolean) =>
+  evaluateFlag(key, { distinctId, email, isTestAccount }),
+);
+
 function flagFor(key: string, user: FlagUser | null): Promise<boolean> {
-  return evaluateFlag(
-    key,
-    user ? { distinctId: user.clerkUserId, email: user.email, isTestAccount: user.isTestAccount } : null,
-  );
+  return user ? flagOnce(key, user.clerkUserId, user.email, user.isTestAccount) : evaluateFlag(key, null);
 }
 
 /**

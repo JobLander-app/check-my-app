@@ -27,18 +27,19 @@
 //
 // Every item says who would have hit it — the owner's question, from the
 // Goran call (2026-10-01, 24:45): «it's kinda tricky that it doesn't break for
-// the existing customers». See audienceAt.
+// the existing customers». See audienceAt (src/lib/audience.ts).
 //
 // Price only (Run.priceUsd), never what the check cost us (CLAUDE.md §10).
 
-import type { PrismaClient } from "@/generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/generated/prisma/client";
+import { audienceAt, type Audience } from "@/lib/audience";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { findingSignature, signatureKind, titleSimilarity } from "@/lib/finding-signature";
 import { parseJson } from "@/lib/json";
 import { lookedAgainAt, positionsSeen, sameIssue, type RecurrenceFinding, type RecurrenceJourney } from "@/lib/recurring";
-import { teamOwned } from "@/lib/tenant-db";
+import { teamOwned, teamRows } from "@/lib/tenant-db";
 
-export type Audience = "existing_users" | "new_visitors" | "unknown";
+export type { Audience } from "@/lib/audience";
 
 interface StepInput {
   status: string;
@@ -107,26 +108,10 @@ export function releaseEnv(run: { deployEnv: string | null; ephemeral: boolean }
   return env;
 }
 
-// Who would have hit a problem seen on a given step: an existing, signed-in
-// user, or a new visitor. Read from what the walk DID, not from what the model
-// named the journey: on checkmyapp.dev the walker signs in during "signup" and
-// "start-free-land" journeys too (#261, #264, #266), and AppJourney.surface is
-// free text ("/public", "/authenticated", "app", "/both") or empty (every
-// meetbashar.com journey but two). Each journey runs in a fresh browser
-// (src/agent/workflow.ts), so a session is signed in only if this journey
-// filled a test credential — and the walk records that fill as the
-// {{TEST_EMAIL}} / {{TEST_EMAIL:<label>}} placeholder in Step.actions (CHE-129).
-//   existing_users — a non-skipped step up to and including this one filled it;
-//   new_visitors   — none did, and the journey recorded its actions;
-//   unknown        — the journey recorded no actions at all (before CHE-129),
-//                    so a sign-in could have happened unrecorded.
-export function audienceAt(steps: StepInput[], index: number): Audience {
-  const upTo = steps.slice(0, index + 1);
-  if (upTo.some((s) => s.status !== "skipped" && /\{\{TEST_(EMAIL|PASSWORD)(:[^}]*)?\}\}/.test(s.actions ?? ""))) {
-    return "existing_users";
-  }
-  return steps.some((s) => s.actions !== null) ? "new_visitors" : "unknown";
-}
+// Who would have hit a problem seen on a given step — the rule is
+// src/lib/audience.ts; re-exported because the verify script and the page
+// read it from here.
+export { audienceAt };
 
 interface Seen {
   finding: RecurrenceFinding;
@@ -328,6 +313,15 @@ const FINISHED = ["completed", "partial"];
 // App link); a non-preview check of a host the team has no app for — our own
 // experiment runs on strangers' sites in August — is not a release of the
 // team's apps.
+//
+// Read flat: the release checks, then their journeys, steps and findings — one
+// statement each, bound to the team, stitched here. The nested select this
+// replaces (run → journeys → steps) is the shape that crashed the query engine
+// on a real team's history when recurrence used it (src/lib/recurring.ts,
+// 2026-10-02); the first page to read releases must not find that out again.
+const releaseChecksOf = (team: string) =>
+  Prisma.sql`r.teamId = ${team} AND r.deploySha IS NOT NULL AND r.status IN ('completed', 'partial')`;
+
 export async function releasesByTeam(
   db: PrismaClient,
   teamId: string,
@@ -335,43 +329,43 @@ export async function releasesByTeam(
 ): Promise<Release[]> {
   const now = opts.now ?? new Date();
   const since = new Date(now.getTime() - (opts.days ?? 30) * 86_400_000);
-  const [apps, runs] = await Promise.all([
+  const [apps, runs, journeys, steps, findings] = await Promise.all([
     db.app.findMany({ where: { ...teamOwned(teamId) }, select: { id: true, appSlug: true } }),
     db.run.findMany({
       where: { ...teamOwned(teamId), deploySha: { not: null }, status: { in: FINISHED } },
       orderBy: { runNumber: "asc" },
       select: {
-        publicId: true,
-        runNumber: true,
-        appId: true,
-        appSlug: true,
-        targetKind: true,
-        deploySha: true,
-        deployEnv: true,
-        ephemeral: true,
-        status: true,
-        verdict: true,
-        priceUsd: true,
-        completedAt: true,
-        journeys: {
-          orderBy: { order: "asc" },
-          select: {
-            appJourneyId: true,
-            journeyKey: true,
-            title: true,
-            carriedFromRunId: true,
-            status: true,
-            steps: { orderBy: { order: "asc" }, select: { status: true, actions: true } },
-          },
-        },
-        findings: {
-          orderBy: { number: "asc" },
-          select: { id: true, title: true, category: true, severity: true, mark: true, detail: true, anchor: true, signature: true },
-        },
+        id: true, publicId: true, runNumber: true, appId: true, appSlug: true, targetKind: true, deploySha: true, deployEnv: true,
+        ephemeral: true, status: true, verdict: true, priceUsd: true, completedAt: true,
       },
     }),
+    db.$queryRaw<{ id: string; runId: string; appJourneyId: string | null; journeyKey: string | null; title: string; carriedFromRunId: string | null; status: string }[]>(
+      Prisma.sql`SELECT j.id, j.runId, j.appJourneyId, j.journeyKey, j.title, j.carriedFromRunId, j.status
+        FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${releaseChecksOf(teamRows(teamId))} ORDER BY j.runId, j."order"`,
+    ),
+    db.$queryRaw<{ journeyId: string; status: string; actions: string | null }[]>(
+      Prisma.sql`SELECT s.journeyId, s.status, s.actions
+        FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
+        WHERE ${releaseChecksOf(teamRows(teamId))} ORDER BY s.journeyId, s."order"`,
+    ),
+    db.$queryRaw<(RecurrenceFinding & { runId: string })[]>(
+      Prisma.sql`SELECT f.id, f.runId, f.title, f.category, f.severity, f.mark, f.detail, f.anchor, f.signature
+        FROM "Finding" f JOIN "Run" r ON r.id = f.runId WHERE ${releaseChecksOf(teamRows(teamId))} ORDER BY f.runId, f.number`,
+    ),
   ]);
-  return computeReleases(releaseInputs(runs, apps)).filter((r) => r.completedAt && r.completedAt >= since && r.completedAt <= now);
+  const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => {
+    const list = m.get(k);
+    if (list) list.push(v);
+    else m.set(k, [v]);
+  };
+  const stepsOf = new Map<string, StepInput[]>();
+  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status, actions: s.actions });
+  const journeysOf = new Map<string, ReleaseRow["journeys"]>();
+  for (const { id, runId, ...j } of journeys) push(journeysOf, runId, { ...j, steps: stepsOf.get(id) ?? [] });
+  const findingsOf = new Map<string, RecurrenceFinding[]>();
+  for (const { runId, ...f } of findings) push(findingsOf, runId, f);
+  const rows: ReleaseRow[] = runs.map(({ id, ...r }) => ({ ...r, journeys: journeysOf.get(id) ?? [], findings: findingsOf.get(id) ?? [] }));
+  return computeReleases(releaseInputs(rows, apps)).filter((r) => r.completedAt && r.completedAt >= since && r.completedAt <= now);
 }
 
 export interface ReleaseRow {
@@ -402,7 +396,12 @@ export interface ReleaseRow {
 // with scripts/report-releases.ts so the read-only prod report runs the same
 // rules as the product.
 export function releaseInputs(runs: ReleaseRow[], apps: Array<{ id: string; appSlug: string }>): ReleaseRunInput[] {
-  const appBySlug = new Map(apps.map((a) => [a.appSlug, a.id]));
+  // A check with no App row is the app's only when that app is the team's only
+  // one of the address — the rule every page that lists an app's checks uses
+  // (appHealth). With two apps of one address it is neither's.
+  const slugCount = new Map<string, number>();
+  for (const a of apps) slugCount.set(a.appSlug, (slugCount.get(a.appSlug) ?? 0) + 1);
+  const appBySlug = new Map(apps.filter((a) => slugCount.get(a.appSlug) === 1).map((a) => [a.appSlug, a.id]));
   const inputs: ReleaseRunInput[] = [];
   for (const r of runs) {
     if (!isRelease(r) || !extensionReportPublished(r)) continue;

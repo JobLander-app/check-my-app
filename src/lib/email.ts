@@ -54,7 +54,9 @@ function whyThisMail(args: { appSlug: string; recurring: boolean; base: string }
   text: string;
 } {
   if (args.recurring) {
-    const manage = `${args.base}/dashboard`;
+    // CHE-351: "Which apps email you" on the reader's own settings — the
+    // switch that stops this mail without stopping anyone else's.
+    const manage = `${args.base}/settings/account`;
     // Cadence-neutral on purpose: a watch may run daily, every 6 hours, or only
     // when someone presses re-check, and all of them reach this branch.
     const sentence = `You get this because checks of ${args.appSlug} report to this address.`;
@@ -203,6 +205,16 @@ export function verdictIdempotencyKey(publicId: string, to: string): string {
   return key.length <= 256 ? key : `verdict-ready/${fnv1a64(`${publicId}/${to.toLowerCase()}`)}`;
 }
 
+// The scheduler's notices (CHE-413): a watch's trial-paused and balance-used-up
+// mails go to every recipient of the app, and a tick that failed on one address
+// sends again on the next. The same rule as the verdict's key: one mail per
+// notice and recipient, however many ticks try. `scope` names the notice and
+// what makes it one notice (the watch, or the team and the window).
+export function noticeIdempotencyKey(scope: string, to: string): string {
+  const key = `${scope}/${fnv1a64(to.toLowerCase())}`;
+  return key.length <= 256 ? key : `notice/${fnv1a64(`${scope}/${to.toLowerCase()}`)}`;
+}
+
 // 64-bit FNV-1a as hex: synchronous, the same in workerd and Node, and ample
 // for telling a handful of addresses on one run apart.
 function fnv1a64(s: string): string {
@@ -221,12 +233,23 @@ interface WatchTrialPausedArgs {
   from?: string;
   replyTo?: string;
   baseUrl?: string;
+  idempotencyKey?: string;
+}
+
+// A 409 on a repeated key: the first attempt's mail went out. Sending again
+// is exactly what the key prevents, so the repeat counts as sent.
+async function refuseUnlessRepeat(res: Response, idempotencyKey: string | undefined): Promise<void> {
+  if (res.ok) return;
+  const detail = await res.text();
+  if (res.status === 409 && idempotencyKey && detail.includes("invalid_idempotent_request")) return;
+  throw new Error(`Resend send failed: ${res.status} ${detail}`);
 }
 
 // Sent once, by the scheduler, the first time it declines to run a watch whose
-// free trial has run out (CHE-54). Nothing is deleted and no setting changed —
-// subscribing is all it takes for the next cron tick to pick the watch back up,
-// so the mail says exactly that.
+// free trial has run out (CHE-54), to the people who hear about the app's
+// checks. Nothing is deleted and no setting changed — subscribing is all it
+// takes for the next cron tick to pick the watch back up, so the mail says
+// exactly that.
 export async function sendWatchTrialPaused({
   to,
   appSlug,
@@ -234,21 +257,26 @@ export async function sendWatchTrialPaused({
   from,
   replyTo,
   baseUrl,
+  idempotencyKey,
 }: WatchTrialPausedArgs): Promise<void> {
   const base = baseUrl ?? "http://localhost:3000";
   const url = `${base}/pricing`;
   const subject = `Your daily watch on ${appSlug} is paused`;
 
   if (!apiKey || !from) {
-     
+
     console.log(`[email:dev] to=${to} subject="${subject}" url=${url}`);
     return;
   }
 
-  const why = `You get this because the daily watch on ${appSlug} was on for this address. Nothing else will follow unless it is turned back on.`;
+  const why = `You get this because you hear about the checks of ${appSlug}. Nothing else will follow unless the daily watch is turned back on.`;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: JSON.stringify({
       from,
       to: [to],
@@ -270,9 +298,7 @@ export async function sendWatchTrialPaused({
         `Keep the daily watch running: ${url}\n\n— CheckMyApp\n\n${why}`,
     }),
   });
-  if (!res.ok) {
-    throw new Error(`Resend send failed: ${res.status} ${await res.text()}`);
-  }
+  await refuseUnlessRepeat(res, idempotencyKey);
 }
 
 interface BalanceUsedUpArgs {
@@ -284,13 +310,14 @@ interface BalanceUsedUpArgs {
   from?: string;
   replyTo?: string;
   baseUrl?: string;
+  idempotencyKey?: string;
 }
 
 // CHE-327: sent by the scheduler the first time in a window it declines to run
 // a watch because the team's balance is used. Nothing is paused by a setting:
 // a top-up, an upgrade, or the plan's next credit is all it takes for the next
 // tick to run it, and the mail says exactly that.
-export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, replyTo, baseUrl }: BalanceUsedUpArgs): Promise<void> {
+export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, replyTo, baseUrl, idempotencyKey }: BalanceUsedUpArgs): Promise<void> {
   const base = baseUrl ?? "http://localhost:3000";
   const url = `${base}${BALANCE_PATH}`;
   const subject = `Recurring checks of ${appSlug} are paused`;
@@ -303,7 +330,11 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, rep
   const why = whyThisMail({ appSlug, recurring: true, base });
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: JSON.stringify({
       from,
       to: [to],
@@ -322,9 +353,7 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, rep
         `they pick up on their own as soon as the balance allows.\n\nTop up or upgrade: ${url}\n\n— CheckMyApp\n\n${why.text}`,
     }),
   });
-  if (!res.ok) {
-    throw new Error(`Resend send failed: ${res.status} ${await res.text()}`);
-  }
+  await refuseUnlessRepeat(res, idempotencyKey);
 }
 
 interface TeamInviteArgs {
