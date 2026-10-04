@@ -13,6 +13,7 @@ import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
 import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
+import { CheckPrice } from "@/components/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { releasesHref } from "@/lib/release-page";
@@ -178,7 +179,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                     {said && <span className="text-sm">{firstSentence(said)}</span>}
                     {coverage && <span className="text-xs text-fg-faint">{coverage}</span>}
                   </div>
-                  <div className="py-3.5 text-right font-mono text-sm">{run.priceUsd !== null ? usd(run.priceUsd) : ""}</div>
+                  <div className="py-3.5 text-right text-sm">
+                    {run.priceUsd !== null && (
+                      <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={appPath.check(app.id, run.runNumber)} label={null} title={`${name}, check #${run.runNumber}`} />
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -198,7 +203,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           </div>
           {mine?.latest && (
             <div className="border-t border-ink-800 pt-2.5 text-[13px]">
-              Last check <span className="font-mono">{usd(mine.latest.priceUsd)}</span>: {mine.latest.price.work}.
+              Last check <CheckPrice explanation={mine.latest.price} label={null} title={`${name}, check #${mine.latest.runNumber}`} />: {mine.latest.price.work}.
               {/* A quick check's comparison repeats its work line. */}
               {mine.latest.price.comparison && mine.latest.price.comparison !== QUICK_COMPARISON ? ` ${mine.latest.price.comparison}` : ""}
             </div>

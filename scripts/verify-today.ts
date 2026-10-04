@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { briefing, dayLabel, daysAgo, hhmm, latestPerApp, longDate, type BriefingCheck } from "../src/lib/today";
+import { ATTENTION_CHARS, briefing, clip, dayLabel, daysAgo, hhmm, latestPerApp, longDate, type BriefingCheck } from "../src/lib/today";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -59,6 +59,14 @@ check("no sentence claims 'fine' for an unverified check", !/fine/.test(briefing
 check("no shape of the sentence names our machinery",
   [briefing([], 3), one, broken, briefing([c("x", "unverified")], 1)].every((b) => !/\b(run|agent|smoke|walk|browser|replay)\b/i.test(`${b.lead} ${b.attention?.label ?? ""}`)));
 
+// CHE-411: the quote under the headline is body text, at most ATTENTION_CHARS.
+const long = "Your paid checkout is the problem: clicking the advertised \"$10 / 100 minutes\" pack opens a live Stripe page that defaults to SGD 13.31 with a 4% conversion fee and renders entirely in German during the whole flow, so a buyer cannot tell what they are paying.";
+check("the quote is clipped to the budget, with an ellipsis on the last word kept", clip(long).length <= ATTENTION_CHARS && /\S…$/.test(clip(long)), clip(long));
+check("…and the cut falls on a word boundary", long.startsWith(clip(long).slice(0, -1)) && /\s/.test(long[clip(long).length - 1]), clip(long));
+eq("a short sentence is quoted whole", clip(said), said);
+eq("exactly the budget is not cut", clip("x".repeat(ATTENTION_CHARS)), "x".repeat(ATTENTION_CHARS));
+check("the budget is a sentence or two of body text, not a headline's worth", ATTENTION_CHARS >= 120 && ATTENTION_CHARS <= 200);
+
 // ── 2. Days and times ───────────────────────────────────────────────────────
 const now = new Date("2026-10-02T03:56:00Z");
 eq("date line", longDate(now), "Friday, 2 October");
@@ -96,7 +104,20 @@ check("'Your apps cost' is the apps' own checks, the sidebar's number; the pace 
 check("a quick check's row is the price explanation's own line", /r\.quickPagesOpened !== null \? `\$\{quickCheckWork\(r\.quickPagesOpened\)\}\.`/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("the agent panel is still the first thing on the page", /<ConnectAgent keys=/.test(page));
-check("an empty team is told how to start, not shown empty cards", /Nothing is being checked yet/.test(page) && /\{!empty && \(\s*<aside/.test(page));
+check("an empty team is told how to start, not shown empty cards", /Nothing is being checked yet/.test(page) && !/<aside/.test(page) && /<Tile label="Your apps cost"/.test(page));
+// CHE-411: one centred column, the width Release and Product use; a side rail
+// left a third of the screen empty for a team with nothing in it.
+check("one centred column, the other pages' width", /<main className="mx-auto flex w-full max-w-4xl flex-col/.test(page) && !/lg:grid-cols-\[minmax\(0,1fr\)_\d+px\]/.test(page));
+check("no inline script: the old #balance fragment is not handled here", !/<script|dangerouslySetInnerHTML/.test(page));
+// The headline is display type for the lead and the label only; the quote is
+// body text below, clipped, with the review one click beside it.
+const leadAt = page.indexOf("{brief.lead}");
+const h1 = page.slice(page.lastIndexOf("<h1", leadAt), page.indexOf("</h1>", leadAt));
+check("the headline carries the lead and the label, never the check's sentence", /brief\.lead/.test(h1) && /brief\.attention\.label/.test(h1) && !/attention\.text/.test(h1));
+check("the quote is clipped body text with the review beside it",
+  /<p className="max-w-2xl text-\[15px\][^>]*>\{clip\(brief\.attention\.text\)\}<\/p>\s*<Link/.test(page));
+check("every price on the page opens its reason: the feed by the check's id, the last check from its loaded explanation",
+  /<CheckPrice publicId=\{r\.publicId\} priceUsd=\{r\.priceUsd!\}/.test(page) && /<CheckPrice explanation=\{last\.latest\.price\}/.test(page));
 check("the per-app controls left this page", !/TeamSelect|AppPostHogProject|setIntegrationEndpoints|webhookUrl/.test(page));
 // CHE-359: the settings are sections; these three are in Integrations.
 const settings = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");

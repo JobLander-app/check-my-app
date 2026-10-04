@@ -70,6 +70,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "GET /api/runs/[id]/verdict": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/runs/[id]/stream": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/runs/[id]/review": { kind: "public", why: "addressed by an unguessable id" },
+  // CHE-411: what a check was priced at and why — the team's spending, so a
+  // read of the team that paid, never public like the verdict it belongs to.
+  "GET /api/runs/[id]/price": { kind: "team", action: "read" },
   "GET /api/tests/[id]": { kind: "public", why: "addressed by an unguessable id" },
   "GET /api/status/[slug]": { kind: "public", why: "addressed by an unguessable id" },
 

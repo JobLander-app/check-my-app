@@ -57,8 +57,25 @@ export function briefing(checked: BriefingCheck[], apps: number): Briefing {
   };
 }
 
+// How much of the troubled check's sentence the page quotes under the headline
+// (CHE-411). The sentence is the check's own and can run to several lines —
+// joblander.app's "Your paid checkout is the problem: clicking the advertised
+// '$10 / 100 minutes' pack opens a live Stripe page that defaults to SGD…" was
+// eight lines of display type on a desktop and fifteen on a phone. The
+// headline stays the lead and "<app> needs you"; the quote is body text, cut
+// at a word, and the review is one click beside it.
+export const ATTENTION_CHARS = 160;
+
+/** `text` cut to at most `max` characters at a word boundary, with an ellipsis when cut. */
+export function clip(text: string, max = ATTENTION_CHARS): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max - 1);
+  const atWord = head.lastIndexOf(" ");
+  return `${(atWord > max / 2 ? head.slice(0, atWord) : head).replace(/[\s,;:—-]+$/, "")}…`;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS =["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 
