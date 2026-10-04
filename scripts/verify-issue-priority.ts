@@ -23,7 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PRIORITIES, PRIORITY_META, issuePriority, priorityRank, sensitivePlace, type PriorityInput } from "../src/lib/issue-priority";
 import { audienceAt, audienceOf, stepFill } from "../src/lib/audience";
-import { buildReview, reviewPriority } from "../src/lib/review";
+import { buildReview, loadReview, reviewPriority } from "../src/lib/review";
 import { draftForFinding, ticketPriority } from "../src/lib/tracker/file";
 import { recurrence, type RecurrenceRun } from "../src/lib/recurring";
 import { issuePriorityOf } from "../src/lib/issues-page";
@@ -149,6 +149,13 @@ eq("ticketPriority: a caller that knows it is believed, and no row is read", awa
     await seen(3);
     eq("ticketPriority, real D1: …in three checks in a row → P0, the Issues page's own answer", await ticketPriority(real.db, { ...twice, id: "f3", runId: "r3" }, { teamId: "t", appId: "a", runNumber: 3 }), "P0");
     eq("ticketPriority, real D1: asked as of the second check, the third is not counted", await ticketPriority(real.db, twice, { teamId: "t", appId: "a", runNumber: 2 }), "P1");
+    // The review of the third check says P0 for the same finding — the same
+    // rule, read once for every finding of the check (Codex P1, round 3).
+    const review3 = await loadReview(real.db, "p3", "https://checkmyapp.dev");
+    eq("the review, real D1: the finding of the third check in a row → P0, as the ticket and Issues say", review3?.findings[0]?.priority, "P0");
+    const review2 = await loadReview(real.db, "p2", "https://checkmyapp.dev");
+    eq("the review, real D1: of the second check → P1 — read as of its own check, not today's", review2?.findings[0]?.priority, "P1");
+    check("the review's payload still carries no id, run number or team of its own", review3 !== null && !/"teamId"|"appId"|"runNumber"/.test(JSON.stringify(review3)));
   } finally {
     await real.dispose();
   }

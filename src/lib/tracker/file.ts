@@ -13,10 +13,9 @@ import { buildTicketDraft } from "./ticket";
 import { decideTicketAction } from "./decision";
 import type { Tracker, TicketDraft } from "./types";
 import { dedupKeyForFinding } from "./dedup-key";
-import { audienceAt, type Audience } from "@/lib/audience";
-import { PRIORITY_META, issuePriority, type Priority } from "@/lib/issue-priority";
+import { findingPriority, type PriorityHistory } from "@/lib/finding-priority";
+import { PRIORITY_META, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
-import { recurrencesAsOf } from "@/lib/recurring";
 import type { FindingDetail } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { alreadyScoped } from "@/lib/tenant-db";
@@ -64,47 +63,16 @@ export interface TicketPolicyFields {
 // that always imported it from here keep doing so.
 export { dedupKeyForFinding };
 
-// The priority on the ticket (CHE-413): the very answer Health → Issues gives,
-// when the finding is one the app's history holds — recurrence as of this
-// check says how many checks in a row have seen the problem and who hit it at
-// its latest sighting. A finding outside any history (a ticket on our own
-// board, an app not yet saved) is judged on its own: who hit it from the step
-// its anchor names, seen once. A caller that already knows the priority is
-// believed; nobody else guesses.
+// The priority on the ticket (CHE-413): the one rule every surface calls
+// (src/lib/finding-priority.ts — Issues' own answer when the app's history
+// holds the finding, the finding's own check otherwise). A caller that
+// already knows the priority is believed.
 export async function ticketPriority(
   db: PrismaClient,
   finding: Pick<TicketFinding, "id" | "runId" | "category" | "severity" | "detail" | "anchor" | "priority">,
-  // The app whose history to read, and the check to read it as of.
-  history: { teamId: string; appId: string; runNumber: number } | null,
+  history: PriorityHistory | null,
 ): Promise<Priority> {
-  if (finding.priority) return finding.priority;
-  const detail = parseJson<FindingDetail>(finding.detail) ?? {};
-  if (finding.id && history) {
-    const asOf = await recurrencesAsOf(db, history.teamId, history.appId, history.runNumber);
-    const mine = asOf?.recurrences.find((r) => r.sightings.some((s) => s.findingId === finding.id));
-    if (mine) {
-      return issuePriority({
-        category: finding.category,
-        severity: finding.severity,
-        where: detail.where,
-        timesSeen: mine.issue.timesSeen,
-        audience: mine.issue.audience,
-      });
-    }
-  }
-  const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
-  let audience: Audience = "unknown";
-  if (typeof ref?.journeyIndex === "number" && typeof ref?.stepIndex === "number") {
-    // The anchor indexes the check's journeys and their steps in order —
-    // Journey.order, Step.order — as every reader of it does
-    // (src/lib/recurring.ts, src/lib/shell-data.ts).
-    const journey = await db.journey.findFirst({
-      where: { runId: finding.runId, order: ref.journeyIndex },
-      select: { steps: { orderBy: { order: "asc" }, select: { status: true, actions: true } } },
-    });
-    if (journey) audience = audienceAt(journey.steps, ref.stepIndex);
-  }
-  return issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen: 1, audience });
+  return finding.priority ?? findingPriority(db, finding, history);
 }
 
 export function draftForFinding(

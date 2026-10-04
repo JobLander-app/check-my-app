@@ -26,9 +26,9 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { normalizeAnatomy } from "@/lib/anatomy";
 import { unreachedPages } from "@/lib/coverage";
-import { issuePriority, type Priority } from "@/lib/issue-priority";
+import type { Priority } from "@/lib/issue-priority";
+import { historyAsOf, priorityFromHistory, priorityOfCheckAlone } from "@/lib/finding-priority";
 import { parseJson } from "@/lib/json";
-import { audienceAt } from "@/lib/audience";
 import type { FindingDetail } from "@/lib/types";
 import { productName, productProse, splitSentences } from "@/lib/verdict-language";
 import { publicRow } from "@/lib/tenant-db";
@@ -63,9 +63,10 @@ export interface ReviewFinding {
   title: string;
   category: string;
   severity: string;
-  // CHE-413: the one scale Health → Issues and the tickets we file use
-  // (src/lib/issue-priority.ts). From this check alone: its category, where
-  // it happens and who hit it; the Issues page adds how long it has been there.
+  // CHE-413: the one scale Health → Issues and the tickets we file use, by
+  // the one rule they use (src/lib/finding-priority.ts): the app's history as
+  // of this check — how many checks in a row, who hit it — when the history
+  // holds the finding; this check alone otherwise.
   priority: Priority;
   mark: string;
   where: string | null;
@@ -139,6 +140,8 @@ export interface ReviewSourceJourney {
 }
 
 export interface ReviewSourceFinding {
+  // Read and not shown: what the app's history is searched by.
+  id?: string;
   number: number;
   title: string;
   category: string;
@@ -151,6 +154,11 @@ export interface ReviewSourceFinding {
 }
 
 export interface ReviewSource {
+  // Read and not shown: whose history the priorities come from, as of this check.
+  id?: string;
+  runNumber?: number;
+  teamId?: string | null;
+  appId?: string | null;
   publicId: string;
   appSlug: string;
   status: string;
@@ -167,10 +175,14 @@ export interface ReviewSource {
 
 // The one query behind the route. `select` rather than `include` so the
 // payload carries nothing it does not show — no credentials columns, no cost,
-// no transcript (those are ours; CHE-108). Two columns are read and not shown:
-// a step's recorded actions and a finding's anchor, which together say who
-// would have hit the finding (its priority).
+// no transcript (those are ours; CHE-108). Read and not shown, for the
+// priorities (CHE-413): the run's ids and number, a finding's id and anchor, a
+// step's recorded actions.
 export const REVIEW_SELECT = {
+  id: true,
+  runNumber: true,
+  teamId: true,
+  appId: true,
   targetKind: true,
   publicId: true,
   appSlug: true,
@@ -207,6 +219,7 @@ export const REVIEW_SELECT = {
   findings: {
     orderBy: { number: "asc" as const },
     select: {
+      id: true,
       number: true,
       title: true,
       category: true,
@@ -226,7 +239,24 @@ export async function loadReview(
 ): Promise<Review | null> {
   const run = await prisma.run.findUnique({ ...publicRow(), where: { publicId }, select: REVIEW_SELECT });
   if (run && !extensionReportPublished(run)) return buildReview({ ...run, verdict: null, bottomLine: null, anatomy: null, journeys: [], findings: [] }, origin);
-  return run ? buildReview(run, origin) : null;
+  if (!run) return null;
+  return buildReview(run, origin, await reviewPriorities(prisma, run));
+}
+
+// CHE-413: every finding's priority by the one rule (src/lib/finding-priority.ts)
+// — the app's history as of this check, read once for all of them; a finding
+// the history does not hold is judged on its own check. By finding number, the
+// one key the review shows. A run of no app has no history, and every finding
+// of it is judged on the check alone.
+export async function reviewPriorities(prisma: PrismaClient, run: ReviewSource): Promise<Map<number, Priority>> {
+  const history =
+    run.teamId && run.appId && typeof run.runNumber === "number" ? { teamId: run.teamId, appId: run.appId, runNumber: run.runNumber } : null;
+  const recurrences = await historyAsOf(prisma, history);
+  const out = new Map<number, Priority>();
+  for (const f of run.findings) {
+    out.set(f.number, priorityFromHistory(f, recurrences) ?? reviewPriority(run, f));
+  }
+  return out;
 }
 
 // ─── Building ────────────────────────────────────────────────────────────────
@@ -290,32 +320,23 @@ export function nextActionFor(
   return { finding: finding.number, symptom, how_to_know_it_is_gone: gone };
 }
 
-// A finding's priority from this check alone (src/lib/issue-priority.ts): who
-// hit it is read from the journey its anchor names, the way the Release lens
-// reads it — a credential filled before the step makes it an existing user's;
-// a finding with no anchor, or a walk that recorded no actions, is unknown and
-// is never promoted. One check has no streak, so "seen three checks in a row"
-// is the Issues page's to add.
+// A finding's priority from this check alone, over the rows the review has
+// loaded (src/lib/finding-priority.ts priorityOfCheckAlone): what a finding
+// gets when no history holds it, and what buildReview falls back to when it
+// is called without the history's answers.
 export function reviewPriority(
   run: Pick<ReviewSource, "journeys">,
   finding: Pick<ReviewSourceFinding, "category" | "severity" | "detail" | "anchor">,
 ): Priority {
-  const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
-  const journey = typeof ref?.journeyIndex === "number" ? run.journeys[ref.journeyIndex] : undefined;
-  const audience =
-    journey && typeof ref?.stepIndex === "number"
-      ? audienceAt(journey.steps.map((s) => ({ status: s.status, actions: s.actions ?? null })), ref.stepIndex)
-      : "unknown";
-  return issuePriority({
-    category: finding.category,
-    severity: finding.severity,
-    where: (parseJson<FindingDetail>(finding.detail) ?? {}).where,
-    timesSeen: 1,
-    audience,
-  });
+  return priorityOfCheckAlone(
+    finding,
+    run.journeys.map((j) => ({ steps: j.steps.map((s) => ({ status: s.status, actions: s.actions ?? null })) })),
+  );
 }
 
-export function buildReview(run: ReviewSource, origin: string): Review {
+// `priorities`: the history's answer per finding number (reviewPriorities);
+// a finding without one is judged on this check alone.
+export function buildReview(run: ReviewSource, origin: string, priorities: Map<number, Priority> = new Map()): Review {
   const base = origin.replace(/\/+$/, "");
 
   const journeys: ReviewJourney[] = run.journeys.map((j) => ({
@@ -340,7 +361,7 @@ export function buildReview(run: ReviewSource, origin: string): Review {
       title: f.title,
       category: f.category,
       severity: f.severity,
-      priority: reviewPriority(run, f),
+      priority: priorities.get(f.number) ?? reviewPriority(run, f),
       mark: f.mark,
       where: detail.where ?? null,
       what_we_tried: detail.whatWeTried ?? [],
