@@ -384,6 +384,19 @@ async function main() {
       /Before the walk/.test(modal) && /Journeys walked \(/.test(modal) && /After the walk/.test(modal) && /Total/.test(modal) && /showModal\(\)/.test(modal) && !/useEffect/.test(modal));
     check("a journey part with no step is shown in its own group, named for what it was",
       /Started, not walked/.test(modal) && /\(p\.steps \?\? 0\) === 0/.test(modal));
+    // Codex on #267: a request that fails is retried in code and then answered
+    // with the check's page, never with our failure or a "try again"; and the
+    // remembered reason carries the check's id, so a row kept across a refresh
+    // that replaced its check cannot explain the old one.
+    const modalText = modal.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    check("the modal never tells the reader our request failed or to try again",
+      !/could not be loaded|try again|failed/i.test(modalText) && /ATTEMPTS = 3/.test(modal) && /See the reason on the check/.test(modal));
+    check("the remembered reason is keyed by the check's public id",
+      /fetched\?\.publicId === publicId \? fetched\.explanation/.test(modal) && !/useState<PriceExplanation \| null>\(explanation/.test(modal));
+    const publicIdUses = ["src/app/(app)/home/page.tsx", "src/app/(app)/health/checks/page.tsx", "src/app/(app)/health/apps/[appId]/page.tsx"]
+      .map((f) => read(f)).filter((s) => /<CheckPrice publicId=/.test(s));
+    check("every price loaded on press names the check's page for the moment the reason does not come back",
+      publicIdUses.length === 3 && publicIdUses.every((s) => /<CheckPrice publicId=\{[^}]+\} priceUsd=\{[^}]+\} checkHref=/.test(s)));
   }
 
   // ─── 8. Customer surfaces ────────────────────────────────────────────────

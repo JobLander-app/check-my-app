@@ -50,11 +50,11 @@ function Result({ result, meta }: { result: Outcome; meta: (typeof VERDICT_META)
 // A check that did not finish is ours and is not charged (CLAUDE.md §4): it
 // says so, whether its price was never written or written as zero. A charged
 // price opens its reason in the modal (CHE-411), loaded for that one check.
-function Price({ run, result, label }: { run: { publicId: string; runNumber: number; priceUsd: number | null }; result: Outcome; label: string }) {
+function Price({ run, result, label, href }: { run: { publicId: string; runNumber: number; priceUsd: number | null }; result: Outcome; label: string; href: string }) {
   if (run.priceUsd === null || (result.kind === "unfinished" && run.priceUsd === 0)) {
     return <span className="text-[13px] text-fg-faint">{result.kind === "unfinished" ? "not charged" : "—"}</span>;
   }
-  return <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} label={null} title={`${label}, check #${run.runNumber}`} />;
+  return <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={href} label={null} title={`${label}, check #${run.runNumber}`} />;
 }
 
 // Health → Checks (CHE-360, direction C): every check of the team, newest
@@ -209,7 +209,7 @@ export default async function ChecksPage({
                       <Result result={result} meta={meta} />
                     </td>
                     <td className={`${TD} text-right`}>
-                      <Price run={run} result={result} label={label} />
+                      <Price run={run} result={result} label={label} href={href} />
                     </td>
                   </tr>
                 ))}
@@ -228,7 +228,7 @@ export default async function ChecksPage({
                       <AppName ownApp={ownApp} label={label} />
                     </span>
                   </span>
-                  <Price run={run} result={result} label={label} />
+                  <Price run={run} result={result} label={label} href={href} />
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-muted">
                   <Result result={result} meta={meta} />

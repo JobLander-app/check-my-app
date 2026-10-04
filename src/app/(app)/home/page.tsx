@@ -348,7 +348,7 @@ export default async function HomePage({
                         </div>
                         {/* The price opens its reason, loaded for the one check asked about. */}
                         <span className="text-right text-sm">
-                          <CheckPrice publicId={r.publicId} priceUsd={r.priceUsd!} label={null} title={`${r.name}, check #${r.runNumber}`} />
+                          <CheckPrice publicId={r.publicId} priceUsd={r.priceUsd!} checkHref={checkHref(r)} label={null} title={`${r.name}, check #${r.runNumber}`} />
                         </span>
                       </div>
                     );

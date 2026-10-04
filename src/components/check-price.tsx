@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
 import type { PriceExplanation, PricePart } from "@/lib/check-price";
 
 // CHE-327: a check's price is never shown alone. The price is a button, and
@@ -23,13 +24,33 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const sum = (parts: PricePart[]) => parts.reduce((s, p) => s + p.price_usd, 0);
 
 type Source =
-  | { explanation: PriceExplanation; publicId?: undefined; priceUsd?: undefined }
-  | { explanation?: undefined; publicId: string; priceUsd: number };
+  | { explanation: PriceExplanation; publicId?: undefined; priceUsd?: undefined; checkHref?: undefined }
+  // Loaded on the first press. `checkHref` is where the same reason is drawn
+  // with the page, for the moment the request does not come back.
+  | { explanation?: undefined; publicId: string; priceUsd: number; checkHref: string };
+
+// Attempts at the reason before the modal points at the check's page instead:
+// a request that fails is retried here, in code, not handed to the reader.
+const ATTEMPTS = 3;
+const RETRY_MS = [400, 1200];
+
+async function fetchExplanation(publicId: string): Promise<PriceExplanation | null> {
+  for (let i = 0; i < ATTEMPTS; i++) {
+    const res = await fetch(`/api/runs/${publicId}/price`).catch(() => null);
+    if (res?.ok) return (await res.json().catch(() => null)) as PriceExplanation | null;
+    // A row that is not there (404, 401) is not transient; only a failed
+    // request or a server error is tried again.
+    if (res && res.status < 500) return null;
+    await new Promise((r) => setTimeout(r, RETRY_MS[i] ?? 0));
+  }
+  return null;
+}
 
 export function CheckPrice({
   explanation,
   publicId,
   priceUsd,
+  checkHref,
   label = "This check",
   title,
   className = "",
@@ -42,17 +63,19 @@ export function CheckPrice({
   className?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [loaded, setLoaded] = useState<PriceExplanation | null>(explanation ?? null);
-  const [failed, setFailed] = useState(false);
-  const price = explanation?.price_usd ?? priceUsd ?? loaded?.price_usd ?? 0;
+  // What was loaded, remembered with the check it is of: a row keyed by the
+  // app keeps this component across a refresh that replaces its latest check,
+  // and a reason remembered without its id would then explain the old one.
+  const [fetched, setFetched] = useState<{ publicId: string; explanation: PriceExplanation | null } | null>(null);
+  const loaded = explanation ?? (fetched?.publicId === publicId ? fetched.explanation : undefined);
+  const price = explanation?.price_usd ?? priceUsd ?? 0;
 
   async function open() {
     dialog.current?.showModal();
     if (loaded || !publicId) return;
-    const res = await fetch(`/api/runs/${publicId}/price`).catch(() => null);
-    const body = res?.ok ? ((await res.json().catch(() => null)) as PriceExplanation | null) : null;
-    if (body) setLoaded(body);
-    else setFailed(true);
+    // Loading again, including after a press that got no reason last time.
+    setFetched(null);
+    setFetched({ publicId, explanation: await fetchExplanation(publicId) });
   }
 
   return (
@@ -107,8 +130,14 @@ export function CheckPrice({
           </div>
           {loaded ? (
             <Breakdown e={loaded} />
+          ) : loaded === null && checkHref ? (
+            // No reason came back after the retries: the check's own page
+            // draws the same reason with the page. A way on, not an excuse.
+            <Link href={checkHref} className="text-accent hover:underline">
+              See the reason on the check&apos;s page →
+            </Link>
           ) : (
-            <p className="text-fg-muted">{failed ? "The reason could not be loaded. Close this and try again." : "Loading…"}</p>
+            <p className="text-fg-muted">Loading…</p>
           )}
         </div>
       </dialog>

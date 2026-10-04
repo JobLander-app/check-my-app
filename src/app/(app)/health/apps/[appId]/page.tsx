@@ -181,7 +181,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                   </div>
                   <div className="py-3.5 text-right text-sm">
                     {run.priceUsd !== null && (
-                      <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} label={null} title={`${name}, check #${run.runNumber}`} />
+                      <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={appPath.check(app.id, run.runNumber)} label={null} title={`${name}, check #${run.runNumber}`} />
                     )}
                   </div>
                 </div>
