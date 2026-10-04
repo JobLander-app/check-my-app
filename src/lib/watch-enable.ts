@@ -16,7 +16,12 @@ export type EnableWatchResult =
   // CHE-202: an ephemeral run (a PR preview) never becomes an App.
   | { kind: "ephemeral" }
   | { kind: "gated"; reason: string }
-  | { kind: "ok"; slug: string };
+  // trialEndsAt: when a Free plan's watch stops being run by itself (CHE-54);
+  // null on a paid plan. Said to the caller because nothing else says it since
+  // the apps moved to Health → All apps (CHE-348): the card shows "Daily" for a
+  // trial and for a paid watch alike, and a trial that was never stamped would
+  // run forever and look the same (Codex on #270).
+  | { kind: "ok"; slug: string; trialEndsAt: Date | null };
 
 export const EPHEMERAL_WATCH_REFUSAL =
   "This check was of a temporary preview, so there is nothing to keep watching. " +
@@ -119,7 +124,7 @@ export async function enableWatchForRun(
     data: { watchId: watch.id, ownerId: user.id, teamId: user.teamId, appId: app.id },
   });
 
-  return { kind: "ok", slug: watch.appSlug };
+  return { kind: "ok", slug: watch.appSlug, trialEndsAt: watch.trialEndsAt };
 }
 
 // CHE-315: the gate every path that turns a watch ON asks — enabling from a
@@ -237,7 +242,7 @@ export async function enableWatchForApp(
   if (app.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
   const enabled = await upsertWatch(db, user, app, opts);
   if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
-  return { kind: "ok", slug: enabled.watch.appSlug };
+  return { kind: "ok", slug: enabled.watch.appSlug, trialEndsAt: enabled.watch.trialEndsAt };
 }
 
 // PATCH /api/watch/{slug} and the MCP disable_watch tool: frequency, notify

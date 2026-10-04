@@ -6,6 +6,8 @@ import { optionalTeamContext } from "@/lib/auth";
 import { EPHEMERAL_WATCH_REFUSAL, enableWatchForRun } from "@/lib/watch-enable";
 import { createWatchSchema } from "@/lib/validation";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
+import { watchTrialState } from "@/lib/plans";
+import type { UserPlan } from "@/lib/enums";
 
 // POST /api/watch — Loop B: enable Daily Watch from a verdict. Owner feature
 // (CHE-33): requires auth; finds-or-creates the owner's App for the run's target,
@@ -45,7 +47,23 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: EPHEMERAL_WATCH_REFUSAL, code: "ephemeral_run" }, { status: 409 });
     case "gated":
       return NextResponse.json({ error: result.reason }, { status: 403 });
-    case "ok":
-      return NextResponse.json({ slug: result.slug }, { status: 201 });
+    case "ok": {
+      // The trial as the product reads it (watchTrialState, the same rule the
+      // pages and the scheduler follow): "active" with the day it ends on a
+      // Free plan, "ended" after that, "none" on a paid plan — where a stamp
+      // left over from a Free trial is kept on the row and means nothing. The
+      // plan is said too, so a Free watch with no stamp cannot pass for a paid
+      // one (Codex on #270). The one place this is readable since the apps
+      // moved to Health → All apps.
+      const trial = watchTrialState({ trialEndsAt: result.trialEndsAt }, team.plan as UserPlan);
+      return NextResponse.json(
+        {
+          slug: result.slug,
+          plan: team.plan,
+          trial: trial.kind === "active" ? { kind: "active", endsAt: result.trialEndsAt?.toISOString() ?? null } : { kind: trial.kind },
+        },
+        { status: 201 },
+      );
+    }
   }
 }

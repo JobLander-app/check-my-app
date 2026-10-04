@@ -120,25 +120,54 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
   }
 
   expect(created.status()).toBe(201);
-  const { slug } = (await created.json()) as { slug: string };
-  expect(slug).toBe("example.com");
-
+  const { slug, plan, trial } = (await created.json()) as {
+    slug: string;
+    plan: string;
+    trial: { kind: "none" } | { kind: "ended" } | { kind: "active"; endsAt: string | null };
+  };
+  // From here on the watch exists, and every failure below must still reach the
+  // DELETE in `finally`: a watch left behind is a real agent run every day.
   try {
-    await page.goto(`${BASE}/dashboard`);
-    const card = page.locator("li", { hasText: slug }).first();
+    expect(slug).toBe("example.com");
+
+    // The trial as the product reads it, off the same answer (the cards no
+    // longer show it, Codex on #270). On Free a 201 means an ACTIVE trial with
+    // a day within WATCH_TRIAL_DAYS of now: a new watch is stamped that far
+    // ahead, and an existing watch whose trial has run out is refused with 403
+    // above (upsertWatch, CHE-325) — so "ended" or "none" here is a watch that
+    // was stamped wrong, or not at all, and would never run or run forever. On
+    // a paid plan it is "none", whatever stamp an old Free trial left on the
+    // row. Which plan the nightly user is on is not readable from any public
+    // surface, so the answer says.
+    const now = Date.now();
+    if (plan === "free") {
+      expect(trial.kind).toBe("active");
+      const ends = Date.parse((trial.kind === "active" && trial.endsAt) || "");
+      expect(Number.isNaN(ends)).toBe(false);
+      expect(ends).toBeGreaterThan(now);
+      expect(ends).toBeLessThanOrEqual(now + WATCH_TRIAL_DAYS * DAY_MS + 60_000);
+    } else {
+      expect(trial.kind).toBe("none");
+    }
+
+    // The app's card on Health → All apps (CHE-348 moved the apps off the old
+    // dashboard; /dashboard now redirects to /home, which lists no cards). The
+    // card is the <article> whose name link is the slug — not the first
+    // element that happens to contain the slug: the balance block's spend
+    // list said "example.com · 7 checks" and the old `li` locator read that
+    // for two nights (2026-10-03, -04).
+    await page.goto(`${BASE}/health/apps?view=cards`);
+    const card = page.locator("article", { has: page.getByRole("link", { name: slug, exact: true }) }).first();
     await expect(card).toBeVisible();
+    await expect(card.getByRole("link", { name: "Settings" })).toBeVisible();
     const text = (await card.innerText()).toLowerCase();
 
-    if (text.includes("trial")) {
-      // Free plan: the watch carries trialEndsAt, and the card says so. Either
-      // wording is legitimate — a re-run of this spec reuses a watch created
-      // more than WATCH_TRIAL_DAYS ago, whose trial has since run out.
-      expect(text).toMatch(/free trial · \d+ days? left|trial ended — daily watch paused/);
-    } else {
-      // Paid plan (the Stripe downgrade hasn't landed yet): no trial is stamped,
-      // and the watch just runs.
-      expect(text).toContain("watching · daily");
-    }
+    // The schedule label (src/lib/all-apps.ts scheduleLabel) must agree with
+    // the answer: "Daily" for an active Free trial and on a paid plan alike.
+    // Anything else means the watch the API just created is not the one the
+    // page shows.
+    expect(text).toMatch(/\bdaily\b/);
+    expect(text).not.toMatch(/not scheduled|\bpaused\b|trial ended/);
   } finally {
     // Never leave a recurring daily agent run behind on the dogfood account.
     const removed = await page.request.delete(`${BASE}/api/watch/${slug}`);
