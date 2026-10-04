@@ -120,22 +120,32 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
   }
 
   expect(created.status()).toBe(201);
-  const { slug, trialEndsAt } = (await created.json()) as { slug: string; trialEndsAt: string | null };
+  const { slug, plan, trial } = (await created.json()) as {
+    slug: string;
+    plan: string;
+    trial: { kind: "none" } | { kind: "ended" } | { kind: "active"; endsAt: string | null };
+  };
   expect(slug).toBe("example.com");
 
-  // The trial stamp itself, off the same answer (the cards no longer show
-  // it, Codex on #270). Free: a date within WATCH_TRIAL_DAYS of now — or
-  // earlier, when a re-run reuses a watch whose clock started on an earlier
-  // night (the clock is not restarted on resume). Paid: null, never expires.
-  // Which plan the nightly user is on is not readable from any public surface,
-  // so both are legitimate; what is not is a Free watch with no stamp at all,
-  // which would run forever — and a paid watch with one.
+  // The trial as the product reads it, off the same answer (the cards no
+  // longer show it, Codex on #270): on Free the watch MUST be in a trial —
+  // "active" with a day within WATCH_TRIAL_DAYS of now, or "ended" when a
+  // re-run reuses a watch whose clock started on an earlier night (the clock
+  // is not restarted on resume) — a Free watch with no trial would run forever.
+  // On a paid plan it is "none", whatever stamp an old Free trial left on the
+  // row. Which plan the nightly user is on is not readable from any public
+  // surface, so the answer says.
   const now = Date.now();
-  if (trialEndsAt !== null) {
-    const ends = Date.parse(trialEndsAt);
-    expect(Number.isNaN(ends)).toBe(false);
-    expect(ends).toBeLessThanOrEqual(now + WATCH_TRIAL_DAYS * DAY_MS + 60_000);
-    expect(ends).toBeGreaterThan(now - 365 * DAY_MS);
+  if (plan === "free") {
+    expect(["active", "ended"]).toContain(trial.kind);
+    if (trial.kind === "active") {
+      const ends = Date.parse(trial.endsAt ?? "");
+      expect(Number.isNaN(ends)).toBe(false);
+      expect(ends).toBeGreaterThan(now);
+      expect(ends).toBeLessThanOrEqual(now + WATCH_TRIAL_DAYS * DAY_MS + 60_000);
+    }
+  } else {
+    expect(trial.kind).toBe("none");
   }
 
   try {
@@ -152,11 +162,10 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
     const text = (await card.innerText()).toLowerCase();
 
     // The schedule label (src/lib/all-apps.ts scheduleLabel) must agree with
-    // the stamp: "Trial ended" once a Free trial's date has passed, "Daily"
-    // before that and on a paid plan. Anything else means the watch the API
-    // just created is not the one the page shows.
-    const ended = trialEndsAt !== null && Date.parse(trialEndsAt) <= now;
-    expect(text).toMatch(ended ? /trial ended/ : /\bdaily\b/);
+    // the answer: "Trial ended" for an ended Free trial, "Daily" for an active
+    // one and on a paid plan. Anything else means the watch the API just
+    // created is not the one the page shows.
+    expect(text).toMatch(trial.kind === "ended" ? /trial ended/ : /\bdaily\b/);
     expect(text).not.toMatch(/not scheduled|\bpaused\b/);
   } finally {
     // Never leave a recurring daily agent run behind on the dogfood account.
