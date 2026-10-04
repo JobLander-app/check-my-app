@@ -147,7 +147,8 @@ check("…and removing an app is what makes that so (the action still clears bot
   /data: \{ appId: null, watchId: null \}/.test(read("src/app/dashboard/actions.ts")));
 check("the table is drawn for a team with no saved app when something was paid for outside the apps", /\{\(apps\.length > 0 \|\| outside\) && \(/.test(page));
 check("the old #balance anchor still lands on the balance", /id="balance"/.test(page));
-check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
+// CHE-412: no table scrolls; the rows fold to cards (scripts/verify-table-fold.ts).
+check("the table never scrolls inside its card", !/overflow-x-auto/.test(page) && /FOLD\.tableClassName/.test(page));
 check("nothing in src still calls the old per-app spend helper", !/spendByApp/.test(read("src/lib/plans.ts")));
 
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");

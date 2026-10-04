@@ -8,8 +8,10 @@ import {
   ISSUES_FILTERS,
   VIEW_CLASS,
   VIEW_LABEL,
+  type IssueView,
   type IssuesFilter,
   inIssuesFilter,
+  issueHref,
   issueView,
   issuesFilter,
   issuesHref,
@@ -19,10 +21,27 @@ import {
   sortIssues,
   ticketLabel,
 } from "@/lib/issues-page";
+import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
 import { IssueMarks } from "@/components/issue-marks";
 
 const TH = "whitespace-nowrap border-b border-ink-700 px-3 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-[18px] last:pr-[18px]";
 const TD = "border-b border-ink-800 px-3 py-3.5 align-top first:pl-[18px] last:pr-[18px]";
+
+function AppLink({ appId, name }: { appId: string; name: string }) {
+  return (
+    <Link href={appPath.page(appId)} className="font-mono text-fg-muted hover:text-fg hover:underline">
+      {name}
+    </Link>
+  );
+}
+
+function StatePill({ view }: { view: IssueView }) {
+  return (
+    <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${VIEW_CLASS[view]}`}>
+      {VIEW_LABEL[view]}
+    </span>
+  );
+}
 
 // Health → Issues (CHE-360, direction C): every problem across the team's
 // apps, one row per problem — the latest wording, the app, its state, the
@@ -77,6 +96,29 @@ export default async function IssuesPage({ searchParams }: { searchParams: Promi
   ]);
   const findingOf = new Map(findings.map((f) => [f.id, f]));
   const linkOf = new Map(links.map((l) => [l.id, l]));
+  // What a row says, decided once for the table and the cards.
+  const shown = rows.map((r) => {
+    const i = r.issue;
+    const findingId = latestFinding.get(i.signature + i.appId) ?? null;
+    const finding = findingId ? findingOf.get(findingId) : undefined;
+    const link = i.issueLinkId ? linkOf.get(i.issueLinkId) : undefined;
+    // The route's own rule (PATCH /api/findings/{id}): the person whose check
+    // found it answers it. Anyone else reads the state.
+    const mayMark = finding !== undefined && (finding.run.ownerId === null || finding.run.ownerId === user.id);
+    return {
+      key: i.appId + i.signature,
+      issue: i,
+      view: r.view,
+      // The problem's own page (CHE-412), keyed by its latest sighting; a
+      // problem with none to key by opens the check that last saw it.
+      href: findingId ? issueHref(findingId) : appPath.check(i.appId, i.lastSeenRunNumber),
+      kind: `${SEVERITY_META[i.severity]?.label ?? i.severity} · ${i.category}`,
+      app: nameOf.get(i.appId) ?? i.appId,
+      seen: seenLine(r),
+      ticket: link ? ticketLabel(link) : null,
+      marks: mayMark && findingId ? { findingId, mark: finding.mark } : null,
+    };
+  });
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-10">
@@ -138,60 +180,78 @@ export default async function IssuesPage({ searchParams }: { searchParams: Promi
                     : "No problems here."}
         </p>
       ) : (
-        // The table scrolls inside its card; the page never scrolls sideways.
-        <section className="card overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th className={TH}>Problem</th>
-                <th className={TH}>App</th>
-                <th className={TH}>State</th>
-                <th className={TH}>Seen</th>
-                <th className={TH}>Ticket</th>
-                <th className={TH}>Your answer</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const i = r.issue;
-                const findingId = latestFinding.get(i.signature + i.appId) ?? null;
-                const finding = findingId ? findingOf.get(findingId) : undefined;
-                const link = i.issueLinkId ? linkOf.get(i.issueLinkId) : undefined;
-                const sev = SEVERITY_META[i.severity];
-                // The route's own rule (PATCH /api/findings/{id}): the person
-                // whose check found it answers it. Anyone else reads the state.
-                const mayMark = finding !== undefined && (finding.run.ownerId === null || finding.run.ownerId === user.id);
-                return (
-                  <tr key={i.appId + i.signature}>
-                    <td className={`${TD} min-w-[260px] max-w-[420px]`}>
-                      <Link href={appPath.check(i.appId, i.lastSeenRunNumber)} className="text-fg hover:underline">
-                        {i.title}
+        // The table fits the work area at every width (src/lib/table-fold.ts):
+        // the app and the ticket are columns on a wide screen and lines under
+        // the problem and under "seen" until then; below the sidebar's width
+        // each problem is a card.
+        <>
+          <section className={`card ${FOLD.tableClassName}`}>
+            <table className={TABLE_CLASS}>
+              <thead>
+                <tr>
+                  <th className={TH}>Problem</th>
+                  <th className={`${TH} w-[160px] ${FOLD.wideColumnClassName}`}>App</th>
+                  <th className={`${TH} w-[158px]`}>State</th>
+                  <th className={`${TH} w-[190px]`}>Seen</th>
+                  <th className={`${TH} w-[130px] ${FOLD.wideColumnClassName}`}>Ticket</th>
+                  <th className={`${TH} w-[136px] xl:w-[210px]`}>Your answer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((p) => (
+                  <tr key={p.key}>
+                    <td className={TD}>
+                      <Link href={p.href} className="text-fg hover:underline">
+                        {p.issue.title}
                       </Link>
                       <span className="mt-0.5 block text-xs text-fg-faint">
-                        {sev?.label ?? i.severity} · {i.category}
+                        {p.kind}
+                        <span className={FOLD.foldedClassName}>
+                          {" · "}
+                          <AppLink appId={p.issue.appId} name={p.app} />
+                        </span>
                       </span>
                     </td>
-                    <td className={`${TD} whitespace-nowrap font-mono text-[13px]`}>
-                      <Link href={appPath.page(i.appId)} className="text-fg-muted hover:text-fg hover:underline">
-                        {nameOf.get(i.appId) ?? i.appId}
-                      </Link>
+                    <td className={`${TD} truncate font-mono text-[13px] ${FOLD.wideColumnClassName}`}>
+                      <AppLink appId={p.issue.appId} name={p.app} />
                     </td>
                     <td className={`${TD} whitespace-nowrap`}>
-                      <span className={`inline-flex h-6 items-center rounded-full border px-2.5 text-xs font-medium ${VIEW_CLASS[r.view]}`}>
-                        {VIEW_LABEL[r.view]}
-                      </span>
+                      <StatePill view={p.view} />
                     </td>
-                    <td className={`${TD} min-w-[180px] text-[13px] text-fg-muted`}>{seenLine(r)}</td>
-                    <td className={`${TD} whitespace-nowrap text-[13px] text-fg-muted`}>{link ? ticketLabel(link) : "—"}</td>
-                    <td className={`${TD} min-w-[150px]`}>
-                      {mayMark && findingId ? <IssueMarks findingId={findingId} mark={finding.mark} /> : <span className="text-xs text-fg-faint">—</span>}
+                    <td className={`${TD} text-[13px] text-fg-muted`}>
+                      {p.seen}
+                      <span className={`block text-xs text-fg-faint ${FOLD.foldedClassName}`}>{p.ticket ?? "No ticket"}</span>
+                    </td>
+                    <td className={`${TD} truncate text-[13px] text-fg-muted ${FOLD.wideColumnClassName}`}>{p.ticket ?? "—"}</td>
+                    <td className={TD}>
+                      {p.marks ? <IssueMarks findingId={p.marks.findingId} mark={p.marks.mark} /> : <span className="text-xs text-fg-faint">—</span>}
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </section>
+                ))}
+              </tbody>
+            </table>
+          </section>
+          <ul className={FOLD.cardsClassName}>
+            {shown.map((p) => (
+              <li key={p.key} className="card flex flex-col gap-2.5 px-4 py-3.5">
+                <div>
+                  <Link href={p.href} className="text-[15px] text-fg hover:underline">
+                    {p.issue.title}
+                  </Link>
+                  <span className="mt-0.5 block text-xs text-fg-faint">
+                    {p.kind} · <AppLink appId={p.issue.appId} name={p.app} />
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-muted">
+                  <StatePill view={p.view} />
+                  <span>{p.seen}</span>
+                  {p.ticket && <span className="text-fg-faint">{p.ticket}</span>}
+                </div>
+                {p.marks && <IssueMarks findingId={p.marks.findingId} mark={p.marks.mark} />}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </main>
   );

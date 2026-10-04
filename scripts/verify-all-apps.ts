@@ -111,12 +111,14 @@ const toggle = read("src/components/apps-view-toggle.tsx");
 check("the toggle writes the cookie in its click handler, with no effect",
   /onClick=\{\(\) => \{\s*document\.cookie = `\$\{APPS_VIEW_COOKIE\}=/.test(toggle) && !/use(Layout)?Effect/.test(toggle));
 check("the page reads the same cookie on the server", /jar\.get\(APPS_VIEW_COOKIE\)/.test(page));
-check("the table scrolls inside its card", /className="card overflow-x-auto"/.test(page));
+// CHE-412: no table scrolls; the list folds to the cards below the sidebar's
+// width (scripts/verify-table-fold.ts holds every table to it).
+check("the table never scrolls inside its card", !/overflow-x-auto/.test(page) && /FOLD\.tableClassName/.test(page));
 check("both views show the strip of checks", (page.match(/<VerdictStrip verdicts=\{app\.verdicts\}/g) ?? []).length === 2);
 check("'Need attention' follows the strip's newest verdict, not the latest priced check (Codex P1 r2 on #233)",
   /newestVerdict: a\.verdicts\.at\(-1\)\?\.verdict \?\? null/.test(page) && !/latestVerdict: a\.latest/.test(page));
-check("the latest check's price opens its reason — in the cards and in the list (§10: never a bare price)",
-  (page.match(/<CheckPrice explanation=\{app\.latest\.price\}/g) ?? []).length === 2 && !/usd\(app\.latest\.priceUsd\)/.test(page));
+check("the latest check's price opens its reason in the cards (§10: never a bare price); the list row carries no price at all (CHE-412)",
+  (page.match(/<CheckPrice explanation=\{app\.latest\.price\}/g) ?? []).length === 1 && !/usd\(app\.latest\.priceUsd\)/.test(page));
 check("the schedule is the scheduler's rule: the page asks shouldSkipWatch with the team's plan",
   /trialEnded: shouldSkipWatch\(w, team\.plan as UserPlan\)/.test(page) && /trialEndsAt: true/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));

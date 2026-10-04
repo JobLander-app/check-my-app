@@ -3,9 +3,10 @@ import { requireUser } from "@/lib/auth";
 import { can } from "@/lib/scopes";
 import { TOPUP_AMOUNTS_USD, teamBalance, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
-import { appHealth } from "@/lib/app-health";
+import { appHealth, type AppHealth } from "@/lib/app-health";
 import { shellData } from "@/lib/shell-data";
 import { appPath } from "@/lib/app-shell";
+import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
 import { appsCostLine, balanceLine, countLine, daysToNextMonth, outsideApps, pace, sharePercent } from "@/lib/billing-page";
 import { TopUpCta } from "@/components/topup-cta";
 import { ManageBillingButton } from "@/components/manage-billing-button";
@@ -19,6 +20,24 @@ const Tile = ({ label, children }: { label: string; children: React.ReactNode })
     {children}
   </div>
 );
+
+// The last check's price, which opens into what that check did (?check=),
+// with the check's number: under the price in a row, beside it in a card.
+function LastCheck({ app, opened, inline = false }: { app: AppHealth; opened: boolean; inline?: boolean }) {
+  if (!app.latest) return <span className="text-xs text-fg-faint">no check yet</span>;
+  return (
+    <>
+      <Link
+        href={`/settings/billing?check=${app.appId}#check`}
+        aria-current={opened ? "true" : undefined}
+        className={`font-mono underline decoration-dotted underline-offset-2 ${opened ? "text-accent" : "text-fg hover:text-accent"}`}
+      >
+        {usd(app.latest.priceUsd)}
+      </Link>
+      <span className={`font-mono text-xs text-fg-muted ${inline ? "" : "mt-0.5 block"}`}>#{app.latest.runNumber}</span>
+    </>
+  );
+}
 
 // Billing (CHE-355, direction C): what the apps cost a month, the balance, and
 // how the two relate; then each app — its 30 days, a day, who started the
@@ -106,88 +125,135 @@ export default async function BillingPage({
       </section>
 
       {(apps.length > 0 || outside) && (
-        // The table scrolls inside its card; the page never scrolls sideways.
-        // A team with no saved app but paid checks (previews, one-off
+        // The table fits the work area at every width (src/lib/table-fold.ts):
+        // a day and the share are columns on a wide screen and lines under the
+        // window's amount until then; below the sidebar's width each app is a
+        // card. A team with no saved app but paid checks (previews, one-off
         // addresses) still gets its one row.
-        <section className="card overflow-x-auto">
+        <section className="card">
           <div className="flex flex-wrap items-baseline justify-between gap-2 px-[18px] pb-3 pt-[18px]">
             <h2 className="text-[17px] font-semibold">What each app costs</h2>
             <span className="text-[13px] text-fg-muted">Click a price to see what the check did for it</span>
           </div>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th className={TH}>App</th>
-                <th className={`${TH} text-right`}>Last {health.windowDays} days</th>
-                <th className={`${TH} text-right`}>A day</th>
-                <th className={`${TH} text-right`}>Scheduled</th>
-                <th className={`${TH} text-right`}>On request</th>
-                <th className={TH}>Share</th>
-                <th className={`${TH} text-right`}>Last check</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.map((app) => (
-                <tr key={app.appId}>
-                  <td className={`${TD} font-mono`}>
-                    <Link href={appPath.page(app.appId)} className="whitespace-nowrap text-fg hover:underline">
-                      {nameOf.get(app.appId) ?? app.appSlug}
-                    </Link>
-                  </td>
-                  <td className={`${TD} text-right font-mono text-[15px]`}>{usd(app.spendUsd)}</td>
-                  <td className={`${TD} text-right font-mono text-fg-muted`}>{usd(app.perDayUsd)}</td>
-                  <td className={`${TD} whitespace-nowrap text-right`}>
-                    <span className="font-mono">{usd(app.scheduled.usd)}</span>
-                    <span className="block text-xs text-fg-muted">{countLine(app.scheduled.count, "not scheduled")}</span>
-                  </td>
-                  <td className={`${TD} whitespace-nowrap text-right`}>
-                    <span className="font-mono">{usd(app.onRequest.usd)}</span>
-                    <span className="block text-xs text-fg-muted">{countLine(app.onRequest.count, "none")}</span>
-                  </td>
-                  <td className={`${TD} w-40`}>
-                    <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
-                      <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(app.spendUsd, health.totalSpendUsd)}%` }} />
-                    </span>
-                  </td>
-                  <td className={`${TD} whitespace-nowrap text-right`}>
-                    {app.latest ? (
-                      <>
-                        <Link
-                          href={`/settings/billing?check=${app.appId}#check`}
-                          aria-current={opened?.appId === app.appId ? "true" : undefined}
-                          className={`font-mono underline decoration-dotted underline-offset-2 ${opened?.appId === app.appId ? "text-accent" : "text-fg hover:text-accent"}`}
-                        >
-                          {usd(app.latest.priceUsd)}
-                        </Link>
-                        <span className="mt-0.5 block font-mono text-xs text-fg-muted">#{app.latest.runNumber}</span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-fg-faint">no check yet</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {outside && (
+          <div className={FOLD.tableClassName}>
+            <table className={TABLE_CLASS}>
+              <thead>
                 <tr>
-                  <td className={`${TD} text-fg-muted`}>Outside your apps</td>
-                  <td className={`${TD} whitespace-nowrap text-right`}>
-                    <span className="font-mono text-[15px]">{usd(outside.usd)}</span>
-                    <span className="block text-xs text-fg-muted">{countLine(outside.checks, "none")}</span>
-                  </td>
-                  <td className={TD} />
-                  {/* Not split: a removed app's checks lose their schedule with it. */}
-                  <td className={TD} />
-                  <td className={TD} />
-                  <td className={`${TD} w-40`}>
-                    <span className="block h-1.5 min-w-24 rounded-full bg-ink-700">
-                      <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
-                    </span>
-                  </td>
-                  <td className={`${TD} text-right text-xs text-fg-faint`}>previews, one-off addresses, removed apps</td>
+                  <th className={TH}>App</th>
+                  <th className={`${TH} w-[104px] text-right`}>Last {health.windowDays} days</th>
+                  <th className={`${TH} w-[84px] text-right ${FOLD.wideColumnClassName}`}>A day</th>
+                  <th className={`${TH} w-[116px] text-right`}>Scheduled</th>
+                  <th className={`${TH} w-[116px] text-right`}>On request</th>
+                  <th className={`${TH} w-[136px] ${FOLD.wideColumnClassName}`}>Share</th>
+                  <th className={`${TH} w-[104px] text-right`}>Last check</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {apps.map((app) => (
+                  <tr key={app.appId}>
+                    <td className={`${TD} font-mono`}>
+                      <Link href={appPath.page(app.appId)} title={nameOf.get(app.appId) ?? app.appSlug} className="block truncate text-fg hover:underline">
+                        {nameOf.get(app.appId) ?? app.appSlug}
+                      </Link>
+                      <span className={`mt-1.5 block h-1.5 max-w-[160px] rounded-full bg-ink-700 ${FOLD.foldedClassName}`}>
+                        <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(app.spendUsd, health.totalSpendUsd)}%` }} />
+                      </span>
+                    </td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <span className="font-mono text-[15px]">{usd(app.spendUsd)}</span>
+                      <span className={`block font-mono text-xs text-fg-muted ${FOLD.foldedClassName}`}>{usd(app.perDayUsd)} a day</span>
+                    </td>
+                    <td className={`${TD} text-right font-mono text-fg-muted ${FOLD.wideColumnClassName}`}>{usd(app.perDayUsd)}</td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <span className="font-mono">{usd(app.scheduled.usd)}</span>
+                      <span className="block text-xs text-fg-muted">{countLine(app.scheduled.count, "not scheduled")}</span>
+                    </td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <span className="font-mono">{usd(app.onRequest.usd)}</span>
+                      <span className="block text-xs text-fg-muted">{countLine(app.onRequest.count, "none")}</span>
+                    </td>
+                    <td className={`${TD} ${FOLD.wideColumnClassName}`}>
+                      <span className="block h-1.5 rounded-full bg-ink-700">
+                        <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(app.spendUsd, health.totalSpendUsd)}%` }} />
+                      </span>
+                    </td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <LastCheck app={app} opened={opened?.appId === app.appId} />
+                    </td>
+                  </tr>
+                ))}
+                {outside && (
+                  <tr>
+                    <td className={`${TD} text-fg-muted`}>
+                      Outside your apps
+                      <span className="block text-xs text-fg-faint">previews, one-off addresses, removed apps</span>
+                      <span className={`mt-1.5 block h-1.5 max-w-[160px] rounded-full bg-ink-700 ${FOLD.foldedClassName}`}>
+                        <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
+                      </span>
+                    </td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <span className="font-mono text-[15px]">{usd(outside.usd)}</span>
+                      <span className="block text-xs text-fg-muted">{countLine(outside.checks, "none")}</span>
+                    </td>
+                    <td className={`${TD} ${FOLD.wideColumnClassName}`} />
+                    {/* Not split: a removed app's checks lose their schedule with it. */}
+                    <td className={TD} />
+                    <td className={TD} />
+                    <td className={`${TD} ${FOLD.wideColumnClassName}`}>
+                      <span className="block h-1.5 rounded-full bg-ink-700">
+                        <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
+                      </span>
+                    </td>
+                    <td className={TD} />
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <ul className={`${FOLD.cardsClassName} px-[18px] pb-[18px]`}>
+            {apps.map((app) => (
+              <li key={app.appId} className="flex flex-col gap-2 rounded-lg border border-ink-700 px-4 py-3.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <Link href={appPath.page(app.appId)} className="truncate font-mono text-fg hover:underline">
+                    {nameOf.get(app.appId) ?? app.appSlug}
+                  </Link>
+                  <span className="whitespace-nowrap font-mono text-[15px]">{usd(app.spendUsd)}</span>
+                </div>
+                <span className="block h-1.5 rounded-full bg-ink-700">
+                  <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(app.spendUsd, health.totalSpendUsd)}%` }} />
+                </span>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted">
+                  <span>
+                    <span className="font-mono">{usd(app.perDayUsd)}</span> a day
+                  </span>
+                  <span>
+                    <span className="font-mono">{usd(app.scheduled.usd)}</span> scheduled, {countLine(app.scheduled.count, "none")}
+                  </span>
+                  <span>
+                    <span className="font-mono">{usd(app.onRequest.usd)}</span> on request, {countLine(app.onRequest.count, "none")}
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-2 text-xs text-fg-muted">
+                  Last check
+                  <LastCheck app={app} opened={opened?.appId === app.appId} inline />
+                </div>
+              </li>
+            ))}
+            {outside && (
+              <li className="flex flex-col gap-2 rounded-lg border border-ink-700 px-4 py-3.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-fg-muted">Outside your apps</span>
+                  <span className="whitespace-nowrap font-mono text-[15px]">{usd(outside.usd)}</span>
+                </div>
+                <span className="block h-1.5 rounded-full bg-ink-700">
+                  <span className="block h-1.5 rounded-full bg-accent" style={{ width: `${sharePercent(outside.usd, health.totalSpendUsd)}%` }} />
+                </span>
+                <span className="text-xs text-fg-muted">
+                  {countLine(outside.checks, "none")} · <span className="text-fg-faint">previews, one-off addresses, removed apps</span>
+                </span>
+              </li>
+            )}
+          </ul>
         </section>
       )}
 

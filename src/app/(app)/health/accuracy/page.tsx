@@ -3,6 +3,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
 import { DEFAULT_SELF_HOSTS, isSelfHost } from "@/agent/self-hosts";
 import { systemWide } from "@/lib/tenant-db";
+import { TABLE_CLASS } from "@/lib/table-fold";
 
 // How often we were right (CHE-99).
 //
@@ -254,13 +255,13 @@ export default async function AccuracyPage() {
           {perApp.length > 0 && (
             <div className="card p-6">
               <p className="section-label">by app</p>
-              <table className="mt-3 w-full text-sm">
+              <table className={`${TABLE_CLASS} mt-3`}>
                 <thead>
                   <tr className="border-b border-ink-700 text-left text-xs text-fg-faint">
                     <th className="pb-2 font-normal">app</th>
-                    <th className="pb-2 text-right font-normal">filed</th>
-                    <th className="pb-2 text-right font-normal">closed</th>
-                    <th className="pb-2 text-right font-normal">rejected</th>
+                    <th className="w-[72px] pb-2 text-right font-normal">filed</th>
+                    <th className="w-[72px] pb-2 text-right font-normal">closed</th>
+                    <th className="w-[80px] pb-2 text-right font-normal">rejected</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono">
@@ -268,7 +269,7 @@ export default async function AccuracyPage() {
                     <tr key={a.slug} className="border-b border-ink-700/50 last:border-0">
                       {/* The score is about a specific app of theirs, so it
                           should be one click from that app, not a dead string. */}
-                      <td className="py-2">
+                      <td className="truncate py-2">
                         <Link
                           href={`/health/apps/${a.id}`}
                           className="transition-colors hover:text-accent"
