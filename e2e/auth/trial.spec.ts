@@ -120,8 +120,23 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
   }
 
   expect(created.status()).toBe(201);
-  const { slug } = (await created.json()) as { slug: string };
+  const { slug, trialEndsAt } = (await created.json()) as { slug: string; trialEndsAt: string | null };
   expect(slug).toBe("example.com");
+
+  // The trial stamp itself, off the same answer (the cards no longer show
+  // it, Codex on #270). Free: a date within WATCH_TRIAL_DAYS of now — or
+  // earlier, when a re-run reuses a watch whose clock started on an earlier
+  // night (the clock is not restarted on resume). Paid: null, never expires.
+  // Which plan the nightly user is on is not readable from any public surface,
+  // so both are legitimate; what is not is a Free watch with no stamp at all,
+  // which would run forever — and a paid watch with one.
+  const now = Date.now();
+  if (trialEndsAt !== null) {
+    const ends = Date.parse(trialEndsAt);
+    expect(Number.isNaN(ends)).toBe(false);
+    expect(ends).toBeLessThanOrEqual(now + WATCH_TRIAL_DAYS * DAY_MS + 60_000);
+    expect(ends).toBeGreaterThan(now - 365 * DAY_MS);
+  }
 
   try {
     // The app's card on Health → All apps (CHE-348 moved the apps off the old
@@ -136,12 +151,12 @@ test("enable Daily Watch: the trial is stamped and shown on the dashboard", asyn
     await expect(card.getByRole("link", { name: "Settings" })).toBeVisible();
     const text = (await card.innerText()).toLowerCase();
 
-    // The schedule label (src/lib/all-apps.ts scheduleLabel): a fresh watch on
-    // Free is "Daily" while its trial runs and "Trial ended" after it — a re-run
-    // of this spec may reuse a watch created more than WATCH_TRIAL_DAYS ago.
-    // On a paid plan it is "Daily" too. Anything else means the watch the API
+    // The schedule label (src/lib/all-apps.ts scheduleLabel) must agree with
+    // the stamp: "Trial ended" once a Free trial's date has passed, "Daily"
+    // before that and on a paid plan. Anything else means the watch the API
     // just created is not the one the page shows.
-    expect(text).toMatch(/\bdaily\b|trial ended/);
+    const ended = trialEndsAt !== null && Date.parse(trialEndsAt) <= now;
+    expect(text).toMatch(ended ? /trial ended/ : /\bdaily\b/);
     expect(text).not.toMatch(/not scheduled|\bpaused\b/);
   } finally {
     // Never leave a recurring daily agent run behind on the dogfood account.

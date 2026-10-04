@@ -46,6 +46,8 @@ export async function POST(req: Request) {
     case "gated":
       return NextResponse.json({ error: result.reason }, { status: 403 });
     case "ok":
-      return NextResponse.json({ slug: result.slug }, { status: 201 });
+      // trialEndsAt (ISO) on a Free plan's watch, null on a paid one — the one
+      // place the trial stamp is readable since the apps moved to Health → All apps.
+      return NextResponse.json({ slug: result.slug, trialEndsAt: result.trialEndsAt?.toISOString() ?? null }, { status: 201 });
   }
 }
