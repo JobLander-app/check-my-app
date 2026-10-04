@@ -2,28 +2,23 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ISSUE_MARKS, type IssueMark } from "@/lib/issues-page";
 
-// The owner's answer to a problem, from the Issues list (CHE-360). The same
-// four marks the check's own page sets, written the same way — PATCH
-// /api/findings/{id} on the finding of the problem's latest sighting — so a
-// mark set here is the one the next check and the tracker rules read
-// (Finding.mark; src/components/findings-list.tsx).
-const MARKS = [
-  { mark: "known", label: "That's fine" },
-  { mark: "watch", label: "Watch it" },
-  { mark: "fixed", label: "Mark as fixed" },
-  { mark: "false_positive", label: "Dispute" },
-] as const;
-
-type Mark = (typeof MARKS)[number]["mark"] | "none";
-
-export function IssueMarks({ findingId, mark: initial }: { findingId: string; mark: string }) {
+// The owner's answer to a problem (CHE-360). The same four marks the check's
+// own page sets, written the same way — PATCH /api/findings/{id} on the
+// finding of the problem's latest sighting — so a mark set here is the one the
+// next check and the tracker rules read (Finding.mark;
+// src/components/findings-list.tsx). The state and the write live in one hook
+// shared by the two places that answer: the four links on a problem's own page
+// (IssueMarks below) and the Actions menu on an Issues row
+// (src/components/issue-actions.tsx, CHE-413).
+export function useIssueMark(findingId: string, initial: string) {
   const router = useRouter();
-  const [mark, setMark] = useState<Mark>(initial as Mark);
+  const [mark, setMark] = useState<IssueMark>(initial as IssueMark);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  async function set(next: Mark) {
+  async function set(next: IssueMark) {
     setBusy(true);
     setFailed(false);
     const prev = mark;
@@ -43,9 +38,15 @@ export function IssueMarks({ findingId, mark: initial }: { findingId: string; ma
     setBusy(false);
   }
 
+  return { mark, busy, failed, set };
+}
+
+export function IssueMarks({ findingId, mark: initial }: { findingId: string; mark: string }) {
+  const { mark, busy, failed, set } = useIssueMark(findingId, initial);
+
   return (
     <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-      {MARKS.map((m) => (
+      {ISSUE_MARKS.map((m) => (
         <button
           key={m.mark}
           type="button"

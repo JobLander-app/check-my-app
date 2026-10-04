@@ -8,6 +8,8 @@ import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
 import { extensionDisplayName } from "@/lib/extension-target";
 import { integrationsLabel } from "@/lib/app-page";
+import { appsRunningTheAction, teamRunsTheAction } from "@/lib/release-action";
+import { GitHubCard } from "@/components/github-card";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -42,10 +44,11 @@ async function analyticsConnection(
 }
 
 // Integrations (CHE-351 shell, CHE-356): the connections the whole team
-// shares. The PostHog flow comes back here with ?integration=…. What is set
-// per app — the tracker and its board, the analytics project, webhooks — is on
-// that app's Integrations section, and every app is one click away from here,
-// connected or not.
+// shares — the analytics connection, and GitHub, where a release's check comes
+// from (CHE-413). The PostHog flow comes back here with ?integration=…. What
+// is set per app — the tracker and its board, the analytics project, webhooks
+// — is on that app's Integrations section, and every app is one click away
+// from here, connected or not.
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -53,7 +56,9 @@ export default async function IntegrationsPage({
 }) {
   const { integration } = await searchParams;
   const { db, team } = await requireUser();
-  const [posthog, apps] = await Promise.all([
+  // GitHub twice: once for the team's card, and per app for the list — the
+  // same fact the app's own card states.
+  const [posthog, apps, fromAction, actionApps] = await Promise.all([
     analyticsConnection(db, team.id),
     db.app.findMany({
       where: { ...teamOwned(team.id) },
@@ -61,9 +66,10 @@ export default async function IntegrationsPage({
       select: {
         id: true, appSlug: true, targetKind: true, targetUrl: true, posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
         tracker: { select: { externalOrg: true } },
-        repo: { select: { id: true } },
       },
     }),
+    teamRunsTheAction(db, team.id),
+    appsRunningTheAction(db, team.id),
   ]);
   const notice = integrationNotice(integration);
 
@@ -86,12 +92,16 @@ export default async function IntegrationsPage({
 
       <AnalyticsConnection connection={posthog} />
 
+      <div className="mt-6">
+        <GitHubCard connected={fromAction} scope="team" />
+      </div>
+
       {apps.length > 0 && (
         <section className="card mt-6 p-5">
           <h2 className="text-lg font-medium">Per app</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            The tracker, the analytics project, the repository and webhooks are each app&apos;s own. Open an app to
-            connect or change them.
+            The tracker, the analytics project and webhooks are each app&apos;s own. Open an app to connect or change
+            them.
           </p>
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
@@ -105,7 +115,7 @@ export default async function IntegrationsPage({
                     {integrationsLabel({
                       tracker: app.tracker !== null,
                       analyticsProject: app.posthogProjectName,
-                      repo: app.repo !== null,
+                      github: actionApps.has(app.id),
                       webhook: Boolean(app.webhookUrl),
                       slack: Boolean(app.slackWebhookUrl),
                     })}

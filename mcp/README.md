@@ -120,18 +120,20 @@ Every successful result carries `ok: true`. Ids: `app_id` from `list_apps` /
   on_demand, `frequency`, `next_run_at`, `trial_days_left`), `last_run`
   (`run_id`, `status`, `verdict`, `finished_at`).
 - **`create_app`** `{url, scenarios?, limits?, notes?, test_email?,
-  test_password?, test_accounts?, store_password?, notify_email?, frequency?}` — add an app,
+  test_password?, test_accounts?, store_password?, frequency?}` — add an app,
   exactly as the onboarding form does: passwords are stored encrypted, and a
   website gets a recurring check (daily by default) within the team's plan —
-  the first one is scheduled automatically. `test_email`/`test_password` is the
+  the first one is scheduled automatically. Its verdicts go to the team members
+  chosen in the app's settings on the site (the team's admins until someone is
+  chosen). `test_email`/`test_password` is the
   `default` account; `test_accounts: [{label, email, password}]` adds named
   ones (`admin`, `free user`), and a scenario that names one ("As admin:
   refunds work") is checked signed in as it. `store_password` is the
   storefront password of a password-protected store (Shopify's "Enter store
   password" page); every check enters it, and it is never returned.
 - **`update_app`** `{app_id, scenarios?, limits?, notes?, test_email?,
-  test_password?, test_accounts?, remove_test_accounts?, store_password?,
-  notify_email?}` — only the fields passed change; `""` clears a field, and
+  test_password?, test_accounts?, remove_test_accounts?, store_password?}` —
+  only the fields passed change; `""` clears a field, and
   `test_password: ""` / `store_password: ""` removes the stored password. `test_accounts` adds a named account or updates
   the one stored under that label (a password left out is kept);
   `remove_test_accounts: ["admin"]` deletes one.
@@ -206,7 +208,7 @@ titles. `get_review` answers *what do I do about it?*:
 | `run` | `{id, status, verdict, deploy, startedAt, completedAt, appSlug}` |
 | `bottom_line` | The verdict in a sentence |
 | `journeys[]` | `{title, status, summary, steps[]}` — every step as walked: `order`, `label`, `attempted`, `observed`, `status`, `unverified_reason` |
-| `findings[]` | `{number, title, category, severity, where, what_we_tried[], what_happened, why_it_matters, evidence[]}`; evidence URLs are absolute |
+| `findings[]` | `{number, title, category, severity, priority, where, what_we_tried[], what_happened, why_it_matters, evidence[]}`; evidence URLs are absolute. `priority` is P0–P3, the same scale as Health → Issues: P0 existing users cannot pay, sign in or reach their data; P1 broken or exposed, or existing users at risk; P2 new visitors meet something risky or confusing; P3 polish |
 | `plan_results` | Always `[]` today; reserved for the plan-driven check |
 | `next_actions[]` | `{finding, symptom, how_to_know_it_is_gone}` — per finding, the sentence the next check must be able to say |
 | `coverage` | `{pages_not_opened[], unverified[]}` — what this run did **not** establish |

@@ -65,7 +65,6 @@ export async function createApp(
       writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
       scopeHints: String(formData.get("scopeHints") ?? ""),
       userNotes: String(formData.get("userNotes") ?? ""),
-      notifyEmail: String(formData.get("notifyEmail") ?? ""),
       frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
       pickupLabels: list(formData.get("pickupLabels")),
       repoLabel: String(formData.get("repoLabel") ?? ""),

@@ -184,9 +184,9 @@ export async function revokeApiKey(id: string): Promise<void> {
 // Edit an app's settings after onboarding (CHE-64). Mirrors createApp's field →
 // record mapping EXACTLY so the settings page and onboarding write the same
 // places: creds/scope/notes on App (test creds also mirrored onto Watch, as
-// onboarding does), cadence + notify email on Watch, ticket params on
-// TicketPolicy. The password is write-only: a blank submission leaves
-// testPasswordEnc untouched on both records.
+// onboarding does), cadence on Watch, ticket params on TicketPolicy. The
+// password is write-only: a blank submission leaves testPasswordEnc untouched
+// on both records.
 //
 // CHE-315: the rules are in src/lib/app-settings.ts, shared with the MCP
 // update_app tool; this action reads its form.
@@ -202,6 +202,9 @@ export async function revokeApiKey(id: string): Promise<void> {
 // A refusal (a cadence the plan does not allow, a bad account) goes back to
 // the section as a sentence, where the form is — it used to be thrown, and the
 // reader got an error page.
+//
+// "Who hears about it" has no field here: its one form is setAppNotifiers
+// (CHE-413 removed the escalation address that used to be the app's field).
 export async function updateAppSettings(appId: string, section: string, formData: FormData) {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.settings.write");
@@ -228,11 +231,9 @@ export async function updateAppSettings(appId: string, section: string, formData
             // CHE-322: the named accounts' rows, saved with the default login.
             testAccounts: testAccountsFromForm(formData),
           }
-        : section === "notifications"
-          ? { notifyEmail: text("notifyEmail") }
-          : section === "integrations"
-            ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
-            : null;
+        : section === "integrations"
+          ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
+          : null;
   if (!patch) throw new Error("unknown settings section");
 
   const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, patch);

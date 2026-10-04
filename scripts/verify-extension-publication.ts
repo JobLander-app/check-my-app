@@ -163,7 +163,15 @@ async function main() {
   }
   assert.equal(fixture.contextCalls, 0, "Private evidence is rejected before storage is consulted");
   assert.equal((await get(["transcripts", "public-audit.json"])).status, 200);
-  const verdictMocks: Record<string, string> = { ...mocks, "@/lib/db": "export const getDbFromContext = async () => fixture.db;" };
+  const verdictMocks: Record<string, string> = {
+    ...mocks,
+    "@/lib/db": "export const getDbFromContext = async () => fixture.db;",
+    // The review reads the app's history for each finding's priority (CHE-413,
+    // src/lib/recurring.ts), whose SQL is built with the client's tag; the
+    // engine behind the client is a wasm module this bundle has no loader for.
+    // The fixture run belongs to no app, so no history is read.
+    "@/generated/prisma/client": "export const Prisma = { sql: () => ({}), empty: {}, join: () => ({}) };",
+  };
   const verdictBundle = await build({ entryPoints: ["src/app/api/runs/[id]/verdict/route.ts"], bundle: true, write: false, platform: "node", format: "cjs",
     plugins: [{ name: "verdict-boundaries", setup(build) {
       build.onResolve({ filter: /.*/ }, args => verdictMocks[args.path] ? { path: args.path, namespace: "fixture" } : undefined);

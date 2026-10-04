@@ -18,9 +18,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ISSUES_FILTERS, VIEW_LABEL, inIssuesFilter, issueView, issuesFilter, issuesHref, issuesLine, portions, seenLine, sortIssues, ticketLabel,
+  ISSUES_FILTERS, ISSUE_MARKS, VIEW_LABEL, inIssuesFilter, issuePriorityOf, issueView, issuesFilter, issuesHref, issuesLine, markLabel, portions,
+  priorityFilter, seenLine, sortIssues, ticketLabel,
   type IssueView,
 } from "../src/lib/issues-page";
+import type { Priority } from "../src/lib/issue-priority";
 import { CHECKS_PAGE, checksHref, checksLine, outcome, runNumberParam, startedFilter, startedLabel, whenLine } from "../src/lib/checks-page";
 import { BY_SCHEDULE, ON_REQUEST, startedBySchedule } from "../src/lib/started-via";
 import type { RecurringIssue } from "../src/lib/recurring";
@@ -76,17 +78,40 @@ eq("seen once", seenLine(row("new", [290])), "Seen in check #290");
 eq("seen in a row", seenLine(row("recurring", [278, 284])), "Seen in 2 checks in a row, #278 to #284");
 eq("gone, with the check that looked again", seenLine(row("gone", [267], 275)), "Seen in check #267. Gone by check #275");
 
+const P = (priority: Priority, view: IssueView, severity: string, lastSeenRunNumber: number) => ({ priority, view, issue: { severity, lastSeenRunNumber } });
 const order = sortIssues([
-  { view: "gone" as IssueView, issue: { severity: "high", lastSeenRunNumber: 300 } },
-  { view: "stale" as IssueView, issue: { severity: "high", lastSeenRunNumber: 280 } },
-  { view: "fresh_new" as IssueView, issue: { severity: "low", lastSeenRunNumber: 294 } },
-  { view: "fresh_new" as IssueView, issue: { severity: "high", lastSeenRunNumber: 290 } },
-  { view: "fresh_recurring" as IssueView, issue: { severity: "low", lastSeenRunNumber: 284 } },
+  P("P2", "gone", "high", 300),
+  P("P2", "stale", "high", 280),
+  P("P2", "fresh_new", "low", 294),
+  P("P2", "fresh_new", "high", 290),
+  P("P2", "fresh_recurring", "low", 284),
 ]).map((r) => `${r.view}/${r.issue.severity}`).join(" ");
-eq("order: what keeps coming back, then new by severity, then not checked again, gone last", order, "fresh_recurring/low fresh_new/high fresh_new/low stale/high gone/high");
+eq("order at one priority: what keeps coming back, then new by severity, then not checked again, gone last", order, "fresh_recurring/low fresh_new/high fresh_new/low stale/high gone/high");
+const byPriority = sortIssues([P("P3", "fresh_recurring", "high", 300), P("P1", "known", "low", 200), P("P0", "stale", "low", 100), P("P2", "fresh_new", "high", 290)])
+  .map((r) => r.priority).join(" ");
+eq("order: the most urgent first among what is still there — a P0 not checked again stands above a P3 that keeps coming back", byPriority, "P0 P1 P2 P3");
+const settledLast = sortIssues([P("P0", "gone", "high", 300), P("P0", "not_a_bug", "high", 299), P("P3", "fresh_new", "low", 100), P("P1", "gone", "low", 200), P("P2", "stale", "low", 150)])
+  .map((r) => `${r.priority}/${r.view}`).join(" ");
+eq("order: what is gone or ruled not a bug sits below everything still there, however urgent it was", settledLast, "P2/stale P3/fresh_new P0/not_a_bug P0/gone P1/gone");
+
+// The priority of a row, from what recurrence recorded of the latest sighting (src/lib/issue-priority.ts has the rule itself).
+const pri = (o: Partial<Parameters<typeof issuePriorityOf>[0]>) => issuePriorityOf({ category: "broken", severity: "high", where: "/", timesSeen: 1, audience: "unknown", ...o });
+eq("a row: broken for existing users at the checkout → P0", pri({ where: "/checkout → Pay", audience: "existing_users" }), "P0");
+eq("a row: the same place, who hit it unknown → P1 (unknown is never promoted)", pri({ where: "/checkout → Pay" }), "P1");
+eq("a row: broken three checks in a row, anywhere → P0", pri({ where: "/about", timesSeen: 3 }), "P0");
+eq("a row: polish seen ten times → P3", pri({ category: "polish", severity: "low", timesSeen: 10 }), "P3");
+eq("a row: confusing for new visitors → P2", pri({ category: "confusing", severity: "medium", audience: "new_visitors" }), "P2");
+eq("a row: confusing once, for whom unknown → P3", pri({ category: "confusing", severity: "medium" }), "P3");
+eq("a row: confusing that keeps coming back → P2", pri({ category: "confusing", severity: "medium", timesSeen: 2 }), "P2");
+eq("priority filter: a level", priorityFilter("P1"), "P1");
+eq("priority filter: anything else is none", priorityFilter("p1; drop"), null);
+eq("priority filter: absent is none", priorityFilter(undefined), null);
 
 eq("address: the default", issuesHref("latest"), "/health/issues");
 eq("address: a filter and an app", issuesHref("gone", "app1"), "/health/issues?show=gone&app=app1");
+eq("address: a priority", issuesHref("latest", null, "P0"), "/health/issues?p=P0");
+eq("address: all three", issuesHref("all", "app1", "P2"), "/health/issues?show=all&app=app1&p=P2");
+check("the four answers, under the words the row shows", ISSUE_MARKS.map((m) => m.mark).join(",") === "known,watch,fixed,false_positive" && markLabel("known") === "That's fine" && markLabel("none") === null && markLabel("x") === null);
 eq("ticket: a tracker key", ticketLabel({ externalIssueId: "JOB-1037", status: "open" }), "JOB-1037 · open");
 eq("ticket: done in the tracker, not yet confirmed by a check", ticketLabel({ externalIssueId: "CHE-79", status: "fixed" }), "CHE-79 · marked done");
 eq("ticket: an opaque id is not shown as a key", ticketLabel({ externalIssueId: "3f2a9c1e-77aa-4c0e-9f43-1b2d3e4f5a6b", status: "suppressed" }), "Ticket · closed as not a bug");
@@ -132,7 +157,22 @@ check("a page is fifty checks", CHECKS_PAGE === 50);
 const issues = read("src/app/(app)/health/issues/page.tsx");
 const checks = read("src/app/(app)/health/checks/page.tsx");
 const marks = read("src/components/issue-marks.tsx");
+const actions = read("src/components/issue-actions.tsx");
 check("Issues reads recurrence — the source of All apps' Recurring column and each app's 'Keeps coming back'", /teamRecurrences\(db, team\.id\)/.test(issues));
+// CHE-413: the priority, first in the row, sorted and filtered, with its legend.
+check("every row gets its priority from the one rule, and the row and the card lead with it — before the title",
+  /priority: issuePriorityOf\(r\.issue\)/.test(issues) && (issues.match(/<PriorityBadge priority=\{p\.priority\} \/>\s*<div className="min-w-0">\s*<Link href=\{p\.href\}/g) ?? []).length === 2);
+check("the priority filter reads ?p and the chips carry it along with the kind and the app",
+  /priorityFilter\(p\)/.test(issues) && /issuesHref\(f\.key, appId, priority\)/.test(issues) && /issuesHref\(filter, a\.id, priority\)/.test(issues) && /issuesHref\(filter, appId, pr\)/.test(issues));
+check("the legend says what each level means, one line each, from the same table the badge reads",
+  /aria-label="What the priorities mean"/.test(issues) && /PRIORITIES\.map\(\(pr\) =>/.test(issues) && /PRIORITY_META\[pr\]\.meaning/.test(issues));
+check("the owner's answers sit under one Actions button on the row and on the card, the answer given as text",
+  /aria-haspopup="menu"/.test(actions) && /role="menuitemradio"/.test(actions) && /markLabel\(mark\)/.test(actions) &&
+    (issues.match(/<IssueActions findingId=\{p\.marks\.findingId\} mark=\{p\.marks\.mark\} \/>/g) ?? []).length === 2 && !/IssueMarks/.test(issues));
+check("the menu closes on a click anywhere else (a backdrop), on Escape and on a wheel turn — no effect, no document listener",
+  /aria-label="Close menu"/.test(actions) && /onWheel=\{close\}/.test(actions) && /e\.key === "Escape" && close\(\)/.test(actions) && !/addEventListener/.test(actions) && !/useEffect/.test(actions));
+check("the menu writes the mark through the same hook as the problem's own page — one PATCH, one refresh", /useIssueMark\(findingId, initial\)/.test(actions) && /export function useIssueMark/.test(marks) && !/fetch\(/.test(actions));
+check("a reader who may not answer still sees the answer given", /<AnswerText mark=\{p\.mark\} \/>/.test(issues) && /markLabel\(mark\)/.test(issues));
 check("…and takes the app's latest check from the sidebar's own data, so 'in the latest checks' is one check on both",
   /latestOf = new Map\(shell\.apps\.map\(\(a\) => \[a\.id, a\.latestRunNumber\]\)\)/.test(issues));
 check("the findings and tickets read by id are read among the team's rows only",
@@ -144,7 +184,7 @@ check("a mark is offered to whom the route would let set it", /finding\.run\.own
 check("a mark is written the way the check's page writes it: PATCH /api/findings/{id}",
   /fetch\(`\/api\/findings\/\$\{findingId\}`, \{\s*method: "PATCH"/.test(marks) && /JSON\.stringify\(\{ mark: next \}\)/.test(marks) &&
     /fetch\(`\/api\/findings\/\$\{finding\.id\}`, \{\s*method: "PATCH"/.test(read("src/components/findings-list.tsx")));
-check("…the four marks the check's page has, no fifth", ["known", "watch", "fixed", "false_positive"].every((m) => marks.includes(`mark: "${m}"`)) && (marks.match(/\{ mark: "/g) ?? []).length === 4);
+check("…the four marks the check's page has, no fifth — one list, read by the links and by the menu", ISSUE_MARKS.length === 4 && /ISSUE_MARKS\.map\(/.test(marks) && /ISSUE_MARKS\.map\(/.test(actions) && !/\{ mark: "/.test(marks) && !/\{ mark: "/.test(actions));
 check("the mark buttons hold no effect: they act on the click", !/useEffect/.test(marks));
 
 check("Checks reads the team's rows, newest first by number, a page and one more",

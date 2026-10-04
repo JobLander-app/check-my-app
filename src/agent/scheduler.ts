@@ -12,7 +12,8 @@ import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib
 import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
-import { sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
+import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
+import { recipientsForApp } from "@/lib/recipients";
 import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
@@ -93,7 +94,6 @@ export async function runDueWatches(
       appSlug: true,
       targetUrl: true,
       frequency: true,
-      notifyEmail: true,
       testEmail: true,
       testPasswordEnc: true,
       // CHE-372: mirrored onto the watch like the test login.
@@ -201,7 +201,6 @@ export type DueWatch = {
   id: string;
   appSlug: string;
   targetUrl: string;
-  notifyEmail: string | null;
   testEmail: string | null;
   testPasswordEnc: string | null;
   storePasswordEnc: string | null;
@@ -246,7 +245,8 @@ export async function createWatchRun(
         teamId: watch.teamId,
         targetKind: watch.app?.targetKind,
       }),
-      notifyEmail: watch.notifyEmail,
+      // No address on a scheduled run: who hears about it is the app's list
+      // of team members (src/lib/recipients.ts), read when the verdict is out.
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
       focusAreas: watch.app?.focusAreas ?? null,
@@ -269,14 +269,15 @@ export async function createWatchRun(
 // plan's next credit runs it. The team hears it once per window
 // (balanceNoticeSentAt), not once per tick — by mail, because a watch that
 // quietly stops is the one nobody notices until the thing it was watching
-// breaks.
+// breaks. It goes to the people who hear the app's verdicts (CHE-413: the
+// same list, not a second address).
 async function pauseBalanceUsedUp(
   env: AgentEnv,
   bindings: AgentBindings,
   watch: {
     id: string;
     appSlug: string;
-    notifyEmail: string | null;
+    appId: string | null;
     ownerId: string | null;
     teamId: string;
     plan: UserPlan;
@@ -307,19 +308,23 @@ async function pauseBalanceUsedUp(
       plan: watch.plan,
       source: "watch",
     });
-    if (watch.notifyEmail) {
-      await sendBalanceUsedUp({
-        to: watch.notifyEmail,
+    // Each recipient on their own: one bad address must not keep the others
+    // from hearing it, and the key makes a retried tick a repeat, not a second
+    // mail (CHE-413). Stamped once anyone has it — a persistently refused
+    // address is logged, not re-tried against everyone else every tick.
+    const { told, of } = await eachRecipient(env, watch.appId, (to) =>
+      sendBalanceUsedUp({
+        to,
         appSlug: watch.appSlug,
         reason: watch.reason,
         apiKey: bindings.EMAIL_API_KEY,
         from: bindings.EMAIL_FROM,
         replyTo: bindings.EMAIL_REPLY_TO,
         baseUrl: bindings.APP_URL,
-      });
-    }
-    // Stamped only after a successful send, like the trial notice — a
-    // transient mail failure costs a retry next tick, not the notice.
+        idempotencyKey: noticeIdempotencyKey(`balance-used-up/${watch.teamId}/${windowStart.toISOString()}`, to),
+      }),
+    );
+    if (of > 0 && told === 0) throw new Error(`none of ${of} recipients could be told`);
     await env.db.team.update({ where: { id: watch.teamId }, data: { balanceNoticeSentAt: now } });
   } catch (err) {
     console.warn(
@@ -337,7 +342,7 @@ async function pauseExpiredTrial(
   watch: {
     id: string;
     appSlug: string;
-    notifyEmail: string | null;
+    appId: string | null;
     trialNoticeSentAt: Date | null;
   },
   now: Date,
@@ -349,18 +354,26 @@ async function pauseExpiredTrial(
     data: { nextRunAt: new Date(now.getTime() + TRIAL_RECHECK_HOURS * 60 * 60 * 1000) },
   });
 
-  if (watch.trialNoticeSentAt || !watch.notifyEmail) return;
+  if (watch.trialNoticeSentAt) return;
 
   try {
-    await sendWatchTrialPaused({
-      to: watch.notifyEmail,
-      appSlug: watch.appSlug,
-      apiKey: bindings.EMAIL_API_KEY,
-      from: bindings.EMAIL_FROM,
-      replyTo: bindings.EMAIL_REPLY_TO,
-      baseUrl: bindings.APP_URL,
-    });
-    // Stamped only after a successful send, so a transient Resend failure costs
+    // The people who hear the app's verdicts (CHE-413), each on their own and
+    // under a key, as the balance notice above. Nobody at all is left
+    // unstamped, so the first person added hears it on the next tick.
+    const { told, of } = await eachRecipient(env, watch.appId, (to) =>
+      sendWatchTrialPaused({
+        to,
+        appSlug: watch.appSlug,
+        apiKey: bindings.EMAIL_API_KEY,
+        from: bindings.EMAIL_FROM,
+        replyTo: bindings.EMAIL_REPLY_TO,
+        baseUrl: bindings.APP_URL,
+        idempotencyKey: noticeIdempotencyKey(`trial-paused/${watch.id}`, to),
+      }),
+    );
+    if (of === 0) return;
+    if (told === 0) throw new Error(`none of ${of} recipients could be told`);
+    // Stamped only once somebody has it, so a transient Resend failure costs
     // a retry on the next tick rather than the notice itself.
     await env.db.watch.update({
       where: { id: watch.id },
@@ -371,4 +384,25 @@ async function pauseExpiredTrial(
       `[scheduler] trial-paused email for watch ${watch.id} failed: ${err instanceof Error ? err.message : err}`,
     );
   }
+}
+
+// One notice to each of the app's recipients (src/lib/recipients.ts), each
+// send on its own: a refused address is logged and the rest are still told.
+// Returns how many were told, of how many there were.
+async function eachRecipient(
+  env: AgentEnv,
+  appId: string | null,
+  send: (to: string) => Promise<void>,
+): Promise<{ told: number; of: number }> {
+  const recipients = (await recipientsForApp(env.db, appId)).to;
+  let told = 0;
+  for (const to of recipients) {
+    try {
+      await send(to);
+      told++;
+    } catch (err) {
+      console.warn(`[scheduler] notice to one recipient of app ${appId} failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  return { told, of: recipients.length };
 }
