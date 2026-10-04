@@ -5,6 +5,9 @@ import { TeamSwitcher } from "@/components/team-switcher";
 import { Button } from "@/components/ui/button";
 import { teamOwned } from "@/lib/tenant-db";
 import { toggleOwnNotifications } from "@/app/dashboard/actions";
+import { cookies } from "next/headers";
+import { parseTheme, THEME_COOKIE } from "@/lib/theme";
+import { ThemeSwitch } from "@/components/theme-switch";
 
 // CHE-277 — your own settings: everything whose effect stops at you
 // (src/lib/settings-boundary.ts).
@@ -18,6 +21,7 @@ export default async function AccountSettingsPage() {
   const { user, db, team } = await requireUser();
 
   const teams = await teamsOf(db, user.id);
+  const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
   const apps = await db.app.findMany({
     where: { ...teamOwned(team.id) },
     select: { id: true, appSlug: true, notifiers: { where: { userId: user.id }, select: { id: true } } },
@@ -58,7 +62,7 @@ export default async function AccountSettingsPage() {
           <ul className="mt-4 space-y-2">
             {apps.map((app) => (
               <li key={app.id} className="flex items-center justify-between gap-3">
-                <span className="text-sm">{app.appSlug}</span>
+                <span className="min-w-0 break-all text-sm">{app.appSlug}</span>
                 <form action={toggleOwnNotifications.bind(null, app.id)}>
                   <Button type="submit" variant="outline" className="py-1.5">
                     {app.notifiers.length > 0 ? "Stop emailing me" : "Email me"}
@@ -79,6 +83,16 @@ export default async function AccountSettingsPage() {
         </p>
         <div className="mt-4">
           <TeamSwitcher teams={teams} activeTeamId={team.id} />
+        </div>
+      </section>
+
+      <section className="card mt-6 p-6">
+        <h2 className="text-lg font-medium">How it looks</h2>
+        <p className="mt-2 text-sm text-fg-muted">
+          Dark or light, for this browser. System follows what your device is set to.
+        </p>
+        <div className="mt-4">
+          <ThemeSwitch current={theme} />
         </div>
       </section>
 

@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Bricolage_Grotesque, IBM_Plex_Mono } from "next/font/google";
 import { ClerkProvider, Show, UserButton } from "@clerk/nextjs";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { HOME_PATH, OG_IMAGE, SITE, TAGLINE } from "@/lib/site-metadata";
+import { htmlTheme, parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { SiteHeaderGate } from "@/components/site-header-gate";
 
@@ -49,14 +51,18 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // CHE-414: the theme is decided here, on the server, from the cookie the
+  // account page sets, and rendered as an attribute — the stylesheet does the
+  // rest (tailwind.config.ts). No attribute means the browser's preference.
+  const theme = htmlTheme(parseTheme((await cookies()).get(THEME_COOKIE)?.value));
   return (
     // Owner 2026-09-28: signing in lands in the workspace, not back on the
     // marketing page. The fallback applies whenever no redirect_url is given;
     // flows that sign in for a purpose (enable a watch on a verdict, export
     // specs) still pass their own and come back to it.
     <ClerkProvider signInFallbackRedirectUrl="/home" signUpFallbackRedirectUrl="/home">
-      <html lang="en" className={`${sans.variable} ${mono.variable}`}>
+      <html lang="en" className={`${sans.variable} ${mono.variable}`} data-theme={theme}>
         <body className="min-h-screen">
           {/* Product analytics (PostHog) — renders nothing; see src/lib/analytics.ts. */}
           <AnalyticsProvider />
