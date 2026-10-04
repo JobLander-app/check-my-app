@@ -36,19 +36,27 @@ export interface PriorityInput {
   audience: Audience;
 }
 
-// A place where money, a sign-in or the user's own data is at stake, read from
-// the path in `where` ("/checkout → Pay", "POST /api/auth/session → 500",
-// "Settings → Billing (/account/billing)"). A whole path segment, so
-// "/payload" is not money and "/checkout-guide" is a page about it, not it.
+// A place where money, a sign-in or the user's own data is at stake. `where`
+// is the finding's own words for the place — a path ("/checkout → Pay", "POST
+// /api/auth/session → 500", "Settings → Billing (/account/billing)") or a
+// label with no path at all ("Checkout → Pay", "Sign-in form"). Both are read:
+// a whole path segment, so "/payload" is not money and "/checkout-guide" is a
+// page about it; and a whole word of the prose, so "accountant" and "paying
+// attention" are not either. The prose list is the narrower one — "session",
+// "data" or "settings" as words are everyday words of a product's copy.
 const SENSITIVE_SEGMENT =
   /(?:^|[/?=&#])(sign-?in|log-?in|login|auth|session|password|checkout|cart|pay|payment|payments|billing|invoice|subscribe|subscription|account|accounts|settings|profile|data|export)(?=$|[/?=&#.\s)])/i;
+const SENSITIVE_WORD = /(?:^|[^\w/-])(sign[- ]?in|log[- ]?in|checkout|cart|pay|payment|payments|billing|invoice|subscribe|subscription|account|password)(?=$|[^\w/-])/i;
+const PATH_TOKEN = /(?:https?:\/\/[^\s/"'”’]+)?\/[A-Za-z0-9_\-.%/?=&#:[\]]*/g;
 
 export function sensitivePlace(where: string | null | undefined): boolean {
   if (!where) return false;
   // Every path-shaped token in the sentence, not only the first: "/pricing →
   // /checkout" is about the checkout.
-  const paths = where.match(/(?:https?:\/\/[^\s/"'”’]+)?\/[A-Za-z0-9_\-.%/?=&#:[\]]*/g) ?? [];
-  return paths.some((p) => SENSITIVE_SEGMENT.test(p.replace(/^https?:\/\/[^/]+/, "")));
+  const paths = where.match(PATH_TOKEN) ?? [];
+  if (paths.some((p) => SENSITIVE_SEGMENT.test(p.replace(/^https?:\/\/[^/]+/, "")))) return true;
+  // What is left once the paths are out: the words.
+  return SENSITIVE_WORD.test(where.replace(PATH_TOKEN, " "));
 }
 
 const DEFECT = new Set(["broken", "exposed", "risky"]);

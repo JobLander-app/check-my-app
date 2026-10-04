@@ -12,8 +12,9 @@
 import { buildTicketDraft } from "./ticket";
 import { decideTicketAction } from "./decision";
 import type { Tracker, TicketDraft } from "./types";
+import { audienceAt, type Audience } from "@/lib/audience";
 import { dedupKey, requestSignature } from "@/lib/dedup";
-import { issuePriority, type Priority } from "@/lib/issue-priority";
+import { PRIORITY_META, issuePriority, type Priority } from "@/lib/issue-priority";
 import { parseJson } from "@/lib/json";
 import type { FindingDetail } from "@/lib/types";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -23,8 +24,8 @@ import { alreadyScoped } from "@/lib/tenant-db";
 // caller can pass its own query result.
 export interface TicketFinding {
   anchor?: string | null;
-  // CHE-413: the priority as the caller knows it (Issues knows the streak and
-  // who hit it). Absent, it is computed from the finding alone.
+  // CHE-413: the priority as the caller knows it. Absent, fileFindingTicket
+  // reads it from the finding's own evidence (ticketPriority).
   priority?: Priority;
   // CHE-103: recorded on the link so the finding is found by pointer, not by
   // re-hashing prose that a later cleanup may rewrite. Optional because the
@@ -89,8 +90,36 @@ export function dedupKeyForFinding(
   });
 }
 
+// The priority on the ticket (CHE-413), the same rule as Issues and the
+// review, from what this finding's own check recorded: who hit it from the
+// step its anchor names (a credential filled before it makes it an existing
+// user's), and how many checks in a row have seen it — the ticket's own
+// count, this occurrence included. A caller that already knows the priority
+// passes it; nobody else guesses.
+export async function ticketPriority(
+  db: PrismaClient,
+  finding: Pick<TicketFinding, "runId" | "category" | "severity" | "detail" | "anchor" | "priority">,
+  timesSeen: number,
+): Promise<Priority> {
+  if (finding.priority) return finding.priority;
+  const detail = parseJson<FindingDetail>(finding.detail) ?? {};
+  const ref = parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
+  let audience: Audience = "unknown";
+  if (typeof ref?.journeyIndex === "number" && typeof ref?.stepIndex === "number") {
+    // The anchor indexes the check's journeys and their steps in order —
+    // Journey.order, Step.order — as every reader of it does
+    // (src/lib/recurring.ts, src/lib/shell-data.ts).
+    const journey = await db.journey.findFirst({
+      where: { runId: finding.runId, order: ref.journeyIndex },
+      select: { steps: { orderBy: { order: "asc" }, select: { status: true, actions: true } } },
+    });
+    if (journey) audience = audienceAt(journey.steps, ref.stepIndex);
+  }
+  return issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen, audience });
+}
+
 export function draftForFinding(
-  finding: TicketFinding,
+  finding: TicketFinding & { priority: Priority },
   run: TicketRun,
   policy: TicketPolicyFields | null,
   verdictUrl: string,
@@ -101,9 +130,7 @@ export function draftForFinding(
 
   return buildTicketDraft(
     {
-      priority:
-        finding.priority ??
-        issuePriority({ category: finding.category, severity: finding.severity, where: detail.where, timesSeen: 1, audience: "unknown" }),
+      priority: finding.priority,
       journeyTitle: detail.where ?? run.appSlug,
       failingStep: finding.title,
       failureSignature: `${finding.category}/${finding.severity}: ${finding.title}`,
@@ -152,7 +179,6 @@ export async function fileFindingTicket(opts: {
   recurrenceDetail?: string;
 }): Promise<FilingOutcome> {
   const { db, tracker, appId, finding, run, policy, ownerId } = opts;
-  const draft = draftForFinding(finding, run, policy, opts.verdictUrl);
   const key = dedupKeyForFinding(finding, run);
   // CHE-256: which team's settlements these are. A settlement outlives the App
   // row it came from (CHE-101), so it is stored with both — the team because
@@ -193,10 +219,16 @@ export async function fileFindingTicket(opts: {
     return { kind: "suppressed", identifier: existing.externalIssueId };
   }
 
+  // CHE-413: the priority, with this occurrence counted — a problem seen three
+  // checks in a row is P0 on the ticket as on Issues.
+  const priority = await ticketPriority(db, finding, action.kind === "comment" && existing ? existing.occurrences + 1 : 1);
+  const draft = draftForFinding({ ...finding, priority }, run, policy, opts.verdictUrl);
+
   if (action.kind === "comment" && existing) {
     const occurrences = existing.occurrences + 1;
     const body = [
       `Re-filed from CheckMyApp — still present in run #${run.runNumber} (${draft.title}).`,
+      `\n**Priority:** ${priority} — ${PRIORITY_META[priority].meaning}`,
       action.escalate
         ? `\nEscalating: this is occurrence ${occurrences} and the issue is still open — ` +
           `past the ${policy?.escalateAfterRuns ?? 3}-run threshold this app was configured with.`

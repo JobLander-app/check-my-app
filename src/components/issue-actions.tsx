@@ -17,7 +17,7 @@ import { useIssueMark } from "@/components/issue-marks";
 // State only — no effect watches anything.
 export function IssueActions({ findingId, mark: initial }: { findingId: string; mark: string }) {
   const { mark, busy, failed, set } = useIssueMark(findingId, initial);
-  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  const [at, setAt] = useState<{ top: number; left?: number; right?: number } | null>(null);
   const menuId = useId();
   const open = at !== null;
   const close = () => setAt(null);
@@ -25,7 +25,11 @@ export function IssueActions({ findingId, mark: initial }: { findingId: string; 
   function toggle(e: MouseEvent<HTMLButtonElement>) {
     if (open) return close();
     const box = e.currentTarget.getBoundingClientRect();
-    setAt({ top: box.bottom + 4, right: Math.max(8, window.innerWidth - box.right) });
+    // Hung from the button's edge nearer the middle of the screen, so it stays
+    // on the screen whether the button sits at the row's end (the table) or at
+    // the card's start (a phone).
+    const side = box.left < window.innerWidth / 2 ? { left: Math.max(8, box.left) } : { right: Math.max(8, window.innerWidth - box.right) };
+    setAt({ top: box.bottom + 4, ...side });
   }
 
   function choose(next: IssueMark) {
@@ -56,7 +60,7 @@ export function IssueActions({ findingId, mark: initial }: { findingId: string; 
             id={menuId}
             role="menu"
             aria-label="Your answer"
-            style={{ top: at.top, right: at.right }}
+            style={{ top: at.top, left: at.left, right: at.right }}
             onKeyDown={(e) => e.key === "Escape" && close()}
             className="fixed z-30 w-44 rounded-lg border border-ink-600 bg-ink-900 p-1 shadow-card"
           >

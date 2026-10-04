@@ -79,7 +79,9 @@ const ofWatchOrApp = naming.filter((rel) => /\b(watch|app|seed|Watch|App)\??\.no
 check("nowhere is it read off a Watch, an App or a settings patch", ofWatchOrApp.length === 0, ofWatchOrApp.join(", "));
 const scheduler = read("src/agent/scheduler.ts");
 check("the scheduler names no address: a scheduled run carries none", !/notifyEmail/.test(scheduler));
-check("…and its own two mails (balance used up, trial paused) go to the app's recipients", (scheduler.match(/recipientsForApp\(env\.db, watch\.appId\)/g) ?? []).length === 2);
+check("…and its own two mails (balance used up, trial paused) go to the app's recipients, each on their own, under a key",
+  (scheduler.match(/eachRecipient\(env, watch\.appId, \(to\) =>/g) ?? []).length === 2 && /recipientsForApp\(env\.db, appId\)/.test(scheduler) &&
+    /noticeIdempotencyKey\(`balance-used-up\/\$\{watch\.teamId\}\/\$\{windowStart\.toISOString\(\)\}`, to\)/.test(scheduler) && /noticeIdempotencyKey\(`trial-paused\/\$\{watch\.id\}`, to\)/.test(scheduler));
 const workflow = read("src/agent/workflow.ts");
 check("every notify gate in the workflow opens for a run of a saved app, address or not",
   (workflow.match(/if \(run\.notifyEmail \|\| run\.appId\)/g) ?? []).length === 4 && !/if \(run\.notifyEmail\)/.test(workflow));
