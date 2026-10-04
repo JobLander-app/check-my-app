@@ -87,6 +87,7 @@
     "verify:all-apps": "tsx --tsconfig tsconfig.json scripts/verify-all-apps.ts",
     "verify:app-page": "tsx --tsconfig tsconfig.json scripts/verify-app-page.ts",
     "verify:today": "tsx --tsconfig tsconfig.json scripts/verify-today.ts",
+    "verify:no-inner-html": "tsx --tsconfig tsconfig.json scripts/verify-no-inner-html.ts",
     "verify:check-page": "tsx --tsconfig tsconfig.json scripts/verify-check-page.ts",
     "verify:issues-checks": "tsx --tsconfig tsconfig.json scripts/verify-issues-checks.ts",
     "verify:app-settings-sections": "tsx --tsconfig tsconfig.json scripts/verify-app-settings-sections.ts",
@@ -133,6 +134,7 @@
     "verify:hands-off": "tsx --tsconfig tsconfig.json scripts/verify-hands-off.ts",
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "verify:code-standards": "tsx --tsconfig tsconfig.json scripts/verify-code-standards.ts",
+    "verify:theme-tokens": "tsx --tsconfig tsconfig.json scripts/verify-theme-tokens.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {

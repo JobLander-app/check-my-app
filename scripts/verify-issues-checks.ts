@@ -118,7 +118,7 @@ eq("outcome: finished without a verdict", outcome({ status: "completed", verdict
 eq("when", whenLine(new Date("2026-10-02T01:02:08Z")), "2 Oct, 01:02");
 eq("when: a hand-written prod date read as UTC elsewhere prints the same way", whenLine(new Date("2026-09-14T23:30:00Z")), "14 Sep, 23:30");
 eq("address: nothing chosen", checksHref({}), "/health/checks");
-eq("address: an app, scheduled, an earlier page, one price opened", checksHref({ app: "app1", started: "scheduled", before: 236, why: 230 }), "/health/checks?app=app1&started=scheduled&before=236&why=230#c230");
+eq("address: an app, scheduled, an earlier page", checksHref({ app: "app1", started: "scheduled", before: 236 }), "/health/checks?app=app1&started=scheduled&before=236");
 eq("filter: default", startedFilter(undefined), "all");
 eq("filter: unknown is the default", startedFilter("mine"), "all");
 eq("number from the address", runNumberParam("290"), 290);
@@ -156,7 +156,10 @@ check("its header's numbers are appHealth's — the ones All apps and Billing sh
   /app \? null : teamSpend\(db, team\.id\)/.test(checks) && /app \? appHealth\(db, team\.id, \{ only: app\.id \}\) : null/.test(checks) && !/appHealth\(db, team\.id\)[,)]/.test(checks));
 check("the sidebar's count leaves out a finding the latest check only restated on a carried journey",
   /cj\.carriedFromRunId IS NOT NULL\s+AND cj\."order" = json_extract\(f\.anchor, '\$\.stepRef\.journeyIndex'\)/.test(read("src/lib/shell-data.ts")));
-check("one price's reason is loaded, for a check on the page — not one per row", (checks.match(/explainPrice\(/g) ?? []).length === 1 && /runs\.find\(\(r\) => r\.runNumber === why\)/.test(checks));
+// CHE-411: a row's price is the modal's button with the check's public id; the
+// reason is loaded when it is pressed (GET /api/runs/{id}/price), not for
+// fifty rows on every page view.
+check("no price's reason is loaded with the page — the modal loads the one asked for", !/explainPrice\(/.test(checks) && /<CheckPrice\s+publicId=\{run\.publicId\}/.test(checks));
 check("a finished check opens inside the app, one that is running or did not finish on its own page",
   /result\.kind === "verdict" \? checkHref\(\{ appId: ownApp, runNumber: run\.runNumber, publicId: run\.publicId \}\) : `\/run\/\$\{run\.publicId\}`/.test(checks));
 check("a check that did not finish says it was not charged", /result\.kind === "unfinished" \? "not charged" : "—"/.test(checks));

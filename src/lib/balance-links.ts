@@ -9,5 +9,5 @@
 // Upgrade: the plan cards.
 export const PRICING_PATH = "/pricing";
 // Top up: the balance card on Billing, where the buttons are (CHE-351; it was
-// /dashboard#balance, which now arrives here too).
+// /dashboard#balance).
 export const BALANCE_PATH = "/settings/billing";

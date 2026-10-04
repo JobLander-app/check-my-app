@@ -123,10 +123,11 @@ eq("count: none scheduled", countLine(0, "not scheduled"), "not scheduled");
 // ── 3. The page ─────────────────────────────────────────────────────────────
 const page = read("src/app/(app)/settings/billing/page.tsx");
 check("the numbers are appHealth's — the same ones the sidebar and All apps show", /appHealth\(db, team\.id\)/.test(page) && !/spendByApp/.test(page));
-check("a price opens what the check did through the address: a link, no client code",
-  /href=\{`\/settings\/billing\?check=\$\{app\.appId\}#check`\}/.test(page) && !/^"use client"/.test(page) && !/useState|useEffect/.test(page));
-check("the opened check says what it did, how that compares, and its parts",
-  /opened\.latest\.price\.work/.test(page) && /opened\.latest\.price\.comparison/.test(page) && /opened\.latest\.price\.parts\.map/.test(page));
+// CHE-411: the reason is the one price modal every page opens, with the
+// explanation appHealth already loaded for the row; the page stays a server
+// component and no longer reads a ?check= from the address.
+check("a price opens what the check did in the price modal, from the row's own explanation",
+  /<CheckPrice\s+explanation=\{app\.latest\.price\}/.test(page) && !/^"use client"/.test(page) && !/useState|useEffect/.test(page) && !/\?check=|searchParams[^;]*check\?:/.test(page));
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("top-ups and the Stripe portal are offered only to those who may bill",
   /mayBill \? \(\s*<TopUpCta/.test(page) && /mayBill \? \(\s*<>\s*<ManageBillingButton \/>/.test(page));

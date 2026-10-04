@@ -58,7 +58,7 @@ export function AppShell({
         <div
           aria-hidden
           onClick={() => setOpen(false)}
-          className="fixed inset-0 z-40 bg-ink-950/70 min-[900px]:hidden"
+          className="fixed inset-0 z-40 bg-scrim/70 min-[900px]:hidden"
         />
       )}
 
