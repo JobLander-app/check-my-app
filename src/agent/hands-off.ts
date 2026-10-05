@@ -145,8 +145,13 @@ function leadsSomewhere(control: ControlSeen): boolean {
 const READS_ONLY =
   /\b(?:(?:add|apply|reset|clear(?: all)?|remove) (?:all |the |a )?(?:filters?|search|sorting)|search|filters?|log ?in|sign ?in|continue|next|show|find|preview|refresh)\b/gi;
 
+// A question asks, it does not do: "How do I get a refund?" is an FAQ
+// accordion, not a refund (the one false hold in CHE-407's replay of 483
+// customer clicks). A control is still judged by its other names.
+const ASKS = /\?\s*$/;
+
 function named(texts: string[], verbs: RegExp): string | null {
-  const hit = texts.find((t) => verbs.test(t.replace(READS_ONLY, " ")));
+  const hit = texts.find((t) => !ASKS.test(t) && verbs.test(t.replace(READS_ONLY, " ")));
   return hit ? hit.replace(/\s+/g, " ").trim().slice(0, 80) : null;
 }
 

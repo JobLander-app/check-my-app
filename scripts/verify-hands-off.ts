@@ -187,6 +187,13 @@ async function main() {
   check("a word that only reads does not cancel a verb beside it: \"Save and continue\" saves; \"Apply filter\" filters",
     BOTH.every(([t, rule]) => held(control(t), session) === rule) && READS.every((t) => held(control(t), session) === null),
     [...BOTH.filter(([t, rule]) => held(control(t), session) !== rule).map(([t]) => `${t}=${held(control(t), session)}`), ...READS.filter((t) => held(control(t), session) !== null)].join(" | "));
+  // CHE-407's replay of 483 customer clicks: the one false hold of the strict
+  // gates was an FAQ accordion, "How do I get a refund?". A question is read.
+  const QUESTIONS = ["How do I get a refund?", "Can I cancel my subscription?", "What happens when I delete a rule?", "Why was my order flagged?", "Need to reset your password?"];
+  check("a question is asked, not done: an FAQ heading that names a verb is not held — the same words as a command still are",
+    QUESTIONS.every((t) => held(control(t), session) === null) && held(control("Refund"), session) === "commit" && held(control("Cancel my subscription"), session) === "toggle" &&
+      held({ texts: ["How do I get a refund?", "Refund"], addresses: [], kind: "button" }, session) === "commit",
+    [...QUESTIONS.filter((t) => held(control(t), session) !== null).map((t) => `${t}=${held(control(t), session)}`)].join(" | "));
   check("a button with no name at all is not pressed in a person's account — and is, as before, anywhere else",
     held({ texts: [], addresses: [], kind: "button" }, session) === "unnamed" && held({ texts: [], addresses: [], kind: "input:submit" }, session) === "unnamed" &&
       held({ texts: [], addresses: [], kind: "" }, session) === null && held({ texts: [], addresses: [], kind: "a", link: "/x" }, session) === null &&
