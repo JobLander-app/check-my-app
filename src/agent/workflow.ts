@@ -83,6 +83,18 @@ import {
 } from "./notify-verdict";
 import { RUNAWAY_COST_USD } from "@/lib/plans";
 import { priceRun, voidRunPrice } from "./pricing";
+import { refreshOpenIssues } from "@/lib/open-issues";
+
+// CHE-399: the number beside Issues, recounted from the check that just became
+// the app's latest. Its failure is logged and swallowed: a run that finished is
+// finished, and a counter is not a reason to retry it (rule 4).
+async function countOpenIssues(env: AgentEnv, appId: string | null): Promise<void> {
+  try {
+    await refreshOpenIssues(env.db, appId);
+  } catch (err) {
+    console.warn(`[open-issues] recount failed for app ${appId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 // CHE-327: the runaway fuse. A NonRetryableError, so the engine does not spend
 // again by retrying, and an "internal:" message, so the run reads as ours.
@@ -412,6 +424,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-quick", async () => {
           await priceRun(env.db, runId);
         });
+        await step.do("count-open-issues-quick", () => countOpenIssues(env, run.appId));
 
         // CHE-289: measure here too. A smoke run walks nothing, and until now
         // it therefore asked the customer's analytics nothing — which starved
@@ -1186,6 +1199,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       await step.do("price", async () => {
         await priceRun(env.db, runId);
       });
+      // CHE-399: this check is now the app's latest (priced, with a verdict) —
+      // the number beside Issues is recounted from it. After the price, since
+      // "latest" is a priced check; in its own step with its own catch, since
+      // a counter never fails a run (rule 4).
+      await step.do("count-open-issues", () => countOpenIssues(env, run.appId));
 
       // Auto-file tracker tickets (CHE-50). Watch runs only, and only when the
       // owner connected a tracker — autoFileFindings decides both. Non-fatal by

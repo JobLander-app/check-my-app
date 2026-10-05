@@ -137,6 +137,7 @@
     "verify:telegram-webhook": "tsx --tsconfig tsconfig.json scripts/verify-telegram-webhook.ts",
     "verify:code-standards": "tsx --tsconfig tsconfig.json scripts/verify-code-standards.ts",
     "verify:theme-tokens": "tsx --tsconfig tsconfig.json scripts/verify-theme-tokens.ts",
+    "verify:open-issues": "tsx --tsconfig tsconfig.json scripts/verify-open-issues.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {
