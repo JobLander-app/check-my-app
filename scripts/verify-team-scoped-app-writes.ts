@@ -30,7 +30,7 @@ import { createStubDb } from "./fixtures/mcp-db";
 import { hashApiKey } from "@/lib/apiKeys";
 import { handleMcpRequest } from "@/lib/mcp/handler";
 import type { McpDeps } from "@/lib/mcp/tools";
-import { createAppForTeam, settingsActionFor, updateAppForTeam } from "@/lib/app-settings";
+import { createActionFor, createAppForTeam, settingsActionFor, updateAppForTeam } from "@/lib/app-settings";
 import { enableWatchForApp } from "@/lib/watch-enable";
 import { can } from "@/lib/scopes";
 
@@ -174,7 +174,15 @@ async function mcpDoor() {
   check("settingsActionFor: a login in the patch asks for the credentials scope, anything else the settings scope",
     settingsActionFor({ testPassword: "x" }) === "app.credentials.write" && settingsActionFor({ testEmail: "" }) === "app.credentials.write" &&
       settingsActionFor({ storePassword: null }) === "app.credentials.write" && settingsActionFor({ testAccounts: { remove: ["qa"] } }) === "app.credentials.write" &&
-      settingsActionFor({ scopeHints: "x", frequency: "daily", allowedOrigins: [] }) === "app.settings.write" && settingsActionFor({ testAccounts: { set: [] } }) === "app.settings.write");
+      settingsActionFor({ scopeHints: "x", frequency: "daily" }) === "app.settings.write" && settingsActionFor({ testAccounts: { set: [] } }) === "app.settings.write");
+  // Codex round 3 on #273: the allowed origins are where the stored login is
+  // typed — an origin a member controls would receive the admin's password.
+  check("settingsActionFor / createActionFor: the allowed origins are a credentials write too",
+    settingsActionFor({ allowedOrigins: ["https://evil.test"] }) === "app.credentials.write" && settingsActionFor({ allowedOrigins: [] }) === "app.credentials.write" &&
+      createActionFor({ targetUrl: "https://a.test", allowedOrigins: ["https://b.test"] }) === "app.credentials.write" && createActionFor({ targetUrl: "https://a.test", testEmail: "" }) === "app.settings.write");
+  const bobOrigins = await update("bob", { allowed_origins: ["https://bob-owns.test"] });
+  check("MCP update_app: a member may not add an allowed origin — refused by the credentials gate, nothing stored",
+    bobOrigins.isError && bobOrigins.out.code === "forbidden" && stub.table("app").find((a) => a.id === "app_0")?.allowedOrigins == null, JSON.stringify(bobOrigins.out));
 
   const zed = await disable("zed");
   check("MCP disable_watch: another team's admin is told the app is not found, and the watch runs on", zed.isError && zed.out.code === "not_found" && active() === true, JSON.stringify(zed.out));

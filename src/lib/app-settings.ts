@@ -236,14 +236,22 @@ export function settingsActionFor(patch: AppSettingsPatch): TeamAction {
     patch.testEmail !== undefined ||
     patch.testPassword !== undefined ||
     patch.storePassword !== undefined ||
-    Boolean(patch.testAccounts?.set?.length || patch.testAccounts?.remove?.length);
+    Boolean(patch.testAccounts?.set?.length || patch.testAccounts?.remove?.length) ||
+    // The allowed origins are where the stored login is typed (CHE-373:
+    // src/agent/instructions.ts, fillSecret in src/agent/tools.ts). Adding
+    // an origin is handing the password to that host — a credentials write
+    // (Codex round 3 on #273).
+    patch.allowedOrigins !== undefined;
   return writesLogin ? "app.credentials.write" : "app.settings.write";
 }
 
 // The same question of a new app: one added with a login stores a credential
-// the moment it exists. A form's empty login boxes are no login.
+// the moment it exists, and one added with origins names where a login will
+// be typed. A form's empty login boxes are no login.
 export function createActionFor(input: CreateAppInput): TeamAction {
-  const writesLogin = Boolean(input.testEmail?.trim() || input.testPassword || input.storePassword || input.testAccounts?.length);
+  const writesLogin = Boolean(
+    input.testEmail?.trim() || input.testPassword || input.storePassword || input.testAccounts?.length || input.allowedOrigins?.length,
+  );
   return writesLogin ? "app.credentials.write" : "app.settings.write";
 }
 
