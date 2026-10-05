@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { realD1 } from "./fixtures/real-d1";
-import { openIssuesOf, refreshOpenIssues } from "../src/lib/open-issues";
+import { appOfRun, openIssuesOf, recountOpenIssuesOfRun, refreshOpenIssues } from "../src/lib/open-issues";
 import { loadShellData } from "../src/lib/shell-data";
 import { teamRecurrences } from "../src/lib/recurring";
 import { inIssuesFilter, issueView } from "../src/lib/issues-page";
@@ -129,6 +129,27 @@ async function main() {
     const again = await refreshOpenIssues(db, "shop");
     const versionAfter = (await db.app.findUnique({ where: { id: "shop" }, select: { openIssuesVersion: true } }))!.openIssuesVersion;
     check("…and every recount that lands bumps the version", again === 1 && versionAfter === versionBefore + 2, JSON.stringify({ versionBefore, versionAfter }));
+
+    // 6 — a check made before the app was saved (no appId) counts against the
+    // team's only app of that address, as the history assigns it (Codex round
+    // 3 on #276); the team's second app of the same address makes it nobody's.
+    await db.app.create({ data: { id: "blog", teamId: "t", ownerId: "u", appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website" } });
+    const loose = { id: "l1", publicId: "p_l1", runNumber: 9, teamId: "t", appId: null, appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website",
+      status: "completed", verdict: "mostly_ok", priceUsd: 0.5, startedAt: day(9), createdAt: day(9), completedAt: day(9) };
+    await db.run.create({ data: loose as never });
+    await db.journey.create({ data: journey("l1", 0) });
+    await db.step.createMany({ data: [step("l1_j0", 0)] });
+    await db.finding.create({ data: finding("f_l1", "l1", "Comments do not post", "/post", 0, 0) });
+    check("6. the app a run counts against: its own, else the team's only app of its address, else nothing",
+      (await appOfRun(db, { appId: "shop", teamId: "t", appSlug: "whatever" })) === "shop" &&
+        (await appOfRun(db, { appId: null, teamId: "t", appSlug: "blog.test" })) === "blog" &&
+        (await appOfRun(db, { appId: null, teamId: null, appSlug: "blog.test" })) === null &&
+        (await appOfRun(db, { appId: null, teamId: "t", appSlug: "nobody.test" })) === null);
+    const viaRun = await recountOpenIssuesOfRun(db, loose);
+    check("…a mark on that check's finding recounts the app it belongs to", viaRun === 1 && (await db.app.findUnique({ where: { id: "blog" }, select: { openIssues: true } }))?.openIssues === 1, String(viaRun));
+    await db.user.create({ data: { id: "u2", clerkUserId: "ck_u2", email: "two@example.test" } });
+    await db.app.create({ data: { id: "blog2", teamId: "t", ownerId: "u2", appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website" } });
+    check("…and with a second app of that address in the team, the loose check is nobody's", (await appOfRun(db, loose)) === null && (await recountOpenIssuesOfRun(db, loose)) === null);
   } finally {
     await real.dispose();
   }
@@ -140,29 +161,32 @@ async function main() {
   // partial verdict and return early; the catch-after-verdict path prices too).
   const priceSteps = ["price", "price-quick", "price-signed-out", "price-closed-door"];
   const recountAfter = (label: string) =>
-    new RegExp(`await step\\.do\\("${label}", async \\(\\) => \\{\\s*await priceRun\\(env\\.db, runId\\);\\s*\\}\\);[\\s\\S]{0,400}await step\\.do\\("count-open-issues[a-z-]*", \\(\\) => countOpenIssues\\(env, run\\.appId\\)\\);`).test(workflow);
+    new RegExp(`await step\\.do\\("${label}", async \\(\\) => \\{\\s*await priceRun\\(env\\.db, runId\\);\\s*\\}\\);[\\s\\S]{0,400}await step\\.do\\("count-open-issues[a-z-]*", \\(\\) => countOpenIssues\\(env, run\\)\\);`).test(workflow);
   check(`workflow: every price step of a finished run (${priceSteps.join(", ")}) is followed by the recount, in a step of its own`, priceSteps.every(recountAfter),
     priceSteps.filter((l) => !recountAfter(l)).join(", "));
   check("…and so is the catch path that prices a run whose verdict was already written",
-    /await priceRun\(env\.db, runId\)\.catch\([\s\S]{0,400}await countOpenIssues\(env, run\.appId\);\s*return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(workflow));
+    /await priceRun\(env\.db, runId\)\.catch\([\s\S]{0,400}await countOpenIssues\(env, run\);\s*return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(workflow));
   check("the workflow's price steps are the only ones (a new terminal path is caught here)", (workflow.match(/await priceRun\(env\.db, runId\)/g) ?? []).length === priceSteps.length + 2);
   // Codex round 2 on #276: reconcile answers findings before the walk; a run
   // that then fails is not the app's latest, but those answers are real.
   check("…and the failed-run path recounts too, after the price is voided",
-    /\.then\(\(\) => voidRunPrice\(env\.db, runId\)\)[\s\S]{0,700}await countOpenIssues\(env, run\.appId\);\s*if \(isExtension && !budget\)/.test(workflow));
+    /\.then\(\(\) => voidRunPrice\(env\.db, runId\)\)[\s\S]{0,700}await countOpenIssues\(env, run\);\s*if \(isExtension && !budget\)/.test(workflow));
+  // Codex round 3 on #276: by the run, never by appId alone.
+  check("every recount goes by the run — its app, else the team's only app of its address — on all three doors",
+    /async function countOpenIssues\(env: AgentEnv, run: \{ appId: string \| null; teamId: string \| null; appSlug: string \}\): Promise<void> \{\s*await recountOpenIssuesOfRun\(env\.db, run\);\s*\}/.test(workflow) &&
+      !/recountOpenIssues\(|refreshOpenIssues\(/.test(workflow));
   check("the write is a compare-and-set on the row's version, retried a bounded number of times",
     /where: \{ id: appId, openIssuesVersion: app\.openIssuesVersion \},\s*data: \{ openIssues: open, openIssuesVersion: \{ increment: 1 \} \}/.test(read("src/lib/open-issues.ts")) &&
       /for \(let attempt = 0; attempt < RECOUNT_ATTEMPTS; attempt\+\+\)/.test(read("src/lib/open-issues.ts")));
   const lib = read("src/lib/open-issues.ts");
-  check("the recount never fails its caller: recountOpenIssues logs and swallows, and the workflow and both mark doors use it",
-    /export async function recountOpenIssues[\s\S]{0,200}try \{\s*return await recount\(db, appId\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(lib) &&
-      /async function countOpenIssues\(env: AgentEnv, appId: string \| null\): Promise<void> \{\s*await recountOpenIssues\(env\.db, appId\);\s*\}/.test(workflow));
+  check("the recount never fails its caller: recountOpenIssuesOfRun logs and swallows",
+    /export async function recountOpenIssuesOfRun[\s\S]{0,300}try \{\s*return await recount\(db, await appOfRun\(db, run\)\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(lib));
   const route = read("src/app/api/findings/[id]/route.ts");
-  check("PATCH /api/findings/{id} recounts the finding's app after the mark is written, best effort",
-    route.indexOf("await recountOpenIssues(prisma, existing.run.appId)") > route.indexOf("data: { mark: parsed.data.mark }") && !/refreshOpenIssues/.test(route));
+  check("PATCH /api/findings/{id} recounts by the finding's run after the mark is written, best effort",
+    route.indexOf("await recountOpenIssuesOfRun(prisma, existing.run)") > route.indexOf("data: { mark: parsed.data.mark }") && /teamId: true, appSlug: true/.test(route) && !/refreshOpenIssues/.test(route));
   const action = read("src/app/(app)/health/issues/actions.ts");
-  check("markFinding recounts the finding's app after the mark is written, best effort",
-    action.indexOf("await recountOpenIssues(db, finding.run.appId)") > action.indexOf("data: { mark: parsed.data.mark }") && !/refreshOpenIssues/.test(action));
+  check("markFinding recounts by the finding's run after the mark is written, best effort",
+    action.indexOf("await recountOpenIssuesOfRun(db, finding.run)") > action.indexOf("data: { mark: parsed.data.mark }") && /teamId: true, appSlug: true/.test(action) && !/refreshOpenIssues/.test(action));
   check("reconcile changes a ticket's state only inside the workflow, whose finish step recounts — no fourth write site needed",
     !/reconcileIssueLinks|verifyFixedLinks/.test(read("src/agent/scheduler.ts")) && /reconcileIssueLinks\(env, run\)/.test(workflow));
   check("the sidebar reads the column and falls back per app", /a\.openIssues \?\? openOf\.get\(a\.id\) \?\? 0/.test(read("src/lib/shell-data.ts")));

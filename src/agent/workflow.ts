@@ -83,14 +83,16 @@ import {
 } from "./notify-verdict";
 import { RUNAWAY_COST_USD } from "@/lib/plans";
 import { priceRun, voidRunPrice } from "./pricing";
-import { recountOpenIssues } from "@/lib/open-issues";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
 
 // CHE-399: the number beside Issues, recounted from the check that just became
 // the app's latest — after every price step, since "latest" is a priced check.
-// recountOpenIssues logs and swallows its own failure: a run that finished is
-// finished, and a counter is not a reason to retry it (rule 4).
-async function countOpenIssues(env: AgentEnv, appId: string | null): Promise<void> {
-  await recountOpenIssues(env.db, appId);
+// By the run: a check made before its app was saved counts against the team's
+// only app of that address, as the history assigns it. recountOpenIssuesOfRun
+// logs and swallows its own failure: a run that finished is finished, and a
+// counter is not a reason to retry it (rule 4).
+async function countOpenIssues(env: AgentEnv, run: { appId: string | null; teamId: string | null; appSlug: string }): Promise<void> {
+  await recountOpenIssuesOfRun(env.db, run);
 }
 
 // CHE-327: the runaway fuse. A NonRetryableError, so the engine does not spend
@@ -421,7 +423,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-quick", async () => {
           await priceRun(env.db, runId);
         });
-        await step.do("count-open-issues-quick", () => countOpenIssues(env, run.appId));
+        await step.do("count-open-issues-quick", () => countOpenIssues(env, run));
 
         // CHE-289: measure here too. A smoke run walks nothing, and until now
         // it therefore asked the customer's analytics nothing — which starved
@@ -609,7 +611,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-signed-out", async () => {
           await priceRun(env.db, runId);
         });
-        await step.do("count-open-issues-signed-out", () => countOpenIssues(env, run.appId));
+        await step.do("count-open-issues-signed-out", () => countOpenIssues(env, run));
         // Its own step, so a retry of anything around it cannot send twice; the
         // send itself is refused a second time by its id. Never fails the run.
         await step.do("tell-signed-out", async () => {
@@ -649,7 +651,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-closed-door", async () => {
           await priceRun(env.db, runId);
         });
-        await step.do("count-open-issues-closed-door", () => countOpenIssues(env, run.appId));
+        await step.do("count-open-issues-closed-door", () => countOpenIssues(env, run));
         await step.do("capability-gaps-closed-door", async () => {
           try {
             for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [] })) {
@@ -1202,7 +1204,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // the number beside Issues is recounted from it. After the price, since
       // "latest" is a priced check; in its own step with its own catch, since
       // a counter never fails a run (rule 4).
-      await step.do("count-open-issues", () => countOpenIssues(env, run.appId));
+      await step.do("count-open-issues", () => countOpenIssues(env, run));
 
       // Auto-file tracker tickets (CHE-50). Watch runs only, and only when the
       // owner connected a tracker — autoFileFindings decides both. Non-fatal by
@@ -1439,7 +1441,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           );
           // CHE-399: a priced, finished run is the app's latest — the step
           // that threw may have been the recount itself.
-          await countOpenIssues(env, run.appId);
+          await countOpenIssues(env, run);
           return { phase: `${before.status}, after the verdict was written`, afterVerdict: true };
         }
         await env.db.run.update({
@@ -1466,7 +1468,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // answered findings before the failure (a ticket Done or Canceled in
         // the tracker) — the number beside Issues follows those answers now,
         // not at the next successful check.
-        await countOpenIssues(env, run.appId);
+        await countOpenIssues(env, run);
         if (isExtension && !budget) {
           try {
             for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [{

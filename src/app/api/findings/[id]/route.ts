@@ -3,7 +3,7 @@ import { getDbFromContext } from "@/lib/db";
 import { canMutateOwned } from "@/lib/auth";
 import { markFindingSchema } from "@/lib/validation";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
-import { recountOpenIssues } from "@/lib/open-issues";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
 
 // PATCH /api/findings/{id} — Loop C: triage a finding from the verdict page
 // (known / fixed / false_positive). Daily Check uses marks to filter noise.
@@ -19,7 +19,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const existing = await prisma.finding.findUnique({
     where: { id: (await params).id },
-    select: { id: true, run: { select: { ownerId: true, appId: true } } },
+    select: { id: true, run: { select: { ownerId: true, appId: true, teamId: true, appSlug: true } } },
   });
   if (!existing) return NextResponse.json({ error: "Finding not found" }, { status: 404 });
   if (!(await canMutateOwned(prisma, existing.run.ownerId))) {
@@ -33,7 +33,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   });
   // CHE-399: a mark changes what Issues counts as open — the app's stored
   // number follows at once, so the menu and the page agree without a reload.
-  // Best effort: the mark is stored whatever happens to the count.
-  await recountOpenIssues(prisma, existing.run.appId);
+  // Best effort: the mark is stored whatever happens to the count. By the run,
+  // so a check made before the app was saved counts against that app.
+  await recountOpenIssuesOfRun(prisma, existing.run);
   return NextResponse.json(finding);
 }

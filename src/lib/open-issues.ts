@@ -29,7 +29,7 @@
 // real D1 and holds the three write sites.
 
 import type { PrismaClient } from "@/generated/prisma/client";
-import { alreadyScoped } from "./tenant-db";
+import { alreadyScoped, teamOwned } from "./tenant-db";
 import { teamRecurrences } from "./recurring";
 import { inIssuesFilter, issueView } from "./issues-page";
 import { latestChecks } from "./shell-data";
@@ -67,6 +67,36 @@ export async function recountOpenIssues(db: PrismaClient, appId: string | null |
     return await recount(db, appId);
   } catch (err) {
     console.warn(`[open-issues] recount failed for app ${appId}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * The app a run's problems count against: the app it is attached to, or — a
+ * check made before the app was saved, or with the public form — the team's
+ * only app of that address, exactly as the history and the sidebar assign it
+ * (teamHistory in src/lib/recurring.ts, latestChecks). A run of nobody's app
+ * counts against nothing (Codex round 3 on #276).
+ */
+export async function appOfRun(
+  db: PrismaClient,
+  run: { appId: string | null; teamId: string | null; appSlug: string },
+): Promise<string | null> {
+  if (run.appId) return run.appId;
+  if (!run.teamId) return null;
+  const apps = await db.app.findMany({ where: { ...teamOwned(run.teamId), appSlug: run.appSlug }, select: { id: true } });
+  return apps.length === 1 ? apps[0].id : null;
+}
+
+/** recountOpenIssues for the app a run counts against. */
+export async function recountOpenIssuesOfRun(
+  db: PrismaClient,
+  run: { appId: string | null; teamId: string | null; appSlug: string },
+): Promise<number | null> {
+  try {
+    return await recount(db, await appOfRun(db, run));
+  } catch (err) {
+    console.warn(`[open-issues] recount failed for a run of ${run.appSlug}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

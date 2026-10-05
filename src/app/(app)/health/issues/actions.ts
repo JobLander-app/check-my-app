@@ -3,7 +3,7 @@
 import { refuseSelfCheck } from "@/lib/self-check-action";
 import { requireActionScope } from "@/lib/team-auth";
 import { markFindingSchema } from "@/lib/validation";
-import { recountOpenIssues } from "@/lib/open-issues";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
 
 // The owner's answer to a problem (CHE-360), written as a server action so the
 // four marks work from the first HTML and need no second mutation path
@@ -22,13 +22,14 @@ export async function markFinding(findingId: string, mark: string): Promise<Mark
 
   const finding = await db.finding.findFirst({
     where: { id: findingId, run: { OR: [{ teamId: team.id }, { ownerId: user.id }] } },
-    select: { id: true, run: { select: { appId: true } } },
+    select: { id: true, run: { select: { appId: true, teamId: true, appSlug: true } } },
   });
   if (!finding) return { error: "Problem not found" };
 
   await db.finding.update({ where: { id: finding.id }, data: { mark: parsed.data.mark } });
   // CHE-399: the number beside Issues follows the answer at once. Best effort:
-  // the answer is stored whatever happens to the count.
-  await recountOpenIssues(db, finding.run.appId);
+  // the answer is stored whatever happens to the count. By the run, so a
+  // check made before the app was saved counts against that app.
+  await recountOpenIssuesOfRun(db, finding.run);
   return { ok: true };
 }
