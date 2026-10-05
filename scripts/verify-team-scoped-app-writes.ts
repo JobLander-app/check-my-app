@@ -235,6 +235,15 @@ function sourceChecks() {
     /const action = settingsActionFor\(patch\);\s*if \(!can\(scope, action\)\) redirect\(`\$\{back\}\?error=/.test(update) && update.indexOf("settingsActionFor(patch)") < update.indexOf("updateAppForTeam("));
   const tools = fnBody(read("src/lib/mcp/tools.ts"), "update_app");
   check("MCP update_app asks the same of the same patch", /deny\(settingsActionFor\(patch\)\)/.test(tools) && tools.indexOf("settingsActionFor(patch)") < tools.indexOf("updateAppForTeam("));
+  // Codex round 2 on #273: the onboarding form shows a member no login fields
+  // it would refuse; a state minted before the team travelled in it is the
+  // active team's for the ten minutes it can still arrive.
+  const wizard = read("src/components/onboarding-wizard.tsx");
+  const onboarding = read("src/app/onboarding/page.tsx");
+  check("the onboarding form shows a member a sentence instead of login fields, by the same scope the action asks",
+    /mayStoreLogin=\{can\(scope, "app\.credentials\.write"\)\}/.test(onboarding) && /\{!mayStoreLogin \? \(\s*<p[^>]*>Test logins are set by an admin of the team/.test(wizard));
+  check("the Linear callback takes a state without a team as the active team's — only the deploy that added it can mint one",
+    /const teamId = stated \?\? active\.id;/.test(callback));
   const sectionPage = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
   check("the Accounts section shows a member a sentence, not a form that would refuse them", /can\(scope, "app\.credentials\.write"\) \? \(\s*<Accounts/.test(sectionPage) && /Test logins are set by an admin of the team\./.test(sectionPage));
   // The dupe check at create time is the team's, so no second row for an address the team has.

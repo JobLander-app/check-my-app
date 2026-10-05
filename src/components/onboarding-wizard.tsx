@@ -16,11 +16,14 @@ export function OnboardingWizard({
   prefillUrl,
   initialKind = "website",
   extensionCheck = false,
+  mayStoreLogin = true,
 }: {
   prefillUrl: string;
   initialKind?: "website" | "extension";
   /** PostHog flag `home-extension-check`, evaluated by the page (CHE-320). Off: no toggle, no extension mode. */
   extensionCheck?: boolean;
+  /** `app.credentials.write` (CHE-417): a login is an admin's to store. A member sees why, not fields that would refuse them. */
+  mayStoreLogin?: boolean;
 }) {
   const [url, setUrl] = useState(prefillUrl);
   const [kind, setKind] = useState(initialKind);
@@ -74,6 +77,9 @@ export function OnboardingWizard({
         <p className="text-sm font-medium text-fg">
           2 · Test login <span className="font-normal text-fg-faint">(recommended)</span>
         </p>
+        {!mayStoreLogin ? (
+          <p className="text-sm text-fg-muted">Test logins are set by an admin of the team — add the app now, and an admin adds the login on its Test accounts page.</p>
+        ) : (<>
         <Input name="testEmail" type="email" placeholder="test@your-app.com" autoComplete="off" />
         <div className="relative">
           <Input
@@ -97,6 +103,7 @@ export function OnboardingWizard({
           Encrypted at rest, never logged, never in evidence. Google-OAuth logins aren&apos;t
           auto-walkable yet — use an email/password test user.
         </p>
+        </>)}
       </section>
 
       {/* 3 — Tracker (Linear) */}

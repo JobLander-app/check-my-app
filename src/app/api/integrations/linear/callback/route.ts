@@ -30,14 +30,14 @@ export async function GET(req: NextRequest) {
   if (!code || !state) return fail(req);
 
   let appId: string;
-  let teamId: string;
+  let stated: string | undefined;
   let nonce: string;
   try {
-    ({ appId, teamId, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
+    ({ appId, teamId: stated, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
   } catch {
     return fail(req);
   }
-  if (typeof appId !== "string" || typeof teamId !== "string" || typeof nonce !== "string") return fail(req);
+  if (typeof appId !== "string" || typeof nonce !== "string" || (stated !== undefined && typeof stated !== "string")) return fail(req);
 
   const jar = await cookies();
   if (jar.get("linear_oauth_nonce")?.value !== nonce) return fail(req);
@@ -47,8 +47,11 @@ export async function GET(req: NextRequest) {
   // one active now — a switch in another tab while Linear asks for consent
   // must not turn a valid authorization into "failed" (CHE-417). The caller's
   // scope is read in that team: activeTeamContext falls back to another team
-  // for a non-member, so the id is compared, not assumed.
-  const { user, db } = await requireUser();
+  // for a non-member, so the id is compared, not assumed. A state minted
+  // before the team travelled in it (the nonce cookie lives ten minutes, so
+  // only across the deploy that introduced this) is the active team's.
+  const { user, db, team: active } = await requireUser();
+  const teamId = stated ?? active.id;
   const context = await activeTeamContext(db, user, teamId);
   if (context.team.id !== teamId) return fail(req);
   if (!can(context.scope, "integration.connect")) {
