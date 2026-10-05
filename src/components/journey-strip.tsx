@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Journey, Step } from "@/generated/prisma/client";
 import { STEP_STATUS_META } from "@/lib/status";
 import { JourneyNumbersBlock, type JourneyNumbersProps } from "@/components/journey-numbers-block";
+import { disclosureWord, stepCardLabel, stepsRegionLabel } from "@/lib/journey-copy";
 
 type JourneyWithSteps = Journey & { steps: Step[] };
 
@@ -80,14 +81,6 @@ export function JourneyStrips({
 // evidence, not a problem — the strip already dims it.
 const PROBLEM_STATUSES = new Set(["risky", "confusing", "broken", "exposed"]);
 
-// CHE-418: the word beside a journey row that says which way it goes. A
-// journey with no steps (carried without its walk, or stopped before one) has
-// its summary and numbers to show, not "0 steps".
-export function disclosureWord(open: boolean, steps: number): string {
-  if (steps === 0) return open ? "Hide details" : "Show details";
-  return open ? "Hide steps" : `Show ${steps} step${steps === 1 ? "" : "s"}`;
-}
-
 function JourneyCard({
   journey,
   collapsedByDefault,
@@ -160,7 +153,7 @@ function JourneyCard({
       </button>
 
       {open && (
-        <div id={panelId} role="region" aria-label={`Steps of ${journey.title}`} className="border-t border-ink-700 px-5 py-4">
+        <div id={panelId} role="region" aria-label={stepsRegionLabel(journey.title)} className="border-t border-ink-700 px-5 py-4">
           {/* Answer the status pill FIRST (owner call, 2026-08-23: "when I
               click Confusing I must immediately see what is confusing").
               Deterministic — built from the steps that dragged the status
@@ -216,7 +209,7 @@ function JourneyCard({
                     // CHE-418: the card says what it is and whether it is open,
                     // so the step's evidence is a readable control, not a picture.
                     aria-expanded={isSelected}
-                    aria-label={`Step ${i + 1}, ${s.label}: ${step.label}. ${isSelected ? "Hide" : "Show"} what we tried and what happened`}
+                    aria-label={stepCardLabel({ index: i, statusLabel: s.label, stepLabel: step.label, open: isSelected })}
                     className={`group w-40 shrink-0 rounded-lg border p-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                       isSelected
                         ? "border-accent bg-ink-800 shadow-glow"
