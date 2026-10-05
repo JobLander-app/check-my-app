@@ -222,14 +222,20 @@ async function main() {
   const streamed = await stream.text();
   assert.match(streamed, /"liveScreenshotUrl":null/);
   assert.doesNotMatch(streamed, /PRIVATE_|screenshots\//, "The public live feed must not advertise raw extension captures, including legacy images");
-  const statusMocks = { ...mocks, "@/lib/db": "export const getDbFromContext = async () => fixture.db;", "@/lib/auth": "export const getOptionalUser = async () => fixture.user;" } as Record<string, string>;
+  // CHE-417: the status route reads the team's app, so the stub answers the
+  // team context too.
+  const statusMocks = { ...mocks, "@/lib/db": "export const getDbFromContext = async () => fixture.db;",
+    "@/lib/auth": "export const getOptionalUser = async () => fixture.user; export const optionalTeamContext = async () => ({ team: { id: 'team' } });" } as Record<string, string>;
   const statusBundle = await build({ entryPoints: ["src/app/api/status/[slug]/route.ts"], bundle: true, write: false, platform: "node", format: "cjs",
     plugins: [{ name: "status-boundaries", setup(build) {
       build.onResolve({ filter: /.*/ }, args => statusMocks[args.path] ? { path: args.path, namespace: "fixture" } : undefined);
       build.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: statusMocks[args.path], loader: "js" }));
     } }],
   });
-  const statusFixture = { user: { id: "owner" }, db: { app: { findUnique: async () => ({ id: "app", appSlug: "extension:fixture" }) },
+  const statusFixture = { user: { id: "owner" }, db: { app: { findFirst: async ({ where }: { where: { teamId: string; appSlug: string } }) => {
+      assert.equal(where.teamId, "team", "The status route finds the app as the team's (CHE-417)");
+      return { id: "app", appSlug: "extension:fixture" };
+    } },
     run: { findFirst: async ({ where }: { where: { appId: string; status: { in: string[] }; verdict: { not: null } } }) => {
       assert.equal(where.appId, "app");
       return [ { status: "partial", verdict: null, runNumber: 3 }, { status: "partial", verdict: "broken", runNumber: 2 }, { status: "completed", verdict: "all_good", runNumber: 1 } ]

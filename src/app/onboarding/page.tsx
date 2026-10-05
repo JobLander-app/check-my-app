@@ -6,6 +6,7 @@ import { watchCapReason } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
 import { ownerScoped, teamOwned } from "@/lib/tenant-db";
 import { extensionCheckFor } from "@/lib/viewer-flags";
+import { can } from "@/lib/scopes";
 
 // Onboarding (protected by proxy.ts). requireUser() also lazily creates the D1
 // mirror row on first visit. Prefilled with ?url= when arriving from a verdict.
@@ -21,7 +22,7 @@ export default async function OnboardingPage({
 }: {
   searchParams: Promise<{ url?: string; type?: string; path?: string }>;
 }) {
-  const { user, db, team } = await requireUser();
+  const { user, db, team, scope } = await requireUser();
   const { url, type, path } = await searchParams;
   // CHE-320: ?type=extension is a way into extension mode like the toggle on
   // the home page, and answers to the same flag. Without it the page is the
@@ -61,7 +62,7 @@ export default async function OnboardingPage({
           </p>
         </div>
       )}
-      <OnboardingWizard prefillUrl={url ?? ""} initialKind={kind} extensionCheck={extensionCheck} />
+      <OnboardingWizard prefillUrl={url ?? ""} initialKind={kind} extensionCheck={extensionCheck} mayStoreLogin={can(scope, "app.credentials.write")} />
     </main>
   );
 }

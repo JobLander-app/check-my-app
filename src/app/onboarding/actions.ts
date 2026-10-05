@@ -3,7 +3,8 @@
 import { redirect } from "next/navigation";
 import { requireActionScope } from "@/lib/team-auth";
 import { refuseSelfCheck } from "@/lib/self-check-action";
-import { createAppForTeam } from "@/lib/app-settings";
+import { createActionFor, createAppForTeam, type CreateAppInput } from "@/lib/app-settings";
+import { can, refusal } from "@/lib/scopes";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { parseExtensionLink } from "@/lib/extension-target";
 import { extensionOptionsFromForm } from "@/lib/validation";
@@ -40,7 +41,7 @@ export async function createApp(
   // CHE-194: our own checker registers nothing. Run #304 pressed this form's
   // button and left an app with a daily watch in the self-check account.
   await refuseSelfCheck("/onboarding");
-  const { user, db, team } = await requireActionScope("app.settings.write");
+  const { user, db, team, scope } = await requireActionScope("app.settings.write");
 
   const targetUrl = String(formData.get("targetUrl") ?? "");
   // CHE-320: the form hides extension mode when the flag is off, but a pasted
@@ -52,25 +53,27 @@ export async function createApp(
     return { error: "Chrome Web Store links can't be added here yet. Enter your app's own URL." };
   }
 
-  const result = await createAppForTeam(
-    db,
-    { userId: user.id, teamId: team.id, plan: team.plan as UserPlan },
-    {
-      targetUrl,
-      expectExtension: formData.get("targetKind") === "extension",
-      extension: extensionOptionsFromForm(formData),
-      testEmail: String(formData.get("testEmail") ?? ""),
-      testPassword: String(formData.get("testPassword") ?? ""),
-      focusAreas: String(formData.get("focusAreas") ?? ""),
-      writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
-      scopeHints: String(formData.get("scopeHints") ?? ""),
-      userNotes: String(formData.get("userNotes") ?? ""),
-      frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
-      pickupLabels: list(formData.get("pickupLabels")),
-      repoLabel: String(formData.get("repoLabel") ?? ""),
-      urgentJourneys: list(formData.get("urgentJourneys")),
-    },
-  );
+  const input: CreateAppInput = {
+    targetUrl,
+    expectExtension: formData.get("targetKind") === "extension",
+    extension: extensionOptionsFromForm(formData),
+    testEmail: String(formData.get("testEmail") ?? ""),
+    testPassword: String(formData.get("testPassword") ?? ""),
+    focusAreas: String(formData.get("focusAreas") ?? ""),
+    writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
+    scopeHints: String(formData.get("scopeHints") ?? ""),
+    userNotes: String(formData.get("userNotes") ?? ""),
+    frequency: String(formData.get("frequency") ?? "daily") as WatchFrequency,
+    pickupLabels: list(formData.get("pickupLabels")),
+    repoLabel: String(formData.get("repoLabel") ?? ""),
+    urgentJourneys: list(formData.get("urgentJourneys")),
+  };
+  // A login is a credentials write — an admin's (src/lib/scopes.ts, CHE-417).
+  // Returned as text next to the button, like every other refusal here.
+  const action = createActionFor(input);
+  if (!can(scope, action)) return { error: refusal(scope, action) ?? "Not allowed" };
+
+  const result = await createAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, input);
   if ("error" in result) return { error: result.error };
 
   const { appSlug } = result.app;

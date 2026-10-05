@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Prisma } from "@/generated/prisma/client";
 import { requireUser } from "@/lib/auth";
+import { can } from "@/lib/scopes";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath, checkHref } from "@/lib/app-shell";
 import { VERDICT_META } from "@/lib/status";
@@ -54,7 +55,7 @@ export default async function AppSettingsSection({
   if (!section) notFound();
   const notice = integrationNotice(integration);
 
-  const { user, db, team } = await requireUser();
+  const { user, db, team, scope } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     include: { watch: { include: { runs: { orderBy: { startedAt: "desc" }, take: 10 } } }, policy: true, tracker: true },
@@ -153,7 +154,18 @@ export default async function AppSettingsSection({
         </form>
       )}
 
-      {section === "accounts" && <Accounts appId={app.id} teamId={team.id} testEmail={app.testEmail} isExtension={isExtension} save={save} />}
+      {/* A login is an admin's to set (app.credentials.write, src/lib/scopes.ts;
+          CHE-417). A member is told so instead of being shown a form that
+          would refuse them on save. */}
+      {section === "accounts" &&
+        (can(scope, "app.credentials.write") ? (
+          <Accounts appId={app.id} teamId={team.id} testEmail={app.testEmail} isExtension={isExtension} save={save} />
+        ) : (
+          <p className="card p-5 text-sm text-fg-muted">
+            {app.testEmail ? `Signs in as ${app.testEmail}. ` : "No test login yet. "}
+            Test logins are set by an admin of the team.
+          </p>
+        ))}
 
       {section === "schedule" && <Schedule app={app} plan={team.plan as UserPlan} teamId={team.id} />}
 

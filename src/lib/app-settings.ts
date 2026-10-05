@@ -16,6 +16,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { SafeParseReturnType } from "zod";
 import type { UserPlan, WatchFrequency } from "@/lib/enums";
+import type { TeamAction } from "@/lib/scopes";
 import { assertCanAddWatch, watchTrialEnd } from "@/lib/plans";
 import { credentialFingerprint, encryptSecret } from "@/lib/crypto";
 import { appSlugFromUrl } from "@/lib/utils";
@@ -102,6 +103,20 @@ export async function createAppForTeam(
   const origins = parseAllowedOriginsInput(input.allowedOrigins ?? []);
   if (!origins.ok) return { error: origins.error, code: "invalid_input" };
 
+  // One App per (team, slug) — CHE-417: an address a teammate already added is
+  // the team's app, not a second row beside it. Asked before the plan cap, so
+  // a Free team at its one watch hears "you already have this app", not "the
+  // plan is full" (Codex on #273). Pre-check for a clear message; the
+  // (owner, slug) unique key still catches a double-submit race (D1 has no
+  // transactions) rather than surfacing a raw 500 — two members adding one
+  // address in the same instant is the gap that key does not close, and a
+  // (team, slug) key is CHE-404's migration.
+  const dupe = await db.app.findFirst({
+    where: { ...teamOwned(actor.teamId), appSlug },
+    select: { id: true },
+  });
+  if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
+
   // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
   const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
     teamId: actor.teamId,
@@ -109,15 +124,6 @@ export async function createAppForTeam(
     frequency,
   });
   if (!gate.ok) return { error: gate.reason, code: "plan_limit" };
-
-  // One App per (owner, slug). Pre-check for a clear message, and catch the
-  // unique-constraint race (D1 has no transactions, so a double-submit can slip
-  // past the check) rather than surfacing a raw 500.
-  const dupe = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
-    where: { ownerId_appSlug: { ownerId: actor.userId, appSlug } },
-    select: { id: true },
-  });
-  if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
 
   // Who hears about the app's first verdict (src/lib/recipients.ts): the team's
   // admins, unless somebody was chosen. A member who is not an admin and adds
@@ -218,14 +224,48 @@ export interface AppSettingsPatch {
 
 const orNull = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
 
+// Which scope a patch needs (src/lib/scopes.ts): a login — the default test
+// account, the named ones, the store password — is `app.credentials.write`,
+// which an admin has and a member does not; everything else is
+// `app.settings.write`. Decided from the patch, not from the form or the tool,
+// so the settings page and MCP update_app ask the same question (Codex on
+// #273: with the app the team's, a member could otherwise replace a
+// teammate's stored passwords under the settings scope).
+export function settingsActionFor(patch: AppSettingsPatch): TeamAction {
+  const writesLogin =
+    patch.testEmail !== undefined ||
+    patch.testPassword !== undefined ||
+    patch.storePassword !== undefined ||
+    Boolean(patch.testAccounts?.set?.length || patch.testAccounts?.remove?.length) ||
+    // The allowed origins are where the stored login is typed (CHE-373:
+    // src/agent/instructions.ts, fillSecret in src/agent/tools.ts). Adding
+    // an origin is handing the password to that host — a credentials write
+    // (Codex round 3 on #273).
+    patch.allowedOrigins !== undefined;
+  return writesLogin ? "app.credentials.write" : "app.settings.write";
+}
+
+// The same question of a new app: one added with a login stores a credential
+// the moment it exists, and one added with origins names where a login will
+// be typed. A form's empty login boxes are no login.
+export function createActionFor(input: CreateAppInput): TeamAction {
+  const writesLogin = Boolean(
+    input.testEmail?.trim() || input.testPassword || input.storePassword || input.testAccounts?.length || input.allowedOrigins?.length,
+  );
+  return writesLogin ? "app.credentials.write" : "app.settings.write";
+}
+
 export async function updateAppForTeam(
   db: PrismaClient,
   actor: AppActor,
   appId: string,
   patch: AppSettingsPatch,
 ): Promise<{ ok: true; app: { id: string; appSlug: string } } | AppRefusal> {
+  // CHE-417: the app is the team's, whoever added it. Who may write its
+  // settings is the scope table's answer (app.settings.write), asked by every
+  // caller before this; ownerId is attribution, not access.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(actor.teamId), id: appId, ownerId: actor.userId },
+    where: { ...teamOwned(actor.teamId), id: appId },
     include: { watch: true, policy: true },
   });
   if (!app) return { error: "app not found", code: "not_found" };

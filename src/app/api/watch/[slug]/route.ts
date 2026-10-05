@@ -1,28 +1,27 @@
 import { NextResponse } from "next/server";
 import { getDbFromContext } from "@/lib/db";
 import { requireScope } from "@/lib/team-auth";
-import { getOptionalUser } from "@/lib/auth";
-import { optionalTeamContext } from "@/lib/auth";
 import { configureWatch } from "@/lib/watch-enable";
 import { updateWatchSchema } from "@/lib/validation";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
-import { alreadyScoped } from "@/lib/tenant-db";
+import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 
-// Resolve the caller's own Watch for an app slug (CHE-33 tenant-scoped). Returns
-// null if not signed in or the app/watch isn't theirs.
+// Resolve the team's Watch for an app slug (CHE-33 tenant-scoped; CHE-417: the
+// team's app, whoever added it — the scope gate decides who may change it).
+// Null if not signed in or the app/watch isn't the team's.
 async function ownWatch(slug: string, req: Request) {
   const db = await getDbFromContext();
   // CHE-255: configuring a watch is `watch.configure` — a reader may read this
   // page and may not change what it costs the team.
   const decision = await requireScope(db, req, "watch.configure");
   if (!decision.ok) return { db, user: null, team: null, watch: null, refusal: decision.response, unauthorized: true as const };
-  const { user, team: scopedTeam } = decision.grant;
-  const context = { team: scopedTeam };
-  const app = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
-    where: { ownerId_appSlug: { ownerId: user.id, appSlug: slug } },
+  const { user, team } = decision.grant;
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(team.id), appSlug: slug },
+    orderBy: { createdAt: "asc" },
     include: { watch: true },
   });
-  return { db, user, team: context?.team ?? null, watch: app?.watch ?? null, unauthorized: false as const };
+  return { db, user, team, watch: app?.watch ?? null, unauthorized: false as const };
 }
 
 // PATCH /api/watch/{slug} — Screen 4 settings: frequency, notify rule, pause/resume.

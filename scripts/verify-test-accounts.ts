@@ -85,8 +85,10 @@ async function main() {
       { id: "team_b", name: "Team B", plan: "business", isPersonal: false },
     ],
     apiKey: [
-      { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
-      { id: "k_b", ownerId: "u_b", teamId: "team_b", scope: "member", keyHash: await hashApiKey(KEY_B), lastUsedAt: null },
+      // Admin keys: a login is an admin's to store (app.credentials.write,
+      // CHE-417) — the scope rule itself is held by verify-team-scoped-app-writes.
+      { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "admin", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
+      { id: "k_b", ownerId: "u_b", teamId: "team_b", scope: "admin", keyHash: await hashApiKey(KEY_B), lastUsedAt: null },
     ],
     app: [],
     watch: [],
