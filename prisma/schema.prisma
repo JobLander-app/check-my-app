@@ -976,6 +976,10 @@ model App {
   // every page. Null = no check has written it yet (the sidebar then counts
   // the latest check's unanswered findings itself).
   openIssues      Int?
+  // Bumped by every write of openIssues; a recount writes only if the version
+  // it read is still the row's (two recounts of one app in flight — a mark and
+  // a finishing check — must not let the staler one land last).
+  openIssuesVersion Int @default(0)
   // CHE-90: may the agent create records while checking? read_only (default)
   // or create_cleanup — full CRUD lifecycle, every creation removed again.
   writeMode       String  @default("read_only")

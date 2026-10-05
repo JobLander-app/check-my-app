@@ -113,6 +113,22 @@ async function main() {
     check("…the recount after the check makes them one number again", recounted === 2 && (await loadShellData(db, "t")).openIssues === 2, String(recounted));
     check("a recount of no app, or of an app that is gone, writes nothing and does not throw",
       (await refreshOpenIssues(db, null)) === null && (await refreshOpenIssues(db, "no-such-app")) === null);
+
+    // 5 — two recounts in flight (Codex on #276): the one that read the older
+    // state must not land last. Played out by hand: a recount reads the row's
+    // version and computes 2; before it writes, another mark lands and its
+    // recount stores 1 (version bumped); the stale write is refused, the
+    // retry reads the new state and stores 1 again — never 2.
+    const versionBefore = (await db.app.findUnique({ where: { id: "shop" }, select: { openIssuesVersion: true } }))!.openIssuesVersion;
+    const staleValue = await openIssuesOf(db, "t", "shop"); // = 2, read with versionBefore in hand
+    await db.finding.update({ where: { id: "f2b" }, data: { mark: "known" } });
+    await refreshOpenIssues(db, "shop"); // the newer recount lands: 1
+    const staleWrite = await db.app.updateMany({ where: { id: "shop", openIssuesVersion: versionBefore }, data: { openIssues: staleValue, openIssuesVersion: { increment: 1 } } });
+    check("5. a recount that read an older version than the row's is refused at the write — the newer value stands",
+      staleValue === 2 && staleWrite.count === 0 && (await stored()) === 1, JSON.stringify({ staleValue, refused: staleWrite.count === 0, stored: await stored() }));
+    const again = await refreshOpenIssues(db, "shop");
+    const versionAfter = (await db.app.findUnique({ where: { id: "shop" }, select: { openIssuesVersion: true } }))!.openIssuesVersion;
+    check("…and every recount that lands bumps the version", again === 1 && versionAfter === versionBefore + 2, JSON.stringify({ versionBefore, versionAfter }));
   } finally {
     await real.dispose();
   }
@@ -130,6 +146,13 @@ async function main() {
   check("…and so is the catch path that prices a run whose verdict was already written",
     /await priceRun\(env\.db, runId\)\.catch\([\s\S]{0,400}await countOpenIssues\(env, run\.appId\);\s*return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(workflow));
   check("the workflow's price steps are the only ones (a new terminal path is caught here)", (workflow.match(/await priceRun\(env\.db, runId\)/g) ?? []).length === priceSteps.length + 2);
+  // Codex round 2 on #276: reconcile answers findings before the walk; a run
+  // that then fails is not the app's latest, but those answers are real.
+  check("…and the failed-run path recounts too, after the price is voided",
+    /\.then\(\(\) => voidRunPrice\(env\.db, runId\)\)[\s\S]{0,700}await countOpenIssues\(env, run\.appId\);\s*if \(isExtension && !budget\)/.test(workflow));
+  check("the write is a compare-and-set on the row's version, retried a bounded number of times",
+    /where: \{ id: appId, openIssuesVersion: app\.openIssuesVersion \},\s*data: \{ openIssues: open, openIssuesVersion: \{ increment: 1 \} \}/.test(read("src/lib/open-issues.ts")) &&
+      /for \(let attempt = 0; attempt < RECOUNT_ATTEMPTS; attempt\+\+\)/.test(read("src/lib/open-issues.ts")));
   const lib = read("src/lib/open-issues.ts");
   check("the recount never fails its caller: recountOpenIssues logs and swallows, and the workflow and both mark doors use it",
     /export async function recountOpenIssues[\s\S]{0,200}try \{\s*return await recount\(db, appId\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(lib) &&
@@ -144,7 +167,8 @@ async function main() {
     !/reconcileIssueLinks|verifyFixedLinks/.test(read("src/agent/scheduler.ts")) && /reconcileIssueLinks\(env, run\)/.test(workflow));
   check("the sidebar reads the column and falls back per app", /a\.openIssues \?\? openOf\.get\(a\.id\) \?\? 0/.test(read("src/lib/shell-data.ts")));
   check("the column: in the schema and in a migration of its own",
-    /openIssues\s+Int\?/.test(read("prisma/schema.prisma")) && /ALTER TABLE "App" ADD COLUMN "openIssues" INTEGER;/.test(read("prisma/migrations/0056_app_open_issues.sql")));
+    /openIssues\s+Int\?/.test(read("prisma/schema.prisma")) && /openIssuesVersion Int @default\(0\)/.test(read("prisma/schema.prisma")) &&
+      /ALTER TABLE "App" ADD COLUMN "openIssues" INTEGER;\s*ALTER TABLE "App" ADD COLUMN "openIssuesVersion" INTEGER NOT NULL DEFAULT 0;/.test(read("prisma/migrations/0056_app_open_issues.sql")));
 
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");
   process.exit(failures ? 1 : 0);

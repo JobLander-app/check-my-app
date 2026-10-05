@@ -1462,6 +1462,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           .catch((e) =>
             console.warn(`[balance] zeroing failed run ${runId} did not happen: ${e instanceof Error ? e.message : String(e)}`),
           );
+        // CHE-399: a failed run is not the app's latest, but reconcile may have
+        // answered findings before the failure (a ticket Done or Canceled in
+        // the tracker) — the number beside Issues follows those answers now,
+        // not at the next successful check.
+        await countOpenIssues(env, run.appId);
         if (isExtension && !budget) {
           try {
             for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [{

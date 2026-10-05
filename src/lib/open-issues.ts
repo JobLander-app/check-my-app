@@ -71,16 +71,32 @@ export async function recountOpenIssues(db: PrismaClient, appId: string | null |
   }
 }
 
+// Two recounts of one app can be in flight at once — a mark and a finishing
+// check, two marks. Each reads several tables and then writes; without a
+// guard the one that read the older state could write last (Codex on #276).
+// So the write is a compare-and-set on the row's version: it lands only if no
+// recount has written since this one read. A recount that lost the race reads
+// again — the state it now sees is at least as new as the winner's — and tries
+// once more; after a few losses it stops, and the winner's value stands.
+const RECOUNT_ATTEMPTS = 3;
+
 async function recount(db: PrismaClient, appId: string | null | undefined): Promise<number | null> {
   if (!appId) return null;
-  const app = await db.app.findUnique({ ...alreadyScoped("the caller resolved this app"),
-    where: { id: appId },
-    select: { teamId: true },
-  });
-  // Every App has a team (scripts/verify-team-backfill.ts); the column is
-  // nullable only because SQLite could not add it NOT NULL.
-  if (!app?.teamId) return null;
-  const open = await openIssuesOf(db, app.teamId, appId);
-  await db.app.update({ ...alreadyScoped("already read in this request"), where: { id: appId }, data: { openIssues: open } });
-  return open;
+  for (let attempt = 0; attempt < RECOUNT_ATTEMPTS; attempt++) {
+    const app = await db.app.findUnique({ ...alreadyScoped("the caller resolved this app"),
+      where: { id: appId },
+      select: { teamId: true, openIssuesVersion: true },
+    });
+    // Every App has a team (scripts/verify-team-backfill.ts); the column is
+    // nullable only because SQLite could not add it NOT NULL.
+    if (!app?.teamId) return null;
+    const open = await openIssuesOf(db, app.teamId, appId);
+    const landed = await db.app.updateMany({ ...alreadyScoped("already read in this request"),
+      where: { id: appId, openIssuesVersion: app.openIssuesVersion },
+      data: { openIssues: open, openIssuesVersion: { increment: 1 } },
+    });
+    if (landed.count === 1) return open;
+  }
+  console.warn(`[open-issues] app ${appId}: another recount landed every time; keeping its value`);
+  return null;
 }
