@@ -83,17 +83,14 @@ import {
 } from "./notify-verdict";
 import { RUNAWAY_COST_USD } from "@/lib/plans";
 import { priceRun, voidRunPrice } from "./pricing";
-import { refreshOpenIssues } from "@/lib/open-issues";
+import { recountOpenIssues } from "@/lib/open-issues";
 
 // CHE-399: the number beside Issues, recounted from the check that just became
-// the app's latest. Its failure is logged and swallowed: a run that finished is
+// the app's latest — after every price step, since "latest" is a priced check.
+// recountOpenIssues logs and swallows its own failure: a run that finished is
 // finished, and a counter is not a reason to retry it (rule 4).
 async function countOpenIssues(env: AgentEnv, appId: string | null): Promise<void> {
-  try {
-    await refreshOpenIssues(env.db, appId);
-  } catch (err) {
-    console.warn(`[open-issues] recount failed for app ${appId}: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  await recountOpenIssues(env.db, appId);
 }
 
 // CHE-327: the runaway fuse. A NonRetryableError, so the engine does not spend
@@ -612,6 +609,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-signed-out", async () => {
           await priceRun(env.db, runId);
         });
+        await step.do("count-open-issues-signed-out", () => countOpenIssues(env, run.appId));
         // Its own step, so a retry of anything around it cannot send twice; the
         // send itself is refused a second time by its id. Never fails the run.
         await step.do("tell-signed-out", async () => {
@@ -651,6 +649,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("price-closed-door", async () => {
           await priceRun(env.db, runId);
         });
+        await step.do("count-open-issues-closed-door", () => countOpenIssues(env, run.appId));
         await step.do("capability-gaps-closed-door", async () => {
           try {
             for (const note of await fileCapabilityGaps(env, runId, { extraGaps: [] })) {
@@ -1438,6 +1437,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await priceRun(env.db, runId).catch((e) =>
             console.warn(`[balance] pricing finished run ${runId} did not happen: ${e instanceof Error ? e.message : String(e)}`),
           );
+          // CHE-399: a priced, finished run is the app's latest — the step
+          // that threw may have been the recount itself.
+          await countOpenIssues(env, run.appId);
           return { phase: `${before.status}, after the verdict was written`, afterVerdict: true };
         }
         await env.db.run.update({

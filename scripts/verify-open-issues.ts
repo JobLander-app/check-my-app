@@ -119,17 +119,27 @@ async function main() {
 
   // ── the write sites and the column ─────────────────────────────────────────
   const workflow = read("src/agent/workflow.ts");
-  check("workflow: the recount runs after the full run's price step and after the quick check's, in a step of its own",
-    /await step\.do\("price", async \(\) => \{\s*await priceRun\(env\.db, runId\);\s*\}\);[\s\S]{0,400}await step\.do\("count-open-issues", \(\) => countOpenIssues\(env, run\.appId\)\);/.test(workflow) &&
-      /await step\.do\("price-quick", async \(\) => \{\s*await priceRun\(env\.db, runId\);\s*\}\);\s*await step\.do\("count-open-issues-quick", \(\) => countOpenIssues\(env, run\.appId\)\);/.test(workflow));
-  check("…inside a catch that logs and swallows: a counter never fails a run (rule 4)",
-    /async function countOpenIssues\(env: AgentEnv, appId: string \| null\): Promise<void> \{\s*try \{\s*await refreshOpenIssues\(env\.db, appId\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(workflow));
+  // Every terminal path that prices a finished run recounts right after it
+  // (Codex on #276: the signed-out and closed-door exits publish a priced
+  // partial verdict and return early; the catch-after-verdict path prices too).
+  const priceSteps = ["price", "price-quick", "price-signed-out", "price-closed-door"];
+  const recountAfter = (label: string) =>
+    new RegExp(`await step\\.do\\("${label}", async \\(\\) => \\{\\s*await priceRun\\(env\\.db, runId\\);\\s*\\}\\);[\\s\\S]{0,400}await step\\.do\\("count-open-issues[a-z-]*", \\(\\) => countOpenIssues\\(env, run\\.appId\\)\\);`).test(workflow);
+  check(`workflow: every price step of a finished run (${priceSteps.join(", ")}) is followed by the recount, in a step of its own`, priceSteps.every(recountAfter),
+    priceSteps.filter((l) => !recountAfter(l)).join(", "));
+  check("…and so is the catch path that prices a run whose verdict was already written",
+    /await priceRun\(env\.db, runId\)\.catch\([\s\S]{0,400}await countOpenIssues\(env, run\.appId\);\s*return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(workflow));
+  check("the workflow's price steps are the only ones (a new terminal path is caught here)", (workflow.match(/await priceRun\(env\.db, runId\)/g) ?? []).length === priceSteps.length + 2);
+  const lib = read("src/lib/open-issues.ts");
+  check("the recount never fails its caller: recountOpenIssues logs and swallows, and the workflow and both mark doors use it",
+    /export async function recountOpenIssues[\s\S]{0,200}try \{\s*return await recount\(db, appId\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(lib) &&
+      /async function countOpenIssues\(env: AgentEnv, appId: string \| null\): Promise<void> \{\s*await recountOpenIssues\(env\.db, appId\);\s*\}/.test(workflow));
   const route = read("src/app/api/findings/[id]/route.ts");
-  check("PATCH /api/findings/{id} recounts the finding's app after the mark is written",
-    route.indexOf("await refreshOpenIssues(prisma, existing.run.appId)") > route.indexOf("data: { mark: parsed.data.mark }"));
+  check("PATCH /api/findings/{id} recounts the finding's app after the mark is written, best effort",
+    route.indexOf("await recountOpenIssues(prisma, existing.run.appId)") > route.indexOf("data: { mark: parsed.data.mark }") && !/refreshOpenIssues/.test(route));
   const action = read("src/app/(app)/health/issues/actions.ts");
-  check("markFinding recounts the finding's app after the mark is written",
-    action.indexOf("await refreshOpenIssues(db, finding.run.appId)") > action.indexOf("data: { mark: parsed.data.mark }"));
+  check("markFinding recounts the finding's app after the mark is written, best effort",
+    action.indexOf("await recountOpenIssues(db, finding.run.appId)") > action.indexOf("data: { mark: parsed.data.mark }") && !/refreshOpenIssues/.test(action));
   check("reconcile changes a ticket's state only inside the workflow, whose finish step recounts — no fourth write site needed",
     !/reconcileIssueLinks|verifyFixedLinks/.test(read("src/agent/scheduler.ts")) && /reconcileIssueLinks\(env, run\)/.test(workflow));
   check("the sidebar reads the column and falls back per app", /a\.openIssues \?\? openOf\.get\(a\.id\) \?\? 0/.test(read("src/lib/shell-data.ts")));

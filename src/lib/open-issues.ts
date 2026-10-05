@@ -53,6 +53,25 @@ export async function openIssuesOf(db: PrismaClient, teamId: string, appId: stri
  * that may fail what it is doing (the workflow's finish step says no).
  */
 export async function refreshOpenIssues(db: PrismaClient, appId: string | null | undefined): Promise<number | null> {
+  return recount(db, appId);
+}
+
+/**
+ * The same, for a caller whose own write is already done — a mark, a finished
+ * run. The count is derived; a hiccup in deriving it is logged and swallowed,
+ * never reported as the write having failed (Codex on #276: the action
+ * rejected after the mark was stored, and the page said "Not saved").
+ */
+export async function recountOpenIssues(db: PrismaClient, appId: string | null | undefined): Promise<number | null> {
+  try {
+    return await recount(db, appId);
+  } catch (err) {
+    console.warn(`[open-issues] recount failed for app ${appId}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+async function recount(db: PrismaClient, appId: string | null | undefined): Promise<number | null> {
   if (!appId) return null;
   const app = await db.app.findUnique({ ...alreadyScoped("the caller resolved this app"),
     where: { id: appId },

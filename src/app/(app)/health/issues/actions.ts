@@ -3,7 +3,7 @@
 import { refuseSelfCheck } from "@/lib/self-check-action";
 import { requireActionScope } from "@/lib/team-auth";
 import { markFindingSchema } from "@/lib/validation";
-import { refreshOpenIssues } from "@/lib/open-issues";
+import { recountOpenIssues } from "@/lib/open-issues";
 
 // The owner's answer to a problem (CHE-360), written as a server action so the
 // four marks work from the first HTML and need no second mutation path
@@ -27,7 +27,8 @@ export async function markFinding(findingId: string, mark: string): Promise<Mark
   if (!finding) return { error: "Problem not found" };
 
   await db.finding.update({ where: { id: finding.id }, data: { mark: parsed.data.mark } });
-  // CHE-399: the number beside Issues follows the answer at once.
-  await refreshOpenIssues(db, finding.run.appId);
+  // CHE-399: the number beside Issues follows the answer at once. Best effort:
+  // the answer is stored whatever happens to the count.
+  await recountOpenIssues(db, finding.run.appId);
   return { ok: true };
 }
