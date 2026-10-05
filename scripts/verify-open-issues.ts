@@ -1,0 +1,204 @@
+// CHE-399: the number beside Issues in the menu and the Issues page count the
+// same thing from one stored figure (App.openIssues, src/lib/open-issues.ts).
+//
+// On a real D1 (every migration applied):
+//   1. an app nothing has written yet: the column is null and the sidebar
+//      falls back to its own count of unanswered findings in the latest check
+//      — which differs from the page where two findings are one problem;
+//   2. refreshOpenIssues stores what Issues' first filter shows for the app,
+//      and from then on the sidebar's number is the page's;
+//   3. an answer ("that's fine") changes the page's number, and a refresh
+//      after it changes the sidebar's to the same;
+//   4. a later check that sees the problem again makes it open again, and
+//      the recount follows; a check of a deleted app recounts nothing and
+//      does not throw.
+// And in the source: the three write sites — the workflow after each price
+// step, inside a catch; the PATCH route and the markFinding action after
+// their update — and the migration that adds the column.
+//
+// Usage: npx tsx --tsconfig tsconfig.json scripts/verify-open-issues.ts
+
+import "./fixtures/wasm-module-loader.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { realD1 } from "./fixtures/real-d1";
+import { appOfRun, openIssuesOf, recountOpenIssuesOfRun, refreshOpenIssues } from "../src/lib/open-issues";
+import { loadShellData } from "../src/lib/shell-data";
+import { teamRecurrences } from "../src/lib/recurring";
+import { inIssuesFilter, issueView } from "../src/lib/issues-page";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
+
+let failures = 0;
+function check(name: string, ok: boolean, detail = "") {
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  →  ${detail}` : ""}`);
+}
+
+async function main() {
+  const real = await realD1();
+  try {
+    const { db } = real;
+    await db.user.create({ data: { id: "u", clerkUserId: "ck_u", email: "open@example.test" } });
+    await db.team.create({ data: { id: "t", name: "T", plan: "business" } });
+    await db.app.create({ data: { id: "shop", teamId: "t", ownerId: "u", appSlug: "shop.test", targetUrl: "https://shop.test", targetKind: "website" } });
+
+    const day = (n: number) => new Date(Date.UTC(2026, 4, 1) + n * 86_400_000);
+    const runRow = (id: string, n: number) => ({
+      id, publicId: `p_${id}`, runNumber: n, teamId: "t", appId: "shop", appSlug: "shop.test", targetUrl: "https://shop.test", targetKind: "website",
+      status: "completed", verdict: "mostly_ok", priceUsd: 0.5, startedAt: day(n), createdAt: day(n), completedAt: day(n),
+    });
+    const journey = (runId: string, k: number) => ({ id: `${runId}_j${k}`, runId, order: k, title: `Journey ${k}`, status: "ok", journeyKey: `journey-${k}` });
+    const step = (j: string, s: number) => ({ id: `${j}_s${s}`, journeyId: j, order: s, label: `step ${s}`, status: "ok" });
+    const finding = (id: string, runId: string, title: string, where: string, journeyIndex: number, stepIndex: number) => ({
+      id, runId, number: 1, title, category: "broken", severity: "high",
+      detail: JSON.stringify({ where }), anchor: JSON.stringify({ stepRef: { journeyIndex, stepIndex } }),
+    });
+    const seedRun = async (id: string, n: number) => {
+      await db.run.create({ data: runRow(id, n) as never });
+      await db.journey.createMany({ data: [journey(id, 0), journey(id, 1)] });
+      await db.step.createMany({ data: [step(`${id}_j0`, 0), step(`${id}_j0`, 1), step(`${id}_j0`, 2), step(`${id}_j1`, 0), step(`${id}_j1`, 1)] });
+    };
+
+    // Check #1: two findings of ONE problem (same place, same step, reworded)
+    // and one of another — Issues shows two problems; the latest-check SQL
+    // counts three unanswered findings.
+    await seedRun("r1", 1);
+    await db.finding.createMany({ data: [
+      finding("f1a", "r1", "Checkout button does nothing", "/checkout", 0, 2),
+      finding("f1b", "r1", "Checkout button does nothing when clicked", "/checkout", 0, 2),
+      finding("f1c", "r1", "Invoice download returns an empty file", "/invoices", 1, 1),
+    ] });
+
+    const pageCount = async () => {
+      const shell = await loadShellData(db, "t");
+      const latest = shell.apps.find((a) => a.id === "shop")?.latestRunNumber ?? null;
+      const rows = (await teamRecurrences(db, "t", "shop")).get("shop") ?? [];
+      return rows.filter((r) => inIssuesFilter("latest", issueView(r, latest), r.issue.state)).length;
+    };
+    const stored = async () => (await db.app.findUnique({ where: { id: "shop" }, select: { openIssues: true } }))?.openIssues ?? null;
+
+    // 1 — nothing written yet.
+    const before = await loadShellData(db, "t");
+    check("1. an app nothing has written yet holds null, and the sidebar falls back to the latest check's unanswered findings",
+      (await stored()) === null && before.openIssues === 3, JSON.stringify({ stored: await stored(), sidebar: before.openIssues }));
+    check("…which is not what the page shows: two findings of one problem are one row there", (await pageCount()) === 2, String(await pageCount()));
+    check("openIssuesOf is the page's number", (await openIssuesOf(db, "t", "shop")) === 2);
+
+    // 2 — the recount.
+    const written = await refreshOpenIssues(db, "shop");
+    const after = await loadShellData(db, "t");
+    check("2. refreshOpenIssues stores the page's number, and the sidebar sums the column from then on",
+      written === 2 && (await stored()) === 2 && after.openIssues === 2, JSON.stringify({ written, stored: await stored(), sidebar: after.openIssues }));
+
+    // 3 — an answer.
+    await db.finding.update({ where: { id: "f1c" }, data: { mark: "known" } });
+    check("3. the owner's answer changes the page's number…", (await pageCount()) === 1 && (await loadShellData(db, "t")).openIssues === 2,
+      JSON.stringify({ page: await pageCount(), sidebarBeforeRefresh: (await loadShellData(db, "t")).openIssues }));
+    await refreshOpenIssues(db, "shop");
+    check("…and the recount after it makes the sidebar's the same", (await stored()) === 1 && (await loadShellData(db, "t")).openIssues === 1);
+
+    // 4 — a later check: the checkout problem is seen again, the invoice one is
+    // not looked at (its journey walked, no finding) → gone; a brand-new one.
+    await seedRun("r2", 2);
+    await db.finding.createMany({ data: [
+      finding("f2a", "r2", "Checkout button does nothing", "/checkout", 0, 2),
+      finding("f2b", "r2", "Search returns no results for any query", "/search", 1, 0),
+    ] });
+    check("4. a new check moves the page's number before any recount, and the stored figure still says the old one",
+      (await pageCount()) === 2 && (await stored()) === 1);
+    const recounted = await refreshOpenIssues(db, "shop");
+    check("…the recount after the check makes them one number again", recounted === 2 && (await loadShellData(db, "t")).openIssues === 2, String(recounted));
+    check("a recount of no app, or of an app that is gone, writes nothing and does not throw",
+      (await refreshOpenIssues(db, null)) === null && (await refreshOpenIssues(db, "no-such-app")) === null);
+
+    // 5 — two recounts in flight (Codex on #276): the one that read the older
+    // state must not land last. Played out by hand: a recount reads the row's
+    // version and computes 2; before it writes, another mark lands and its
+    // recount stores 1 (version bumped); the stale write is refused, the
+    // retry reads the new state and stores 1 again — never 2.
+    const versionBefore = (await db.app.findUnique({ where: { id: "shop" }, select: { openIssuesVersion: true } }))!.openIssuesVersion;
+    const staleValue = await openIssuesOf(db, "t", "shop"); // = 2, read with versionBefore in hand
+    await db.finding.update({ where: { id: "f2b" }, data: { mark: "known" } });
+    await refreshOpenIssues(db, "shop"); // the newer recount lands: 1
+    const staleWrite = await db.app.updateMany({ where: { id: "shop", openIssuesVersion: versionBefore }, data: { openIssues: staleValue, openIssuesVersion: { increment: 1 } } });
+    check("5. a recount that read an older version than the row's is refused at the write — the newer value stands",
+      staleValue === 2 && staleWrite.count === 0 && (await stored()) === 1, JSON.stringify({ staleValue, refused: staleWrite.count === 0, stored: await stored() }));
+    const again = await refreshOpenIssues(db, "shop");
+    const versionAfter = (await db.app.findUnique({ where: { id: "shop" }, select: { openIssuesVersion: true } }))!.openIssuesVersion;
+    check("…and every recount that lands bumps the version", again === 1 && versionAfter === versionBefore + 2, JSON.stringify({ versionBefore, versionAfter }));
+
+    // 6 — a check made before the app was saved (no appId) counts against the
+    // team's only app of that address, as the history assigns it (Codex round
+    // 3 on #276); the team's second app of the same address makes it nobody's.
+    await db.app.create({ data: { id: "blog", teamId: "t", ownerId: "u", appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website" } });
+    const loose = { id: "l1", publicId: "p_l1", runNumber: 9, teamId: "t", appId: null, appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website",
+      status: "completed", verdict: "mostly_ok", priceUsd: 0.5, startedAt: day(9), createdAt: day(9), completedAt: day(9) };
+    await db.run.create({ data: loose as never });
+    await db.journey.create({ data: journey("l1", 0) });
+    await db.step.createMany({ data: [step("l1_j0", 0)] });
+    await db.finding.create({ data: finding("f_l1", "l1", "Comments do not post", "/post", 0, 0) });
+    check("6. the app a run counts against: its own, else the team's only app of its address, else nothing",
+      (await appOfRun(db, { appId: "shop", teamId: "t", appSlug: "whatever" })) === "shop" &&
+        (await appOfRun(db, { appId: null, teamId: "t", appSlug: "blog.test" })) === "blog" &&
+        (await appOfRun(db, { appId: null, teamId: null, appSlug: "blog.test" })) === null &&
+        (await appOfRun(db, { appId: null, teamId: "t", appSlug: "nobody.test" })) === null);
+    const viaRun = await recountOpenIssuesOfRun(db, loose);
+    check("…a mark on that check's finding recounts the app it belongs to", viaRun === 1 && (await db.app.findUnique({ where: { id: "blog" }, select: { openIssues: true } }))?.openIssues === 1, String(viaRun));
+    await db.user.create({ data: { id: "u2", clerkUserId: "ck_u2", email: "two@example.test" } });
+    await db.app.create({ data: { id: "blog2", teamId: "t", ownerId: "u2", appSlug: "blog.test", targetUrl: "https://blog.test", targetKind: "website" } });
+    check("…and with a second app of that address in the team, the loose check is nobody's", (await appOfRun(db, loose)) === null && (await recountOpenIssuesOfRun(db, loose)) === null);
+  } finally {
+    await real.dispose();
+  }
+
+  // ── the write sites and the column ─────────────────────────────────────────
+  const workflow = read("src/agent/workflow.ts");
+  // Every terminal path that prices a finished run recounts right after it
+  // (Codex on #276: the signed-out and closed-door exits publish a priced
+  // partial verdict and return early; the catch-after-verdict path prices too).
+  const priceSteps = ["price", "price-quick", "price-signed-out", "price-closed-door"];
+  const recountAfter = (label: string) =>
+    new RegExp(`await step\\.do\\("${label}", async \\(\\) => \\{\\s*await priceRun\\(env\\.db, runId\\);\\s*\\}\\);[\\s\\S]{0,400}await step\\.do\\("count-open-issues[a-z-]*", \\(\\) => countOpenIssues\\(env, run\\)\\);`).test(workflow);
+  check(`workflow: every price step of a finished run (${priceSteps.join(", ")}) is followed by the recount, in a step of its own`, priceSteps.every(recountAfter),
+    priceSteps.filter((l) => !recountAfter(l)).join(", "));
+  check("…and so is the catch path that prices a run whose verdict was already written",
+    /await priceRun\(env\.db, runId\)\.catch\([\s\S]{0,400}await countOpenIssues\(env, run\);\s*return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(workflow));
+  check("the workflow's price steps are the only ones (a new terminal path is caught here)", (workflow.match(/await priceRun\(env\.db, runId\)/g) ?? []).length === priceSteps.length + 2);
+  // Codex round 2 on #276: reconcile answers findings before the walk; a run
+  // that then fails is not the app's latest, but those answers are real.
+  check("…and the failed-run path recounts too, after the price is voided",
+    /\.then\(\(\) => voidRunPrice\(env\.db, runId\)\)[\s\S]{0,700}await countOpenIssues\(env, run\);\s*if \(isExtension && !budget\)/.test(workflow));
+  // Codex round 3 on #276: by the run, never by appId alone.
+  check("every recount goes by the run — its app, else the team's only app of its address — on all three doors",
+    /async function countOpenIssues\(env: AgentEnv, run: \{ appId: string \| null; teamId: string \| null; appSlug: string \}\): Promise<void> \{\s*await recountOpenIssuesOfRun\(env\.db, run\);\s*\}/.test(workflow) &&
+      !/recountOpenIssues\(|refreshOpenIssues\(/.test(workflow));
+  check("the write is a compare-and-set on the row's version, retried a bounded number of times",
+    /where: \{ id: appId, openIssuesVersion: app\.openIssuesVersion \},\s*data: \{ openIssues: open, openIssuesVersion: \{ increment: 1 \} \}/.test(read("src/lib/open-issues.ts")) &&
+      /for \(let attempt = 0; attempt < RECOUNT_ATTEMPTS; attempt\+\+\)/.test(read("src/lib/open-issues.ts")));
+  const lib = read("src/lib/open-issues.ts");
+  check("the recount never fails its caller: recountOpenIssuesOfRun logs and swallows",
+    /export async function recountOpenIssuesOfRun[\s\S]{0,300}try \{\s*return await recount\(db, await appOfRun\(db, run\)\);\s*\} catch \(err\) \{\s*console\.warn\(/.test(lib));
+  const route = read("src/app/api/findings/[id]/route.ts");
+  check("PATCH /api/findings/{id} recounts by the finding's run after the mark is written, best effort",
+    route.indexOf("await recountOpenIssuesOfRun(prisma, existing.run)") > route.indexOf("data: { mark: parsed.data.mark }") && /teamId: true, appSlug: true/.test(route) && !/refreshOpenIssues/.test(route));
+  const action = read("src/app/(app)/health/issues/actions.ts");
+  check("markFinding recounts by the finding's run after the mark is written, best effort",
+    action.indexOf("await recountOpenIssuesOfRun(db, finding.run)") > action.indexOf("data: { mark: parsed.data.mark }") && /teamId: true, appSlug: true/.test(action) && !/refreshOpenIssues/.test(action));
+  check("reconcile changes a ticket's state only inside the workflow, whose finish step recounts — no fourth write site needed",
+    !/reconcileIssueLinks|verifyFixedLinks/.test(read("src/agent/scheduler.ts")) && /reconcileIssueLinks\(env, run\)/.test(workflow));
+  check("the sidebar reads the column and falls back per app", /a\.openIssues \?\? openOf\.get\(a\.id\) \?\? 0/.test(read("src/lib/shell-data.ts")));
+  check("the column: in the schema and in a migration of its own",
+    /openIssues\s+Int\?/.test(read("prisma/schema.prisma")) && /openIssuesVersion Int @default\(0\)/.test(read("prisma/schema.prisma")) &&
+      /ALTER TABLE "App" ADD COLUMN "openIssues" INTEGER;\s*ALTER TABLE "App" ADD COLUMN "openIssuesVersion" INTEGER NOT NULL DEFAULT 0;/.test(read("prisma/migrations/0056_app_open_issues.sql")));
+
+  console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+  process.exit(failures ? 1 : 0);
+}
+
+main().catch((err) => {
+  console.error("verify-open-issues: crashed:", err);
+  process.exit(1);
+});

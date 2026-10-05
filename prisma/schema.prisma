@@ -969,6 +969,17 @@ model App {
   // sign-in has ended, the person who signs in is told once per value of this
   // (src/agent/signed-out.ts). Null = no check has reached the app yet.
   sessionReachedAt DateTime?
+  // CHE-399: how many problems are open in the app's latest check — the number
+  // Health → Issues' first filter shows for it — stored where it changes (a
+  // check finishing, a mark, a ticket's state; src/lib/open-issues.ts) so the
+  // sidebar can sum a column instead of reading the team's whole history on
+  // every page. Null = no check has written it yet (the sidebar then counts
+  // the latest check's unanswered findings itself).
+  openIssues      Int?
+  // Bumped by every write of openIssues; a recount writes only if the version
+  // it read is still the row's (two recounts of one app in flight — a mark and
+  // a finishing check — must not let the staler one land last).
+  openIssuesVersion Int @default(0)
   // CHE-90: may the agent create records while checking? read_only (default)
   // or create_cleanup — full CRUD lifecycle, every creation removed again.
   writeMode       String  @default("read_only")

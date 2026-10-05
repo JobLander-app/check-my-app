@@ -138,6 +138,7 @@
     "verify:code-standards": "tsx --tsconfig tsconfig.json scripts/verify-code-standards.ts",
     "verify:theme-tokens": "tsx --tsconfig tsconfig.json scripts/verify-theme-tokens.ts",
     "verify:team-scoped-app-writes": "tsx --tsconfig tsconfig.json scripts/verify-team-scoped-app-writes.ts",
+    "verify:open-issues": "tsx --tsconfig tsconfig.json scripts/verify-open-issues.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {

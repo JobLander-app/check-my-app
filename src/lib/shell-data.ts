@@ -100,6 +100,16 @@ const LATEST_WITH_OPEN = (teamId: string) => Prisma.sql`
   )
   WHERE rn = 1`;
 
+export type LatestCheck = { appId: string; verdict: string; runNumber: number; open: number };
+
+// Each app's latest check with its verdict and unanswered findings — the one
+// statement above. Shared with src/lib/open-issues.ts, which needs the same
+// "latest" an app's stored count is of.
+export async function latestChecks(db: PrismaClient, teamId: string): Promise<LatestCheck[]> {
+  const rows = await db.$queryRaw<{ appId: string; verdict: string; runNumber: number | bigint; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId)));
+  return rows.map((r) => ({ appId: r.appId, verdict: r.verdict, runNumber: Number(r.runNumber), open: Number(r.open) }));
+}
+
 export async function loadShellData(db: PrismaClient, teamId: string, now: Date = new Date()): Promise<ShellData> {
   const since = new Date(utcDayStart(now).getTime() - (WINDOW_DAYS - 1) * DAY_MS);
   const until = new Date(utcDayStart(now).getTime() + DAY_MS);
@@ -107,9 +117,9 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
     db.app.findMany({
       where: { ...teamOwned(teamId) },
       orderBy: { createdAt: "asc" },
-      select: { id: true, appSlug: true, targetKind: true, targetUrl: true },
+      select: { id: true, appSlug: true, targetKind: true, targetUrl: true, openIssues: true },
     }),
-    db.$queryRaw<{ appId: string; verdict: string; runNumber: number | bigint; open: number | bigint }[]>(LATEST_WITH_OPEN(teamRows(teamId))),
+    latestChecks(db, teamId),
     db.run.findMany({
       where: { ...teamOwned(teamId), createdAt: { gte: new Date(since.getTime() - DAY_MS), lte: new Date(until.getTime() - 1) } },
       select: { appId: true, appSlug: true, priceUsd: true, createdAt: true },
@@ -117,7 +127,13 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
   ]);
 
   const verdictOf = new Map(latest.map((r) => [r.appId, r.verdict]));
-  const latestRunOf = new Map(latest.map((r) => [r.appId, Number(r.runNumber)]));
+  const latestRunOf = new Map(latest.map((r) => [r.appId, r.runNumber]));
+  const openOf = new Map(latest.map((r) => [r.appId, r.open]));
+  // CHE-399: the number beside Issues is what Issues' first filter shows — the
+  // problems open in each app's latest check, stored on the app by whatever
+  // last changed it (src/lib/open-issues.ts). An app nothing has written yet
+  // falls back to the statement's own count of unanswered findings.
+  const openIssues = apps.reduce((n, a) => n + (a.openIssues ?? openOf.get(a.id) ?? 0), 0);
   // "Your apps cost": the checks that belong to a saved app, by appHealth's
   // rule — attached to it, or made before the team's only app with that
   // address was saved. A preview or a one-off address is the team's spending
@@ -138,7 +154,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
       verdict: verdictOf.get(a.id) ?? null,
       latestRunNumber: latestRunOf.get(a.id) ?? null,
     })),
-    openIssues: latest.reduce((n, r) => n + Number(r.open), 0),
+    openIssues,
     monthlyCostUsd: Math.round((totalCents / WINDOW_DAYS) * 30) / 100,
   };
 }

@@ -238,7 +238,8 @@ async function main() {
   // finished (not failed, not re-priced to 0) and the throw is still filed.
   check(
     "a throw after the verdict was written keeps the run finished, clears credentials, keeps its price",
-    /if \(before\?\.status === "completed" \|\| before\?\.status === "partial"\) \{[\s\S]{0,700}\.\.\.cleared,[\s\S]{0,300}priceRun\(env\.db, runId\)\.catch[\s\S]{0,300}return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(wf),
+    // (CHE-399 recounts the number beside Issues between the price and the return.)
+    /if \(before\?\.status === "completed" \|\| before\?\.status === "partial"\) \{[\s\S]{0,700}\.\.\.cleared,[\s\S]{0,300}priceRun\(env\.db, runId\)\.catch[\s\S]{0,600}return \{ phase: `\$\{before\.status\}, after the verdict was written`, afterVerdict: true \};/.test(wf),
   );
 
   // ─── 3. What a customer's agent reads: GET /api/runs/{id}, MCP status ─────
