@@ -113,15 +113,13 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   const again = (recurring.get(app.id) ?? []).filter((i) => i.state === "recurring");
   const settings = appPath.settings(app.id);
   // The button is shown only where pressing it starts a check: the viewer's
-  // scope allows it, and the app is one they added — today startSavedApp
-  // answers "App not found" for a teammate's app (CHE-395). A reader, or a
-  // member on a teammate's app, sees the review link alone.
-  const mayRun = can(scope, "run.start") && app.ownerId === user.id;
+  // scope allows it. The app is the team's, whoever added it (CHE-395,
+  // CHE-417); a reader sees the review link alone.
+  const mayRun = can(scope, "run.start");
   // The same for the tracker offer: exactly what /api/integrations/linear/start
-  // asks for — the scope, a plan that carries tracker integrations, the
-  // viewer's own app. Anyone else would follow it into a refusal.
-  const mayConnectTracker =
-    can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration && app.ownerId === user.id;
+  // asks for — the scope and a plan that carries tracker integrations. Anyone
+  // else would follow it into a refusal.
+  const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">

@@ -223,6 +223,10 @@ const unenforced = teamRules.filter(([key, rule]) => {
     text.includes(`requireScope(`) && text.includes(`"${rule.action}"`) ||
     text.includes(`requireActionScope("${rule.action}")`) ||
     (text.includes("can(scope,") && text.includes(`"${rule.action}"`)) ||
+    // CHE-417: a handler bound to the team an OAuth flow was started for reads
+    // the caller's scope in that team (activeTeamContext), and asks the table
+    // of that scope.
+    (text.includes("can(context.scope,") && text.includes(`"${rule.action}"`)) ||
     // CHE-265: a funnel asks the same table through funnelAllows, which answers
     // "a stranger may, this signed-in caller may not".
     (text.includes("funnelAllows(") && text.includes(`"${rule.action}"`));

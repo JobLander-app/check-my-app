@@ -13,9 +13,9 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { discoverPostHog, revokeToken } from "@/lib/posthog/oauth";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
-import { updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
+import { settingsActionFor, updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
-import { TEAM_SCOPES, mintRefusal, type TeamScope } from "@/lib/scopes";
+import { TEAM_SCOPES, can, mintRefusal, refusal, type TeamScope } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
@@ -27,8 +27,10 @@ import { appPath } from "@/lib/app-shell";
 export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
+  // CHE-417: the app is the team's, whoever added it — the scope table above
+  // decided who may act; ownerId is attribution, not access.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     include: { tracker: true },
   });
   if (!app?.tracker) throw new Error("tracker not connected");
@@ -51,9 +53,9 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
 // webhook URL so a disabled endpoint leaves no secret behind.
 export async function setIntegrationEndpoints(appId: string, formData: FormData) {
   await refuseSelfCheck(appPath.page(appId));
-  const { user, db, team } = await requireActionScope("integration.connect");
+  const { db, team } = await requireActionScope("integration.connect");
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     select: { id: true },
   });
   if (!app) throw new Error("app not found");
@@ -207,7 +209,7 @@ export async function revokeApiKey(id: string): Promise<void> {
 // (CHE-413 removed the escalation address that used to be the app's field).
 export async function updateAppSettings(appId: string, section: string, formData: FormData) {
   await refuseSelfCheck(appPath.page(appId));
-  const { user, db, team } = await requireActionScope("app.settings.write");
+  const { user, db, team, scope } = await requireActionScope("app.settings.write");
   const text = (name: string) => String(formData.get(name) ?? "");
   const list = (name: string) =>
     text(name)
@@ -235,9 +237,15 @@ export async function updateAppSettings(appId: string, section: string, formData
           ? { pickupLabels: list("pickupLabels"), repoLabel: text("repoLabel"), urgentJourneys: list("urgentJourneys") }
           : null;
   if (!patch) throw new Error("unknown settings section");
+  const back = appPath.section(appId, section);
+
+  // A login is a credentials write — an admin's (src/lib/scopes.ts). A member
+  // who reaches the Accounts form is told so where the form is, not on an
+  // error page.
+  const action = settingsActionFor(patch);
+  if (!can(scope, action)) redirect(`${back}?error=${encodeURIComponent(refusal(scope, action) ?? "Not allowed")}`);
 
   const result = await updateAppForTeam(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId, patch);
-  const back = appPath.section(appId, section);
   if ("error" in result) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
 
   revalidatePath("/home");
@@ -262,8 +270,9 @@ export async function deleteApp(
 ): Promise<DeleteAppResult> {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("app.delete");
+  // CHE-417: an admin removes any app of the team, not only the ones they added.
   const app = await db.app.findFirst({
-    where: { ...teamOwned(team.id), id: appId, ownerId: user.id },
+    where: { ...teamOwned(team.id), id: appId },
     select: { id: true, appSlug: true },
   });
   if (!app) return { error: "App not found." };

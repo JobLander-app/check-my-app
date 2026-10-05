@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDbFromContext } from "@/lib/db";
-import { getOptionalUser } from "@/lib/auth";
-import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { getOptionalUser, optionalTeamContext } from "@/lib/auth";
+import { publicRow, teamOwned } from "@/lib/tenant-db";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://checkmyapp.dev";
 
@@ -15,10 +15,13 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://checkmyapp.dev";
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const db = await getDbFromContext();
   const user = await getOptionalUser(db);
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const context = await optionalTeamContext(db, user);
+  if (!user || !context) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const app = await db.app.findUnique({ ...alreadyScoped("the unique key names the owner"),
-    where: { ownerId_appSlug: { ownerId: user.id, appSlug: (await params).slug } },
+  // CHE-417: the team's app of that address, whoever added it.
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(context.team.id), appSlug: (await params).slug },
+    orderBy: { createdAt: "asc" },
     select: { id: true, appSlug: true },
   });
   if (!app) return NextResponse.json({ error: "App not found" }, { status: 404 });

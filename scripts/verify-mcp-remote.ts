@@ -68,6 +68,9 @@ function check(name: string, ok: boolean, detail = "") {
 const ORIGIN = "https://checkmyapp.dev";
 const KEY_A = "cma_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const KEY_A_READER = "cma_cccccccccccccccccccccccccccccccc";
+// CHE-417: a login is an admin's to store (app.credentials.write); the
+// member key above may change what is checked, never whom it signs in as.
+const KEY_A_ADMIN = "cma_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const KEY_B = "cma_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const KEY_FREE = "cma_dddddddddddddddddddddddddddddddd";
 const KEY_FREE_LAST = "cma_ffffffffffffffffffffffffffffffff";
@@ -96,6 +99,7 @@ async function seed() {
     apiKey: [
       { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
       { id: "k_r", ownerId: "u_a", teamId: "team_a", scope: "reader", keyHash: await hashApiKey(KEY_A_READER), lastUsedAt: null },
+      { id: "k_aa", ownerId: "u_a", teamId: "team_a", scope: "admin", keyHash: await hashApiKey(KEY_A_ADMIN), lastUsedAt: null },
       { id: "k_b", ownerId: "u_b", teamId: "team_b", scope: "member", keyHash: await hashApiKey(KEY_B), lastUsedAt: null },
       { id: "k_f", ownerId: "u_f", teamId: "team_f", scope: "admin", keyHash: await hashApiKey(KEY_FREE), lastUsedAt: null },
       { id: "k_g", ownerId: "u_g", teamId: "team_g", scope: "admin", keyHash: await hashApiKey(KEY_FREE_LAST), lastUsedAt: null },
@@ -236,6 +240,7 @@ async function main() {
   }
 
   const a = await connect(KEY_A);
+  const aa = await connect(KEY_A_ADMIN);
   const b = await connect(KEY_B);
   const reader = await connect(KEY_A_READER);
   const free = await connect(KEY_FREE);
@@ -313,7 +318,14 @@ async function main() {
       listed.includes('"has_test_account":true') && !listed.includes(PASSWORD) && !listed.includes("testPasswordEnc"),
       listed.slice(0, 200));
 
-    const created = await call(a, "create_app", {
+    // CHE-417: a login is an admin's to store. The member key is refused before
+    // anything is written; the admin key of the same person stores it.
+    const asMember = await call(a, "create_app", {
+      url: "https://new-app.test", scenarios: "Sign-up must work.", test_email: "qa@new-app.test", test_password: PASSWORD,
+    });
+    check("create_app: a member key with a login is refused by the credentials gate, and no app appears",
+      asMember.isError && asMember.out.code === "forbidden" && !stub.table("app").some((x) => x.appSlug === "new-app.test"), JSON.stringify(asMember.out));
+    const created = await call(aa, "create_app", {
       url: "https://new-app.test", scenarios: "Sign-up must work.", test_email: "qa@new-app.test", test_password: PASSWORD,
     });
     const row = stub.table("app").find((x) => x.id === created.out.app_id);
@@ -333,13 +345,13 @@ async function main() {
     check("create_app: the same app twice → invalid_input pointing at update_app",
       dupe.isError && dupe.out.code === "invalid_input" && String(dupe.out.hint).includes("update_app"), JSON.stringify(dupe.out));
 
-    const cleared = await call(a, "update_app", { app_id: row!.id, test_password: "" });
+    const cleared = await call(aa, "update_app", { app_id: row!.id, test_password: "" });
     const after = stub.table("app").find((x) => x.id === row!.id)!;
     const watchAfter = stub.table("watch").find((w) => w.appId === row!.id)!;
     check("update_app: test_password \"\" removes it from the app and its watch",
       cleared.out.ok === true && after.testPasswordEnc === null && watchAfter.testPasswordEnc === null);
     // CHE-372: the store password of a password-protected store, the same way.
-    const storeCreated = await call(a, "create_app", { url: "https://locked-store.test", store_password: STORE_PASSWORD });
+    const storeCreated = await call(aa, "create_app", { url: "https://locked-store.test", store_password: STORE_PASSWORD });
     const store = stub.table("app").find((x) => x.id === storeCreated.out.app_id);
     const storeWatch = stub.table("watch").find((w) => w.appId === store?.id);
     check("create_app: store_password is stored encrypted on the app and its watch",
@@ -354,7 +366,7 @@ async function main() {
         !storeListed.includes(store?.storePasswordEnc as string) && !storeListed.includes("storePasswordEnc"),
       JSON.stringify(storeEntry));
     check("create_app: its reply carries no store password", !JSON.stringify(storeCreated.out).includes(STORE_PASSWORD));
-    const storeCleared = await call(a, "update_app", { app_id: store!.id, store_password: "" });
+    const storeCleared = await call(aa, "update_app", { app_id: store!.id, store_password: "" });
     const storeAfter = stub.table("app").find((x) => x.id === store!.id)!;
     const storeWatchAfter = stub.table("watch").find((w) => w.appId === store!.id)!;
     check("update_app: store_password \"\" removes it from the app and its watch",

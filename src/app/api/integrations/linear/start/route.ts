@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   if (!appId) return NextResponse.json({ error: "appId required" }, { status: 400 });
 
   // CHE-253: the plan that carries tracker integrations is the team's.
-  const { user, db, team, scope } = await requireUser();
+  const { db, team, scope } = await requireUser();
   // CHE-255: connecting a tracker stores a token for the whole team.
   if (!can(scope, "integration.connect")) {
     return NextResponse.json({ error: refusal(scope, "integration.connect") }, { status: 403 });
@@ -23,7 +23,8 @@ export async function GET(req: NextRequest) {
   if (!PLAN_LIMITS[team.plan as UserPlan].trackerIntegration) {
     return NextResponse.json({ error: "Tracker integrations require a paid plan." }, { status: 403 });
   }
-  const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId, ownerId: user.id } });
+  // CHE-417: the team's app, whoever added it — the scope gate above decided.
+  const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId } });
   if (!app) return NextResponse.json({ error: "app not found" }, { status: 404 });
 
   const { env } = getCloudflareContext();
@@ -34,9 +35,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL("/home?integration=linear_unconfigured", req.url));
   }
 
-  // CSRF: random nonce in an httpOnly cookie; appId travels in the signed-ish state.
+  // CSRF: random nonce in an httpOnly cookie; the app and the team the connect
+  // was started for travel in the state, so the callback binds to that team
+  // and not to whichever team is active when Linear comes back (CHE-417).
   const nonce = crypto.randomUUID();
-  const state = Buffer.from(JSON.stringify({ appId, nonce })).toString("base64url");
+  const state = Buffer.from(JSON.stringify({ appId, teamId: team.id, nonce })).toString("base64url");
   const jar = await cookies();
   jar.set("linear_oauth_nonce", nonce, {
     httpOnly: true,

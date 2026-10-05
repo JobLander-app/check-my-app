@@ -101,17 +101,20 @@ check("'Keeps coming back' lists recurring problems only", /filter\(\(i\) => i\.
 check("prices only: the page names no cost, token or margin field", !/costUsd|cost_usd|tokens|multiplier|margin/i.test(page));
 check("the timeline shows only finished checks with a verdict and a price — the header's rule — newest first by number",
   /status: \{ in: FINISHED \}, verdict: \{ not: null \}, priceUsd: \{ not: null \},\s*\},\s*orderBy: \{ runNumber: "desc" \}/.test(page));
+// CHE-417: the app is the team's, whoever added it — the offer and the route
+// ask the scope and the plan, not who added the app.
 check("the tracker offer is shown only to someone the connect flow will accept",
-  /const mayConnectTracker =\s*can\(scope, "integration\.connect"\) && PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration && app\.ownerId === user\.id;/.test(page) &&
+  /const mayConnectTracker = can\(scope, "integration\.connect"\) && PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration;/.test(page) &&
     /app\.tracker === null && mayConnectTracker &&/.test(page));
 const start = read("src/app/api/integrations/linear/start/route.ts");
-check("…and those are the start route's own three conditions",
-  /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) && /id: appId, ownerId: user\.id/.test(start));
+check("…and those are the start route's own conditions: the scope, the plan, the team's app",
+  /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) &&
+    /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(start) && !/ownerId: user\.id/.test(start));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
-// Codex P1 on #241: a button a reader may not press, or that answers "App not
-// found" for a teammate's app, is not shown.
-check("the Run button is shown only where pressing it starts a check: the scope allows it and the app is the viewer's own",
-  /const mayRun = can\(scope, "run\.start"\) && app\.ownerId === user\.id;/.test(page) && /\{mayRun && <RunSavedApp appId=\{app\.id\} primary \/>\}/.test(page));
+// Codex P1 on #241: a button a reader may not press is not shown. Since CHE-395
+// and CHE-417 a teammate's app starts like one's own, so the scope alone decides.
+check("the Run button is shown only where pressing it starts a check: the scope allows it",
+  /const mayRun = can\(scope, "run\.start"\);/.test(page) && /\{mayRun && <RunSavedApp appId=\{app\.id\} primary \/>\}/.test(page));
 check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
   /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",

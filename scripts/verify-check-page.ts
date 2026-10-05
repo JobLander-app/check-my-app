@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import { checkDelta, deltaLine } from "../src/lib/check-delta";
 import { appPath, checkHref } from "../src/lib/app-shell";
 import type { Recurrence } from "../src/lib/recurring";
+import { disclosureWord, stepCardLabel, stepsRegionLabel } from "../src/lib/journey-copy";
+import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -145,6 +147,37 @@ check("Today, All apps, the app's page, Billing and Schedule open checks inside 
 const allApps = read("src/app/(app)/health/apps/page.tsx");
 check("All apps' header is the apps' own spending, as the sidebar's figure is",
   /usd\(health\.apps\.reduce\(\(sum, a\) => sum \+ a\.spendUsd, 0\)\)\} in the last/.test(allApps) && !/usd\(health\.totalSpendUsd\)/.test(allApps));
+
+// CHE-418: our own check of this page reported the journey rows and the step
+// cards as unreadable toggles — a 10px glyph, no state a reader could see or a
+// screen reader could read. Each disclosure now says what it is and which way
+// it is: the state on the control, the panel it controls, a word next to it.
+const strip = read("src/components/journey-strip.tsx");
+check("a journey row is a disclosure: aria-expanded on the button, the panel it controls named",
+  /aria-expanded=\{open\}\s*aria-controls=\{panelId\}/.test(strip) && /id=\{panelId\} role="region" aria-label=\{stepsRegionLabel\(journey\.title\)\}/.test(strip));
+check("…with a word that says which way it goes, and a chevron that turns",
+  /\{disclosureWord\(open, journey\.steps\.length\)\}/.test(strip) && /transition-transform duration-200 \$\{open \? "rotate-90" : ""\}/.test(strip));
+check("the word: closed says how many steps open, open says hide; a journey without steps has details, not 0 steps",
+  disclosureWord(false, 7) === "Show 7 steps" && disclosureWord(false, 1) === "Show 1 step" && disclosureWord(true, 7) === "Hide steps" &&
+    disclosureWord(false, 0) === "Show details" && disclosureWord(true, 0) === "Hide details");
+check("a step card says which step it is, how it went, and whether its evidence is open",
+  /aria-expanded=\{isSelected\}\s*aria-label=\{stepCardLabel\(\{ index: i, statusLabel: s\.label, stepLabel: step\.label, open: isSelected \}\)\}/.test(strip) &&
+    stepCardLabel({ index: 2, statusLabel: "Works", stepLabel: "Open the pricing page", open: false }) === "Step 3, Works: Open the pricing page. Show what we tried and what happened" &&
+    stepCardLabel({ index: 0, statusLabel: "Broken", stepLabel: "Pay", open: true }) === "Step 1, Broken: Pay. Hide what we tried and what happened" &&
+    stepsRegionLabel("Sign in") === "Steps of Sign in");
+// R18: every sentence the strip says comes from src/lib/journey-copy.ts (no
+// React there), and none of them names our machinery or hands work back.
+const copy = read("src/lib/journey-copy.ts");
+const sentences = [
+  disclosureWord(false, 7), disclosureWord(true, 7), disclosureWord(false, 0), disclosureWord(true, 0), stepsRegionLabel("Sign in"),
+  stepCardLabel({ index: 0, statusLabel: "Works", stepLabel: "Open the pricing page", open: false }),
+  stepCardLabel({ index: 0, statusLabel: "Confusing", stepLabel: "Submit the form", open: true }),
+];
+check("the strip's sentences live in a pure module and pass the leak guards",
+  !/from "react"|from "next\//.test(copy) && !/`Steps of|what we tried and what happened|Show \$\{|Hide steps/.test(strip) &&
+    sentences.every((s) => !hasEnvironmentLeak(s) && !hasHomework(s)), sentences.filter((s) => hasEnvironmentLeak(s) || hasHomework(s)).join(" | "));
+check("the problem lines that open a step carry the same state", /aria-expanded=\{selected\?\.id === p\.id\}/.test(strip));
+check("every disclosure is reachable by keyboard with a visible focus ring", (strip.match(/focus-visible:ring-2 focus-visible:ring-(?:inset focus-visible:ring-)?accent/g) ?? []).length >= 2);
 
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);

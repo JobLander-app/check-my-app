@@ -22,7 +22,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { captureServer } from "@/lib/analytics-server";
-import { createAppForTeam, updateAppForTeam } from "@/lib/app-settings";
+import { createActionFor, createAppForTeam, settingsActionFor, updateAppForTeam, type AppSettingsPatch, type CreateAppInput } from "@/lib/app-settings";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
 import { ephemeralExpiry, ephemeralGate } from "@/lib/ephemeral";
 import { latestResults } from "@/lib/latest-results";
@@ -464,22 +464,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       if (denied) return denied;
       const accounts = splitDefault(args.test_accounts, { email: args.test_email, password: args.test_password });
       if ("error" in accounts) return fail("invalid_input", accounts.error);
-      const result = await createAppForTeam(
-        db,
-        { userId: caller.user.id, teamId: team.id, plan },
-        {
-          targetUrl: args.url,
-          focusAreas: args.scenarios,
-          scopeHints: args.limits,
-          userNotes: args.notes,
-          testEmail: accounts.email,
-          testPassword: accounts.password,
-          testAccounts: accounts.named,
-          allowedOrigins: args.allowed_origins,
-          storePassword: args.store_password || null,
-          frequency: args.frequency,
-        },
-      );
+      const input: CreateAppInput = {
+        targetUrl: args.url,
+        focusAreas: args.scenarios,
+        scopeHints: args.limits,
+        userNotes: args.notes,
+        testEmail: accounts.email,
+        testPassword: accounts.password,
+        testAccounts: accounts.named,
+        allowedOrigins: args.allowed_origins,
+        storePassword: args.store_password || null,
+        frequency: args.frequency,
+      };
+      // A login is a credentials write — an admin's (src/lib/scopes.ts, CHE-417).
+      const deniedLogin = deny(createActionFor(input));
+      if (deniedLogin) return deniedLogin;
+      const result = await createAppForTeam(db, { userId: caller.user.id, teamId: team.id, plan }, input);
       if ("error" in result) {
         return result.code === "duplicate"
           ? fail("invalid_input", result.error, "The app already exists — list_apps has its app_id; use update_app.")
@@ -540,7 +540,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       if (args.remove_test_accounts?.some((l) => normalizeAccountLabel(l) === DEFAULT_ACCOUNT_LABEL)) {
         return fail("invalid_input", 'The default account is removed with test_email "" and test_password "".');
       }
-      const result = await updateAppForTeam(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_id, {
+      const patch: AppSettingsPatch = {
         focusAreas: args.scenarios,
         scopeHints: args.limits,
         userNotes: args.notes,
@@ -556,7 +556,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         allowedOrigins: args.allowed_origins,
         // CHE-372: like test_password — "" removes it from the app and its watch.
         storePassword: args.store_password === undefined ? undefined : args.store_password || null,
-      });
+      };
+      // A login is a credentials write — an admin's (src/lib/scopes.ts); the
+      // settings page asks the same of the same patch (CHE-417).
+      const deniedLogin = deny(settingsActionFor(patch));
+      if (deniedLogin) return deniedLogin;
+      const result = await updateAppForTeam(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_id, patch);
       if ("error" in result) {
         return result.code === "not_found"
           ? fail("not_found", "App not found", HINTS.not_found)
@@ -831,8 +836,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     async disable_watch(args: { app_id: string }): Promise<ToolResult> {
       const denied = deny("watch.configure");
       if (denied) return denied;
+      // CHE-417: the team's app, whoever added it — the scope gate above decided.
       const app = await db.app.findFirst({
-        where: { ...teamOwned(team.id), id: args.app_id, ownerId: caller.user.id },
+        where: { ...teamOwned(team.id), id: args.app_id },
         select: { id: true, appSlug: true, watch: { select: { id: true, active: true, frequency: true } } },
       });
       if (!app) return fail("not_found", "App not found", HINTS.not_found);
