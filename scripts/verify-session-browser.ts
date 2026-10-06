@@ -369,7 +369,13 @@ async function main() {
         // Positive evidence only (Codex on #280): a sign-out control → true, a
         // sign-in control and no sign-out → false, neither → null (the readers
         // fall back to the trail); a question about signing out is neither.
-        const { signedInNow } = await import("@/agent/tools");
+        const { signedInNow, settleSignedIn } = await import("@/agent/tools");
+        // …and the row never holds null from a walk that ran with the column:
+        // a page that says nothing keeps what the journey knew, a page that
+        // offers to sign us in ends it, nothing known at all is "not seen".
+        check("settleSignedIn: this step's evidence wins; a silent page keeps the journey's last word; no word at all is false, never null",
+          settleSignedIn(true, null) === true && settleSignedIn(false, true) === false && settleSignedIn(null, true) === true &&
+            settleSignedIn(null, false) === false && settleSignedIn(null, null) === false);
         const plain = await own.newPage();
         await plain.goto(`${SITE}/admin/menu`);
         const fromPage = await signedInNow({ page: plain } as unknown as ToolEnv);

@@ -537,6 +537,17 @@ export interface ReportedStep {
 // (hands-off.ts asksQuestion — the same distinction the click gate draws).
 const SIGN_IN_CONTROL = /\b(log ?in|sign ?in|log ?on|sign ?on)\b/i;
 
+// What the row gets, from what this step's page said and what the journey
+// already knew (Codex on #280, round 2): a journey runs in one browser context,
+// so a session seen on an earlier step is still there on a page that says
+// nothing, and a page that offers to sign us in ends it. With no evidence on
+// this step and none before it, the step was not seen signed in — false, never
+// null: a NULL row means "written before the column", and only such rows are
+// read by the trail inference (src/lib/audience.ts).
+export function settleSignedIn(now: boolean | null, before: boolean | null): boolean {
+  return now ?? before ?? false;
+}
+
 export async function signedInNow(env: Pick<ToolEnv, "page">): Promise<boolean | null> {
   if (inSignedInSession(env.page)) return true;
   try {
