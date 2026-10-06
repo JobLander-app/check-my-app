@@ -33,7 +33,7 @@ import { adjudicateStep } from "./judge";
 import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
-import { summarizeWalk, unrecordedWalkSummary } from "./summary";
+import { summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
@@ -437,6 +437,10 @@ export async function walkOneJourney(args: {
       const unrecorded = unrecordedWalkSummary(stepStatuses.length, status);
       if (unrecorded) {
         console.warn(`[walk] journey "${proposed.title}" recorded no step — its summary is the fixed coverage sentence, not the model's prose`);
+        // Ours to fix, and filed like every gap of ours (rule 2; Codex on
+        // #293): one skipped step carrying the class, which fileCapabilityGaps
+        // reads — without a step there was nothing for it to find.
+        await env.db.step.create({ data: { journeyId: journey.id, order: stepOrder++, ...unrecordedWalkStep(proposed.title) } });
       }
       const written = unrecorded ?? (await summarizeWalk(llm, result, usage, status));
       // CHE-219: run #159's journey 0 summary said the notes field "fails to

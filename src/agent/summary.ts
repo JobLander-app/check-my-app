@@ -110,6 +110,20 @@ export function unrecordedWalkSummary(stepCount: number, status?: string): strin
   return stepCount === 0 ? summaryFallback(status) : null;
 }
 
+// The one step such a walk leaves: skipped, ours (`our_capability`), of class
+// `unrecorded_walk` — what fileCapabilityGaps files, deduped and counted. Its
+// words are the customer's: what was meant, and that it is unconfirmed.
+export function unrecordedWalkStep(journeyTitle: string) {
+  return {
+    label: "Walk the journey",
+    status: "skipped" as const,
+    unverifiedReason: "our_capability" as const,
+    gapClass: "unrecorded_walk" as const,
+    attempted: `Go through "${journeyTitle}" as a user would.`,
+    observed: "This journey could not be confirmed this time.",
+  };
+}
+
 export async function summarizeWalk(
   llm: LlmConfig,
   result: Pick<AgentLoopResult, "finalText" | "messages" | "endedBy">,
