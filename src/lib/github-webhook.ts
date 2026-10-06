@@ -145,12 +145,12 @@ async function onDeploymentStatus(db: PrismaClient, env: GitHubAppEnv, payload: 
     try {
       const token = await installationToken(env, repo.installation.installationId, deps.fetch);
       const detailsUrl = runId
-        ? reviewUrl(deps.baseUrl, (await db.run.findUnique({ where: { id: runId }, select: { publicId: true } }))?.publicId ?? "")
+        ? reviewUrl(deps.baseUrl, (await db.run.findUnique({ ...alreadyScoped("created with its team"), where: { id: runId }, select: { publicId: true } }))?.publicId ?? "")
         : `${deps.baseUrl}/settings/integrations`;
       const check = refusal
         ? await createCheckRun(token, event.repoFullName, { headSha: event.sha, detailsUrl, status: "completed", conclusion: "neutral", output: { title: refusalTitle(refusal), summary: `${refusal}.` } }, deps.fetch)
         : await createCheckRun(token, event.repoFullName, { headSha: event.sha, detailsUrl, status: "in_progress", output: { title: "Checking this deploy…", summary: `A check of this deploy is running. The verdict lands here when it ends — and at ${detailsUrl}.` } }, deps.fetch);
-      await db.gitHubDeploymentCheck.update({ where: { id: claim.id }, data: { checkRunId: check.id } });
+      await db.gitHubDeploymentCheck.update({ where: { id: claim.id }, data: { githubCheckId: check.id } });
     } catch (err) {
       console.warn(`[github-app] check run for ${event.repoFullName}@${event.sha.slice(0, 7)} not created: ${err instanceof Error ? err.message : String(err)}`);
     }

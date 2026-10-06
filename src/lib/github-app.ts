@@ -14,6 +14,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { VERDICT_META } from "@/lib/status";
+import { alreadyScoped } from "@/lib/tenant-db";
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -352,11 +353,11 @@ export async function createCheckRun(
 export async function completeCheckRun(
   token: string,
   repoFullName: string,
-  checkRunId: number,
+  githubCheckId: number,
   input: { conclusion: CheckConclusion; detailsUrl: string; output: { title: string; summary: string; text?: string } },
   fetchImpl: Fetch,
 ): Promise<void> {
-  await api(fetchImpl, token, "PATCH", `/repos/${repoFullName}/check-runs/${checkRunId}`, {
+  await api(fetchImpl, token, "PATCH", `/repos/${repoFullName}/check-runs/${githubCheckId}`, {
     status: "completed",
     conclusion: input.conclusion,
     details_url: input.detailsUrl,
@@ -377,12 +378,15 @@ export async function answerGitHub(
 ): Promise<"answered" | "not-a-deploy" | "unconfigured" | "no-check-run"> {
   const deploy = await db.gitHubDeploymentCheck.findFirst({
     where: { runId },
-    select: { id: true, checkRunId: true, repo: { select: { repoFullName: true, installation: { select: { installationId: true } } } } },
+    select: { id: true, githubCheckId: true, repo: { select: { repoFullName: true, installation: { select: { installationId: true } } } } },
   });
   if (!deploy) return "not-a-deploy";
   if (!appConfigured(env)) return "unconfigured";
-  if (deploy.checkRunId === null) return "no-check-run";
-  const run = await db.run.findUnique({
+  if (deploy.githubCheckId === null) return "no-check-run";
+  // The deploy row names its run; the row was reached through the signed
+  // delivery's installation (or the agent's own workflow, which is acting for
+  // the run it is finishing).
+  const run = await db.run.findUnique({ ...alreadyScoped("a signed GitHub delivery names the installation"),
     where: { id: runId },
     select: {
       publicId: true,
@@ -396,6 +400,6 @@ export async function answerGitHub(
   if (!run) return "not-a-deploy";
   const url = reviewUrl(opts.baseUrl, run.publicId);
   const token = await installationToken(env, deploy.repo.installation.installationId, opts.fetch);
-  await completeCheckRun(token, deploy.repo.repoFullName, deploy.checkRunId, { conclusion: conclusionFor(run), detailsUrl: url, output: checkRunOutput(run, url) }, opts.fetch);
+  await completeCheckRun(token, deploy.repo.repoFullName, deploy.githubCheckId, { conclusion: conclusionFor(run), detailsUrl: url, output: checkRunOutput(run, url) }, opts.fetch);
   return "answered";
 }

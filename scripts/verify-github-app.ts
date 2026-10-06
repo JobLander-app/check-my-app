@@ -168,7 +168,7 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     const run = await db.run.findFirst({ where: { appId: "a" }, select: { id: true, publicId: true, deploySha: true, deployEnv: true, startedVia: true, teamId: true, ownerId: true } });
     eq("…bound to the deploy, started by github, the installer's run for the team", [run?.deploySha, run?.deployEnv, run?.startedVia, run?.teamId, run?.ownerId], ["abcdef1234567890", "Production", "github", "t", "u"]);
     const claim = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 500 } } });
-    eq("…the deployment row holds the run and the Check Run", [claim?.runId === run?.id, claim?.checkRunId, claim?.refusal], [true, 100, null]);
+    eq("…the deployment row holds the run and the Check Run", [claim?.runId === run?.id, claim?.githubCheckId, claim?.refusal], [true, 100, null]);
     const opened = gh.checkRuns.get(100)!;
     eq("…an in-progress Check Run opened on the commit", [opened.status, gh.calls.find((c) => c.path.endsWith("/check-runs"))?.body.head_sha, gh.calls.find((c) => c.path.endsWith("/check-runs"))?.body.name], ["in_progress", "abcdef1234567890", "CheckMyApp"]);
     check("…whose details link is the review", String(gh.calls.find((c) => c.path.endsWith("/check-runs"))?.body.details_url).endsWith(`/verdict/${run?.publicId}`));
@@ -183,7 +183,7 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("a new deploy while a check of the app is running", await deliver("deployment_status", deploymentStatus({ deploymentId: 501, sha: "1111111111111111" })), "refused");
     const busy = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 501 } } });
     check("…is recorded with its reason and no run", busy?.runId === null && /already running/.test(busy?.refusal ?? ""), busy?.refusal ?? "");
-    const neutral = gh.checkRuns.get(busy!.checkRunId!)!;
+    const neutral = gh.checkRuns.get(busy!.githubCheckId!)!;
     eq("…and its Check Run completes neutral, naming the reason", [neutral.status, neutral.conclusion, neutral.output.title.startsWith("Not checked — ")], ["completed", "neutral", true]);
     eq("still one run", triggered.length, 1);
 
@@ -204,7 +204,7 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("GitHub unreachable at the start: the run still starts", await deliver("deployment_status", deploymentStatus({ deploymentId: 502, sha: "2222222222222222" })), "started");
     eq("…two runs now", triggered.length, 2);
     const noCheck = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 502 } } });
-    eq("…with no Check Run recorded, so the answer step knows", noCheck?.checkRunId, null);
+    eq("…with no Check Run recorded, so the answer step knows", noCheck?.githubCheckId, null);
     eq("…and the answer step says so instead of throwing", await answerGitHub(db, env, noCheck!.runId!, { baseUrl: "https://checkmyapp.dev", fetch: gh.fetch }), "no-check-run");
 
     // A failed run closes neutral and says nothing about why.

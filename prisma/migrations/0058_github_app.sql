@@ -51,7 +51,7 @@ CREATE TABLE "GitHubDeploymentCheck" (
     "environment" TEXT NOT NULL,
     "sha" TEXT NOT NULL,
     "runId" TEXT,
-    "checkRunId" INTEGER,
+    "githubCheckId" INTEGER,
     "refusal" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,

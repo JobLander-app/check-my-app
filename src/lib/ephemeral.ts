@@ -231,6 +231,13 @@ export async function sweepExpiredEphemeralRuns(
   await eachChunk(runIds, (ids) =>
     db.journeyMetricPoint.updateMany({ where: { runId: { in: ids } }, data: { runId: null } }),
   );
+  // CHE-369: a deploy the GitHub App checked is DETACHED, not deleted — the
+  // row is the claim that this deployment was checked once, and the Check Run
+  // on the commit stays whatever happens to the run. A preview deploy's run
+  // (part C) is ephemeral; the pointer goes, the record stays.
+  await eachChunk(runIds, (ids) =>
+    db.gitHubDeploymentCheck.updateMany({ where: { runId: { in: ids } }, data: { runId: null } }),
+  );
   await eachChunk(runIds, (ids) => db.run.deleteMany({ ...systemWide("janitor"), where: { id: { in: ids } } }));
 
   // Not touched on purpose: Run.baselineRunId, Journey.carriedFromRunId,

@@ -290,6 +290,7 @@ const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/api/tests/[id]/route.ts": "reads",
   "src/app/api/integrations/linear/start/route.ts": "browser-only",
   "src/app/api/integrations/posthog/start/route.ts": "browser-only",
+  "src/app/api/integrations/github/app/start/route.ts": "browser-only",
   "src/app/api/billing/one-check/route.ts": {
     writes: "starts the run of a paid $1 check when the webhook has not arrived yet",
     needs: "a Stripe Checkout session that Stripe reports as paid — parking one is the POST above it, which is guarded, and paying it is a card at Stripe",
@@ -301,6 +302,11 @@ const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/api/integrations/posthog/callback/route.ts": {
     writes: "stores the analytics connection",
     needs: "the nonce and verifier cookies its start route set AND a code PostHog's token endpoint accepts — issued only after a person consents at PostHog, off our origin",
+  },
+  // CHE-369: the GitHub App's install callback.
+  "src/app/api/integrations/github/app/callback/route.ts": {
+    writes: "binds the GitHub App installation to the team and lists its repositories",
+    needs: "the nonce cookie its start route set when a state travelled, AND an installation id the App itself confirms at GitHub with its own JWT — one exists only after a person installs the App on GitHub, off our origin",
   },
 };
 const WRITE_CALL = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/;
@@ -375,8 +381,8 @@ function inventory() {
     `${seenRoutes.length} handlers, ${seenActions.length} actions, ${inline.length} inline`);
   check("inventory: every named exception still exists — a stale name is a rule nobody can read",
     Object.keys(UNGUARDED_ACTIONS).every((key) => excepted.includes(key)), Object.keys(UNGUARDED_ACTIONS).filter((key) => !excepted.includes(key)).join(", "));
-  check("inventory: the webhooks are the only handlers left out, and there are three of them",
-    files.filter(({ file }) => file.startsWith(WEBHOOKS) && file.endsWith("/route.ts")).map(({ file }) => file.slice(WEBHOOKS.length).split("/")[0]).sort().join() === "clerk,stripe,telegram");
+  check("inventory: the webhooks are the only handlers left out, and there are four of them",
+    files.filter(({ file }) => file.startsWith(WEBHOOKS) && file.endsWith("/route.ts")).map(({ file }) => file.slice(WEBHOOKS.length).split("/")[0]).sort().join() === "clerk,github,stripe,telegram");
 
   // GET handlers: each one named, none stale, and "reads" means what it says.
   const gets = files.filter(({ file, src }) => file.endsWith("/route.ts") && /export\s+(?:async\s+)?(?:function|const)\s+GET\b/.test(src));
@@ -400,7 +406,16 @@ function inventory() {
         const exchangeAt = src.indexOf("exchangeCode(");
         const writeAt = src.search(/\.upsert\(/);
         return nonceAt > 0 && exchangeAt > nonceAt && writeAt > exchangeAt;
-      }));
+      }) &&
+      // CHE-369: the nonce is compared (when a state travelled), the
+      // installation is confirmed at GitHub, and only then written.
+      (() => {
+        const src = readFileSync(path.join(repoRoot, "src/app/api/integrations/github/app/callback/route.ts"), "utf8");
+        const nonceAt = src.search(/[nN]once[^\n]*!== nonce/);
+        const confirmAt = src.indexOf("installationInfo(");
+        const writeAt = src.search(/\.upsert\(/);
+        return nonceAt > 0 && confirmAt > nonceAt && writeAt > confirmAt;
+      })());
 
   // What signing in keeps current, and only that: one upsert, keyed by the
   // signed-in identity, writing the email and the name.

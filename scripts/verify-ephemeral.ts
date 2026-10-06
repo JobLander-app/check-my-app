@@ -154,6 +154,7 @@ interface World {
   generatedTest: Row[];
   pendingCheck: Row[];
   journeyMetricPoint: Row[];
+  gitHubDeploymentCheck: Row[];
   watch: Row[];
   user: Row[];
   app: Row[];
@@ -172,6 +173,7 @@ function world(): World {
     generatedTest: [],
     pendingCheck: [],
     journeyMetricPoint: [],
+    gitHubDeploymentCheck: [],
     watch: [],
     user: [],
     app: [],
@@ -193,6 +195,7 @@ function stubDb(w: World) {
     generatedTest: table(w.generatedTest, "generatedTest", log),
     pendingCheck: table(w.pendingCheck, "pendingCheck", log),
     journeyMetricPoint: table(w.journeyMetricPoint, "journeyMetricPoint", log),
+    gitHubDeploymentCheck: table(w.gitHubDeploymentCheck, "gitHubDeploymentCheck", log),
     watch: table(w.watch, "watch", log),
     user: table(w.user, "user", log),
     counter: { upsert: async () => ({ name: "runNumber", value: ++counter }) },
@@ -474,6 +477,7 @@ async function main() {
       llmUsage: base.llmUsage, createdResource: base.createdResource, appSnapshot: base.appSnapshot,
       generatedTest: base.generatedTest, pendingCheck: base.pendingCheck, watch: base.watch, user: base.user, counter: base.counter,
       journeyMetricPoint: base.journeyMetricPoint,
+      gitHubDeploymentCheck: base.gitHubDeploymentCheck,
       app: {
         findMany: async ({ where }: { where: Where }) => withOwner(apps, where),
         deleteMany: async ({ where }: { where: Where }) => ({ count: apps.filter((a) => matches(a, where)).length }),
@@ -601,7 +605,9 @@ async function main() {
     // did that day, obtained at the cost of a query against their analytics.
     // The run that asked is gone; what it learned is still true, and deleting it
     // would put a hole in a series whose whole value is continuity.
-    const DETACHED = ["PendingCheck", "JourneyMetricPoint"];
+    // CHE-369: so is the deployment the GitHub App checked — the claim that it
+    // was checked once, and the Check Run on the commit, outlive the run.
+    const DETACHED = ["PendingCheck", "JourneyMetricPoint", "GitHubDeploymentCheck"];
     const REFERENCES = [
       "Run.baselineRunId",
       "Journey.carriedFromRunId",
@@ -646,6 +652,7 @@ async function main() {
     w.appSnapshot.push({ id: "snap", runId: "run_x", appId: null });
     w.generatedTest.push({ id: "gt1", journeyId: "j1", appSlug: "pr.preview.test" });
     w.pendingCheck.push({ id: "pc1", runId: "run_x", checkoutSessionId: "cs_1" });
+    w.gitHubDeploymentCheck.push({ id: "gd1", runId: "run_x", repoId: "r", deploymentId: 1 });
     const { db, log } = stubDb(w);
     const { bucket } = stubBucket();
     await sweepExpiredEphemeralRuns(db, NOW, bucket);
@@ -653,6 +660,8 @@ async function main() {
     check("schema: after a sweep every deleted table is empty", stillThere.length === 0, stillThere.join(", "));
     check("schema: the parked paid-check row is detached, not deleted",
       w.pendingCheck.length === 1 && w.pendingCheck[0].runId === null, JSON.stringify(w.pendingCheck));
+    check("schema: the deployment the GitHub App checked is detached, not deleted (CHE-369)",
+      w.gitHubDeploymentCheck.length === 1 && w.gitHubDeploymentCheck[0].runId === null, JSON.stringify(w.gitHubDeploymentCheck));
     const touched = [...DELETED, ...DETACHED].map((t) => t[0].toLowerCase() + t.slice(1));
     const untouched = touched.filter((t) => !log.some((l) => l.startsWith(`${t}.deleteMany`) || l.startsWith(`${t}.updateMany`)));
     check("schema: the sweep issued a delete or detach for each table", untouched.length === 0, `no write for: ${untouched.join(", ")}`);

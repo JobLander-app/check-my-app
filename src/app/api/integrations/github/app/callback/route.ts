@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
     }
     if (typeof stated !== "string" || typeof nonce !== "string") return back(req, "github_failed");
     const jar = await cookies();
-    if (jar.get(GITHUB_INSTALL_NONCE_COOKIE)?.value !== nonce) return back(req, "github_failed");
+    const givenNonce = jar.get(GITHUB_INSTALL_NONCE_COOKIE)?.value;
+    if (givenNonce !== nonce) return back(req, "github_failed");
     jar.delete(GITHUB_INSTALL_NONCE_COOKIE);
   }
 
