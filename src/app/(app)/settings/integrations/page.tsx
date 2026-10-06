@@ -12,11 +12,10 @@ import { integrationsLabel } from "@/lib/app-page";
 import { appsRunningTheAction, teamRunsTheAction } from "@/lib/release-action";
 import { GitHubCard } from "@/components/github-card";
 import { GitHubAppPanel } from "@/components/github-app-panel";
-import { mappingErrorText, teamGitHub } from "@/lib/github-mapping";
 import { getGitHubAppEnv } from "@/lib/github-app";
+import { teamGitHub } from "@/lib/github-mapping";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { can } from "@/lib/scopes";
-import type { UserPlan } from "@/lib/enums";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -59,9 +58,9 @@ async function analyticsConnection(
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string; github_error?: string }>;
+  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string }>;
 }) {
-  const { integration, installation_id, setup_action, state, github_error } = await searchParams;
+  const { integration, installation_id, setup_action, state } = await searchParams;
   // CHE-369: this page is the GitHub App's setup URL — where GitHub sends the
   // person after installing it. The binding happens in the callback route;
   // this only carries GitHub's parameters there.
@@ -86,11 +85,9 @@ export default async function IntegrationsPage({
     }),
     teamRunsTheAction(db, team.id),
     appsRunningTheAction(db, team.id),
-    teamGitHub(db, { id: team.id, plan: team.plan as UserPlan }),
+    teamGitHub(db, { id: team.id }),
   ]);
-  // A refusal arrives as a code and is shown only if it is one of ours.
-  const refused = mappingErrorText(github_error);
-  const notice = integrationNotice(integration) ?? (refused ? { text: refused, ok: false } : null);
+  const notice = integrationNotice(integration);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">

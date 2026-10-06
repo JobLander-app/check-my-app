@@ -53,6 +53,12 @@ export const GUIDES: Guide[] = [
     description:
       "Add one step to your GitHub workflow and every deploy is checked the way a real user would use it — a broken release fails the job.",
   },
+  {
+    slug: "github-app",
+    title: "The GitHub App, step by step",
+    description:
+      "Install the CheckMyApp GitHub App, pick the repository an app is deployed from, and a production deploy starts a check whose result appears on the commit — what happens at each step, and how to stop it.",
+  },
 ];
 
 export const GUIDES_PATH = "/guides" as const;

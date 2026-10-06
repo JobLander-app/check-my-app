@@ -1015,8 +1015,9 @@ model App {
   tracker TrackerIntegration?
   repo    RepoIntegration?
   policy  TicketPolicy?
-  // CHE-369: the repositories whose successful deploys check this app.
-  githubRepos GitHubRepo[]
+  // CHE-369: the repository this app is deployed from — one per app, the
+  // app's own setting (owner, 2026-10-06), enforced by a unique index.
+  githubRepo GitHubRepo?
   runs    Run[]
   issues  IssueLink[]
   // CHE-231: the app's journeys — the units its runs are made of.
@@ -1138,7 +1139,8 @@ model GitHubRepo {
   // GitHub's repository id, stable across renames.
   repoId         Int
   app            App?    @relation(fields: [appId], references: [id], onDelete: SetNull)
-  appId          String?
+  // Unique: one repository per app (0059). NULLs do not collide.
+  appId          String? @unique
   // "production" — only deployments to a production environment (below);
   // "all" — production and previews (previews as ephemeral runs, later);
   // "off" — mapped, but nothing is checked.
