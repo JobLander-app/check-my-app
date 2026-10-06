@@ -2,6 +2,7 @@ import Link from "next/link";
 import { APP_GITHUB_COPY as COPY, OFFERED_POLICIES, POLICY_LABELS, repoStatusLine } from "@/lib/github-mapping";
 import type { appGitHub } from "@/lib/github-mapping";
 import { setAppGitHubRepo } from "@/app/dashboard/actions";
+import { guidePath } from "@/lib/guides";
 
 // Which repository deploys this app, and whether its deploys are checked —
 // on the app's Integrations section, where each integration's app-specific
@@ -24,10 +25,13 @@ export function AppGitHubRepo({
 }) {
   return (
     <section className="card space-y-3 p-5">
-      <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <p className="text-sm font-medium text-fg">
           {COPY.title} <span className="text-xs font-normal text-fg-faint">· {COPY.tagline}</span>
         </p>
+        <Link href={guidePath("github-app")} className="text-xs text-accent hover:underline">
+          {COPY.guideLink}
+        </Link>
       </div>
       {!github.installed ? (
         <p className="text-xs text-fg-faint">

@@ -113,8 +113,12 @@ export const GITHUB_PANEL_COPY = {
   tagline: "checks from your deploys, no YAML",
   installedIntro:
     "GitHub is connected. Each app picks its repository on its own Integrations section.",
+  // Installing alone checks nothing: an app starts checks only once its own
+  // Integrations section names a repository (owner, 2026-10-06: «мы за
+  // владельца что-то настроили, что он не просил»).
   emptyIntro:
-    "Install it on the GitHub account your apps deploy from. A successful production deploy then starts a check, and the verdict appears on the commit.",
+    "Install it on the GitHub account your apps deploy from. Then each app chooses its repository — until it does, deploys start nothing.",
+  guideLink: "How it works, step by step →",
   install: "Install →",
   addAccount: "Add an account →",
   unavailable: "The GitHub App isn't available yet.",
@@ -134,6 +138,7 @@ export const APP_GITHUB_COPY = {
   none: "None",
   policyLabel: "When its deploys are checked",
   save: "Save",
+  guideLink: "How it works, step by step →",
 } as const;
 
 // The line under a repository's row: what its deploys do now. A suspended

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { TeamGitHub } from "@/lib/github-mapping";
 import { GITHUB_PANEL_COPY as COPY } from "@/lib/github-mapping";
+import { guidePath } from "@/lib/guides";
 
 // The GitHub App on Integrations (CHE-369): install it once. From then on every
 // successful production deploy of a repository the installation can see is
@@ -28,6 +29,9 @@ export function GitHubAppPanel({
             {COPY.title} <span className="text-xs font-normal text-fg-faint">· {COPY.tagline}</span>
           </p>
           <p className="text-xs text-fg-muted">{installed ? COPY.installedIntro : COPY.emptyIntro}</p>
+          <Link href={guidePath("github-app")} className="text-xs text-accent hover:underline">
+            {COPY.guideLink}
+          </Link>
         </div>
         {canConnect && installable && (
           <Link

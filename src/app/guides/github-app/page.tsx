@@ -99,7 +99,7 @@ export default function GitHubAppGuide() {
 
       <Section title="4. What it costs">
         <p>
-          Each check is paid from your balance like any other: the app's usual price is shown next to
+          Each check is paid from your balance like any other: the app&apos;s usual price is shown next to
           the switch. A busy week of deploys is that price times the number of production deploys. Plans
           are on <A href="/pricing">Pricing</A>.
         </p>

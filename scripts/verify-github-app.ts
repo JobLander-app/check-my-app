@@ -23,6 +23,7 @@
 import "./fixtures/wasm-module-loader.mjs";
 import { generateKeyPairSync, createVerify } from "node:crypto";
 import { realD1 } from "./fixtures/real-d1";
+import { GUIDES } from "../src/lib/guides";
 import {
   answerGitHub,
   appJwt,
@@ -429,6 +430,11 @@ function tables() {
     visit(sf);
   }
   check("no sentence typed into the panel JSX (team and per-app)", typed.length === 0, typed.join(" | "));
+  // Owner, 2026-10-06: «хочу понимать step by step… положи ссылку в этом же
+  // боксе». Both boxes link the guide, and the guide is a listed one (so it is
+  // in the sitemap and verify-seo checks its page exists).
+  const unlinked = files.filter((f) => !/href=\{guidePath\("github-app"\)\}/.test(readFileSync(join(process.cwd(), f), "utf8")));
+  check("both GitHub boxes link the step-by-step guide", unlinked.length === 0 && GUIDES.some((g) => g.slug === "github-app"), unlinked.join(", ") || "linked");
   const now = Date.parse("2026-10-06T12:00:00Z");
   eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
     installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
