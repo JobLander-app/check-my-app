@@ -145,8 +145,25 @@ function leadsSomewhere(control: ControlSeen): boolean {
 const READS_ONLY =
   /\b(?:(?:add|apply|reset|clear(?: all)?|remove) (?:all |the |a )?(?:filters?|search|sorting)|search|filters?|log ?in|sign ?in|continue|next|show|find|preview|refresh)\b/gi;
 
+// A question asks, it does not do: "How do I get a refund?" is an FAQ
+// accordion, not a refund (the one false hold in CHE-407's replay of 483
+// customer clicks). A question is one by its words, not by its punctuation
+// (Codex on #277): "Delete account?" is a button that deletes, and stays
+// held. An accordion's disclosure glyph after the question ("+", "▾", "›")
+// is not a word and does not make it a command. A control is still judged
+// by its other names.
+const ASKS =
+  /^(?:how|what|why|when|where|which|who|whom|whose|can|could|do|does|did|is|are|was|were|should|shall|will|would|may|might|need|want|forgot|looking|having|wondering|not sure)\b[^?]*\?[^\p{L}\p{N}]*$/iu;
+
+// → the text asks a question. The name gates in tools.ts click read it too,
+// so a question the walk names is not refused by its words before the
+// control is read (Codex on #277, round 3).
+export function asksQuestion(text: string | null | undefined): boolean {
+  return Boolean(text) && ASKS.test((text as string).trim());
+}
+
 function named(texts: string[], verbs: RegExp): string | null {
-  const hit = texts.find((t) => verbs.test(t.replace(READS_ONLY, " ")));
+  const hit = texts.find((t) => !asksQuestion(t) && verbs.test(t.replace(READS_ONLY, " ")));
   return hit ? hit.replace(/\s+/g, " ").trim().slice(0, 80) : null;
 }
 

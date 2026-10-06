@@ -213,6 +213,9 @@ async function main() {
         <div id="b16" role="checkbox" aria-checked="false" tabindex="0" onclick="${write("rolecheckbox")}">Weekly digest</div>
         <label><input id="b17" type="radio" name="mode" onchange="${write("radio")}"> Strict mode</label>
         <button id="view" onclick="document.title = 'Details'">View details</button>
+        <button id="faq1" aria-expanded="false" onclick="document.title = 'FAQ'">Can I cancel my subscription?<span aria-hidden="true"> +</span></button>
+        <button id="faq2" aria-expanded="false" onclick="document.title = 'FAQ2'">How do I get a refund?</button>
+        <button id="b18" onclick="${write("delete-account")}">Delete account?</button>
         <section id="card" onclick="document.title = 'Card'"><p>Rules you save here apply to every visitor. You can add, update or delete a rule at any time, and block or unblock a country from the list below this card.</p></section>`);
     } else if (url.pathname === "/signin") {
       res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": `session=${COOKIE}; Path=/; HttpOnly` });
@@ -434,6 +437,9 @@ async function main() {
     await heldAt("…pressed through the text of its label", { selector: "#b15t" });
     await heldAt("a role=checkbox called \"Weekly digest\"", { selector: "#b16" });
     await heldAt("a radio button called \"Strict mode\"", { selector: "#b17" });
+    // #277: a question mark does not free a button that acts.
+    await heldAt("\"Delete account?\" by selector", { selector: "#b18" });
+    await heldAt("\"Delete account?\" by its name", { role: "button", name: "Delete account?" });
     const typed = await executeTool(toolEnv, "navigate", { url: `${SITE}/admin/write/delete` });
     check("…and such an address is not opened when the walk types it either", typed.startsWith("Refused:") && typed.includes("not_applicable") && menuPage.url() === `${SITE}/admin/app`, typed.slice(0, 110));
     check("…and none of it reached the product", writes.length === 0, writes.join(", "));
@@ -456,6 +462,15 @@ async function main() {
     check("a tab called \"Order protection\", a \"View details\" button, a card whose paragraph mentions saving and deleting, and a field whose placeholder says \"Add a note…\" are pressed and typed into",
       tab.startsWith("Clicked") && view.startsWith("Clicked") && card.startsWith("Clicked") && note.startsWith("Filled"),
       [tab, view, card, note].map((r) => r.slice(0, 40)).join(" | "));
+    // #277 (CHE-407's one false hold): an FAQ accordion asks, it does not do —
+    // by its name, which the name gates in click read first, and by selector,
+    // which the control's own words answer, glyph and all.
+    const faqNamed = await executeTool(toolEnv, "click", { role: "button", name: "Can I cancel my subscription?" });
+    const faqSelector = await executeTool(toolEnv, "click", { selector: "#faq1" });
+    const faqRefund = await executeTool(toolEnv, "click", { role: "button", name: "How do I get a refund?" });
+    check("an FAQ button \"Can I cancel my subscription? +\" is pressed by its name and by selector, and so is \"How do I get a refund?\"",
+      faqNamed.startsWith("Clicked") && faqSelector.startsWith("Clicked") && faqRefund.startsWith("Clicked"),
+      [faqNamed, faqSelector, faqRefund].map((r) => r.slice(0, 70)).join(" | "));
     // A link whose words say it changes something is not clicked — a click
     // runs whatever the page hung on it — and the walk is sent to its address.
     const notClicked = await executeTool(toolEnv, "click", { selector: "#nav-block" });

@@ -34,7 +34,7 @@ import { isStoreGateUrl } from "@/lib/store-gate";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
-import { CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, handsOffUnread, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
+import { asksQuestion, CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, handsOffUnread, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
 
 // The word lists live with the rest of what a walk does not press (CHE-406).
 export { SELF_HOST_GUARDED_VERBS };
@@ -1305,7 +1305,11 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   }
   // CHE-406: where this run stands, for the gates that read the control itself.
   const place = { session: signedIn, ownHost: isSelfTarget(env), writeAllowed: Boolean(env.writeAllowed) };
-  if (label && SELF_HOST_GUARDED_VERBS.test(label) && isSelfTarget(env)) {
+  // A question the walk names ("How do I get a refund?", an FAQ accordion) is
+  // not a command; the verb lists below do not read it (hands-off.ts asks the
+  // same of the control itself). A selector is never a question.
+  const asks = asksQuestion(input.name ? String(input.name) : null) && !input.selector;
+  if (label && !asks && SELF_HOST_GUARDED_VERBS.test(label) && isSelfTarget(env)) {
     console.warn(`[click] refused self-host guarded click: ${label}`);
     noteSelfCheckRefusal(env, `click gate: ${label}`);
     return (
@@ -1330,7 +1334,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       `this login is verifiable as that account this run, and none of it may be described as failing.`
     );
   }
-  if (label && STATE_TOGGLE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
+  if (label && !asks && STATE_TOGGLE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
     console.warn(`[click] refused state-toggling click: ${label}`);
     // CHE-334: on our own host this refusal is the self-check guard, like the
     // one above; on a customer's app it is not ours to note.
@@ -1343,7 +1347,7 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
       `say in the step that acting on it would have changed the owner's own state.`
     );
   }
-  if (!env.writeAllowed && label && CREATE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
+  if (!env.writeAllowed && label && !asks && CREATE_VERBS.test(label) && !SAFE_SUBMITS.test(label)) {
     console.warn(`[click] refused create-shaped click in read-only run: ${label}`);
     noteSelfCheckRefusal(env, `click gate: ${label}`);
     return (
