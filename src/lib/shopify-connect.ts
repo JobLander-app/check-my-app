@@ -21,6 +21,7 @@ import { createAppForTeam, type AppActor, type AppRefusal } from "@/lib/app-sett
 import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { enableWatchForApp } from "@/lib/watch-enable";
+import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
 import { appHandleOfAdminUrl, isPendingShopifyApp, parseAppLink, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
@@ -31,9 +32,9 @@ export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 export function sessionTeamAllowed(env: { SESSION_TEAMS?: string }, teamId: string): boolean {
   return (env.SESSION_TEAMS ?? "").split(",").map((t) => t.trim()).filter(Boolean).includes(teamId);
 }
-export const NOT_OPEN_YET = "Checking Shopify apps is not open for your team yet.";
-export const BAD_LINK =
-  "Paste the link to your app inside your store's admin — open the app in Shopify and copy the address, like https://admin.shopify.com/store/my-store/apps/my-app.";
+// The words are in the guarded copy module (src/lib/sign-in-copy.ts).
+export const NOT_OPEN_YET = CONNECT_ERRORS.notOpen;
+export const BAD_LINK = CONNECT_ERRORS.badLink;
 
 export async function connectApp(
   db: PrismaClient,
@@ -76,21 +77,21 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
     where: { ...teamOwned(actor.teamId), id: appId },
     select: { id: true, targetUrl: true, targetKind: true, appSlug: true },
   });
-  if (!app || app.targetKind !== "session") return { error: "App not found.", code: "not_found" };
+  if (!app || app.targetKind !== "session") return { error: CONNECT_ERRORS.notFound, code: "not_found" };
   const store = storeOfAdminUrl(app.targetUrl);
-  if (!store || store !== pick.store) return { error: "That app belongs to another store.", code: "invalid_input" };
+  if (!store || store !== pick.store) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
   // Only a store still waiting for its app takes a choice: a connected app is
   // not repointed at another one by a stale page.
-  if (!isPendingShopifyApp(app)) return { error: "This store's app is already chosen.", code: "invalid_input" };
+  if (!isPendingShopifyApp(app)) return { error: CONNECT_ERRORS.alreadyChosen, code: "invalid_input" };
   // The app the person linked to is the app saved — not another one a stale
   // page or a pick of something else would name.
   const linked = appHandleOfAdminUrl(app.targetUrl);
-  if (linked && linked !== pick.handle) return { error: "That is not the app you linked to.", code: "invalid_input" };
+  if (linked && linked !== pick.handle) return { error: CONNECT_ERRORS.notLinked, code: "invalid_input" };
   const origins = parseAllowedOriginsInput([SHOPIFY_ADMIN_ORIGIN, pick.origin]);
-  if (!origins.ok) return { error: "This app cannot be checked: the address it is served from is not one we can open.", code: "invalid_input" };
+  if (!origins.ok) return { error: CONNECT_ERRORS.cannotOpen, code: "invalid_input" };
   const appSlug = shopifySlug(store, pick.handle);
   const other = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug, NOT: { id: app.id } }, select: { id: true } });
-  if (other) return { error: `${pick.name} is already connected.`, code: "duplicate", appId: other.id };
+  if (other) return { error: CONNECT_ERRORS.alreadyConnected(pick.name), code: "duplicate", appId: other.id };
   const targetUrl = shopifyAdminUrl(store, pick.handle);
   await db.app.update({
     ...alreadyScoped("the App was just scoped to this team"),

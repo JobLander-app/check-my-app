@@ -37,6 +37,19 @@ export const CONNECT_COPY = {
   submitting: "Opening…",
 } as const;
 
+// What connecting and choosing refuse with (src/lib/shopify-connect.ts).
+export const CONNECT_ERRORS = {
+  notOpen: "Checking Shopify apps is not open for your team yet.",
+  badLink:
+    "Paste the link to your app inside your store's admin — open the app in Shopify and copy the address, like https://admin.shopify.com/store/my-store/apps/my-app.",
+  notFound: "App not found.",
+  otherStore: "That app belongs to another store.",
+  alreadyChosen: "This store's app is already chosen.",
+  notLinked: "That is not the app you linked to.",
+  cannotOpen: "This app cannot be checked: the address it is served from is not one we can open.",
+  alreadyConnected: (name: string) => `${name} is already connected.`,
+} as const;
+
 export type SignInErrorCode = "busy" | "idle" | "failed" | "closed";
 
 export const SIGN_IN_ERRORS: Record<SignInErrorCode, string> = {
@@ -52,6 +65,7 @@ export const CHOOSE_COPY = {
   signedIn: (store: string) => `Signed in to ${store}.`,
   listing: (store: string) => `Reading the apps installed in ${store}…`,
   question: "Which app should we check?",
+  retry: "Try again",
   noApps: "No apps are installed in this store yet. Install yours, then reload this page.",
   picking: (name: string) => `Opening ${name} in your admin…`,
   openIt: "Open it",
@@ -92,6 +106,8 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.ok,
     SIGN_IN_COPY.cancel,
     ...Object.values(CONNECT_COPY),
+    ...Object.values(CONNECT_ERRORS).map((v) => (typeof v === "function" ? v("Securify") : v)),
+    CHOOSE_COPY.retry,
     ...Object.values(SIGN_IN_ERRORS),
     CHOOSE_COPY.signedIn(store),
     CHOOSE_COPY.listing(store),

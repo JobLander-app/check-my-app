@@ -270,6 +270,13 @@ export function LiveSignIn({
               {choice.href && <> <Link href={choice.href} className="underline">{CHOOSE_COPY.openIt}</Link>.</>}
             </p>
           )}
+          {/* The linked app could not be read: try it again, here (Codex on
+              #290 — the host says "signed in" once, so nothing else would). */}
+          {choice.kind === "error" && handle && !choice.href && !choice.apps?.length && (
+            <button type="button" className="rounded border border-ink-700 px-3 py-1.5 hover:border-accent hover:text-accent" onClick={() => pickApp(handle)}>
+              {CHOOSE_COPY.retry}
+            </button>
+          )}
           {(choice.kind === "list" || (choice.kind === "error" && choice.apps?.length)) && (
             <>
               <p className="font-medium">{CHOOSE_COPY.question}</p>
