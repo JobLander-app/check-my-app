@@ -246,16 +246,20 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // session run takes none of those shortcuts: it walks, in the session.
     const isSession = isSessionTarget(run);
     // CHE-426: which browser on the host — the run's team's slot. Asked once,
-    // as a step, so a replayed workflow names the same slot; a team with no
-    // slot fails the run with an internal reason (rule 4), never borrows one.
-    const sessionSlot = isSession ? await step.do("session-slot", () => sessionSlotForRun(env.db, run.id)) : "main";
+    // as a step, first thing inside the failure handler below (Codex on #292:
+    // asked out here, a team with no slot left the run non-terminal and its
+    // watch never fired again); a team with no slot fails the run with an
+    // internal reason (rule 4), never borrows one. Null until it is known: there
+    // is then no lease of ours to give back.
+    let sessionSlot: string | null = null;
     // The host is leased to one run at a time. Given back at every way out of
     // this function; the lease's own expiry is the backstop. Never fails a run.
     const releaseSessionHost = async (stepName: string) => {
-      if (!isSession) return;
+      if (!isSession || sessionSlot === null) return;
+      const slot = sessionSlot;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings, sessionSlot), run.id);
+          return await releaseSession(sessionHost(env.bindings, slot), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -271,9 +275,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // saying nothing at all would read as a check that hung.
     const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
       if (!isSession) return;
+      // Set first thing in the handler below; never another team's browser.
+      const slot = sessionSlot;
+      if (slot === null) throw new Error("internal: the run's session slot is not known");
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, sessionSlot), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, slot), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
@@ -289,6 +296,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // non-terminal status is worse than a failed one — the scheduler treats it
     // as still in flight and never fires that Watch again.
     try {
+      if (isSession) sessionSlot = await step.do("session-slot", () => sessionSlotForRun(env.db, run.id));
       // Survey (CHE-132): what the app's pages look like to a plain fetch, and
       // whether that differs from the last snapshot. Free, under a minute, and
       // the input every mode decision below reads. Swallowed on error like the
