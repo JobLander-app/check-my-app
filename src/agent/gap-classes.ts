@@ -44,9 +44,15 @@ export type GapClass =
   | "journey_rotation"
   | "shopify_admin"
   | "target_door"
+  | "unrecorded_walk"
   | "unclassified";
 
 export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
+  // CHE-420: run cmuvu9xhl walked "Review the Block Log" and recorded nothing.
+  unrecorded_walk: {
+    label: "Checker walks a journey without recording a single step",
+    why: "A walk that records no step leaves nothing a customer can open — no step, no screenshot, no trail — so whatever it saw cannot be said, and the journey goes unconfirmed although it was paid for. Every such walk is coverage we sold and did not deliver.",
+  },
   journey_rotation: {
     label: "Checker cannot keep every journey of a large app checked",
     why: "An app with more journeys than a run can walk gets a rotation, and a journey at the back of a long queue can age past the point where its last check still means anything. The owner is paying for their app to be checked, and part of it was not — a bigger app must not quietly buy less coverage.",

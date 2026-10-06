@@ -33,7 +33,7 @@ import { adjudicateStep } from "./judge";
 import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
-import { summarizeWalk } from "./summary";
+import { summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
@@ -427,7 +427,25 @@ export async function walkOneJourney(args: {
       // cap cut mid-action (run #144: "Let me try the Reset to Defaults
       // button") is asked once more for the summary alone.
       const status = journeyStatus(stepStatuses);
-      const written = await summarizeWalk(llm, result, usage, status);
+      // CHE-420: a walk that recorded no step has nothing a customer could
+      // open behind anything it says. Run cmuvu9xhl (Securify admin): the model
+      // drove the Visitor Logs page, never called report_step, and its prose
+      // summary ("the search count never reflects a match") grew a published
+      // finding with no step, no screenshot, no trail. With no step, the
+      // summary is the fixed coverage sentence — never the model's words — so
+      // synthesis has nothing to grow a finding from.
+      // Steps written, not steps rolled up: a self-check refusal is recorded
+      // and kept out of the roll-up (countsTowardJourney) — it is still a
+      // recorded step, and such a walk is not unrecorded (Codex on #293).
+      const unrecorded = unrecordedWalkSummary(stepOrder, status);
+      if (unrecorded) {
+        console.warn(`[walk] journey "${proposed.title}" recorded no step — its summary is the fixed coverage sentence, not the model's prose`);
+        // Ours to fix, and filed like every gap of ours (rule 2; Codex on
+        // #293): one skipped step carrying the class, which fileCapabilityGaps
+        // reads — without a step there was nothing for it to find.
+        await env.db.step.create({ data: { journeyId: journey.id, order: stepOrder++, ...unrecordedWalkStep(proposed.title) } });
+      }
+      const written = unrecorded ?? (await summarizeWalk(llm, result, usage, status));
       // CHE-219: run #159's journey 0 summary said the notes field "fails to
       // accept input — the fill operation times out", about a control this
       // journey never drove. The phrase tables cannot see that sentence; the

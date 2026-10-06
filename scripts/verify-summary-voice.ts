@@ -20,7 +20,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { LlmConfig } from "@/agent/llm";
 import { emptyUsage } from "@/agent/llm";
-import { SUMMARY_INSTRUCTION, summarizeWalk } from "@/agent/summary";
+import { SUMMARY_INSTRUCTION, summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "@/agent/summary";
+import { GAP_CLASSES } from "@/agent/gap-classes";
+import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   hasNarration,
   HOMEWORK_FALLBACK,
@@ -397,6 +401,29 @@ async function main() {
   {
     const r = await walk("The dashboard greeted me by name.", "The dashboard shows the account name after sign-in.");
     check("closing text all narration: asked once more, the reply is the summary", r.summary === "The dashboard shows the account name after sign-in." && r.calls === 1, `${r.calls}: ${r.summary}`);
+  }
+
+  // CHE-420: a walk with no recorded step publishes no words of the model's —
+  // run cmuvu9xhl grew a finding from such a summary. And the walk asks for
+  // the fixed sentence before it would ask the model for a summary at all.
+  check("a walk that recorded no step: the fixed coverage sentence, whatever its status", unrecordedWalkSummary(0, "skipped") === HOMEWORK_FALLBACK && unrecordedWalkSummary(0) === HOMEWORK_FALLBACK);
+  check("a walk that recorded steps: written as always (null here)", unrecordedWalkSummary(3, "ok") === null);
+  {
+    const source = readFileSync(join(process.cwd(), "src/agent/execution.ts"), "utf8");
+    check("execution.ts uses the fixed sentence before it summarizes a walk",
+      // The count of steps WRITTEN (stepOrder), not of steps in the roll-up:
+      // a recorded self-check refusal is kept out of the roll-up, and is still
+      // a recorded step (Codex on #293).
+      /unrecordedWalkSummary\(stepOrder, status\)[\s\S]{0,900}unrecorded \?\? \(await summarizeWalk\(/.test(source));
+    // Codex on #293: and it is filed as ours — a skipped our_capability step of
+    // its own class, which fileCapabilityGaps reads.
+    check("execution.ts leaves the walk's one gap step when it recorded none",
+      /if \(unrecorded\) \{[\s\S]{0,700}env\.db\.step\.create\(\{ data: \{ journeyId: journey\.id, order: stepOrder\+\+, \.\.\.unrecordedWalkStep\(proposed\.title\) \} \}\)/.test(source));
+    const step = unrecordedWalkStep("Review the Block Log");
+    check("the gap step is skipped, ours, of class unrecorded_walk, and the class is registered",
+      step.status === "skipped" && step.unverifiedReason === "our_capability" && step.gapClass === "unrecorded_walk" && Boolean(GAP_CLASSES.unrecorded_walk?.label));
+    check("its words are the customer's: no machinery, no homework",
+      [step.attempted, step.observed].every((s) => !hasEnvironmentLeak(s) && !hasHomework(s)), JSON.stringify(step));
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
