@@ -11,6 +11,12 @@ import { extensionDisplayName } from "@/lib/extension-target";
 import { integrationsLabel } from "@/lib/app-page";
 import { appsRunningTheAction, teamRunsTheAction } from "@/lib/release-action";
 import { GitHubCard } from "@/components/github-card";
+import { GitHubAppPanel } from "@/components/github-app-panel";
+import { mappingErrorText, teamGitHub } from "@/lib/github-mapping";
+import { getGitHubAppEnv } from "@/lib/github-app";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { can } from "@/lib/scopes";
+import type { UserPlan } from "@/lib/enums";
 
 /**
  * The analytics connection as the screen needs it (CHE-236).
@@ -53,9 +59,9 @@ async function analyticsConnection(
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string }>;
+  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string; github_error?: string }>;
 }) {
-  const { integration, installation_id, setup_action, state } = await searchParams;
+  const { integration, installation_id, setup_action, state, github_error } = await searchParams;
   // CHE-369: this page is the GitHub App's setup URL — where GitHub sends the
   // person after installing it. The binding happens in the callback route;
   // this only carries GitHub's parameters there.
@@ -63,10 +69,12 @@ export default async function IntegrationsPage({
     const q = new URLSearchParams({ installation_id, ...(setup_action ? { setup_action } : {}), ...(state ? { state } : {}) });
     redirect(`/api/integrations/github/app/callback?${q}`);
   }
-  const { db, team } = await requireUser();
+  const { db, team, scope } = await requireUser();
+  const { env } = getCloudflareContext();
+  const installable = Boolean(getGitHubAppEnv(env as Record<string, unknown>).GITHUB_APP_SLUG);
   // GitHub twice: once for the team's card, and per app for the list — the
   // same fact the app's own card states.
-  const [posthog, apps, fromAction, actionApps] = await Promise.all([
+  const [posthog, apps, fromAction, actionApps, github] = await Promise.all([
     analyticsConnection(db, team.id),
     db.app.findMany({
       where: { ...teamOwned(team.id) },
@@ -78,8 +86,11 @@ export default async function IntegrationsPage({
     }),
     teamRunsTheAction(db, team.id),
     appsRunningTheAction(db, team.id),
+    teamGitHub(db, { id: team.id, plan: team.plan as UserPlan }),
   ]);
-  const notice = integrationNotice(integration);
+  // A refusal arrives as a code and is shown only if it is one of ours.
+  const refused = mappingErrorText(github_error);
+  const notice = integrationNotice(integration) ?? (refused ? { text: refused, ok: false } : null);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">
@@ -99,6 +110,10 @@ export default async function IntegrationsPage({
       )}
 
       <AnalyticsConnection connection={posthog} />
+
+      <div className="mt-6">
+        <GitHubAppPanel github={github} canConnect={can(scope, "integration.connect")} installable={installable} />
+      </div>
 
       <div className="mt-6">
         <GitHubCard connected={fromAction} scope="team" />

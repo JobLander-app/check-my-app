@@ -39,6 +39,11 @@ import {
   type Fetch,
 } from "../src/lib/github-app";
 import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
+import { OFFERED_POLICIES, allPanelSentences, mappingErrorText, mappingEventSummary, mappingFromForm, priceLine, repoStatusLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
+import { hasEnvironmentLeak, hasHomework, narrationIn } from "../src/lib/verdict-language";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -290,6 +295,59 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("…its repositories and deployment rows go with it", [await db.gitHubInstallation.count(), await db.gitHubRepo.count(), await db.gitHubDeploymentCheck.count()], [0, 0, 0]);
     eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 4);
     eq("every delivery is on record (the n numbered ones plus d-retry and d-trigger), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 2, 0]);
+
+    // 6. Part B: the mapping the team sets on Integrations.
+    await db.team.create({ data: { id: "o", name: "Other", plan: "business" } });
+    await db.app.create({ data: { id: "oa", teamId: "o", ownerId: "u", appSlug: "other.example", targetUrl: "https://other.example", targetKind: "website" } });
+    await db.gitHubInstallation.create({ data: { id: "i2", installationId: 888, accountLogin: "acme", accountType: "Organization", teamId: "t", connectedById: "u" } });
+    await db.gitHubInstallation.create({ data: { id: "io", installationId: 999, accountLogin: "other", accountType: "User", teamId: "o", connectedById: "u" } });
+    await db.gitHubRepo.create({ data: { id: "m1", installationId: "i2", repoFullName: "acme/shop", repoId: 11, teamId: "t" } });
+    await db.gitHubRepo.create({ data: { id: "mo", installationId: "io", repoFullName: "other/repo", repoId: 21, teamId: "o" } });
+    eq("map a repository to the team's app, every production deploy", await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" }), { ok: true, repoFullName: "acme/shop", appSlug: "shop.example" });
+    eq("…stored", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
+    eq("another team's repository is refused", await saveRepoMapping(db, "t", { repoId: "mo", appId: "a", policy: "production" }), { error: "otherRepo" });
+    eq("another team's app is refused", await saveRepoMapping(db, "t", { repoId: "m1", appId: "oa", policy: "production" }), { error: "otherApp" });
+    await db.app.create({ data: { id: "ext", teamId: "t", ownerId: "u", appSlug: "extension:abc", targetUrl: "https://chromewebstore.google.com/detail/abc", targetKind: "extension" } });
+    eq("the team's own extension is refused — a deploy is not an extension check", await saveRepoMapping(db, "t", { repoId: "m1", appId: "ext", policy: "production" }), { error: "otherApp" });
+    eq("…and the row kept its app", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
+    eq("unmap: an empty app clears it", (await saveRepoMapping(db, "t", { repoId: "m1", appId: null, policy: "off" })) as unknown, { ok: true, repoFullName: "acme/shop", appSlug: null });
+    const form = (o: Record<string, string>) => { const f = new FormData(); for (const [k, v] of Object.entries(o)) f.set(k, v); return f; };
+    eq("form: production with an app", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "production" })), { repoId: "m1", appId: "a", policy: "production" });
+    eq("form: previews are not offered yet", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "all" })), { error: "noPolicy" });
+    eq("form: no repository", mappingFromForm(form({ appId: "a", policy: "off" })), { error: "noRepo" });
+    eq("a refusal code resolves to its guarded sentence; anything else shows nothing", [mappingErrorText("otherApp"), mappingErrorText("You have been hacked, call +1 555"), mappingErrorText("toString"), mappingErrorText(undefined)], ["That app is not one of this team's websites.", null, null, null]);
+    const page = readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/page.tsx"), "utf8");
+    check("the page shows no sentence from its URL — only codes resolved against the guarded list", /mappingErrorText\(github_error\)/.test(page) && !/text: error\b/.test(page) && !/\berror\?: string/.test(page));
+    eq("the activity line records the setting, not a promise", mappingEventSummary({ repoFullName: "acme/shop", appSlug: "shop.example", policy: "production" }), "set successful production deploys of acme/shop to start checks of shop.example");
+    check("…and the action writes that line, not one of its own", /summary: mappingEventSummary\(/.test(readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/actions.ts"), "utf8")));
+    await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" });
+    const gh2 = await teamGitHub(db, { id: "t", plan: "business" });
+    eq("the screen sees the team's installations only", gh2.installations.map((i) => i.accountLogin).sort(), ["acme"]);
+    eq("…its repositories with their mapping", gh2.installations.flatMap((i) => i.repos.map((r) => [r.repoFullName, r.appId, r.policy])), [["acme/shop", "a", "production"]]);
+    eq("…the team's website apps only (no extension)", gh2.apps.map((a) => a.appSlug), ["shop.example"]);
+    check("…a mapped app with under three checks shows the plan's typical range", /^a check is typically \$\d+\.\d\d–\$\d+\.\d\d$/.test(gh2.apps[0].priceLine ?? ""), String(gh2.apps[0].priceLine));
+
+    // At real size (R15): 130 apps, 160 repositories over two installations,
+    // three mapped. The loader reads the team's rows only, prices the mapped
+    // apps only, and returns every repository.
+    const BIG = 130;
+    await db.team.create({ data: { id: "big", name: "Big", plan: "growth" } });
+    await db.app.createMany({ data: Array.from({ length: BIG }, (_, i) => ({ id: `ba${i}`, teamId: "big", ownerId: "u", appSlug: `app${String(i).padStart(3, "0")}.example`, targetUrl: `https://app${i}.example`, targetKind: "website" })) });
+    await db.gitHubInstallation.createMany({ data: [
+      { id: "bi1", installationId: 70001, accountLogin: "big-org", accountType: "Organization", teamId: "big", connectedById: "u" },
+      { id: "bi2", installationId: 70002, accountLogin: "big-user", accountType: "User", teamId: "big", connectedById: "u" },
+    ] });
+    await db.gitHubRepo.createMany({ data: Array.from({ length: 160 }, (_, i) => ({ id: `br${i}`, installationId: i < 100 ? "bi1" : "bi2", repoFullName: `big/r${String(i).padStart(3, "0")}`, repoId: 80000 + i, appId: i < 3 ? `ba${i}` : null, teamId: "big" })) });
+    // Priced history for one mapped app: 25 walked checks.
+    await db.run.createMany({ data: Array.from({ length: 25 }, (_, i) => ({ id: `bru${i}`, publicId: `bp${i}`, runNumber: 9000 + i, teamId: "big", appId: "ba0", appSlug: "app000.example", targetUrl: "https://app0.example", status: "completed", verdict: "all_good", priceUsd: 0.5 + i / 100, costUsd: 0.2 + i / 200 })) as never });
+    const calls: string[] = [];
+    const counted = new Proxy(db, { get: (target, prop) => (prop === "run" ? new Proxy(target.run, { get: (r, p) => { if (p === "findMany") calls.push("run.findMany"); return (r as never)[p]; } }) : (target as never)[prop]) }) as typeof db;
+    const big = await teamGitHub(counted, { id: "big", plan: "growth" });
+    eq("real size: every repository of both installations", big.installations.reduce((n, i) => n + i.repos.length, 0), 160);
+    eq("real size: every website app in the select", big.apps.length, BIG);
+    eq("real size: prices only the three mapped apps", [calls.length, big.apps.filter((a) => a.priceLine !== null).length], [3, 3]);
+    check("real size: a mapped app with history shows its own range", /^usually \$\d+\.\d\d(–\$\d+\.\d\d)? a check$/.test(big.apps.find((a) => a.id === "ba0")?.priceLine ?? ""), String(big.apps.find((a) => a.id === "ba0")?.priceLine));
+    eq("real size: none of another team's rows", big.installations.flatMap((i) => i.repos).some((r) => !r.repoFullName.startsWith("big/")), false);
   } finally {
     await real.dispose();
   }
@@ -312,6 +370,34 @@ function tables() {
   eq("refusal title", refusalTitle("Your team's balance is used up."), "Not checked — Your team's balance is used up");
   const out = checkRunOutput({ ...run, status: "failed" }, "https://checkmyapp.dev/verdict/p");
   check("a failed run's summary charges nothing and names the review", /Nothing was charged/.test(out.summary) && out.summary.includes("/verdict/p"));
+  eq("price line: the app's own range, a single price, the plan's range", [
+    priceLine({ low: 0.48, high: 0.8 }, { low: 0.3, high: 1.5 }),
+    priceLine({ low: 0.61, high: 0.61 }, { low: 0.3, high: 1.5 }),
+    priceLine(null, { low: 0.3, high: 1.5 }),
+  ], ["usually $0.48–$0.80 a check", "usually $0.61 a check", "a check is typically $0.30–$1.50"]);
+  eq("the switch offers production and off — previews arrive with their runs", [...OFFERED_POLICIES], ["production", "off"]);
+
+  // The panel's words (R18): every sentence through the verdict's own gates,
+  // and none typed straight into its JSX.
+  const sentences = allPanelSentences();
+  check("the panel's sentences are listed, the action's refusals among them", sentences.length >= 22 && sentences.includes("That app is not one of this team's websites."), String(sentences.length));
+  check("no row promises that every deploy is checked", !sentences.some((s) => /every (production )?deploy (is )?checked|checked on every/i.test(s)), sentences.filter((s) => /every/i.test(s)).join(" | "));
+  for (const s of sentences) {
+    const found = [hasHomework(s) && "homework", hasEnvironmentLeak(s) && "environment", narrationIn(s).length > 0 && "narration", /\b(cost|multiplier|mark-?up|margin|tokens?)\b/i.test(s) && "cost word"].filter(Boolean);
+    check(`panel, clean: “${s.slice(0, 60)}${s.length > 60 ? "…" : ""}”`, found.length === 0, found.join(", "));
+  }
+  eq("a suspended installation never promises a check", repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48 a check", policy: "production", suspended: true }), "Deploys of shop.example are not checked while the App is suspended on GitHub.");
+  // Read with the TypeScript parser: a JSX text node with a word in it is a
+  // sentence typed into the component.
+  const file = "src/components/github-app-panel.tsx";
+  const sf = ts.createSourceFile(file, readFileSync(join(process.cwd(), file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const typed: string[] = [];
+  const visit = (n: ts.Node) => {
+    if (ts.isJsxText(n) && /[A-Za-z]{2,}/.test(n.text)) typed.push(n.text.trim());
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  check("the panel types no sentence into its JSX", typed.length === 0, typed.join(" | "));
   const now = Date.parse("2026-10-06T12:00:00Z");
   eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
     installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
