@@ -3,10 +3,13 @@
 // repositories it can see, and lands on Integrations with a sentence.
 //
 // GitHub puts `installation_id`, `setup_action` and our `state` on the App's
-// setup URL (/settings/integrations); that page forwards them here. An
-// install begun on GitHub itself arrives with no state: it binds to the
-// active team — the person is signed in there and holds the scope — after the
-// App has confirmed the installation exists.
+// setup URL (/settings/integrations); that page forwards them here. The
+// state is required: GitHub's own docs say an installation id on the setup
+// URL can be typed by anyone, and the App's confirmation proves only that the
+// installation exists — not that this person made it. What proves it is the
+// nonce this product set in this browser when the install began here. An
+// install begun on GitHub itself therefore lands on Integrations with the
+// "install from here" notice; nothing is bound.
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -17,7 +20,7 @@ import { GITHUB_INSTALL_NONCE_COOKIE, appConfigured, getGitHubAppEnv, installati
 import { syncInstallationRepos } from "@/lib/github-webhook";
 import { alreadyScoped } from "@/lib/tenant-db";
 
-function back(req: NextRequest, outcome: "github_installed" | "github_failed" | "github_unconfigured") {
+function back(req: NextRequest, outcome: "github_installed" | "github_failed" | "github_unconfigured" | "github_start_here") {
   return NextResponse.redirect(new URL(`/settings/integrations?integration=${outcome}`, req.nextUrl.origin));
 }
 
@@ -25,24 +28,24 @@ export async function GET(req: NextRequest) {
   const installationId = Number(req.nextUrl.searchParams.get("installation_id"));
   const state = req.nextUrl.searchParams.get("state");
   if (!Number.isInteger(installationId) || installationId <= 0) return back(req, "github_failed");
+  if (!state) return back(req, "github_start_here");
 
-  let stated: string | undefined;
-  if (state) {
-    let nonce: string | undefined;
-    try {
-      ({ teamId: stated, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
-    } catch {
-      return back(req, "github_failed");
-    }
-    if (typeof stated !== "string" || typeof nonce !== "string") return back(req, "github_failed");
-    const jar = await cookies();
-    const givenNonce = jar.get(GITHUB_INSTALL_NONCE_COOKIE)?.value;
-    if (givenNonce !== nonce) return back(req, "github_failed");
-    jar.delete(GITHUB_INSTALL_NONCE_COOKIE);
+  let teamId: string | undefined;
+  let nonce: string | undefined;
+  try {
+    ({ teamId, nonce } = JSON.parse(Buffer.from(state, "base64url").toString()));
+  } catch {
+    return back(req, "github_failed");
   }
+  if (typeof teamId !== "string" || typeof nonce !== "string") return back(req, "github_failed");
+  // Single use: the cookie goes before anything is written, so the same URL
+  // opened again (a prefetch, a replay, a reload) binds nothing.
+  const jar = await cookies();
+  const givenNonce = jar.get(GITHUB_INSTALL_NONCE_COOKIE)?.value;
+  if (givenNonce !== nonce) return back(req, "github_failed");
+  jar.delete(GITHUB_INSTALL_NONCE_COOKIE);
 
-  const { user, db, team: active } = await requireUser();
-  const teamId = stated ?? active.id;
+  const { user, db } = await requireUser();
   const context = await activeTeamContext(db, user, teamId);
   if (context.team.id !== teamId) return back(req, "github_failed");
   if (!can(context.scope, "integration.connect")) {

@@ -174,6 +174,16 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     check("…whose details link is the review", String(gh.calls.find((c) => c.path.endsWith("/check-runs"))?.body.details_url).endsWith(`/verdict/${run?.publicId}`));
 
     eq("the same success delivered again (same delivery id) is a no-op", await handleDelivery(db, env, { deliveryId: `d-${n}`, event: "deployment_status", payload: deploymentStatus() }, deps), "duplicate-delivery");
+    // A delivery whose handler threw (the route answered 500) is on record
+    // but unfinished; GitHub's retry of it is handled, not skipped.
+    await db.gitHubDelivery.create({ data: { deliveryId: "d-retry", event: "installation" } });
+    eq("a retried delivery that never finished is handled this time", await handleDelivery(db, env, { deliveryId: "d-retry", event: "installation", payload: { action: "suspend", installation: { id: 777 } } }, deps), "installation-updated");
+    check("…and is now on record as finished", (await db.gitHubDelivery.findUnique({ where: { deliveryId: "d-retry" } }))?.handledAt !== null);
+    await deliver("installation", { action: "unsuspend", installation: { id: 777 } });
+    // A rename: the deploy names the new name, the mapping survives, the name follows.
+    eq("a renamed repository is still the mapped one (by GitHub's id)", await deliver("deployment_status", deploymentStatus({ repo: "acme/shop-renamed", deploymentId: 500 })), "duplicate-deployment");
+    eq("…and the row now carries the new name", (await db.gitHubRepo.findUnique({ where: { id: "r" } }))?.repoFullName, "acme/shop-renamed");
+    await db.gitHubRepo.update({ where: { id: "r" }, data: { repoFullName: "acme/shop" } });
     eq("a second success status of the same deployment (new delivery id) starts no second run", await deliver("deployment_status", deploymentStatus()), "duplicate-deployment");
     eq("…still one run", triggered.length, 1);
     eq("…and one Check Run", gh.checkRuns.size, 1);
@@ -226,14 +236,14 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
 
     // 5. Repositories added and removed.
     eq("repositories added", await deliver("installation_repositories", { action: "added", installation: { id: 777 }, repositories_added: [{ id: 13, full_name: "acme/new" }], repositories_removed: [] }), "repos-updated");
-    eq("…the row exists, unmapped", (await db.gitHubRepo.findUnique({ where: { installationId_repoFullName: { installationId: "i", repoFullName: "acme/new" } } }))?.appId, null);
+    eq("…the row exists, unmapped", (await db.gitHubRepo.findUnique({ where: { installationId_repoId: { installationId: "i", repoId: 13 } } }))?.appId, null);
     eq("repositories removed", await deliver("installation_repositories", { action: "removed", installation: { id: 777 }, repositories_added: [], repositories_removed: [{ id: 13, full_name: "acme/new" }] }), "repos-updated");
     eq("…the row is gone", await db.gitHubRepo.count({ where: { repoFullName: "acme/new" } }), 0);
     eq("a mapping survives a re-list", (await db.gitHubRepo.findUnique({ where: { id: "r" } }))?.appId, "a");
     eq("installation deleted", await deliver("installation", { action: "deleted", installation: { id: 777 } }), "installation-removed");
     eq("…its repositories and deployment rows go with it", [await db.gitHubInstallation.count(), await db.gitHubRepo.count(), await db.gitHubDeploymentCheck.count()], [0, 0, 0]);
     eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 2);
-    eq("every delivery is on record", await db.gitHubDelivery.count(), n);
+    eq("every delivery is on record (the n numbered ones plus d-retry), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 1, 0]);
   } finally {
     await real.dispose();
   }

@@ -34,14 +34,15 @@ CREATE TABLE "GitHubRepo" (
     CONSTRAINT "GitHubRepo_installationId_fkey" FOREIGN KEY ("installationId") REFERENCES "GitHubInstallation" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "GitHubRepo_appId_fkey" FOREIGN KEY ("appId") REFERENCES "App" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
-CREATE UNIQUE INDEX "GitHubRepo_installationId_repoFullName_key" ON "GitHubRepo"("installationId", "repoFullName");
+CREATE UNIQUE INDEX "GitHubRepo_installationId_repoId_key" ON "GitHubRepo"("installationId", "repoId");
 CREATE INDEX "GitHubRepo_teamId_idx" ON "GitHubRepo"("teamId");
 CREATE INDEX "GitHubRepo_repoFullName_idx" ON "GitHubRepo"("repoFullName");
 
 CREATE TABLE "GitHubDelivery" (
     "deliveryId" TEXT NOT NULL PRIMARY KEY,
     "event" TEXT NOT NULL,
-    "receivedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "receivedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "handledAt" DATETIME
 );
 
 CREATE TABLE "GitHubDeploymentCheck" (

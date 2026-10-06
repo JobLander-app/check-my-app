@@ -74,12 +74,23 @@ export function refusalTitle(reason: string): string {
 }
 
 export async function handleDelivery(db: PrismaClient, env: GitHubAppEnv, delivery: Delivery, deps: WebhookDeps): Promise<DeliveryOutcome> {
+  // The claim. A delivery already on record and finished is a repeat; one on
+  // record but unfinished is GitHub retrying what threw last time, and it is
+  // handled again (the deployment row below keeps that from starting a
+  // second run).
   try {
     await db.gitHubDelivery.create({ data: { deliveryId: delivery.deliveryId, event: delivery.event } });
   } catch (err) {
-    if (isUniqueViolation(err)) return "duplicate-delivery";
-    throw err;
+    if (!isUniqueViolation(err)) throw err;
+    const row = await db.gitHubDelivery.findUnique({ where: { deliveryId: delivery.deliveryId }, select: { handledAt: true } });
+    if (row?.handledAt) return "duplicate-delivery";
   }
+  const outcome = await dispatch(db, env, delivery, deps);
+  await db.gitHubDelivery.update({ where: { deliveryId: delivery.deliveryId }, data: { handledAt: new Date() } });
+  return outcome;
+}
+
+function dispatch(db: PrismaClient, env: GitHubAppEnv, delivery: Delivery, deps: WebhookDeps): Promise<DeliveryOutcome> {
   switch (delivery.event) {
     case "deployment_status":
       return onDeploymentStatus(db, env, delivery.payload, deps);
@@ -88,23 +99,27 @@ export async function handleDelivery(db: PrismaClient, env: GitHubAppEnv, delive
     case "installation_repositories":
       return onInstallationRepositories(db, env, delivery.payload, deps);
     default:
-      return "ignored";
+      return Promise.resolve("ignored");
   }
 }
 
 async function onDeploymentStatus(db: PrismaClient, env: GitHubAppEnv, payload: unknown, deps: WebhookDeps): Promise<DeliveryOutcome> {
   const event = parseDeploymentStatus(payload);
   if (!event) return "not-a-deployment";
-  // The repository under the installation that delivered it: a repository
-  // name is not unique across installations (a fork, a transfer), the pair is.
+  // The repository under the installation that delivered it, by GitHub's id:
+  // a name changes on a rename (and is not unique across installations — a
+  // fork, a transfer); the id is the repository. The name is refreshed from
+  // the delivery so the mapping screen shows the current one.
+  if (!event.installationId) return "unmapped";
   const repo = await db.gitHubRepo.findFirst({ ...alreadyScoped("a signed GitHub delivery names the installation"),
-    where: { repoFullName: event.repoFullName, ...(event.installationId ? { installation: { installationId: event.installationId } } : {}) },
+    where: { repoId: event.repoId, installation: { installationId: event.installationId } },
     select: {
-      id: true, appId: true, policy: true, productionEnvs: true, teamId: true,
+      id: true, appId: true, policy: true, productionEnvs: true, teamId: true, repoFullName: true,
       installation: { select: { installationId: true, connectedById: true, suspendedAt: true, team: { select: { plan: true } } } },
     },
   });
   if (!repo) return "unmapped";
+  if (repo.repoFullName !== event.repoFullName) await db.gitHubRepo.update({ where: { id: repo.id }, data: { repoFullName: event.repoFullName } });
   if (!deploymentWanted(event, repo)) return "not-wanted";
   if (repo.installation.suspendedAt) return "suspended";
   const appId = repo.appId!;
@@ -194,13 +209,13 @@ async function onInstallationRepositories(db: PrismaClient, env: GitHubAppEnv, p
   if (!row) return "ignored";
   for (const r of p.repositories_added ?? []) {
     await db.gitHubRepo.upsert({
-      where: { installationId_repoFullName: { installationId: row.id, repoFullName: r.full_name } },
+      where: { installationId_repoId: { installationId: row.id, repoId: r.id } },
       create: { installationId: row.id, repoFullName: r.full_name, repoId: r.id, teamId: row.teamId },
-      update: { repoId: r.id },
+      update: { repoFullName: r.full_name },
     });
   }
-  const removed = (p.repositories_removed ?? []).map((r) => r.full_name);
-  if (removed.length) await db.gitHubRepo.deleteMany({ where: { installationId: row.id, repoFullName: { in: removed } } });
+  const removed = (p.repositories_removed ?? []).map((r) => r.id);
+  if (removed.length) await db.gitHubRepo.deleteMany({ where: { installationId: row.id, repoId: { in: removed } } });
   // "all repositories" installs list nothing in the payload; the whole set is
   // re-read from GitHub when the App can ask.
   if (!p.repositories_added?.length && !removed.length && appConfigured(env)) await syncInstallationRepos(db, env, installationId, deps.fetch);
@@ -218,11 +233,16 @@ export async function syncInstallationRepos(db: PrismaClient, env: GitHubAppEnv,
   const repos = await installationRepos(token, fetchImpl);
   for (const r of repos) {
     await db.gitHubRepo.upsert({
-      where: { installationId_repoFullName: { installationId: row.id, repoFullName: r.full_name } },
+      where: { installationId_repoId: { installationId: row.id, repoId: r.id } },
       create: { installationId: row.id, repoFullName: r.full_name, repoId: r.id, teamId: row.teamId },
-      update: { repoId: r.id },
+      update: { repoFullName: r.full_name },
     });
   }
-  await db.gitHubRepo.deleteMany({ where: { installationId: row.id, repoFullName: { notIn: repos.map((r) => r.full_name) } } });
+  // Up to D1's parameter cap per statement; an installation with more
+  // repositories than that is deleted-from in chunks.
+  const keep = repos.map((r) => r.id);
+  const current = await db.gitHubRepo.findMany({ where: { installationId: row.id }, select: { id: true, repoId: true } });
+  const gone = current.filter((c) => !keep.includes(c.repoId)).map((c) => c.id);
+  for (let i = 0; i < gone.length; i += 90) await db.gitHubRepo.deleteMany({ where: { id: { in: gone.slice(i, i + 90) } } });
   return repos.length;
 }

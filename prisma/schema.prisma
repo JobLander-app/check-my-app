@@ -1154,18 +1154,23 @@ model GitHubRepo {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([installationId, repoFullName])
+  // GitHub's id is the identity (a rename keeps the mapping; the name is
+  // refreshed from the next delivery or sync).
+  @@unique([installationId, repoId])
   @@index([teamId])
   @@index([repoFullName])
 }
 
 // Every webhook delivery GitHub sent us, by its id. GitHub redelivers (its
-// retries and the "Redeliver" button) under the same X-GitHub-Delivery; the
-// second arrival is a no-op because this row already exists.
+// retries and the "Redeliver" button) under the same X-GitHub-Delivery: a
+// second arrival of one we finished is a no-op; one we did not finish (the
+// handler threw, the route answered 500) is handled again — the claim is the
+// row, the proof of work is handledAt.
 model GitHubDelivery {
-  deliveryId String   @id
+  deliveryId String    @id
   event      String
-  receivedAt DateTime @default(now())
+  receivedAt DateTime  @default(now())
+  handledAt  DateTime?
 }
 
 // One GitHub Deployment → at most one check. A deployment reports several

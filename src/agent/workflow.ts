@@ -84,7 +84,7 @@ import {
 import { RUNAWAY_COST_USD } from "@/lib/plans";
 import { priceRun, voidRunPrice } from "./pricing";
 import { recountOpenIssuesOfRun } from "@/lib/open-issues";
-import { answerGitHub, getGitHubAppEnv } from "@/lib/github-app";
+import { GitHubAppError, answerGitHub, getGitHubAppEnv } from "@/lib/github-app";
 
 // CHE-399: the number beside Issues, recounted from the check that just became
 // the app's latest — after every price step, since "latest" is a priced check.
@@ -99,17 +99,37 @@ async function countOpenIssues(env: AgentEnv, run: { appId: string | null; teamI
 // CHE-369: a run the GitHub App started for a deploy answers on the commit —
 // the Check Run it opened completes with the verdict's label, the number of
 // findings and the price. A run nobody's deploy started returns at once.
-// Never throws: GitHub being down is not a reason to retry a finished run.
-async function answerGitHubSafely(env: AgentEnv, runId: string): Promise<string> {
+//
+// GitHub being down is a reason to try again, not to fail a finished run: the
+// step throws on a transient answer (5xx, 429, no connection) so the engine
+// retries it on the schedule below, and the wrapper swallows the error once
+// the retries are spent — a Check Run left in progress is logged, never a
+// failed run (rule 4). A 4xx (the installation gone, the commit gone) is
+// final and ends the step at once.
+const ANSWER_GITHUB_RETRIES = { retries: { limit: 6, delay: "1 minute" as const, backoff: "exponential" as const }, timeout: "1 minute" as const };
+
+function retryableGitHub(err: unknown): boolean {
+  return err instanceof GitHubAppError ? err.status >= 500 || err.status === 429 : true;
+}
+
+async function answerGitHubSafely(step: WorkflowStep, name: string, env: AgentEnv, runId: string): Promise<string> {
   try {
-    const outcome = await answerGitHub(env.db, getGitHubAppEnv(env.bindings as unknown as Record<string, unknown>), runId, {
-      baseUrl: env.bindings.APP_URL ?? "https://checkmyapp.dev",
-      fetch: (url, init) => fetch(url, init),
+    return await step.do(name, ANSWER_GITHUB_RETRIES, async () => {
+      try {
+        const outcome = await answerGitHub(env.db, getGitHubAppEnv(env.bindings as unknown as Record<string, unknown>), runId, {
+          baseUrl: env.bindings.APP_URL ?? "https://checkmyapp.dev",
+          fetch: (url, init) => fetch(url, init),
+        });
+        if (outcome === "answered") console.log(`[github-app] run ${runId}: check run completed`);
+        return outcome;
+      } catch (err) {
+        if (retryableGitHub(err)) throw err;
+        console.warn(`[github-app] run ${runId}: check run not completed, not retrying: ${err instanceof Error ? err.message : String(err)}`);
+        return "error";
+      }
     });
-    if (outcome === "answered") console.log(`[github-app] run ${runId}: check run completed`);
-    return outcome;
   } catch (err) {
-    console.warn(`[github-app] run ${runId}: check run not completed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[github-app] run ${runId}: check run not completed after retries: ${err instanceof Error ? err.message : String(err)}`);
     return "error";
   }
 }
@@ -474,7 +494,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             notifyAndRecord(env, this.env, runId, run, smoke.verdict),
           );
         }
-        if (run.appId) await step.do("answer-github-quick", () => answerGitHubSafely(env, runId));
+        if (run.appId) await answerGitHubSafely(step, "answer-github-quick", env, runId);
         // No credential cleanup: a smoke pass only happens on watch runs, and a
         // Watch retains its credentials for the next one.
         return;
@@ -642,7 +662,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         if (run.notifyEmail || run.appId) {
           await step.do("notify-signed-out", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
         }
-        if (run.appId) await step.do("answer-github-signed-out", () => answerGitHubSafely(env, runId));
+        if (run.appId) await answerGitHubSafely(step, "answer-github-signed-out", env, runId);
         await step.do("cleanup-signed-out", async () => {
           if (!run.watchId) {
             await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
@@ -685,7 +705,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         if (run.notifyEmail || run.appId) {
           await step.do("notify-closed-door", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
         }
-        if (run.appId) await step.do("answer-github-closed-door", () => answerGitHubSafely(env, runId));
+        if (run.appId) await answerGitHubSafely(step, "answer-github-closed-door", env, runId);
         await step.do("cleanup-closed-door", async () => {
           if (!run.watchId) {
             await env.db.run.update({ where: { id: runId }, data: clearedCredentials(run) });
@@ -1388,7 +1408,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("notify", () => notifyAndRecord(env, this.env, runId, run, verdict));
       }
       // CHE-369: the answer on the commit, for a run the GitHub App started.
-      if (run.appId) await step.do("answer-github", () => answerGitHubSafely(env, runId));
+      if (run.appId) await answerGitHubSafely(step, "answer-github", env, runId);
 
       // CHE-129 spike — redo each walked journey's recorded actions with no
       // model in the loop and write down how far a browser got on its own. This
@@ -1537,7 +1557,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // on the commit forever — the Check Run closes neutral, with no word
       // about why (rule 4), unless the verdict was already written and
       // answered above.
-      if (!ended.afterVerdict) await step.do("answer-github-failed", () => answerGitHubSafely(env, runId));
+      if (!ended.afterVerdict) await answerGitHubSafely(step, "answer-github-failed", env, runId);
       await releaseSessionHost("release-session-failed");
       throw err;
     }
