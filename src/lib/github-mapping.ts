@@ -19,7 +19,7 @@ export const OFFERED_POLICIES = ["production", "off"] as const;
 export type OfferedPolicy = (typeof OFFERED_POLICIES)[number];
 
 export const POLICY_LABELS: Record<OfferedPolicy, string> = {
-  production: "Every production deploy",
+  production: "Production deploys",
   off: "Off",
 };
 
@@ -32,7 +32,10 @@ export interface MappedRepo {
 
 export interface TeamGitHub {
   installations: Array<{ id: string; accountLogin: string; suspended: boolean; repos: MappedRepo[] }>;
-  apps: Array<{ id: string; appSlug: string; priceLine: string }>;
+  // Every website app of the team, for the select; the price line only for
+  // the apps a repository already deploys (one price query per mapped app,
+  // not per app — a team with a hundred apps maps a handful).
+  apps: Array<{ id: string; appSlug: string; priceLine: string | null }>;
 }
 
 function usd(n: number): string {
@@ -69,8 +72,13 @@ export async function teamGitHub(db: PrismaClient, team: { id: string; plan: Use
     }),
   ]);
   const typical = typicalPriceRange(team.plan);
+  const mapped = new Set(installations.flatMap((i) => i.repos.map((r) => r.appId)).filter((id): id is string => id !== null));
   const priced = await Promise.all(
-    apps.map(async (a) => ({ id: a.id, appSlug: a.appSlug, priceLine: priceLine(await appPriceRange(db, team, a.appSlug), typical) })),
+    apps.map(async (a) => ({
+      id: a.id,
+      appSlug: a.appSlug,
+      priceLine: mapped.has(a.id) ? priceLine(await appPriceRange(db, team, a.appSlug), typical) : null,
+    })),
   );
   return {
     installations: installations.map((i) => ({
@@ -88,11 +96,11 @@ export async function teamGitHub(db: PrismaClient, team: { id: string; plan: Use
 // language gates (CODE_STANDARDS R18).
 export const GITHUB_PANEL_COPY = {
   title: "GitHub App",
-  tagline: "every deploy checked, no YAML",
+  tagline: "checks from your deploys, no YAML",
   installedIntro:
     "Choose which app each repository deploys. A successful production deploy of it starts a check of that app, and the verdict appears on the commit.",
   emptyIntro:
-    "Install it on the GitHub account your apps deploy from. Each successful production deploy is then checked, and the verdict appears on the commit.",
+    "Install it on the GitHub account your apps deploy from. A successful production deploy then starts a check, and the verdict appears on the commit.",
   install: "Install →",
   addAccount: "Add an account →",
   unavailable: "The GitHub App isn't available yet.",
@@ -111,14 +119,26 @@ export const GITHUB_PANEL_COPY = {
 export function repoStatusLine(row: { appSlug: string | null; priceLine: string | null; policy: OfferedPolicy; suspended: boolean }): string {
   if (!row.appSlug) return "Not mapped — its deploys start nothing.";
   if (row.suspended) return `Deploys of ${row.appSlug} are not checked while the App is suspended on GitHub.`;
-  if (row.policy === "production") return `Checked on every production deploy — ${row.priceLine}.`;
+  // One check of an app at a time: a deploy that lands while one is running is
+  // answered on its commit as not checked (src/lib/github-webhook.ts), so the
+  // line says so instead of promising every deploy.
+  if (row.policy === "production") return `A production deploy starts a check — ${row.priceLine}. One that lands while a check is still running is not checked separately.`;
   return `Deploys of ${row.appSlug} are not checked.`;
 }
+
+// What the server action can answer with, rendered on the page as a notice.
+export const MAPPING_ERRORS = {
+  noRepo: "No repository was named.",
+  noPolicy: "Choose when this repository's deploys are checked.",
+  otherRepo: "That repository is not connected to this team.",
+  otherApp: "That app is not one of this team's websites.",
+} as const;
 
 export function allPanelSentences(): string[] {
   return [
     ...Object.values(GITHUB_PANEL_COPY),
     ...Object.values(POLICY_LABELS),
+    ...Object.values(MAPPING_ERRORS),
     repoStatusLine({ appSlug: null, priceLine: null, policy: "production", suspended: false }),
     repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "production", suspended: false }),
     repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "off", suspended: false }),
@@ -134,19 +154,22 @@ export function mappingFromForm(form: FormData): MappingInput | { error: string 
   const repoId = String(form.get("repoId") ?? "");
   const appId = String(form.get("appId") ?? "");
   const policy = String(form.get("policy") ?? "");
-  if (!repoId) return { error: "No repository was named." };
-  if (!(OFFERED_POLICIES as readonly string[]).includes(policy)) return { error: "Choose when this repository's deploys are checked." };
+  if (!repoId) return { error: MAPPING_ERRORS.noRepo };
+  if (!(OFFERED_POLICIES as readonly string[]).includes(policy)) return { error: MAPPING_ERRORS.noPolicy };
   return { repoId, appId: appId || null, policy: policy as OfferedPolicy };
 }
 
-// Saves one row, refusing a repository or an app of another team.
+// Saves one row, refusing a repository of another team and any app that is
+// not one of the team's websites — the form offers only those, and the action
+// is an entry point anyone can post to, so the server says it again (a deploy
+// cannot be checked as a Chrome extension).
 export async function saveRepoMapping(db: PrismaClient, teamId: string, input: MappingInput): Promise<{ ok: true; repoFullName: string; appSlug: string | null } | { error: string }> {
   const repo = await db.gitHubRepo.findFirst({ where: { ...teamOwned(teamId), id: input.repoId }, select: { id: true, repoFullName: true } });
-  if (!repo) return { error: "That repository is not connected to this team." };
+  if (!repo) return { error: MAPPING_ERRORS.otherRepo };
   let appSlug: string | null = null;
   if (input.appId) {
-    const app = await db.app.findFirst({ where: { ...teamOwned(teamId), id: input.appId }, select: { appSlug: true } });
-    if (!app) return { error: "That app is not one of this team's." };
+    const app = await db.app.findFirst({ where: { ...teamOwned(teamId), id: input.appId, targetKind: "website" }, select: { appSlug: true } });
+    if (!app) return { error: MAPPING_ERRORS.otherApp };
     appSlug = app.appSlug;
   }
   await db.gitHubRepo.update({ where: { id: repo.id }, data: { appId: input.appId, policy: input.policy } });
