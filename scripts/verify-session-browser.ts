@@ -390,6 +390,19 @@ async function main() {
         check("signedInNow: a sign-out control → true; a sign-in control and no sign-out → false; neither → null; \"How do I log out?\" is a question, not a sign-out; a link to a sign-out address counts whatever it is called",
           fromPage === true && saysNothing === null && offersSignIn === false && faq === false && byAddress === true,
           JSON.stringify({ fromPage, saysNothing, offersSignIn, faq, byAddress }));
+        // Codex on #280, round 3: what the markup hides for the other state is
+        // not evidence; what the target app shows inside its own frame is.
+        await plain.setContent('<nav><a href="/login">Log in</a><div style="display:none"><a href="/logout">Log out</a></div><a href="/logout" style="visibility:hidden">Log out</a></nav>');
+        const hidden = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.goto(`${SITE}/admin`);
+        await plain.setContent(`<h1>Host shell</h1><iframe name="app" src="${SITE}/admin/menu"></iframe>`);
+        await plain.waitForSelector("iframe");
+        await plain.frame("app")?.waitForLoadState();
+        const inFrame = await signedInNow({ page: plain, targetOrigin: SITE, allowedOrigins: [] } as unknown as ToolEnv);
+        const frameNotOurs = await signedInNow({ page: plain, targetOrigin: "https://elsewhere.test", allowedOrigins: [] } as unknown as ToolEnv);
+        check("signedInNow: a hidden sign-out (display:none, visibility:hidden) is no evidence — the visible Log in decides; a sign-out inside the target app's own frame is read; a frame of another origin is not",
+          hidden === false && inFrame === true && frameNotOurs === null,
+          JSON.stringify({ hidden, inFrame, frameNotOurs }));
         await plain.close();
       } finally {
         await own.close();

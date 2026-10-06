@@ -548,25 +548,57 @@ export function settleSignedIn(now: boolean | null, before: boolean | null): boo
   return now ?? before ?? false;
 }
 
-export async function signedInNow(env: Pick<ToolEnv, "page">): Promise<boolean | null> {
+// The pressable things a person can see on one document — not what the markup
+// also holds for the other state and hides (Codex on #280, round 3: a
+// signed-out page that keeps its signed-in menu in the DOM, display:none).
+async function visibleControls(frame: Frame): Promise<Array<{ text: string; href: string | null }>> {
+  return frame.evaluate(() => {
+    const out: Array<{ text: string; href: string | null }> = [];
+    const nodes = document.querySelectorAll('a[href], button, [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]');
+    for (const el of Array.from(nodes).slice(0, 600)) {
+      const h = el as HTMLElement;
+      // Rendered at all, and not hidden by style: getClientRects is empty for
+      // display:none and for anything inside it; visibility:hidden and
+      // opacity:0 keep a box but show nothing.
+      if (h.getClientRects().length === 0) continue;
+      const style = getComputedStyle(h);
+      if (style.visibility === "hidden" || style.opacity === "0") continue;
+      const text = `${h.innerText ?? h.textContent ?? ""} ${h.getAttribute("aria-label") ?? ""} ${h.getAttribute("title") ?? ""} ${(h as HTMLInputElement).value ?? ""}`;
+      out.push({ text: text.replace(/\s+/g, " ").trim().slice(0, 80), href: el instanceof HTMLAnchorElement ? el.getAttribute("href") : null });
+      if (out.length >= 400) break;
+    }
+    return out;
+  });
+}
+
+export async function signedInNow(env: Pick<ToolEnv, "page"> & Partial<Pick<ToolEnv, "targetOrigin" | "allowedOrigins">>): Promise<boolean | null> {
   if (inSignedInSession(env.page)) return true;
   try {
-    const names = await env.page.evaluate(() => {
-      const out: Array<{ text: string; href: string | null }> = [];
-      const nodes = document.querySelectorAll('a[href], button, [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]');
-      for (const el of Array.from(nodes).slice(0, 400)) {
-        const h = el as HTMLElement;
-        const text = `${h.innerText ?? h.textContent ?? ""} ${h.getAttribute("aria-label") ?? ""} ${h.getAttribute("title") ?? ""} ${(h as HTMLInputElement).value ?? ""}`;
-        out.push({ text: text.replace(/\s+/g, " ").trim().slice(0, 80), href: el instanceof HTMLAnchorElement ? el.getAttribute("href") : null });
+    // The page, and the embedded frames of the target app the tools act in
+    // (CHE-373): a journey that lives inside one finds its sign-out there, not
+    // in the host shell around it. Frames of other origins are not read.
+    const frames = env.page.frames().filter((f) => {
+      if (f === env.page.mainFrame()) return true;
+      if (!env.targetOrigin) return false;
+      try {
+        return isAllowedOrigin(env as ToolEnv, new URL(f.url()).origin);
+      } catch {
+        return false;
       }
-      return out;
     });
-    const here = env.page.url();
-    const signsOut = names.some(
-      (n) => (!asksQuestion(n.text) && isSignOutText(n.text)) || (n.href !== null && n.href !== "" && isSignOutAddress(n.href, here)),
+    const seen: Array<{ text: string; href: string | null; base: string }> = [];
+    for (const frame of frames) {
+      try {
+        for (const c of await visibleControls(frame)) seen.push({ ...c, base: frame.url() });
+      } catch {
+        /* a frame mid-navigation or gone says nothing */
+      }
+    }
+    const signsOut = seen.some(
+      (n) => (!asksQuestion(n.text) && isSignOutText(n.text)) || (n.href !== null && n.href !== "" && isSignOutAddress(n.href, n.base)),
     );
     if (signsOut) return true;
-    const offersSignIn = names.some((n) => !asksQuestion(n.text) && SIGN_IN_CONTROL.test(n.text));
+    const offersSignIn = seen.some((n) => !asksQuestion(n.text) && SIGN_IN_CONTROL.test(n.text));
     return offersSignIn ? false : null;
   } catch {
     // A page mid-navigation, or one that is gone: nothing can be said.
