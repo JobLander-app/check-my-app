@@ -131,8 +131,8 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
 export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/dashboard/actions.ts#setTrackerTeam": { kind: "team", action: "integration.connect" },
   "src/app/dashboard/actions.ts#setIntegrationEndpoints": { kind: "team", action: "integration.connect" },
-  // CHE-369: which app a repository deploys, and whether its deploys start checks.
-  "src/app/(app)/settings/integrations/actions.ts#setGitHubRepo": { kind: "team", action: "integration.connect" },
+  // CHE-369: which repository deploys an app, and whether its deploys start checks. Per app now.
+  "src/app/dashboard/actions.ts#setAppGitHubRepo": { kind: "team", action: "integration.connect" },
   // CHE-236: disconnecting is the same authority as connecting — whoever may
   // grant a team's analytics access may end it.
   "src/app/dashboard/actions.ts#disconnectPostHog": { kind: "team", action: "integration.connect" },

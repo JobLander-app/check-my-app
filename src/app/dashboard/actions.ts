@@ -20,6 +20,7 @@ import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
+import { appRepoFromForm, mappingEventSummary, saveAppRepo } from "@/lib/github-mapping";
 
 // Re-point an app's tracker to a different team (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
@@ -378,6 +379,29 @@ export async function setAppPosthogProject(appId: string, formData: FormData): P
   });
   revalidatePath(appPath.settings(appId));
   revalidatePath("/home");
+}
+
+// Which GitHub repository deploys this app, and whether its deploys start a
+// check — on the app's Integrations section, one row per repository (CHE-369,
+// part B). The same gate as connecting a tracker — turning it on lets the
+// team's deploys start checks the team pays for. A refusal travels as a code,
+// resolved on the page against the guarded sentences.
+export async function setAppGitHubRepo(appId: string, formData: FormData): Promise<void> {
+  await refuseSelfCheck(appPath.page(appId));
+  const { user, db, team } = await requireActionScope("integration.connect");
+  const back = appPath.section(appId, "integrations");
+  const input = appRepoFromForm(formData);
+  if ("error" in input) redirect(`${back}?github_error=${input.error}`);
+  const saved = await saveAppRepo(db, team.id, appId, input);
+  if ("error" in saved) redirect(`${back}?github_error=${saved.error}`);
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "integration.connected",
+    subject: saved.appSlug,
+    summary: mappingEventSummary({ repoFullName: saved.repoFullName ?? "no repository", appSlug: saved.repoFullName ? saved.appSlug : null, policy: input.policy }),
+  });
+  redirect(`${back}?integration=github_mapped`);
 }
 
 export async function setAppNotifiers(appId: string, formData: FormData): Promise<void> {

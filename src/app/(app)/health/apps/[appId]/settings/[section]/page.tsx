@@ -4,10 +4,13 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Prisma } from "@/generated/prisma/client";
 import { requireUser } from "@/lib/auth";
 import { can } from "@/lib/scopes";
+import type { TeamScope } from "@/lib/scopes";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath, checkHref } from "@/lib/app-shell";
 import { VERDICT_META } from "@/lib/status";
 import { appPriceRange, usd } from "@/lib/plans";
+import { appGitHub, mappingErrorText } from "@/lib/github-mapping";
+import { AppGitHubRepo } from "@/components/app-github-repo";
 import type { UserPlan } from "@/lib/enums";
 import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { outcome } from "@/lib/checks-page";
@@ -47,10 +50,10 @@ export default async function AppSettingsSection({
   params: Promise<{ appId: string; section: string }>;
   // What a save bounces back: that it was saved, or the sentence it was refused
   // with. What the Linear flow bounces back: its outcome (src/lib/integration-notice.ts).
-  searchParams: Promise<{ saved?: string; error?: string; integration?: string }>;
+  searchParams: Promise<{ saved?: string; error?: string; integration?: string; github_error?: string }>;
 }) {
   const { appId, section: raw } = await params;
-  const { saved, error, integration } = await searchParams;
+  const { saved, error, integration, github_error } = await searchParams;
   const section = settingsSection(raw);
   if (!section) notFound();
   const notice = integrationNotice(integration);
@@ -171,7 +174,7 @@ export default async function AppSettingsSection({
 
       {section === "notifications" && <Notifications appId={app.id} teamId={team.id} userId={user.id} />}
 
-      {section === "integrations" && <Integrations app={app} teamId={team.id} save={save} />}
+      {section === "integrations" && <Integrations app={app} teamId={team.id} plan={team.plan as UserPlan} scope={scope} githubError={github_error} save={save} />}
 
       {section === "remove" && <DeleteAppSection appId={app.id} appSlug={app.appSlug} isExtension={isExtension} />}
     </div>
@@ -368,7 +371,7 @@ type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; track
 
 // Where problems go besides this page, and where checks come from: one card
 // per integration, each with its state and its own action.
-async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; teamId: string; save: Save }) {
+async function Integrations({ app, teamId, plan, scope, githubError, save }: { app: AppWithIntegrations; teamId: string; plan: UserPlan; scope: TeamScope; githubError: string | undefined; save: Save }) {
   const { db } = await requireUser();
   const tracker = app.tracker;
   const health = trackerHealth(tracker, new Date());
@@ -382,14 +385,16 @@ async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; t
     : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
-  const [projectChoices, fromAction] = await Promise.all([
+  const [projectChoices, fromAction, github] = await Promise.all([
     projectChoicesFor(db, {
       teamId,
       appUrl: app.targetUrl,
       clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
     }),
     appRunsTheAction(db, teamId, app.id),
+    appGitHub(db, { id: teamId, plan }, app.id),
   ]);
+  const githubErrorText = mappingErrorText(githubError);
 
   const pickupLabels = (JSON.parse(app.policy?.pickupLabels ?? "[]") as string[]).join(", ");
   const urgentJourneys = (() => {
@@ -468,7 +473,15 @@ async function Integrations({ app, teamId, save }: { app: AppWithIntegrations; t
         />
       </div>
 
-      {/* GitHub — where a release is checked from (CHE-413). */}
+      {/* GitHub — where a release is checked from (CHE-413). The repository this app
+          deploys from is set here, on the app's Integrations section (CHE-369, B). */}
+      {/* The refusal arrives as a code and is shown only as our own sentence. */}
+      {githubErrorText && (
+        <p role="alert" className="rounded-lg border border-status-broken/40 bg-status-broken/10 px-4 py-2.5 text-sm text-status-broken">
+          Not saved: {githubErrorText}
+        </p>
+      )}
+      <AppGitHubRepo appId={app.id} appSlug={app.appSlug} github={github} canConnect={can(scope, "integration.connect")} />
       <GitHubCard connected={fromAction} />
 
       {/* Outbound webhooks + Slack (CHE-53). */}

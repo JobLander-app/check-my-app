@@ -39,7 +39,7 @@ import {
   type Fetch,
 } from "../src/lib/github-app";
 import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
-import { OFFERED_POLICIES, allPanelSentences, mappingErrorText, mappingEventSummary, mappingFromForm, priceLine, repoStatusLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
+import { OFFERED_POLICIES, allPanelSentences, appGitHub, appRepoFromForm, mappingErrorText, mappingEventSummary, priceLine, repoStatusLine, saveAppRepo, teamGitHub } from "../src/lib/github-mapping";
 import { hasEnvironmentLeak, hasHomework, narrationIn } from "../src/lib/verdict-language";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -303,29 +303,42 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     await db.gitHubInstallation.create({ data: { id: "io", installationId: 999, accountLogin: "other", accountType: "User", teamId: "o", connectedById: "u" } });
     await db.gitHubRepo.create({ data: { id: "m1", installationId: "i2", repoFullName: "acme/shop", repoId: 11, teamId: "t" } });
     await db.gitHubRepo.create({ data: { id: "mo", installationId: "io", repoFullName: "other/repo", repoId: 21, teamId: "o" } });
-    eq("map a repository to the team's app, every production deploy", await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" }), { ok: true, repoFullName: "acme/shop", appSlug: "shop.example" });
+    // Per-app mapping (CHE-369, B): the app picks its repository on its own
+    // Integrations section. One repository per app — setting a second clears
+    // any other that pointed here.
+    await db.gitHubRepo.create({ data: { id: "m2", installationId: "i2", repoFullName: "acme/api", repoId: 12, teamId: "t" } });
+    eq("link app a to repo m1", await saveAppRepo(db, "t", "a", { repoId: "m1", policy: "production" }), { ok: true, repoFullName: "acme/shop", appSlug: "shop.example" });
     eq("…stored", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
-    eq("another team's repository is refused", await saveRepoMapping(db, "t", { repoId: "mo", appId: "a", policy: "production" }), { error: "otherRepo" });
-    eq("another team's app is refused", await saveRepoMapping(db, "t", { repoId: "m1", appId: "oa", policy: "production" }), { error: "otherApp" });
+    eq("another team's repo refused", await saveAppRepo(db, "t", "a", { repoId: "mo", policy: "production" }), { error: "otherRepo" });
+    eq("another team's app refused", await saveAppRepo(db, "t", "oa", { repoId: "m1", policy: "production" }), { error: "otherApp" });
     await db.app.create({ data: { id: "ext", teamId: "t", ownerId: "u", appSlug: "extension:abc", targetUrl: "https://chromewebstore.google.com/detail/abc", targetKind: "extension" } });
-    eq("the team's own extension is refused — a deploy is not an extension check", await saveRepoMapping(db, "t", { repoId: "m1", appId: "ext", policy: "production" }), { error: "otherApp" });
-    eq("…and the row kept its app", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
-    eq("unmap: an empty app clears it", (await saveRepoMapping(db, "t", { repoId: "m1", appId: null, policy: "off" })) as unknown, { ok: true, repoFullName: "acme/shop", appSlug: null });
+    eq("the team's own extension is refused — a deploy is not an extension check", await saveAppRepo(db, "t", "ext", { repoId: "m1", policy: "production" }), { error: "otherApp" });
+    eq("link a to a second repo — m1.appId becomes null, m2.appId is a", await saveAppRepo(db, "t", "a", { repoId: "m2", policy: "production" }), { ok: true, repoFullName: "acme/api", appSlug: "shop.example" });
+    eq("…and only one row points at a", [await db.gitHubRepo.count({ where: { appId: "a" } }), (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, (await db.gitHubRepo.findUnique({ where: { id: "m2" } }))?.appId], [1, null, "a"]);
+    eq("repoId null: no repo has appId a", await saveAppRepo(db, "t", "a", { repoId: null, policy: "off" }), { ok: true, repoFullName: null, appSlug: "shop.example" });
+    eq("…and the row is unmapped", (await db.gitHubRepo.findUnique({ where: { id: "m2" } }))?.appId, null);
     const form = (o: Record<string, string>) => { const f = new FormData(); for (const [k, v] of Object.entries(o)) f.set(k, v); return f; };
-    eq("form: production with an app", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "production" })), { repoId: "m1", appId: "a", policy: "production" });
-    eq("form: previews are not offered yet", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "all" })), { error: "noPolicy" });
-    eq("form: no repository", mappingFromForm(form({ appId: "a", policy: "off" })), { error: "noRepo" });
+    eq("form: production with a repo", appRepoFromForm(form({ repoId: "m2", policy: "production" })), { repoId: "m2", policy: "production" });
+    eq("form: previews are not offered yet", appRepoFromForm(form({ repoId: "m2", policy: "all" })), { error: "noPolicy" });
+    eq("form: empty repo means unmapped", appRepoFromForm(form({ repoId: "", policy: "off" })), { repoId: null, policy: "off" });
     eq("a refusal code resolves to its guarded sentence; anything else shows nothing", [mappingErrorText("otherApp"), mappingErrorText("You have been hacked, call +1 555"), mappingErrorText("toString"), mappingErrorText(undefined)], ["That app is not one of this team's websites.", null, null, null]);
-    const page = readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/page.tsx"), "utf8");
-    check("the page shows no sentence from its URL — only codes resolved against the guarded list", /mappingErrorText\(github_error\)/.test(page) && !/text: error\b/.test(page) && !/\berror\?: string/.test(page));
+    const appPage = readFileSync(join(process.cwd(), "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx"), "utf8");
+    // The GitHub refusal travels as `github_error` → `githubError` and is only
+    // ever passed to mappingErrorText; the raw value is rendered nowhere. (The
+    // page's older `error` param belongs to the settings save and is out of
+    // this check's scope.)
+    const rawUses = (appPage.match(/\bgithubError\b/g) ?? []).length;
+    const resolved = (appPage.match(/mappingErrorText\(githubError\)/g) ?? []).length;
+    const declared = (appPage.match(/githubError[?]?: string|githubError=\{github_error\}|\{ githubError \}|githubError,|githubError \}/g) ?? []).length;
+    check("the app settings page shows no sentence from its URL — the GitHub code is only resolved against the guarded list", resolved === 1 && rawUses === resolved + declared, `${rawUses} uses, ${resolved} resolved, ${declared} declared`);
     eq("the activity line records the setting, not a promise", mappingEventSummary({ repoFullName: "acme/shop", appSlug: "shop.example", policy: "production" }), "set successful production deploys of acme/shop to start checks of shop.example");
-    check("…and the action writes that line, not one of its own", /summary: mappingEventSummary\(/.test(readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/actions.ts"), "utf8")));
-    await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" });
-    const gh2 = await teamGitHub(db, { id: "t", plan: "business" });
-    eq("the screen sees the team's installations only", gh2.installations.map((i) => i.accountLogin).sort(), ["acme"]);
-    eq("…its repositories with their mapping", gh2.installations.flatMap((i) => i.repos.map((r) => [r.repoFullName, r.appId, r.policy])), [["acme/shop", "a", "production"]]);
-    eq("…the team's website apps only (no extension)", gh2.apps.map((a) => a.appSlug), ["shop.example"]);
-    check("…a mapped app with under three checks shows the plan's typical range", /^a check is typically \$\d+\.\d\d–\$\d+\.\d\d$/.test(gh2.apps[0].priceLine ?? ""), String(gh2.apps[0].priceLine));
+    check("…and the action writes that line, not one of its own", /summary: mappingEventSummary\(/.test(readFileSync(join(process.cwd(), "src/app/dashboard/actions.ts"), "utf8")));
+    await saveAppRepo(db, "t", "a", { repoId: "m1", policy: "production" });
+    const gh2 = await appGitHub(db, { id: "t", plan: "business" }, "a");
+    eq("the screen sees the team is installed", gh2.installed, true);
+    eq("…with the team's repositories only (not the other team's)", gh2.repos.map((r) => r.repoFullName).sort(), ["acme/api", "acme/shop"]);
+    eq("…current is the repo linked to this app", gh2.current, { repoId: "m1", policy: "production" });
+    check("…a mapped app with under three checks shows the plan's typical range", /^a check is typically \$\d+\.\d\d–\$\d+\.\d\d$/.test(gh2.priceLine), gh2.priceLine);
 
     // At real size (R15): 130 apps, 160 repositories over two installations,
     // three mapped. The loader reads the team's rows only, prices the mapped
@@ -342,12 +355,12 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     await db.run.createMany({ data: Array.from({ length: 25 }, (_, i) => ({ id: `bru${i}`, publicId: `bp${i}`, runNumber: 9000 + i, teamId: "big", appId: "ba0", appSlug: "app000.example", targetUrl: "https://app0.example", status: "completed", verdict: "all_good", priceUsd: 0.5 + i / 100, costUsd: 0.2 + i / 200 })) as never });
     const calls: string[] = [];
     const counted = new Proxy(db, { get: (target, prop) => (prop === "run" ? new Proxy(target.run, { get: (r, p) => { if (p === "findMany") calls.push("run.findMany"); return (r as never)[p]; } }) : (target as never)[prop]) }) as typeof db;
-    const big = await teamGitHub(counted, { id: "big", plan: "growth" });
-    eq("real size: every repository of both installations", big.installations.reduce((n, i) => n + i.repos.length, 0), 160);
-    eq("real size: every website app in the select", big.apps.length, BIG);
-    eq("real size: prices only the three mapped apps", [calls.length, big.apps.filter((a) => a.priceLine !== null).length], [3, 3]);
-    check("real size: a mapped app with history shows its own range", /^usually \$\d+\.\d\d(–\$\d+\.\d\d)? a check$/.test(big.apps.find((a) => a.id === "ba0")?.priceLine ?? ""), String(big.apps.find((a) => a.id === "ba0")?.priceLine));
-    eq("real size: none of another team's rows", big.installations.flatMap((i) => i.repos).some((r) => !r.repoFullName.startsWith("big/")), false);
+    const big = await appGitHub(counted, { id: "big", plan: "growth" }, "ba0");
+    eq("real size: every repository of the team", big.repos.length, 160);
+    eq("real size: the team is installed", big.installed, true);
+    eq("real size: prices exactly this one app (one run.findMany)", calls.length, 1);
+    check("real size: a mapped app with history shows its own range", /^usually \$\d+\.\d\d(–\$\d+\.\d\d)? a check$/.test(big.priceLine), big.priceLine);
+    eq("real size: current is the repo linked to ba0", big.current?.repoId, "br0");
   } finally {
     await real.dispose();
   }
@@ -389,15 +402,17 @@ function tables() {
   eq("a suspended installation never promises a check", repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48 a check", policy: "production", suspended: true }), "Deploys of shop.example are not checked while the App is suspended on GitHub.");
   // Read with the TypeScript parser: a JSX text node with a word in it is a
   // sentence typed into the component.
-  const file = "src/components/github-app-panel.tsx";
-  const sf = ts.createSourceFile(file, readFileSync(join(process.cwd(), file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const files = ["src/components/github-app-panel.tsx", "src/components/app-github-repo.tsx"];
   const typed: string[] = [];
-  const visit = (n: ts.Node) => {
-    if (ts.isJsxText(n) && /[A-Za-z]{2,}/.test(n.text)) typed.push(n.text.trim());
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  check("the panel types no sentence into its JSX", typed.length === 0, typed.join(" | "));
+  for (const file of files) {
+    const sf = ts.createSourceFile(file, readFileSync(join(process.cwd(), file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const visit = (n: ts.Node) => {
+      if (ts.isJsxText(n) && /[A-Za-z]{2,}/.test(n.text)) typed.push(`${file}: ${n.text.trim()}`);
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  check("no sentence typed into the panel JSX (team and per-app)", typed.length === 0, typed.join(" | "));
   const now = Date.parse("2026-10-06T12:00:00Z");
   eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
     installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
