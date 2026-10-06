@@ -1,0 +1,12 @@
+[Unit]
+Description=One live tab for the person signing in: fresh sign-in form, no stale or duplicate tabs (CHE-419)
+After=session-chrome.service session-server.service
+
+[Service]
+Type=oneshot
+# The session-host user reaches Chrome's DevTools and the session server on
+# loopback (the firewall refuses only session-browser); it is the probe's user.
+User=session-host
+EnvironmentFile=/etc/session-host/server.env
+ExecStart=/usr/bin/node /opt/session-host/probe/door.mjs
+TimeoutStartSec=60

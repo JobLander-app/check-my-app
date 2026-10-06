@@ -14,7 +14,15 @@ Group=session-browser
 # owner's email. A password here would be a second secret to hand him for no
 # added protection. A page inside Chrome cannot reach this port either: Chrome's
 # user is refused every loopback connection.
-ExecStart=/usr/bin/x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -noxdamage -quiet
+#
+# -remap: the person signing in sits at a Mac. noVNC sends Cmd as Super, and
+# Linux Chrome does nothing on Super+V, so a pasted password never landed
+# (2026-10-05). Cmd is Ctrl here: Cmd+V pastes, Cmd+C copies, Cmd+A selects.
+#
+# -afteraccept (CHE-419): each accepted viewer writes the door's trigger, and
+# session-door.path tidies the tab the person is about to see. This user can
+# write the file and nothing more; the tidying runs as session-host.
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -noxdamage -quiet -remap Super_L-Control_L,Super_R-Control_R -afteraccept "date +%%s > /var/lib/session-door/connected"
 Restart=always
 RestartSec=3
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Residential egress for the session browser (CHE-333)
+Before=session-chrome.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/session-host/proxy-render.sh
+
+[Install]
+WantedBy=multi-user.target
