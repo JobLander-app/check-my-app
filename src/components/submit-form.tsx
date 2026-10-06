@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VERDICT_META } from "@/lib/status";
 import { appSlugFromUrl } from "@/lib/utils";
-import { track, useLandingVariant } from "@/lib/analytics";
+import { track } from "@/lib/analytics";
+import { FORM_NOTE } from "@/lib/home-copy";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
@@ -63,7 +64,9 @@ type LookupHit = {
 };
 
 // Screen 1 — Submit. One field, one button; credentials/notes hidden behind a
-// single toggle so casual visitors aren't scared off.
+// single toggle so casual visitors aren't scared off. The headline above the
+// field belongs to the page (src/app/page.tsx, CHE-421); the form starts at
+// the field.
 //
 // `extensionCheck` is the PostHog flag `home-extension-check`, evaluated by
 // the page on the server (CHE-320): off for the public, on for the owner and
@@ -98,9 +101,6 @@ export function SubmitForm({ initialUrl = "", extensionCheck = false }: { initia
   // the same submission, follow the checkout URL it returns.
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
-  // Landing headline A/B (PostHog flag `landing-variant`, see
-  // src/lib/analytics.ts): "A" on the server and until the flag resolves.
-  const variant = useLandingVariant();
 
   // The site-cap panel is the growth plan's own signal: count it when it
   // renders, once per rejection.
@@ -247,28 +247,7 @@ export function SubmitForm({ initialUrl = "", extensionCheck = false }: { initia
   }
 
   return (
-    <form onSubmit={onSubmit} className="stagger w-full max-w-xl space-y-6">
-      <div className="space-y-3 text-center">
-        <p className="section-label">free first run · no signup</p>
-        {/* Two headlines under test (experiment "Landing headline A/B"). A is
-            the original; B names what the check is for. Same element, same
-            classes — only the words differ, so a late switch to B moves no
-            layout beyond the text itself. */}
-        <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-[2.75rem] sm:leading-[1.1]">
-          Paste a link.
-          <br />
-          {isExtension ? <>We&apos;ll show you <span className="text-accent">your extension</span>.</> : variant === "B" ? (
-            <>
-              We&apos;ll show you what a <span className="text-accent">first-time visitor</span> hits.
-            </>
-          ) : (
-            <>
-              We&apos;ll show you <span className="text-accent">your app</span>.
-            </>
-          )}
-        </h1>
-      </div>
-
+    <form onSubmit={onSubmit} className="w-full space-y-6">
       {extensionCheck && (
         <div className="flex justify-center gap-1 font-mono text-xs" aria-label="Product type">
           {(["website", "extension"] as const).map(kind => (
@@ -479,16 +458,15 @@ export function SubmitForm({ initialUrl = "", extensionCheck = false }: { initia
         )}
       </Button>
 
+      {/* One line, not a wall (CHE-421): the three things a visitor asks after
+          deciding to paste a link, and today's counter when it is known. */}
       <p className="text-center font-mono text-[13px] leading-6 text-fg-faint">
-        No signup. Free first run.
-        <br />
-        We&apos;ll email you when ready.
+        {FORM_NOTE}
         {today && (
           <>
-            <br />
-            {today.left} of {today.cap} free checks left today · anonymous checks are{" "}
+            {" · "}
             <Link href="/checks/today" className="text-accent transition-colors hover:underline">
-              public
+              {today.left} of {today.cap} left today
             </Link>
           </>
         )}

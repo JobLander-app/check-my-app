@@ -29,6 +29,7 @@ import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared
 import { OnboardingChooser } from "@/components/onboarding-chooser";
 import { CONNECT_GUIDE_PATH, EXAMPLE_APP_URL, firstPrompt, installCommand } from "@/lib/agent-connect";
 import { ANALYTICS_EVENTS } from "@/lib/analytics";
+import { WAYS_IN } from "@/lib/home-copy";
 import { hasEnvironmentLeak, hasHomework, narrationIn } from "@/lib/verdict-language";
 
 let failures = 0;
@@ -123,8 +124,11 @@ check("the dashboard renders a team with no apps", /const empty = shell\.apps\.l
 
 // ─── 5. The home page links to the guide ────────────────────────────────────
 
+// Since CHE-421 the words come from src/lib/home-copy.ts; the page renders them
+// next to the link.
 const home = source("src/app/page.tsx");
-check("the home page links to the guide", /href=\{CONNECT_GUIDE_PATH\}/.test(home) && /Prefer your coding agent\?/.test(home));
+check("the home page links to the guide", /href=\{CONNECT_GUIDE_PATH\}/.test(home) && /\{WAYS_IN\.agent\}/.test(home) && /\{WAYS_IN\.agentLink\}/.test(home));
+check("…with the line it always had", WAYS_IN.agent === "Prefer your coding agent?" && WAYS_IN.agentLink === "Connect it →");
 check("the guide is a route", CONNECT_GUIDE_PATH === "/guides/connect-your-agent" && existsSync(join(process.cwd(), "src/app/guides/connect-your-agent/page.tsx")));
 
 // ─── 6. Which way was chosen ────────────────────────────────────────────────
@@ -136,7 +140,7 @@ check("…and on 'Add an app here'", /event="onboarding_path_chosen"\s+props=\{\
 
 // ─── 7. §1 and the owner's rule ─────────────────────────────────────────────
 
-const homeLine = "Prefer your coding agent? Connect it →";
+const homeLine = `${WAYS_IN.agent} ${WAYS_IN.agentLink}`;
 // The narration detector reads "Done — …" as the envelope an agent wraps a
 // verdict in ("Done — here is what I found"); on a button it is the button's
 // name, so it is checked as prose without it. Homework and leaks are checked

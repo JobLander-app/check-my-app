@@ -43,6 +43,8 @@ const SOURCES = [
   "src/lib/billing-page.ts",
   "src/lib/all-apps.ts",
   "src/lib/app-page.ts",
+  // CHE-421: every sentence on the home page.
+  "src/lib/home-copy.ts",
   "src/components",
   "src/lib/email.ts",
   // CHE-369: the Check Run on the customer's commit and the notices around it.
