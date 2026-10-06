@@ -31,7 +31,7 @@ export const HERO_VARIANTS: readonly HeroVariant[] = [
     key: "hear-first",
     headline: "Will you hear it broke before your customers do?",
     line:
-      "Every day your app is checked again — its pages, their errors, and the full walk by someone who isn't you the moment something changed. What stopped answering overnight is in your inbox that morning.",
+      "Every day your app is checked again — its pages, their errors, and a walk through your journeys by someone who isn't you when something changed. What stopped answering overnight is in your inbox that morning.",
   },
   {
     key: "not-you",
@@ -66,19 +66,19 @@ export const PAINS: readonly Pain[] = [
   {
     fear: "“Will I hear about it before my merchants do?”",
     check:
-      "Every day your app is checked again: do its pages still answer, do they throw errors — and the moment something changed, the full walk through every journey, again. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding that morning.",
+      "Every day your app is checked again: do its pages still answer, do they throw errors — and when something changed, a walk through your journeys again, a few each time. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding that morning.",
     get: "You hear it from the check, not from a merchant.",
   },
   {
-    fear: "“I'm not fighting captchas and 2FA myself.”",
+    fear: "“I'm not writing and babysitting browser scripts myself.”",
     check:
-      "You paste a link and, if you want the signed-in parts covered, a test login. What comes back is the verdict: broken or not, what, where, how to know it's gone.",
+      "You paste a link and, for the signed-in parts, a test login that signs in without a captcha or a code. What comes back is the verdict: broken or not, what, where, how to know it's gone.",
     get: "No scripts to write, no sessions to keep alive, no flaky setup that breaks the week you need it.",
   },
   {
     fear: "“I vibe-coded it. Can I ship it without the fear?”",
     check:
-      "Your coding agent connects to the check and runs it on every release. The verdict comes back into the same chat, with the fix for you to decide.",
+      "Your coding agent connects to the check and runs one when you ask — after a release, before a submission. The verdict comes back into the same chat, with the fix for you to decide.",
     get: "Ship, check, fix — without opening a dashboard, and without wondering what the first user will see.",
   },
 ];
