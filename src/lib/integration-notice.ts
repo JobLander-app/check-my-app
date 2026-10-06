@@ -26,6 +26,7 @@ const NOTICES: Record<string, { text: string; ok: boolean }> = {
   github_unconfigured: { text: "The GitHub App isn't available yet — it is being set up.", ok: false },
   github_start_here: { text: "The GitHub App was installed from GitHub's side, so it isn't connected to a team yet — press Install here, and GitHub will bring you back connected.", ok: false },
   github_failed: { text: "Couldn't connect the GitHub App — please try again.", ok: false },
+  github_mapped: { text: "Saved — each repository's row says what its deploys now do.", ok: true },
 };
 
 export function integrationNotice(outcome: string | undefined): { text: string; ok: boolean } | null {

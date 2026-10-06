@@ -39,6 +39,7 @@ import {
   type Fetch,
 } from "../src/lib/github-app";
 import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
+import { OFFERED_POLICIES, mappingFromForm, priceLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -290,6 +291,30 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("…its repositories and deployment rows go with it", [await db.gitHubInstallation.count(), await db.gitHubRepo.count(), await db.gitHubDeploymentCheck.count()], [0, 0, 0]);
     eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 4);
     eq("every delivery is on record (the n numbered ones plus d-retry and d-trigger), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 2, 0]);
+
+    // 6. Part B: the mapping the team sets on Integrations.
+    await db.team.create({ data: { id: "o", name: "Other", plan: "business" } });
+    await db.app.create({ data: { id: "oa", teamId: "o", ownerId: "u", appSlug: "other.example", targetUrl: "https://other.example", targetKind: "website" } });
+    await db.gitHubInstallation.create({ data: { id: "i2", installationId: 888, accountLogin: "acme", accountType: "Organization", teamId: "t", connectedById: "u" } });
+    await db.gitHubInstallation.create({ data: { id: "io", installationId: 999, accountLogin: "other", accountType: "User", teamId: "o", connectedById: "u" } });
+    await db.gitHubRepo.create({ data: { id: "m1", installationId: "i2", repoFullName: "acme/shop", repoId: 11, teamId: "t" } });
+    await db.gitHubRepo.create({ data: { id: "mo", installationId: "io", repoFullName: "other/repo", repoId: 21, teamId: "o" } });
+    eq("map a repository to the team's app, every production deploy", await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" }), { ok: true, repoFullName: "acme/shop", appSlug: "shop.example" });
+    eq("…stored", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
+    eq("another team's repository is refused", await saveRepoMapping(db, "t", { repoId: "mo", appId: "a", policy: "production" }), { error: "That repository is not connected to this team." });
+    eq("another team's app is refused", await saveRepoMapping(db, "t", { repoId: "m1", appId: "oa", policy: "production" }), { error: "That app is not one of this team's." });
+    eq("…and the row kept its app", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
+    eq("unmap: an empty app clears it", (await saveRepoMapping(db, "t", { repoId: "m1", appId: null, policy: "off" })) as unknown, { ok: true, repoFullName: "acme/shop", appSlug: null });
+    const form = (o: Record<string, string>) => { const f = new FormData(); for (const [k, v] of Object.entries(o)) f.set(k, v); return f; };
+    eq("form: production with an app", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "production" })), { repoId: "m1", appId: "a", policy: "production" });
+    eq("form: previews are not offered yet", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "all" })), { error: "Choose when this repository's deploys are checked." });
+    eq("form: no repository", mappingFromForm(form({ appId: "a", policy: "off" })), { error: "No repository was named." });
+    await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" });
+    const gh2 = await teamGitHub(db, { id: "t", plan: "business" });
+    eq("the screen sees the team's installations only", gh2.installations.map((i) => i.accountLogin).sort(), ["acme"]);
+    eq("…its repositories with their mapping", gh2.installations.flatMap((i) => i.repos.map((r) => [r.repoFullName, r.appId, r.policy])), [["acme/shop", "a", "production"]]);
+    eq("…the team's apps only, each with its price line", gh2.apps.map((a) => a.appSlug), ["shop.example"]);
+    check("…an app with under three checks shows the plan's typical range", /^a check is typically \$\d+\.\d\d–\$\d+\.\d\d$/.test(gh2.apps[0].priceLine), gh2.apps[0].priceLine);
   } finally {
     await real.dispose();
   }
@@ -312,6 +337,12 @@ function tables() {
   eq("refusal title", refusalTitle("Your team's balance is used up."), "Not checked — Your team's balance is used up");
   const out = checkRunOutput({ ...run, status: "failed" }, "https://checkmyapp.dev/verdict/p");
   check("a failed run's summary charges nothing and names the review", /Nothing was charged/.test(out.summary) && out.summary.includes("/verdict/p"));
+  eq("price line: the app's own range, a single price, the plan's range", [
+    priceLine({ low: 0.48, high: 0.8 }, { low: 0.3, high: 1.5 }),
+    priceLine({ low: 0.61, high: 0.61 }, { low: 0.3, high: 1.5 }),
+    priceLine(null, { low: 0.3, high: 1.5 }),
+  ], ["usually $0.48–$0.80 a check", "usually $0.61 a check", "a check is typically $0.30–$1.50"]);
+  eq("the switch offers production and off — previews arrive with their runs", [...OFFERED_POLICIES], ["production", "off"]);
   const now = Date.parse("2026-10-06T12:00:00Z");
   eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
     installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
