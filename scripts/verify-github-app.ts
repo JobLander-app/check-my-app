@@ -261,7 +261,7 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
 
     // A full sync whose listing stopped short deletes nothing.
     gh.truncated = true;
-    await db.gitHubRepo.create({ data: { id: "r9", installationId: "i", repoFullName: "acme/beyond", repoId: 99, appId: "a", teamId: "t" } });
+    await db.gitHubRepo.create({ data: { id: "r9", installationId: "i", repoFullName: "acme/beyond", repoId: 99, appId: null, teamId: "t" } });
     await syncInstallationRepos(db, env, 777, gh.fetch);
     eq("a truncated listing keeps the mappings it did not reach", await db.gitHubRepo.count({ where: { id: "r9" } }), 1);
     gh.truncated = false;
@@ -337,7 +337,23 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     const gh2 = await appGitHub(db, { id: "t", plan: "business" }, "a");
     eq("the screen sees the team is installed", gh2.installed, true);
     eq("…with the team's repositories only (not the other team's)", gh2.repos.map((r) => r.repoFullName).sort(), ["acme/api", "acme/shop"]);
-    eq("…current is the repo linked to this app", gh2.current, { repoId: "m1", policy: "production" });
+    eq("…current is the repo linked to this app", gh2.current, { repoId: "m1", policy: "production", suspended: false });
+    // One repository per app is a fact of the table (0059), not a habit of
+    // saveAppRepo: a second row pointing at the same app is refused by D1.
+    let second = "accepted";
+    try {
+      await db.gitHubRepo.update({ where: { id: "m2" }, data: { appId: "a" } });
+    } catch {
+      second = "refused";
+    }
+    eq("a second repository for the same app is refused by the unique index", second, "refused");
+    await db.gitHubInstallation.update({ where: { id: "i2" }, data: { suspendedAt: new Date() } });
+    const suspendedView = await appGitHub(db, { id: "t", plan: "business" }, "a");
+    eq("a suspended installation reaches the app's picker", suspendedView.current?.suspended, true);
+    check("…and its line promises no check", repoStatusLine({ appSlug: "shop.example", priceLine: suspendedView.priceLine, policy: "production", suspended: suspendedView.current!.suspended }).includes("not checked while the App is suspended"));
+    await db.gitHubInstallation.update({ where: { id: "i2" }, data: { suspendedAt: null } });
+    const settingsPage = readFileSync(join(process.cwd(), "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx"), "utf8");
+    check("an extension app gets no repository picker (loaded and rendered for websites only)", /app\.targetKind === "website" \? appGitHub\(/.test(settingsPage) && /\{github && <AppGitHubRepo/.test(settingsPage));
     check("…a mapped app with under three checks shows the plan's typical range", /^a check is typically \$\d+\.\d\d–\$\d+\.\d\d$/.test(gh2.priceLine), gh2.priceLine);
 
     // At real size (R15): 130 apps, 160 repositories over two installations,

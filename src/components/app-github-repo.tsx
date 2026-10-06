@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { APP_GITHUB_COPY as COPY, OFFERED_POLICIES, POLICY_LABELS, repoStatusLine } from "@/lib/github-mapping";
-import type { OfferedPolicy } from "@/lib/github-mapping";
+import type { appGitHub } from "@/lib/github-mapping";
 import { setAppGitHubRepo } from "@/app/dashboard/actions";
 
 // Which repository deploys this app, and whether its deploys are checked —
@@ -19,7 +19,7 @@ export function AppGitHubRepo({
 }: {
   appId: string;
   appSlug: string;
-  github: { installed: boolean; repos: Array<{ id: string; repoFullName: string; appId: string | null }>; current: { repoId: string; policy: OfferedPolicy } | null; priceLine: string };
+  github: Awaited<ReturnType<typeof appGitHub>>;
   canConnect: boolean;
 }) {
   return (
@@ -80,7 +80,7 @@ export function AppGitHubRepo({
             </button>
           )}
           <span className="basis-full text-xs text-fg-faint">
-            {repoStatusLine({ appSlug: github.current ? appSlug : null, priceLine: github.priceLine, policy: github.current?.policy ?? "production", suspended: false })}
+            {repoStatusLine({ appSlug: github.current ? appSlug : null, priceLine: github.priceLine, policy: github.current?.policy ?? "production", suspended: github.current?.suspended ?? false })}
           </span>
         </form>
       )}

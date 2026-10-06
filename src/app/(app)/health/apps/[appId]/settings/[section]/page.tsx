@@ -392,7 +392,8 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
       clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
     }),
     appRunsTheAction(db, teamId, app.id),
-    appGitHub(db, { id: teamId, plan }, app.id),
+    // A deploy is checked as a website; an extension has no repository here.
+    app.targetKind === "website" ? appGitHub(db, { id: teamId, plan }, app.id) : Promise.resolve(null),
   ]);
   const githubErrorText = mappingErrorText(githubError);
 
@@ -481,7 +482,7 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           Not saved: {githubErrorText}
         </p>
       )}
-      <AppGitHubRepo appId={app.id} appSlug={app.appSlug} github={github} canConnect={can(scope, "integration.connect")} />
+      {github && <AppGitHubRepo appId={app.id} appSlug={app.appSlug} github={github} canConnect={can(scope, "integration.connect")} />}
       <GitHubCard connected={fromAction} />
 
       {/* Outbound webhooks + Slack (CHE-53). */}

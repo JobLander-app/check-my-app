@@ -83,13 +83,16 @@ export async function appGitHub(
   db: PrismaClient,
   team: { id: string; plan: UserPlan },
   appId: string,
-): Promise<{ installed: boolean; repos: Array<{ id: string; repoFullName: string; appId: string | null }>; current: { repoId: string; policy: OfferedPolicy } | null; priceLine: string }> {
+): Promise<{ installed: boolean; repos: Array<{ id: string; repoFullName: string; appId: string | null }>; current: { repoId: string; policy: OfferedPolicy; suspended: boolean } | null; priceLine: string }> {
   const installationRows = await db.gitHubInstallation.findMany({
     where: { ...teamOwned(team.id) },
     orderBy: { createdAt: "asc" },
-    select: { id: true, repos: { orderBy: { repoFullName: "asc" }, select: { id: true, repoFullName: true, appId: true, policy: true } } },
+    select: { id: true, suspendedAt: true, repos: { orderBy: { repoFullName: "asc" }, select: { id: true, repoFullName: true, appId: true, policy: true } } },
   });
-  const repos = installationRows.flatMap((i) => i.repos);
+  // Each repository carries its installation's suspension: a suspended one
+  // starts nothing (github-webhook.ts), so its line must not promise a check.
+  const repos = installationRows.flatMap((i) => i.repos.map((r) => ({ ...r, suspended: i.suspendedAt !== null })));
+  // One at most: GitHubRepo.appId is unique (0059).
   const currentRow = repos.find((r) => r.appId === appId) ?? null;
   const installed = installationRows.length > 0;
   const app = await db.app.findFirst({ where: { ...teamOwned(team.id), id: appId }, select: { appSlug: true } });
@@ -97,7 +100,7 @@ export async function appGitHub(
   return {
     installed,
     repos: repos.map((r) => ({ id: r.id, repoFullName: r.repoFullName, appId: r.appId })),
-    current: currentRow ? { repoId: currentRow.id, policy: offered(currentRow.policy) } : null,
+    current: currentRow ? { repoId: currentRow.id, policy: offered(currentRow.policy), suspended: currentRow.suspended } : null,
     priceLine: line,
   };
 }
