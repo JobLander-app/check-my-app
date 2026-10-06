@@ -85,6 +85,15 @@ export const shopifyAdminUrl = (store: string, handle?: string) =>
 // make a team's second Shopify app a duplicate of its first.
 export const shopifySlug = (store: string, handle?: string) => `shopify:${store}${handle ? `/${handle}` : ""}`;
 
+// A store connected, its app not chosen yet: no check may run (Codex on #288 —
+// the address is the admin's home, and a verdict about it would be about
+// Shopify, not the customer's app). Checked where every check starts
+// (startSavedApp), so the app page's Run, MCP start_check and anything later
+// all refuse.
+export const isPendingShopifyApp = (app: { targetKind: string; appSlug: string }) =>
+  app.targetKind === "session" && /^shopify:[a-z0-9][a-z0-9-]*$/.test(app.appSlug);
+export const PENDING_SHOPIFY_APP = "Choose which app in this store to check first, on the store's sign-in page.";
+
 // The store handle of an app checked inside the Shopify admin, from its saved
 // address (https://admin.shopify.com/store/<handle>/apps/<app>), or null.
 export function storeOfAdminUrl(targetUrl: string): string | null {

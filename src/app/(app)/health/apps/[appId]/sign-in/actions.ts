@@ -16,7 +16,10 @@ import type { UserPlan } from "@/lib/enums";
 // save it and start its first check. `app.credentials.write`: what is saved
 // names where a check of this app may act, the same rule as allowed origins on
 // the settings page (createActionFor).
-export async function chooseShopifyApp(appId: string, pickToken: string): Promise<{ error: string; href?: string } | { runHref: string; appHref: string }> {
+export async function chooseShopifyApp(
+  appId: string,
+  pickToken: string,
+): Promise<{ error: string; href?: string } | { runHref: string; appHref: string; watchRefused?: string }> {
   await refuseSelfCheck(appPath.signIn(appId));
   const { user, db, team } = await requireActionScope("app.credentials.write");
   const { env } = getCloudflareContext();
@@ -36,5 +39,5 @@ export async function chooseShopifyApp(appId: string, pickToken: string): Promis
   revalidatePath("/", "layout");
   const run = await startSavedApp(db, { id: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId);
   if ("error" in run) return { error: run.error, href: appPath.page(appId) };
-  return { runHref: `/run/${run.publicId}`, appHref: appPath.page(appId) };
+  return { runHref: `/run/${run.publicId}`, appHref: appPath.page(appId), ...(chosen.watchRefused ? { watchRefused: chosen.watchRefused } : {}) };
 }

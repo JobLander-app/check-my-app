@@ -30,7 +30,7 @@ type Choice =
   | { kind: "list"; apps: { handle: string; name: string }[] }
   | { kind: "picking"; name: string }
   | { kind: "error"; message: string; href?: string }
-  | { kind: "done"; name: string; runHref: string; appHref: string };
+  | { kind: "done"; name: string; runHref: string; appHref: string; watchRefused?: string };
 type State = { status: Status; dialog: Dialog; choice: Choice };
 type Action =
   | { t: "live" }
@@ -106,7 +106,7 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
         dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href } });
         return;
       }
-      dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, appHref: result.appHref } });
+      dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, appHref: result.appHref, watchRefused: result.watchRefused } });
       // The host gives no check the browser while a person is in it: leave,
       // so the first check can start.
       socket.current?.close();
@@ -262,7 +262,8 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
           )}
           {choice.kind === "done" && (
             <p className="text-accent">
-              {CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>. {CHOOSE_COPY.daily}{" "}
+              {CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>.{" "}
+              {choice.watchRefused ?? CHOOSE_COPY.daily}{" "}
               <Link href={choice.appHref} className="underline">{CHOOSE_COPY.appPage}</Link>.
             </p>
           )}

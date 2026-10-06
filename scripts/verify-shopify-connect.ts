@@ -22,6 +22,8 @@ import { createAppForTeam } from "@/lib/app-settings";
 import { NOT_OPEN_YET, chooseApp, connectStore } from "@/lib/shopify-connect";
 import type { Pick } from "@/lib/session-view";
 import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
+import { startSavedApp } from "@/lib/start-saved-app";
+import { PENDING_SHOPIFY_APP } from "@/lib/session-view";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -56,7 +58,12 @@ async function main() {
     const appId = "ok" in first ? first.appId : "";
     const pending = await db.app.findUnique({ where: { id: appId }, select: { targetKind: true, appSlug: true, targetUrl: true, allowedOrigins: true, watch: { select: { active: true } } } });
     check("the store becomes a pending app checked inside the session", pending?.targetKind === "session" && pending.appSlug === "shopify:prod-release-1" && pending.targetUrl === "https://admin.shopify.com/store/prod-release-1", JSON.stringify(pending));
-    check("…with the admin allowed and its daily check off until the app is chosen", pending?.allowedOrigins === JSON.stringify(["https://admin.shopify.com"]) && pending?.watch?.active === false, JSON.stringify(pending));
+    check("…with the admin allowed and no daily check until the app is chosen", pending?.allowedOrigins === JSON.stringify(["https://admin.shopify.com"]) && pending?.watch === null, JSON.stringify(pending));
+    // Codex on #288: nothing may check a store whose app is not chosen.
+    let triggered = 0;
+    const startDeps = { trigger: async () => { triggered++; }, siteCap: () => 1000, source: "mcp" as const };
+    const early = await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, startDeps);
+    check("a check of a store whose app is not chosen is refused, and nothing starts", "error" in early && early.error === PENDING_SHOPIFY_APP && triggered === 0, JSON.stringify(early));
     const again = await connectStore(db, ann, env, "prod-release-1");
     check("the same store asked again is the same pending app", "ok" in again && again.appId === appId && again.reused, JSON.stringify(again));
 
@@ -72,6 +79,11 @@ async function main() {
     check("the chosen app is saved with its address in the admin and its own origin", "ok" in chosen && saved?.appSlug === "shopify:prod-release-1/securify" && saved.targetUrl === "https://admin.shopify.com/store/prod-release-1/apps/securify" && saved.allowedOrigins === JSON.stringify(["https://admin.shopify.com", "https://securify.example.app"]), JSON.stringify({ chosen, saved }));
     check("…and its daily check is on, at the same address", saved?.watch?.active === true && saved.watch.targetUrl === saved.targetUrl && saved.watch.appSlug === saved.appSlug, JSON.stringify(saved?.watch));
 
+    const repoint = await chooseApp(db, ann, appId, pick({ handle: "flow", name: "Flow", origin: "https://flow.example.app" }));
+    check("a connected app is not repointed at another app by a stale page", "error" in repoint && repoint.code === "invalid_input", JSON.stringify(repoint));
+    const started = await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, startDeps);
+    check("once chosen, the app's check starts", "publicId" in started && triggered === 1, JSON.stringify(started));
+
     const second = await connectStore(db, ann, env, "prod-release-1");
     const secondId = "ok" in second ? second.appId : "";
     check("connecting the store again starts a second app", "ok" in second && secondId !== appId && !second.reused, JSON.stringify(second));
@@ -85,6 +97,23 @@ async function main() {
     // homework).
     const refusals = [closed, bad, otherStore, ours, foreign, dupe].map((r) => ("error" in r ? r.error : "")).filter(Boolean);
     check("every refusal reads as being about the person's store", refusals.length === 6 && refusals.every((s) => !hasEnvironmentLeak(s) && !hasHomework(s) && !/\b(browser|session host|VNC)\b/i.test(s)), refusals.join(" | "));
+
+    // Codex on #288: a Free team with two stores waiting gets one daily check,
+    // not two — the watch cap is asked when the app is chosen.
+    await db.team.create({ data: { id: "team_f", name: "F", plan: "free" } });
+    await db.user.create({ data: { id: "fay", clerkUserId: "ck_fay", email: "fay@team-f.test" } });
+    await db.membership.create({ data: { teamId: "team_f", userId: "fay", scope: "admin" } as never });
+    const fay = { userId: "fay", teamId: "team_f", plan: "free" as const };
+    const envF = { SESSION_TEAMS: "team_a,team_f" };
+    const s1 = await connectStore(db, fay, envF, "store-one");
+    const s2 = await connectStore(db, fay, envF, "store-two");
+    const c1 = "ok" in s1 ? await chooseApp(db, fay, s1.appId, pick({ store: "store-one" })) : s1;
+    const c2 = "ok" in s2 ? await chooseApp(db, fay, s2.appId, pick({ store: "store-two" })) : s2;
+    const activeF = await db.watch.count({ where: { teamId: "team_f", active: true } });
+    check("a Free team choosing two waiting stores gets one daily check, and is told why not the second",
+      "ok" in c1 && !c1.watchRefused && "ok" in c2 && Boolean(c2.watchRefused) && activeF === 1, JSON.stringify({ c1, c2, activeF }));
+    const trial = await db.watch.findFirst({ where: { teamId: "team_f", active: true }, select: { trialEndsAt: true } });
+    check("…and the Free trial runs from the moment the app was chosen", Boolean(trial?.trialEndsAt) && new Date(trial!.trialEndsAt!).getTime() > Date.now() + 6 * 24 * 3600_000, JSON.stringify(trial));
 
     const site = await createAppForTeam(db, ann, { targetUrl: "https://shop.example/path" });
     const siteRow = "ok" in site ? await db.app.findUnique({ where: { id: site.app.id }, select: { appSlug: true, targetKind: true } }) : null;

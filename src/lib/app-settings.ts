@@ -62,7 +62,7 @@ export interface CreateAppInput {
   // CHE-333: an app checked inside a signed-in Shopify admin. Its slug is the
   // store (and, once chosen, the app's handle) — every such app's address is on
   // admin.shopify.com, so the host would make the second a duplicate of the
-  // first. Its watch waits until the app is chosen: a daily check of a store
+  // first. It has no watch until the app is chosen: a daily check of a store
   // with no app picked would check the admin's home page.
   session?: { slug: string };
   frequency?: WatchFrequency;
@@ -125,7 +125,7 @@ export async function createAppForTeam(
   if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
 
   // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
-  const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
+  const gate = isExtension || input.session ? { ok: true as const } : await assertCanAddWatch(db, {
     teamId: actor.teamId,
     plan: actor.plan,
     frequency,
@@ -162,7 +162,9 @@ export async function createAppForTeam(
         // CHE-91: creation is opt-in AND only meaningful with a test account —
         // the run-time gate enforces the second half, this records consent.
         writeMode: input.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
-        watch: isExtension ? undefined : {
+        // A Shopify store waiting for its app has no watch yet: choosing the
+        // app creates it through the watch gate (shopify-connect.ts chooseApp).
+        watch: isExtension || input.session ? undefined : {
           create: {
             appSlug,
             targetUrl,
@@ -172,7 +174,6 @@ export async function createAppForTeam(
             testEmail,
             testPasswordEnc,
             storePasswordEnc,
-            ...(input.session ? { active: false } : {}),
             // CHE-54: a watch enabled on Free is a 7-day trial. Enabling from a
             // verdict stamped it; adding the app here did not, so a Free team's
             // one onboarded watch ran with no end at all.

@@ -18,7 +18,8 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { createAppForTeam, type AppActor, type AppRefusal } from "@/lib/app-settings";
 import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
-import { parseStoreInput, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
+import { enableWatchForApp } from "@/lib/watch-enable";
+import { isPendingShopifyApp, parseStoreInput, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 
@@ -54,7 +55,7 @@ export async function connectStore(
 }
 
 export type ChooseResult =
-  | { ok: true; appId: string; appSlug: string }
+  | { ok: true; appId: string; appSlug: string; watchRefused?: string }
   | { error: string; code: "invalid_input" | "not_found" | "duplicate"; appId?: string };
 
 // Saves the app the person picked on the sign-in page. `pick` is what the host
@@ -67,6 +68,9 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
   if (!app || app.targetKind !== "session") return { error: "App not found.", code: "not_found" };
   const store = storeOfAdminUrl(app.targetUrl);
   if (!store || store !== pick.store) return { error: "That app belongs to another store.", code: "invalid_input" };
+  // Only a store still waiting for its app takes a choice: a connected app is
+  // not repointed at another one by a stale page.
+  if (!isPendingShopifyApp(app)) return { error: "This store's app is already chosen.", code: "invalid_input" };
   const origins = parseAllowedOriginsInput([SHOPIFY_ADMIN_ORIGIN, pick.origin]);
   if (!origins.ok) return { error: "This app cannot be checked: the address it is served from is not one we can open.", code: "invalid_input" };
   const appSlug = shopifySlug(store, pick.handle);
@@ -78,6 +82,11 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
     where: { id: app.id },
     data: { targetUrl, appSlug, allowedOrigins: serializeAllowedOrigins(origins.origins) },
   });
-  await db.watch.updateMany({ where: { ...teamOwned(actor.teamId), appId: app.id }, data: { targetUrl, appSlug, active: true } });
-  return { ok: true, appId: app.id, appSlug };
+  // The daily check is switched on through the same gate as anywhere else
+  // (Codex on #288): the plan's watch cap counts it now, and a Free trial is
+  // stamped from today, not from when the store was first typed in. Refused,
+  // the app is still connected; its first check still runs, and the reason is
+  // said.
+  const watch = await enableWatchForApp(db, { id: actor.userId, teamId: actor.teamId, plan: actor.plan }, app.id, { frequency: "daily" });
+  return { ok: true, appId: app.id, appSlug, ...(watch.kind === "gated" ? { watchRefused: watch.reason } : {}) };
 }
