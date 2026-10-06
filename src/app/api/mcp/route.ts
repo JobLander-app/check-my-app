@@ -1,3 +1,4 @@
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getDbFromContext } from "@/lib/db";
 import { captureServer } from "@/lib/analytics-server";
 import { handleMcpRequest } from "@/lib/mcp/handler";
@@ -25,6 +26,7 @@ export async function POST(req: Request) {
     capture: captureServer,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
+    sessionTeams: () => (getCloudflareContext().env as unknown as { SESSION_TEAMS?: string }).SESSION_TEAMS,
   });
 }
 

@@ -1,0 +1,48 @@
+"use server";
+
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { revalidatePath } from "next/cache";
+import { requireActionScope } from "@/lib/team-auth";
+import { refuseSelfCheck } from "@/lib/self-check-action";
+import { appPath } from "@/lib/app-shell";
+import { verifyPick } from "@/lib/session-view";
+import { PICK_ERRORS } from "@/lib/sign-in-copy";
+import { chooseApp } from "@/lib/shopify-connect";
+import { startSavedApp } from "@/lib/start-saved-app";
+import { recordTeamEvent } from "@/lib/team-events";
+import type { UserPlan } from "@/lib/enums";
+
+// CHE-333: the person picked their app on the sign-in page; the session host
+// signed what it read (its handle, name and the origin it is served from). We
+// save it and start its first check. `app.credentials.write`: what is saved
+// names where a check of this app may act, the same rule as allowed origins on
+// the settings page (createActionFor).
+export async function chooseShopifyApp(
+  appId: string,
+  pickToken: string,
+): Promise<{ error: string; href?: string } | { runHref: string | null; runRefused?: string; appHref: string; watchRefused?: string }> {
+  await refuseSelfCheck(appPath.signIn(appId));
+  const { user, db, team } = await requireActionScope("app.credentials.write");
+  const { env } = getCloudflareContext();
+  const secret = (env as unknown as { SESSION_VIEW_SECRET?: string }).SESSION_VIEW_SECRET;
+  const pick = secret ? await verifyPick(secret, pickToken) : null;
+  if (!pick) return { error: PICK_ERRORS.expired };
+  const actor = { userId: user.id, teamId: team.id, plan: team.plan as UserPlan };
+  const chosen = await chooseApp(db, actor, appId, pick);
+  if (!("ok" in chosen)) return { error: chosen.error, ...(chosen.appId ? { href: appPath.page(chosen.appId) } : {}) };
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "app.created",
+    subject: chosen.appSlug,
+    summary: `connected ${pick.name} in ${pick.store}`,
+  });
+  revalidatePath("/", "layout");
+  const watched = chosen.watchRefused ? { watchRefused: chosen.watchRefused } : {};
+  const run = await startSavedApp(db, { id: user.id, teamId: team.id, plan: team.plan as UserPlan }, appId);
+  // The app IS connected by now; a first check the balance cannot pay for is
+  // said beside that, not as a failed choice (Codex on #288: the picker came
+  // back and choosing again could only answer "already chosen").
+  if ("error" in run) return { runHref: null, runRefused: run.error, appHref: appPath.page(appId), ...watched };
+  return { runHref: `/run/${run.publicId}`, appHref: appPath.page(appId), ...watched };
+}

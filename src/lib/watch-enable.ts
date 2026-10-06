@@ -8,6 +8,7 @@ import type { UserPlan, WatchFrequency } from "@/lib/enums";
 import { TRIAL_ENDED_REASON, assertCanAddWatch, shouldSkipWatch, watchTrialEnd } from "@/lib/plans";
 import { alreadyScoped, publicRow, teamOwned } from "@/lib/tenant-db";
 import { isPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
+import { isPendingShopifyApp, PENDING_SHOPIFY_APP } from "@/lib/session-view";
 
 export type EnableWatchResult =
   | { kind: "unauthenticated" }
@@ -241,6 +242,10 @@ export async function enableWatchForApp(
   });
   if (!app) return { kind: "not_found" };
   if (app.targetKind === "extension") return { kind: "gated", reason: EXTENSION_ON_DEMAND };
+  // CHE-333 (Codex on #288): a Shopify store whose app is not chosen has
+  // nothing to check every day — MCP enable_watch would otherwise schedule the
+  // admin's home page.
+  if (isPendingShopifyApp(app)) return { kind: "gated", reason: PENDING_SHOPIFY_APP };
   const enabled = await upsertWatch(db, user, app, opts);
   if (!enabled.ok) return { kind: "gated", reason: enabled.reason };
   return { kind: "ok", slug: enabled.watch.appSlug, trialEndsAt: enabled.watch.trialEndsAt };

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useReducer, useRef } from "react";
-import { SIGN_IN_COPY, signInError } from "@/lib/sign-in-copy";
+import { CHOOSE_COPY, SIGN_IN_COPY, pickError, signInError } from "@/lib/sign-in-copy";
+import { chooseShopifyApp } from "@/app/(app)/health/apps/[appId]/sign-in/actions";
 
 // CHE-419: the live view a person signs in through. Frames of one tab come in
 // as JPEG; mouse, keys and pasted text go out as a closed list of messages the
@@ -22,16 +23,29 @@ type Status =
   | { kind: "signed_in"; store: string }
   | { kind: "closed"; message: string };
 type Dialog = { kind: string; message: string } | null;
-type State = { status: Status; dialog: Dialog };
+// CHE-333: after sign-in, a store whose app is not chosen yet asks which one.
+type Choice =
+  | { kind: "idle" }
+  | { kind: "listing" }
+  | { kind: "list"; apps: { handle: string; name: string }[] }
+  | { kind: "picking"; name: string }
+  // `apps`: the list stays under the error, so the person can choose again
+  // (Codex on #288: the host lists them once, after sign-in).
+  | { kind: "error"; message: string; href?: string; apps?: { handle: string; name: string }[] }
+  | { kind: "done"; name: string; runHref: string | null; runRefused?: string; appHref: string; watchRefused?: string };
+type State = { status: Status; dialog: Dialog; choice: Choice };
 type Action =
   | { t: "live" }
   | { t: "page"; host: string }
   | { t: "signed_in"; store: string }
   | { t: "dialog"; dialog: Dialog }
-  | { t: "closed"; message: string };
+  | { t: "closed"; message: string }
+  | { t: "choice"; choice: Choice };
 
 function reduce(state: State, action: Action): State {
   switch (action.t) {
+    case "choice":
+      return { ...state, choice: action.choice };
     case "live":
       return state.status.kind === "connecting" ? { ...state, status: { kind: "live", host: null } } : state;
     case "page":
@@ -73,8 +87,10 @@ const COMMANDS: Record<string, string> = { a: "selectAll", z: "undo", x: "cut", 
 const modifiers = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
   (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 
-export function LiveSignIn({ url, store, appHref }: { url: string; store: string; appHref: string }) {
-  const [state, dispatch] = useReducer(reduce, { status: { kind: "connecting" }, dialog: null });
+export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string; store: string; appHref: string; appId: string; choose: boolean }) {
+  const [state, dispatch] = useReducer(reduce, { status: { kind: "connecting" }, dialog: null, choice: { kind: "idle" } });
+  const names = useRef(new Map<string, string>());
+  const listed = useRef<{ handle: string; name: string }[]>([]);
   const socket = useRef<WebSocket | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const field = useRef<HTMLTextAreaElement | null>(null);
@@ -83,6 +99,23 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
   const say = (message: object) => {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(message));
   };
+
+  // What the host read and signed for the chosen app, saved by the server.
+  const save = useCallback(
+    async (handle: string, token: string) => {
+      const name = names.current.get(handle) ?? handle;
+      const result = await chooseShopifyApp(appId, token);
+      if ("error" in result) {
+        dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href, apps: listed.current } });
+        return;
+      }
+      dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, runRefused: result.runRefused, appHref: result.appHref, watchRefused: result.watchRefused } });
+      // The host gives no check the browser while a person is in it: leave,
+      // so the first check can start.
+      socket.current?.close();
+    },
+    [appId],
+  );
 
   const stage = useCallback(
     (element: HTMLDivElement | null) => {
@@ -111,7 +144,21 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
           canvas.current.width = message.w;
           canvas.current.height = message.h;
         } else if (message.t === "page") dispatch({ t: "page", host: message.host });
-        else if (message.t === "signed_in") dispatch({ t: "signed_in", store: message.store });
+        else if (message.t === "signed_in") {
+          dispatch({ t: "signed_in", store: message.store });
+          // The store's apps are asked for the moment the admin opens.
+          if (choose) {
+            dispatch({ t: "choice", choice: { kind: "listing" } });
+            ws.send(JSON.stringify({ t: "apps" }));
+          }
+        } else if (message.t === "apps") {
+          for (const app of message.apps) names.current.set(app.handle, app.name);
+          listed.current = message.apps;
+          dispatch({ t: "choice", choice: message.apps.length ? { kind: "list", apps: message.apps } : { kind: "error", message: CHOOSE_COPY.noApps } });
+        } else if (message.t === "picked") {
+          if (message.code || !message.token) dispatch({ t: "choice", choice: { kind: "error", message: pickError(message.code), apps: listed.current } });
+          else void save(message.handle, message.token);
+        }
         else if (message.t === "dialog") dispatch({ t: "dialog", dialog: { kind: message.kind, message: message.message } });
         else if (message.t === "error") dispatch({ t: "closed", message: signInError(message.code) });
       };
@@ -122,8 +169,13 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
         ws.close();
       };
     },
-    [url],
+    [url, choose, save],
   );
+
+  const pickApp = (handle: string) => {
+    dispatch({ t: "choice", choice: { kind: "picking", name: names.current.get(handle) ?? handle } });
+    say({ t: "pick", handle });
+  };
 
   const point = (e: React.MouseEvent<HTMLCanvasElement> | React.WheelEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -187,18 +239,54 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
     if (text) say({ t: "text", text });
   };
 
-  const { status, dialog } = state;
+  const { status, dialog, choice } = state;
   return (
     <div className="mt-6">
+      {choice.kind !== "idle" && (
+        <div className="mb-4 rounded border border-ink-700 p-4 text-sm">
+          {choice.kind === "listing" && <p className="text-fg-muted">{CHOOSE_COPY.listing(store)}</p>}
+          {choice.kind === "error" && (
+            <p className="mb-3">
+              {choice.message}
+              {choice.href && <> <Link href={choice.href} className="underline">{CHOOSE_COPY.openIt}</Link>.</>}
+            </p>
+          )}
+          {(choice.kind === "list" || (choice.kind === "error" && choice.apps?.length)) && (
+            <>
+              <p className="font-medium">{CHOOSE_COPY.question}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(choice.kind === "list" ? choice.apps : choice.apps ?? []).map((app) => (
+                  <button key={app.handle} type="button" className="rounded border border-ink-700 px-3 py-1.5 hover:border-accent hover:text-accent" onClick={() => pickApp(app.handle)}>
+                    {app.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {choice.kind === "picking" && <p className="text-fg-muted">{CHOOSE_COPY.picking(choice.name)}</p>}
+          {choice.kind === "done" && (
+            <p className="text-accent">
+              {choice.runHref ? (
+                <>{CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>.</>
+              ) : (
+                <>{CHOOSE_COPY.connected(choice.name)} {choice.runRefused}</>
+              )}{" "}
+              {choice.watchRefused ?? CHOOSE_COPY.daily}{" "}
+              <Link href={choice.appHref} className="underline">{CHOOSE_COPY.appPage}</Link>.
+            </p>
+          )}
+        </div>
+      )}
       <div className="mb-3 flex min-h-6 items-center justify-between gap-4 text-sm">
         {status.kind === "connecting" && <span className="text-fg-muted">{SIGN_IN_COPY.connecting}</span>}
         {status.kind === "live" && <span className="text-fg-muted">{SIGN_IN_COPY.live}</span>}
-        {status.kind === "signed_in" && (
+        {status.kind === "signed_in" && !choose && (
           <span className="text-accent">
             {SIGN_IN_COPY.signedIn(status.store)}{" "}
             <Link href={appHref} className="underline">{SIGN_IN_COPY.backToApp}</Link>.
           </span>
         )}
+        {status.kind === "signed_in" && choose && <span className="text-accent">{CHOOSE_COPY.signedIn(status.store)}</span>}
         {status.kind === "closed" && <span>{status.message}</span>}
         <span className="flex gap-2">
           <button type="button" className="rounded border border-ink-700 px-2 py-1 text-[13px] hover:text-accent" onClick={() => say({ t: "nav", action: "back" })}>{SIGN_IN_COPY.back}</button>

@@ -59,6 +59,12 @@ export interface CreateAppInput {
   userNotes?: string | null;
   // CHE-373: https origins a check may act on besides the app's own.
   allowedOrigins?: string[];
+  // CHE-333: an app checked inside a signed-in Shopify admin. Its slug is the
+  // store (and, once chosen, the app's handle) — every such app's address is on
+  // admin.shopify.com, so the host would make the second a duplicate of the
+  // first. It has no watch until the app is chosen: a daily check of a store
+  // with no app picked would check the admin's home page.
+  session?: { slug: string };
   frequency?: WatchFrequency;
   pickupLabels?: string[];
   repoLabel?: string | null;
@@ -88,7 +94,8 @@ export async function createAppForTeam(
   if (input.expectExtension && !isExtension) return { error: "Enter a Chrome Web Store extension link.", code: "invalid_input" };
   const extension = input.extension;
   if (isExtension && extension && !extension.success) return { error: extension.error.issues[0].message, code: "invalid_input" };
-  const appSlug = appSlugFromUrl(targetUrl);
+  if (input.session && isExtension) return { error: "Enter your store.", code: "invalid_input" };
+  const appSlug = input.session?.slug ?? appSlugFromUrl(targetUrl);
 
   const testEmail = input.testEmail?.trim() || null;
   const testPasswordEnc = input.testPassword ? encryptSecret(input.testPassword) : null;
@@ -118,7 +125,7 @@ export async function createAppForTeam(
   if (dupe) return { error: DUPLICATE_APP, code: "duplicate" };
 
   // Tier gate (CHE-34): Daily Watch availability + cadence + count per plan.
-  const gate = isExtension ? { ok: true as const } : await assertCanAddWatch(db, {
+  const gate = isExtension || input.session ? { ok: true as const } : await assertCanAddWatch(db, {
     teamId: actor.teamId,
     plan: actor.plan,
     frequency,
@@ -143,6 +150,7 @@ export async function createAppForTeam(
         teamId: actor.teamId,
         targetUrl,
         ...extensionColumns(targetUrl, extension?.success ? extension.data : undefined),
+        ...(input.session ? { targetKind: "session" } : {}),
         appSlug,
         testEmail,
         testPasswordEnc,
@@ -154,7 +162,9 @@ export async function createAppForTeam(
         // CHE-91: creation is opt-in AND only meaningful with a test account —
         // the run-time gate enforces the second half, this records consent.
         writeMode: input.writeMode === "create_cleanup" ? "create_cleanup" : "read_only",
-        watch: isExtension ? undefined : {
+        // A Shopify store waiting for its app has no watch yet: choosing the
+        // app creates it through the watch gate (shopify-connect.ts chooseApp).
+        watch: isExtension || input.session ? undefined : {
           create: {
             appSlug,
             targetUrl,

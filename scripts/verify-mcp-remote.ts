@@ -9,7 +9,7 @@
 //
 //   1. no key, a malformed key or an unknown key gets a 401 JSON-RPC error and
 //      nothing else; GET and DELETE get 405 (stateless);
-//   2. the tool list is exactly the twelve tools;
+//   2. the tool list is exactly the thirteen tools;
 //   3. `instructions` name the team's apps with their latest verdict and the
 //      count of new findings, say what to do about them, and stay under 1500
 //      characters;
@@ -252,9 +252,9 @@ async function main() {
   // 2 — the tool list.
   {
     const names = (await a.listTools()).tools.map((t) => t.name).sort();
-    const expected = ["create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
+    const expected = ["connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
       "latest_results", "list_apps", "start_check", "update_app", "wait_for_review", "wait_for_run"];
-    check("tools: exactly the twelve", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    check("tools: exactly the thirteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
   }
 
   // 3 — instructions, computed from the key's team.

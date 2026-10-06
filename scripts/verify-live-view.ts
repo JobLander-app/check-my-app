@@ -18,12 +18,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
-import { SIGN_IN_COPY, allSignInSentences, signInError } from "../src/lib/sign-in-copy";
+import { PICK_ERRORS, SIGN_IN_COPY, allSignInSentences, signInError } from "../src/lib/sign-in-copy";
 import WebSocket from "ws";
 import { chromium } from "playwright";
 // @ts-ignore — the host's own modules are plain JavaScript.
 import { signViewToken, verifyViewToken, signedInStore, startViewer, storeAdminUrl, translate } from "../spikes/shopify-session/viewer.mjs";
-import { mintViewToken, storeOfAdminUrl } from "../src/lib/session-view";
+import { mintViewToken, parseStoreInput, shopifySlug, storeOfAdminUrl, verifyPick } from "../src/lib/session-view";
 
 async function main() {
 let failures = 0;
@@ -86,6 +86,27 @@ await check("the sign-in page's every sentence is about the person's store, and 
   assert.ok(codes.length >= 4, `codes found: ${codes}`);
   for (const code of codes) assert.notEqual(signInError(code), SIGN_IN_COPY.connectionEnded, `no sentence for "${code}"`);
   assert.doesNotMatch(source, /t: "error", message:/, "the host still sends a sentence of its own");
+  const pickCodes = [...source.matchAll(/t: "picked",(?: handle,)? code: "([a-z_]+)"/g)].map((m) => m[1]);
+  assert.ok(pickCodes.length >= 2, `pick codes found: ${pickCodes}`);
+  for (const code of pickCodes) assert.ok(code in PICK_ERRORS, `no sentence for pick code "${code}"`);
+  assert.doesNotMatch(source, /t: "picked"[^}]*error:/, "the host still sends a pick sentence of its own");
+});
+
+await check("what a person types as their store is read as its handle, and nothing else is", () => {
+  for (const [raw, want] of [
+    ["prod-release-1", "prod-release-1"],
+    ["Prod-Release-1.myshopify.com", "prod-release-1"],
+    ["https://prod-release-1.myshopify.com/", "prod-release-1"],
+    ["https://admin.shopify.com/store/prod-release-1/apps/x", "prod-release-1"],
+    ["  my-store ", "my-store"],
+    ["joblander.app", null],
+    ["https://evil.dev/store/x", null],
+    ["", null],
+    ["a b", null],
+    ["-x", null],
+  ] as const) assert.equal(parseStoreInput(raw), want, JSON.stringify(raw));
+  assert.equal(shopifySlug("s"), "shopify:s");
+  assert.equal(shopifySlug("s", "h"), "shopify:s/h");
 });
 
 await check("a store becomes its admin address, and nothing else does", () => {
@@ -155,6 +176,22 @@ const site = http.createServer(async (req, res) => {
     // Shopify does with the admin's address when the session has ended.
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!doctype html><meta charset="utf-8"><title>flash</title><script>setTimeout(() => location.replace('/admin'), 300)</script>`);
+  } else if (url.pathname === "/admin/settings/apps") {
+    // The admin's installed-apps list, as measured on a real store: links that
+    // name each app's handle, rendered a moment after load.
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!doctype html><meta charset="utf-8"><title>apps</title><div id="list"></div><script>
+setTimeout(() => { document.getElementById('list').innerHTML =
+  '<a href="/store/fixture/settings/apps/app_installations/app/fixture-app">Fixture App</a>' +
+  '<a href="/store/fixture/settings/apps/app_installations/app/other-app">Other ‑ App</a>' +
+  '<a href="/store/fixture/settings/apps/app_installations/app/fixture-app">Fixture App</a>' +
+  '<a href="/store/fixture/settings">Settings</a>'; }, 800);
+</script>`);
+  } else if (url.pathname === "/admin/apps/fixture-app") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!doctype html><meta charset="utf-8"><title>app</title><script>
+setTimeout(() => { const f = document.createElement('iframe'); f.name = 'app-iframe'; f.src = 'https://fixture-app.example/?shop=fixture'; document.body.appendChild(f); }, 500);
+</script>`);
   } else if (url.pathname === "/popup") {
     res.writeHead(200, { "Content-Type": "text/html" });
     // Closes on the press, so the release that follows goes to a tab that is
@@ -367,6 +404,27 @@ await check("a pop-up the tab opens is shown while it is open, then the tab agai
   v.say({ t: "text", text: "again" });
   await waitFor(async () => (await evaluate(tab, "document.getElementById('email').value")).endsWith("again"), "input on the tab after the pop-up");
   assert.ok(before >= 1);
+});
+
+await check("the viewer lists the store's apps and signs the one picked, without touching the person's tab", async () => {
+  const before = (await (await fetch(`${CDP}/json`)).json()).filter((t: { type: string }) => t.type === "page").length;
+  v.say({ t: "apps" });
+  await v.until(() => v.seen.messages.some((m) => m.t === "apps"), "the app list", 20_000);
+  const apps = v.seen.messages.find((m) => m.t === "apps").apps;
+  assert.deepEqual(apps, [{ handle: "fixture-app", name: "Fixture App" }, { handle: "other-app", name: "Other ‑ App" }]);
+  v.say({ t: "pick", handle: "fixture-app" });
+  await v.until(() => v.seen.messages.some((m) => m.t === "picked"), "the pick", 20_000);
+  const picked = v.seen.messages.find((m) => m.t === "picked");
+  assert.equal(picked.origin, "https://fixture-app.example");
+  const pick = await verifyPick(SECRET, picked.token);
+  assert.deepEqual(pick, { slot: "main", store: "fixture", handle: "fixture-app", name: "Fixture App", origin: "https://fixture-app.example" });
+  assert.equal(await verifyPick("z".repeat(40), picked.token), null, "a pick under another secret");
+  assert.equal(await verifyPick(SECRET, token()), null, "a view token is not a pick");
+  // The tabs it opened to read are gone; the person's is where it was.
+  await waitFor(async () => (await (await fetch(`${CDP}/json`)).json()).filter((t: { type: string }) => t.type === "page").length === before, "the reading tabs closed");
+  v.say({ t: "pick", handle: "../evil" });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(v.seen.messages.filter((m) => m.t === "picked").length, 1, "a malformed handle was acted on");
 });
 
 await check("a second viewer replaces the first", async () => {
