@@ -149,9 +149,11 @@ const READS_ONLY =
 // accordion, not a refund (the one false hold in CHE-407's replay of 483
 // customer clicks). A question is one by its words, not by its punctuation
 // (Codex on #277): "Delete account?" is a button that deletes, and stays
-// held. A control is still judged by its other names.
+// held. An accordion's disclosure glyph after the question ("+", "▾", "›")
+// is not a word and does not make it a command. A control is still judged
+// by its other names.
 const ASKS =
-  /^(?:how|what|why|when|where|which|who|whom|whose|can|could|do|does|did|is|are|was|were|should|shall|will|would|may|might|need|want|forgot|looking|having|wondering|not sure)\b[^?]*\?\s*$/i;
+  /^(?:how|what|why|when|where|which|who|whom|whose|can|could|do|does|did|is|are|was|were|should|shall|will|would|may|might|need|want|forgot|looking|having|wondering|not sure)\b[^?]*\?[^\p{L}\p{N}]*$/iu;
 
 function named(texts: string[], verbs: RegExp): string | null {
   const hit = texts.find((t) => !ASKS.test(t) && verbs.test(t.replace(READS_ONLY, " ")));
