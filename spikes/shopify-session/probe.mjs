@@ -58,6 +58,11 @@ const REASON = {
 
 // Returns an error description, or null when the message went out. The
 // description never contains the request URL — it carries the bot token.
+//
+// CHE-419: the message says what the person will meet, so the sign-in takes a
+// minute and not forty (2026-10-05): the form is already open and fresh
+// (door.mjs refreshes it on connect), Shopify's passkey dialog has no key to
+// use on this machine, and Cmd+V pastes.
 async function notifyOwner(state, at) {
   let token;
   try {
@@ -68,6 +73,7 @@ async function notifyOwner(state, at) {
   const text =
     `Сессия Shopify admin на session host закончилась: ${REASON[state] ?? state} (${at}).\n` +
     `Нужно войти заново (vladislav@otp.plus): ${SESSION_URL}\n` +
+    `Форма входа откроется сама. Если Shopify попросит ключ безопасности — Cancel, затем «Log in using a different method». Пароль вставляется Cmd+V.\n` +
     `Отвечать не нужно — проба сама увидит, что сессия снова жива.`;
   try {
     const response = await fetch("https://api.telegram.org/bot" + token + "/sendMessage", {

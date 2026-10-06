@@ -15,7 +15,10 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -q
-apt-get install -y -q ca-certificates curl gnupg xvfb x11vnc novnc websockify nftables \
+# tinyproxy: the local forwarder to the residential egress (proxy-render.sh).
+# jq: proxy-render.sh reads the metadata token and the secret with it.
+# xsel: reads the display's clipboard when a paste does not land (CHE-419).
+apt-get install -y -q ca-certificates curl gnupg jq xvfb x11vnc websockify nftables tinyproxy xsel \
   fonts-liberation fonts-noto-color-emoji
 
 install -d -m 0755 /etc/apt/keyrings
@@ -56,11 +59,24 @@ install -m 0644 "$SRC/firewall.nft" /etc/session-host/firewall.nft
 # signed in to it; a second profile lying around is one somebody opens by mistake.
 rm -rf /var/lib/session-host/profile
 
-# noVNC: a copy of the packaged client plus an index that opens the viewer
+# noVNC: upstream at a pinned commit, plus an index that opens the viewer
 # already connected, so the owner lands on the screen and not on a file list.
+# Not the Debian package (1.3.0) and not release 1.7.0: only upstream master
+# after 1.7.0 has core/clipboard.js, which hands the local clipboard to the
+# remote screen when it gets focus — Cmd+C on the Mac, click, Cmd+V. Before it,
+# a password could only be pasted through the side panel, and on 2026-10-05
+# that cost the owner most of forty minutes (CHE-419).
+NOVNC_COMMIT=b17d04c1a1a926a59f4a04bb866332b429f2ce37
 install -d -m 0755 /opt/session-host
-rm -rf /opt/session-host/novnc
-cp -r /usr/share/novnc /opt/session-host/novnc
+if [ "$(cat /opt/session-host/novnc/INSTALLED_FROM 2>/dev/null | cut -d' ' -f1)" != "$NOVNC_COMMIT" ]; then
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/novnc/noVNC/archive/${NOVNC_COMMIT}.tar.gz" | tar xz -C "$tmp"
+  rm -rf /opt/session-host/novnc
+  mv "$tmp/noVNC-${NOVNC_COMMIT}" /opt/session-host/novnc
+  echo "$NOVNC_COMMIT $(date -u +%FT%TZ)" > /opt/session-host/novnc/INSTALLED_FROM
+  rm -rf "$tmp"
+fi
+test -f /opt/session-host/novnc/core/clipboard.js || { echo "provision: FAIL — noVNC at $NOVNC_COMMIT has no core/clipboard.js"; exit 1; }
 cat > /opt/session-host/novnc/index.html <<'HTML'
 <!doctype html>
 <meta charset="utf-8">
@@ -77,8 +93,25 @@ server_changed=0
 for file in session-server.mjs lease.mjs classify.mjs package.json; do
   cmp -s "$SRC/$file" "/opt/session-host/probe/$file" || server_changed=1
 done
-install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/session-server.mjs" "$SRC/lease.mjs" "$SRC/package.json" /opt/session-host/probe/
+install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/session-server.mjs" "$SRC/lease.mjs" "$SRC/door.mjs" "$SRC/package.json" /opt/session-host/probe/
 (cd /opt/session-host/probe && npm install --omit=dev --no-audit --no-fund --silent)
+runuser -u session-host -- node /opt/session-host/probe/door.mjs --self-test >/dev/null || { echo "provision: FAIL — door.mjs self-test"; exit 1; }
+
+# CHE-419: x11vnc (as session-browser) writes the door's trigger here on every
+# accepted viewer; session-door.path then tidies the person's tab as
+# session-host. Its own directory: session-browser may not enter
+# /var/lib/session-host.
+install -d -o session-browser -g session-browser -m 0755 /var/lib/session-door
+
+# CHE-333: the residential egress. proxy-render.sh reads the upstream from
+# Secret Manager (session-host-proxy) and renders tinyproxy; without the secret
+# Chrome goes out directly, as before. tinyproxy is started by it (session-
+# proxy.service, before Chrome), never at boot with the package's own config —
+# and NOT stopped here: a running forwarder is the owner's session's egress.
+proxy_changed=0
+cmp -s "$SRC/proxy-render.sh" /opt/session-host/proxy-render.sh || proxy_changed=1
+install -m 0755 "$SRC/proxy-render.sh" /opt/session-host/proxy-render.sh
+systemctl disable tinyproxy 2>/dev/null || true
 
 # portability.mjs reaches DevTools through an IAP SSH tunnel. On 2026-10-01 the
 # tunnel's sshd kept its forwarded DevTools sockets open after the client was
@@ -96,11 +129,21 @@ install -d -m 0700 /etc/cloudflared
 # cookies die with the process), and restarting the tunnel drops his noVNC view.
 # So only the units whose file actually changed are restarted.
 changed=()
-for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer; do
+for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer "$SRC"/systemd/*.path; do
   name="$(basename "$unit")"
   if ! cmp -s "$unit" "/etc/systemd/system/$name"; then
     install -m 0644 "$unit" "/etc/systemd/system/$name"
     changed+=("$name")
+  fi
+done
+# Drop-ins (session-chrome.service.d/proxy.conf): a changed one restarts its unit.
+for dropin in "$SRC"/systemd/*.service.d/*.conf; do
+  [ -e "$dropin" ] || continue
+  dir="$(basename "$(dirname "$dropin")")"
+  install -d -m 0755 "/etc/systemd/system/$dir"
+  if ! cmp -s "$dropin" "/etc/systemd/system/$dir/$(basename "$dropin")"; then
+    install -m 0644 "$dropin" "/etc/systemd/system/$dir/"
+    changed+=("${dir%.d}")
   fi
 done
 systemctl daemon-reload
@@ -112,10 +155,18 @@ systemctl daemon-reload
 # nothing).
 nft -f /etc/session-host/firewall.nft
 systemctl enable --now session-firewall
-systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer
+systemctl enable session-proxy
+# A changed renderer is run again (Codex on #283): session-proxy is a oneshot
+# that stays "active", so enabling it alone would leave the old forwarder
+# config in place. Re-rendering restarts tinyproxy only — Chrome keeps its
+# flag and its session. A render that fails is a failed provision.
+if [ "$proxy_changed" = 1 ] || ! systemctl is-active -q session-proxy; then
+  systemctl restart session-proxy || { echo "provision: FAIL — proxy-render.sh (journalctl -u session-proxy)"; exit 1; }
+fi
+systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer session-door.path
 if [ ${#changed[@]} -gt 0 ]; then
   echo "provision: unit files changed: ${changed[*]}"
-  case " ${changed[*]} " in *" session-chrome.service "*|*" session-xvfb.service "*|*" session-firewall.service "*)
+  case " ${changed[*]} " in *" session-chrome.service "*|*" session-chrome "*|*" session-xvfb.service "*|*" session-firewall.service "*|*" session-proxy.service "*)
     echo "provision: Chrome restarts — the owner will have to sign in again." ;;
   esac
   systemctl try-restart "${changed[@]}"
@@ -153,6 +204,12 @@ for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:90
 done
 if as session-browser bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — the browser's user can reach VNC"; fail=1; fi
 reach session-browser https://admin.shopify.com/ || { echo "provision: FAIL — the browser's user cannot reach the public web (DNS or routing)"; fail=1; }
+# CHE-333: with a proxy configured, the browser's user goes out through it —
+# observed, by where the request comes out.
+if [ -s /etc/session-host/proxy.env ]; then
+  egress="$(as session-browser curl -s -m 20 --proxy http://127.0.0.1:3128 https://ipinfo.io/org || true)"
+  if [ -n "$egress" ]; then echo "provision: residential egress — $egress"; else echo "provision: FAIL — the browser's user cannot go out through 127.0.0.1:3128"; fail=1; fi
+fi
 chrome_uids="$(ps -o uid= -C chrome | sort -u | tr -d ' ' | tr '\n' ' ')"
 [ "$chrome_uids" = "$(id -u session-browser) " ] || { echo "provision: FAIL — Chrome is not running as session-browser alone (uids: $chrome_uids)"; fail=1; }
 if [ "$fail" = 0 ]; then echo "provision: isolation holds — the browser's user reaches the public web and nothing on this host or its private network"; fi

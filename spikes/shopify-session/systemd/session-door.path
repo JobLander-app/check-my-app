@@ -1,0 +1,10 @@
+[Unit]
+Description=A person connected to session.checkmyapp.dev: tidy the tab they will see (CHE-419)
+
+[Path]
+# x11vnc -afteraccept writes this file each time it accepts a viewer.
+PathChanged=/var/lib/session-door/connected
+Unit=session-door.service
+
+[Install]
+WantedBy=multi-user.target

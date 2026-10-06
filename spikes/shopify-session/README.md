@@ -11,10 +11,31 @@ directory is the instrument that measures it.
 | Piece | Where | What |
 |---|---|---|
 | `checkmyapp-session-host` | GCP `meet-assistant-6d8ad`, `europe-west1-b`, e2-medium, Debian 12, static IP `checkmyapp-session-host-ip` | Xvfb `:99` → Chrome with a persistent profile (`/var/lib/session-browser/profile`) → x11vnc → noVNC. The first three run as `session-browser`, which `firewall.nft` keeps off the host's own ports; the rest as `session-host` |
-| `session.checkmyapp.dev` | Cloudflare tunnel `checkmyapp-session-host` → `http://127.0.0.1:6080` | noVNC for the owner, behind Cloudflare Access (one-time PIN, `sorokinvj@gmail.com` only) |
+| `session.checkmyapp.dev` | Cloudflare tunnel `checkmyapp-session-host` → `http://127.0.0.1:6080` | noVNC for the owner, behind Cloudflare Access (one-time PIN; policy "Owner only": `sorokinvj@gmail.com`, `vladislav@otp.plus`) |
 | `session-api.checkmyapp.dev` | same tunnel → `http://127.0.0.1:9090` | the session server for checks (CHE-389), behind a Cloudflare Access service token — no person signs in there |
 | `probe.mjs` | on the host, `session-probe.timer`, hourly | opens the app in one new tab of that Chrome, classifies, appends to `/var/lib/session-host/probe.jsonl` |
 | `portability.mjs` | our side (an agent's machine), daily | copies the host's admin cookies into a fresh Cloudflare Browser Run session, appends to `/var/lib/session-host/portability.jsonl` |
+| `door.mjs` | on the host, `session-door.path` → `session-door.service`, on every accepted VNC viewer | leaves the person one live tab: the admin if signed in, a sign-in form younger than 20 min if they are mid-sign-in, otherwise a fresh tab on the store (CHE-419); appends to `/var/lib/session-host/door.jsonl`; does nothing while a check holds the lease |
+| `proxy-render.sh` | on the host, `session-proxy.service`, before Chrome | residential egress (CHE-333): reads `session-host-proxy` from Secret Manager, renders tinyproxy on `127.0.0.1:3128` forwarding everything upstream, and hands Chrome `--proxy-server` through `/etc/session-host/proxy.env` (`session-chrome.service.d/proxy.conf`). No secret → direct egress |
+
+The VM's own address is Google Cloud's, and Cloudflare challenges it on
+accounts.shopify.com in a loop — for a person as much as for a script
+(2026-10-04). Through the residential egress (IPRoyal, Germany, sticky 7 days,
+bought by the owner) the plain sign-in form appears.
+
+It is this machine's egress, so everything in this Chrome goes through it: the
+person's sign-in and the checks that run inside the signed-in session (CHE-389
+— a session check opens its tab in this same browser, and a Shopify session is
+used from the network it lives on). That is the same as the PoC on the owner's
+Mac, where the checks went out through his home connection. What never uses a
+proxy is the checker's own browser: Cloudflare Browser Rendering contexts, for
+every ordinary check, are refused one in code. The firewall lets
+`session-browser` open exactly one local port, `3128`, and tinyproxy forwards
+nothing locally.
+
+Switching the mode — adding the secret or removing it — restarts Chrome
+(`proxy-render.sh`): a running Chrome keeps the `--proxy-server` it started
+with. That ends the sign-in. A new upstream URL in the same mode does not.
 
 Nothing on the host listens on a public address: Chrome DevTools (`9222`),
 VNC (`5900`) and noVNC (`6080`) are bound to `127.0.0.1`. The project's
@@ -24,17 +45,40 @@ so this host carries the tag `checkmyapp-session-host`, which
 `allow-iap-ssh` (priority 900, `35.235.240.0/20` tcp:22) apply to. SSH works
 through IAP only (`gcloud compute ssh … --tunnel-through-iap`).
 
-The VM's service account `checkmyapp-session-host@meet-assistant-6d8ad` has one
-binding: `roles/secretmanager.secretAccessor` on the single secret
-`checkmyapp-telegram-bot-token`. No project role. It cannot read the Shopify
-login secrets — those are for the owner to type, never a script.
+The VM's service account `checkmyapp-session-host@meet-assistant-6d8ad` has two
+bindings, both `roles/secretmanager.secretAccessor` on a single secret:
+`checkmyapp-telegram-bot-token` (the probe's message) and `session-host-proxy`
+(the residential egress, read by `proxy-render.sh`). No project role. It cannot
+read the Shopify login secrets — those are for the owner to type, never a
+script. A host rebuilt from scratch needs the second binding again:
+
+```bash
+gcloud secrets add-iam-policy-binding session-host-proxy --project meet-assistant-6d8ad \
+  --member serviceAccount:checkmyapp-session-host@meet-assistant-6d8ad.iam.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+```
+
+Without it `proxy-render.sh` fails loudly (HTTP 403) and `provision.sh` fails
+with it; a missing secret (404) means direct egress on purpose.
 
 ## Signing in (the owner, once)
 
 Open https://session.checkmyapp.dev, get the PIN by mail, and you are looking at
-the host's Chrome. Shopify may first show a Cloudflare "Verify you are human"
-box; tick it yourself. Sign in as `vladislav@otp.plus`. Leave the tab open.
-The probe opens a second tab for a few seconds every hour and closes it.
+the host's Chrome — on a fresh sign-in form (`door.mjs` replaces a stale one
+when you connect). Sign in as `vladislav@otp.plus`:
+
+- Shopify offers a passkey first ("Insert your security key"). There is no key
+  on this machine: **Cancel**, then **Log in using a different method** →
+  password.
+- Paste works as on the Mac: copy the password locally, click into the screen,
+  **Cmd+V**. x11vnc maps Cmd to Ctrl (`-remap`), and noVNC (pinned upstream
+  commit with `core/clipboard.js`) hands the local clipboard to the screen when
+  it gets focus. The side panel's clipboard box still works as a fallback.
+- If Shopify shows a Cloudflare "Verify you are human" box, tick it yourself —
+  through the residential egress it has not appeared since 2026-10-05.
+
+Leave the tab open. The probe opens a second tab for a few seconds every hour
+and closes it.
 
 ## The hourly probe
 
