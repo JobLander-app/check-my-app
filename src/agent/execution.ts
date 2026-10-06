@@ -434,7 +434,10 @@ export async function walkOneJourney(args: {
       // finding with no step, no screenshot, no trail. With no step, the
       // summary is the fixed coverage sentence — never the model's words — so
       // synthesis has nothing to grow a finding from.
-      const unrecorded = unrecordedWalkSummary(stepStatuses.length, status);
+      // Steps written, not steps rolled up: a self-check refusal is recorded
+      // and kept out of the roll-up (countsTowardJourney) — it is still a
+      // recorded step, and such a walk is not unrecorded (Codex on #293).
+      const unrecorded = unrecordedWalkSummary(stepOrder, status);
       if (unrecorded) {
         console.warn(`[walk] journey "${proposed.title}" recorded no step — its summary is the fixed coverage sentence, not the model's prose`);
         // Ours to fix, and filed like every gap of ours (rule 2; Codex on

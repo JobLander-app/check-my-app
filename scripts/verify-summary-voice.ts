@@ -411,7 +411,10 @@ async function main() {
   {
     const source = readFileSync(join(process.cwd(), "src/agent/execution.ts"), "utf8");
     check("execution.ts uses the fixed sentence before it summarizes a walk",
-      /unrecordedWalkSummary\(stepStatuses\.length, status\)[\s\S]{0,900}unrecorded \?\? \(await summarizeWalk\(/.test(source));
+      // The count of steps WRITTEN (stepOrder), not of steps in the roll-up:
+      // a recorded self-check refusal is kept out of the roll-up, and is still
+      // a recorded step (Codex on #293).
+      /unrecordedWalkSummary\(stepOrder, status\)[\s\S]{0,900}unrecorded \?\? \(await summarizeWalk\(/.test(source));
     // Codex on #293: and it is filed as ours — a skipped our_capability step of
     // its own class, which fileCapabilityGaps reads.
     check("execution.ts leaves the walk's one gap step when it recorded none",
