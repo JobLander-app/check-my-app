@@ -165,10 +165,7 @@ export const toolSchemas = {
       .string()
       .min(1)
       .max(500)
-      .describe(
-        "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
-          "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
-      ),
+      .describe(MCP_CONNECT_COPY.appUrl),
   },
   update_app: {
     app_id: appId,

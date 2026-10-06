@@ -51,6 +51,9 @@ export const MCP_CONNECT_COPY = {
     "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
     "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
   alreadyConnected: "This app is already connected — list_apps has it; start_check checks it.",
+  appUrl:
+    "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
+    "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
 } as const;
 
 // What connecting and choosing refuse with (src/lib/shopify-connect.ts).
