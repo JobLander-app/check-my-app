@@ -635,7 +635,8 @@ async function main() {
     const helperAt = workflow.indexOf("const sessionTurn = async");
     const helper = workflow.slice(helperAt, workflow.indexOf("// Everything below is inside the failure handler", helperAt));
     check("the workflow: a session run takes its turn in steps that sleep — and only a session run",
-      helperAt > 0 && /if \(!isSession\) return;\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
+      // CHE-426: between the two, the run's own slot — never another's.
+      helperAt > 0 && /if \(!isSession\) return;[\s\S]{0,300}?if \(slot === null\) throw[^\n]*\n\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
       helper.slice(0, 80));
     // Before every phase that opens the browser, under that phase's name: a
     // wait inside a phase would be a step failing and being retried.
