@@ -37,6 +37,22 @@ export const CONNECT_COPY = {
   submitting: "Opening…",
 } as const;
 
+// What the customer's agent reads from MCP connect_shopify_app
+// (src/lib/mcp/tools.ts): the tool's description and its hints.
+export const MCP_CONNECT_COPY = {
+  description:
+    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass app_url, the link to the app " +
+    "in the admin (the store and the app are both read from it); the result's sign_in_url is for the user: they sign in " +
+    "to their store on that page (CheckMyApp never asks for their Shopify password, and neither should you), the app is " +
+    "picked up and its first check starts there; after that it is checked daily like any app. Use this instead of " +
+    "create_app for an app inside the Shopify admin.",
+  signIn:
+    "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password); " +
+    "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
+    "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
+  alreadyConnected: "This app is already connected — list_apps has it; start_check checks it.",
+} as const;
+
 // What connecting and choosing refuse with (src/lib/shopify-connect.ts).
 export const CONNECT_ERRORS = {
   notOpen: "Checking Shopify apps is not open for your team yet.",
@@ -107,6 +123,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.cancel,
     ...Object.values(CONNECT_COPY),
     ...Object.values(CONNECT_ERRORS).map((v) => (typeof v === "function" ? v("Securify") : v)),
+    ...Object.values(MCP_CONNECT_COPY),
     CHOOSE_COPY.retry,
     ...Object.values(SIGN_IN_ERRORS),
     CHOOSE_COPY.signedIn(store),

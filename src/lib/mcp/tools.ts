@@ -45,6 +45,7 @@ import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
+import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
@@ -475,7 +476,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return fail(code, result.error, HINTS[code]);
       }
       if (result.connected) {
-        return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: "This app is already connected — list_apps has it; start_check checks it." });
+        return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: MCP_CONNECT_COPY.alreadyConnected });
       }
       return text({
         ok: true,
@@ -483,10 +484,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         store: result.store,
         app: result.handle,
         sign_in_url: `${deps.origin}${appPath.signIn(result.appId)}`,
-        hint:
-          "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password); " +
-          "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
-          "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
+        hint: MCP_CONNECT_COPY.signIn,
       });
     },
 
@@ -917,12 +915,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(or, on a paid plan, the next monthly credit) " +
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
-  connect_shopify_app:
-    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass app_url, the link to the app " +
-    "in the admin (the store and the app are both read from it); the result's sign_in_url is for the user: they sign in " +
-    "to their store on that page (CheckMyApp never asks for their Shopify password, and neither should you), the app is " +
-    "picked up and its first check starts there; after that it is checked daily like any app. Use this instead of " +
-    "create_app for an app inside the Shopify admin.",
+  connect_shopify_app: MCP_CONNECT_COPY.description,
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
