@@ -394,7 +394,15 @@ await check("on the host, the browser has a user of its own and does not start w
   assert.match(chrome, /^After=.*\bsession-firewall\.service\b/m);
   assert.match(chrome, /--remote-debugging-address=127\.0\.0\.1/);
   const rules = await readFile(new URL("firewall.nft", dir), "utf8");
-  assert.match(rules, /meta skuid != "session-browser" accept/);
+  // CHE-426: the set of browser users is rendered by provision.sh — "main"'s
+  // session-browser and every slot's sb-<n> — and held to the same rules.
+  assert.match(rules, /meta skuid != \{ @BROWSER_USERS@ \} accept/);
+  assert.match(rules, /meta skuid \{ @BROWSER_USERS@ \} ip daddr 127\.0\.0\.1 tcp dport 3128 accept/);
+  // Each team slot's browser: its own user, the firewall required, DevTools on loopback.
+  for (const name of ["session-slot-xvfb@.service", "session-slot-chrome@.service"]) assert.equal(userOf(await unit(name)), "sb-%i", name);
+  const slotChrome = await unit("session-slot-chrome@.service");
+  assert.match(slotChrome, /^Requires=.*\bsession-firewall\.service\b/m);
+  assert.match(slotChrome, /--remote-debugging-address=127\.0\.0\.1/);
   // Without this line the browser's own listening ports answer nobody (seen on
   // the host, 2026-10-02): replies leave through the same hook.
   assert.match(rules, /ct state established,related accept/);
@@ -407,6 +415,7 @@ await check("on the host, the browser has a user of its own and does not start w
   // and ends the person's session. The rules are reloaded with nft itself.
   assert.doesNotMatch(provision, /systemctl (try-)?restart[^\n]*session-firewall/, "a provision would restart Chrome every time");
   assert.match(provision, /^nft -f \/etc\/session-host\/firewall\.nft$/m);
+  assert.match(provision, /@BROWSER_USERS@/, "the provision no longer renders the browser users into the rules");
   assert.match(rules, /fib daddr type local reject/);
 });
 

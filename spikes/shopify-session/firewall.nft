@@ -28,7 +28,11 @@ table inet session_browser {
   chain output {
     type filter hook output priority filter; policy accept;
 
-    meta skuid != "session-browser" accept
+    # CHE-426: every browser user — "main"'s session-browser and each team
+    # slot's sb-<n> — is held to the same rules. provision.sh renders the set
+    # (@BROWSER_USERS@) from the slot count; the file as committed reads it as
+    # just "session-browser".
+    meta skuid != { @BROWSER_USERS@ } accept
 
     # Answers are not refused, only openings: Chrome's DevTools port and the
     # VNC server listen as this user, and their replies to the session server,
@@ -42,7 +46,7 @@ table inet session_browser {
     # forwarder to the residential egress (tinyproxy, /opt/session-host/
     # proxy-render.sh). It forwards everything upstream and nothing locally,
     # so a page cannot reach this host's own ports through it either.
-    meta skuid "session-browser" ip daddr 127.0.0.1 tcp dport 3128 accept
+    meta skuid { @BROWSER_USERS@ } ip daddr 127.0.0.1 tcp dport 3128 accept
 
     # "This host", whatever its addresses are or become — an interface added
     # later (a tunnel, a bridge) is covered the day it comes up, in any range.
