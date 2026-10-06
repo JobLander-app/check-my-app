@@ -212,6 +212,8 @@ export const REVIEW_SELECT = {
           unverifiedReason: true,
           networkLog: true,
           actions: true,
+          // CHE-393: who was seen hitting a finding, as the walk recorded it.
+          signedIn: true,
         },
       },
     },

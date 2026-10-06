@@ -114,6 +114,10 @@ export interface RecurrenceJourney {
   // stepFill). Absent from a caller that has no actions: the audience is then
   // unknown.
   fills?: StepFill[];
+  // CHE-393: what each step recorded about being signed in, in the same order
+  // (Step.signedIn; null on rows before the column). Absent from a caller that
+  // did not load it: the fills decide.
+  signedIn?: Array<boolean | null>;
 }
 
 export interface RecurrenceRun {
@@ -398,7 +402,11 @@ export function recurrence(
 // step, or a journey whose fills nobody loaded, is unknown — never a guess.
 function audienceOfSighting(s: Sighting): Audience {
   if (!s.journey || s.stepIndex === null || !s.journey.fills) return "unknown";
-  const steps = s.journey.steps.map((status, i) => ({ status, fill: s.journey!.fills![i] ?? ("unrecorded" as const) }));
+  const steps = s.journey.steps.map((status, i) => ({
+    status,
+    fill: s.journey!.fills![i] ?? ("unrecorded" as const),
+    signedIn: s.journey!.signedIn?.[i] ?? null,
+  }));
   return audienceOf(steps, s.stepIndex);
 }
 
@@ -476,11 +484,13 @@ async function teamHistory(db: PrismaClient, teamId: string, only?: string): Pro
     // The step's actions reduced to one word in the database (stepFill's three
     // answers — src/lib/audience.ts): a team's history is thousands of steps,
     // and the recorded actions of each are the heaviest column on the row.
-    db.$queryRaw<{ journeyId: string; status: string; fill: StepFill }[]>(
+    // CHE-393: and the recorded fact beside it (0/1/NULL from SQLite).
+    db.$queryRaw<{ journeyId: string; status: string; fill: StepFill; signedIn: number | boolean | null }[]>(
       Prisma.sql`SELECT s.journeyId, s.status,
           CASE WHEN s.actions IS NULL THEN 'unrecorded'
                WHEN instr(s.actions, '{{TEST_EMAIL') > 0 OR instr(s.actions, '{{TEST_PASSWORD') > 0 THEN 'credential'
-               ELSE 'none' END AS fill
+               ELSE 'none' END AS fill,
+          s.signedIn
         FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
         WHERE ${finishedChecksOf(teamRows(teamId), only)} ORDER BY s.journeyId, s."order"`,
     ),
@@ -494,8 +504,14 @@ async function teamHistory(db: PrismaClient, teamId: string, only?: string): Pro
     if (list) list.push(v);
     else m.set(k, [v]);
   };
-  const stepsOf = new Map<string, Array<{ status: string; fill: StepFill }>>();
-  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status, fill: s.fill });
+  const stepsOf = new Map<string, Array<{ status: string; fill: StepFill; signedIn: boolean | null }>>();
+  for (const s of steps) {
+    push(stepsOf, s.journeyId, {
+      status: s.status,
+      fill: s.fill,
+      signedIn: s.signedIn === null || s.signedIn === undefined ? null : Boolean(s.signedIn),
+    });
+  }
   const journeysOf = new Map<string, HistoryRun["journeys"]>();
   for (const j of journeys) push(journeysOf, j.runId, { ...j, steps: stepsOf.get(j.id) ?? [] });
   const findingsOf = new Map<string, RecurrenceFinding[]>();
@@ -658,7 +674,8 @@ export interface RecurrenceRunRow {
     carriedFromRunId: string | null;
     // `fill` when the caller has the step's actions (the team loader above);
     // a row without it answers "unknown" for who hit the problem.
-    steps: Array<{ status: string; fill?: StepFill }>;
+    // CHE-393: `signedIn` beside it when the caller loaded the column.
+    steps: Array<{ status: string; fill?: StepFill; signedIn?: boolean | null }>;
   }>;
   findings: RecurrenceFinding[];
 }
@@ -671,6 +688,7 @@ export function toRecurrenceRun(run: RecurrenceRunRow): RecurrenceRun {
       carried: j.carriedFromRunId !== null,
       steps: j.steps.map((s) => s.status),
       ...(j.steps.every((s) => s.fill !== undefined) ? { fills: j.steps.map((s) => s.fill!) } : {}),
+      ...(j.steps.some((s) => s.signedIn !== undefined) ? { signedIn: j.steps.map((s) => s.signedIn ?? null) } : {}),
     })),
     findings: run.findings,
   };

@@ -512,6 +512,44 @@ export interface ReportedStep {
   // product's own 5xx/exception beside the refusal keeps its status). The walk
   // reads it to gate its summary.
   selfCheckGuardSeen?: boolean;
+  // CHE-393: whether the step ran signed in — written by report_step from
+  // where the walk stands (signedInNow), never by the model. Null only on a
+  // bare ToolEnv with no page to read.
+  signedIn?: boolean | null;
+}
+
+// CHE-393: is the walk signed in, right now? Read from where it stands, not
+// inferred later from a placeholder in the trail (src/lib/audience.ts was that
+// inference, and it read a carried session as a visitor and a failed sign-in
+// as signed in):
+//   - a person's signed-in session (session-browser.ts) — always;
+//   - a test account this journey signed in as, unless that account was turned
+//     away (CHE-100 records the rejection; each journey runs in a fresh
+//     context, so the fill belongs to this journey);
+//   - a sign-out control on the page — a session the browser carried in, a
+//     magic link, SSO: the page says so even when we typed no credential.
+// The page is asked for the names of its pressable things only; the words are
+// judged here with the same rule the sign-out gate uses (isSignOutText).
+export async function signedInNow(env: Pick<ToolEnv, "page" | "activeAccount" | "credentials">): Promise<boolean> {
+  if (inSignedInSession(env.page)) return true;
+  if (env.activeAccount && !accountRejected(env.credentials, env.activeAccount)) return true;
+  try {
+    const names = await env.page.evaluate(() => {
+      const out: string[] = [];
+      const nodes = document.querySelectorAll('a[href], button, [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]');
+      for (const el of Array.from(nodes).slice(0, 400)) {
+        const h = el as HTMLElement;
+        const text = `${h.innerText ?? h.textContent ?? ""} ${h.getAttribute("aria-label") ?? ""} ${h.getAttribute("title") ?? ""} ${(h as HTMLInputElement).value ?? ""}`;
+        out.push(text.replace(/\s+/g, " ").trim().slice(0, 80));
+        if (el instanceof HTMLAnchorElement) out.push(el.getAttribute("href") ?? "");
+      }
+      return out;
+    });
+    return names.some((n) => isSignOutText(n) || (n.startsWith("/") || n.startsWith("http") ? isSignOutAddress(n, env.page.url()) : false));
+  } catch {
+    // A page mid-navigation, or one that is gone: nothing says signed in.
+    return false;
+  }
 }
 
 export const BROWSER_TOOLS: Anthropic.Tool[] = [
@@ -819,6 +857,8 @@ async function executeToolUnscrubbed(
         // CHE-190 after both: a risky step is never judged (CHE-169) and never
         // classified above, so a link we could not reach had no gate at all.
         coerceUnreachable(step, env);
+        // CHE-393: where the walk stands, read now — never the model's word.
+        step.signedIn = await signedInNow(env);
         // CHE-180: the step leaves here with the model's words intact — the
         // judge (CHE-169) rules on them. productizeStep runs in the walk's
         // onReportStep, after the judge and before the row is written.

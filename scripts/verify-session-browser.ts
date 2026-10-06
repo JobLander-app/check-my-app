@@ -364,6 +364,20 @@ async function main() {
       try {
         const ordinaryScan = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, own as unknown as Browser, { targetUrl: `${SITE}/expired`, id: RUN_B, storePasswordEnc: null });
         check("surfaceScan: outside a signed-in session a redirect to another host is not 'signed out'", ordinaryScan.signedOut === null && ordinaryScan.status === 200, JSON.stringify({ signedOut: ordinaryScan.signedOut, status: ordinaryScan.status }));
+        // CHE-393: where an ordinary walk stands, read from the page and from
+        // the account it signed in as — the fact Step.signedIn is written from.
+        const { signedInNow } = await import("@/agent/tools");
+        const plain = await own.newPage();
+        await plain.goto(`${SITE}/admin/menu`);
+        const fromPage = await signedInNow({ page: plain, credentials: { rejected: false } } as unknown as ToolEnv);
+        await plain.goto(`${SITE}/admin`);
+        const noSign = await signedInNow({ page: plain, credentials: { rejected: false } } as unknown as ToolEnv);
+        const asAccount = await signedInNow({ page: plain, activeAccount: "default", credentials: { rejected: false } } as unknown as ToolEnv);
+        const turnedAway = await signedInNow({ page: plain, activeAccount: "default", credentials: { rejected: true } } as unknown as ToolEnv);
+        check("signedInNow: a page with a sign-out control is signed in; one without, and no account filled, is not; an account filled is — unless it was turned away",
+          fromPage === true && noSign === false && asAccount === true && turnedAway === false,
+          JSON.stringify({ fromPage, noSign, asAccount, turnedAway }));
+        await plain.close();
       } finally {
         await own.close();
       }
@@ -454,6 +468,9 @@ async function main() {
       reported[0]?.status === "skipped" && reported[0]?.unverifiedReason === "not_applicable" && reported[0]?.observed === SELF_CHECK_REFUSED_OBSERVED, JSON.stringify(reported[0]));
     await executeTool(toolEnv, "report_step", { label: "Read the rules", status: "confusing", attempted: "Read the list", observed: "Two rules have the same name." });
     check("…and it is spent on that step: the next one is the walk's own", reported[1]?.status === "confusing" && reported[1]?.observed === "Two rules have the same name.", JSON.stringify(reported[1]));
+    // CHE-393: inside a person's session every step is reported signed in —
+    // written by the tool, whatever the model sent (here: nothing).
+    check("a step reported inside the session carries signedIn = true, written by the tool", reported[0]?.signedIn === true && reported[1]?.signedIn === true, JSON.stringify([reported[0]?.signedIn, reported[1]?.signedIn]));
     // What only reads is still pressed, on the same page.
     const tab = await executeTool(toolEnv, "click", { selector: "#tab" });
     const view = await executeTool(toolEnv, "click", { role: "button", name: "View details" });

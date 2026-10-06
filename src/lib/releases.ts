@@ -44,6 +44,8 @@ export type { Audience } from "@/lib/audience";
 interface StepInput {
   status: string;
   actions: string | null;
+  // CHE-393: the recorded fact; absent or null on rows before the column.
+  signedIn?: boolean | null;
 }
 
 export interface ReleaseRunInput {
@@ -262,7 +264,7 @@ function delta(previous: ReleaseRunInput, current: ReleaseRunInput): NonNullable
 
 function summarise(d: Release["delta"]): Release["summary"] {
   const zero = (): Counts => ({ broke: 0, fixed: 0, unchanged: 0, notCompared: 0 });
-  const s: Release["summary"] = { existing_users: zero(), new_visitors: zero(), unknown: zero() };
+  const s: Release["summary"] = { seen_signed_in: zero(), seen_as_visitor: zero(), unknown: zero() };
   if (!d) return s;
   for (const key of ["broke", "fixed", "unchanged", "notCompared"] as const) {
     for (const i of d[key]) s[i.audience][key]++;
@@ -343,8 +345,9 @@ export async function releasesByTeam(
       Prisma.sql`SELECT j.id, j.runId, j.appJourneyId, j.journeyKey, j.title, j.carriedFromRunId, j.status
         FROM "Journey" j JOIN "Run" r ON r.id = j.runId WHERE ${releaseChecksOf(teamRows(teamId))} ORDER BY j.runId, j."order"`,
     ),
-    db.$queryRaw<{ journeyId: string; status: string; actions: string | null }[]>(
-      Prisma.sql`SELECT s.journeyId, s.status, s.actions
+    // CHE-393: signedIn comes back from SQLite as 0/1/NULL, never a boolean.
+    db.$queryRaw<{ journeyId: string; status: string; actions: string | null; signedIn: number | boolean | null }[]>(
+      Prisma.sql`SELECT s.journeyId, s.status, s.actions, s.signedIn
         FROM "Step" s JOIN "Journey" j ON j.id = s.journeyId JOIN "Run" r ON r.id = j.runId
         WHERE ${releaseChecksOf(teamRows(teamId))} ORDER BY s.journeyId, s."order"`,
     ),
@@ -359,7 +362,13 @@ export async function releasesByTeam(
     else m.set(k, [v]);
   };
   const stepsOf = new Map<string, StepInput[]>();
-  for (const s of steps) push(stepsOf, s.journeyId, { status: s.status, actions: s.actions });
+  for (const s of steps) {
+    push(stepsOf, s.journeyId, {
+      status: s.status,
+      actions: s.actions,
+      signedIn: s.signedIn === null || s.signedIn === undefined ? null : Boolean(s.signedIn),
+    });
+  }
   const journeysOf = new Map<string, ReleaseRow["journeys"]>();
   for (const { id, runId, ...j } of journeys) push(journeysOf, runId, { ...j, steps: stepsOf.get(id) ?? [] });
   const findingsOf = new Map<string, RecurrenceFinding[]>();

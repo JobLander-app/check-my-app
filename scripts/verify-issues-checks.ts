@@ -96,11 +96,11 @@ eq("order: what is gone or ruled not a bug sits below everything still there, ho
 
 // The priority of a row, from what recurrence recorded of the latest sighting (src/lib/issue-priority.ts has the rule itself).
 const pri = (o: Partial<Parameters<typeof issuePriorityOf>[0]>) => issuePriorityOf({ category: "broken", severity: "high", where: "/", timesSeen: 1, audience: "unknown", ...o });
-eq("a row: broken for existing users at the checkout → P0", pri({ where: "/checkout → Pay", audience: "existing_users" }), "P0");
+eq("a row: broken for existing users at the checkout → P0", pri({ where: "/checkout → Pay", audience: "seen_signed_in" }), "P0");
 eq("a row: the same place, who hit it unknown → P1 (unknown is never promoted)", pri({ where: "/checkout → Pay" }), "P1");
 eq("a row: broken three checks in a row, anywhere → P0", pri({ where: "/about", timesSeen: 3 }), "P0");
 eq("a row: polish seen ten times → P3", pri({ category: "polish", severity: "low", timesSeen: 10 }), "P3");
-eq("a row: confusing for new visitors → P2", pri({ category: "confusing", severity: "medium", audience: "new_visitors" }), "P2");
+eq("a row: confusing for new visitors → P2", pri({ category: "confusing", severity: "medium", audience: "seen_as_visitor" }), "P2");
 eq("a row: confusing once, for whom unknown → P3", pri({ category: "confusing", severity: "medium" }), "P3");
 eq("a row: confusing that keeps coming back → P2", pri({ category: "confusing", severity: "medium", timesSeen: 2 }), "P2");
 eq("priority filter: a level", priorityFilter("P1"), "P1");

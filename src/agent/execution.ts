@@ -261,6 +261,9 @@ export async function walkOneJourney(args: {
         // time (a control our hands could not drive) is evidence, not a guess.
         // Captured before adjudication, which may hand back a different object.
         const machineClass = reported.gapClass;
+        // CHE-393: the same — read at report time by the tool, kept past the
+        // judge, written to the row.
+        const signedIn = reported.signedIn ?? null;
         // CHE-169: a negative step gets its second opinion BEFORE anything is
         // written — the status that lands in the row is the adjudicated one.
         // With the judge off this returns the step untouched.
@@ -320,6 +323,7 @@ export async function walkOneJourney(args: {
             unverifiedReason: step.unverifiedReason ?? null,
             gapClass: step.gapClass ?? null,
             actions: trail.length ? JSON.stringify(trail) : null,
+            signedIn,
             screenshotUrl: lastScreenshot?.storageUrl ?? null,
             evidence: lastScreenshot
               ? { create: [{ type: "screenshot", ...lastScreenshot }] }
