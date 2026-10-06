@@ -156,6 +156,10 @@ async function main() {
   if (dry) line.dry = true;
   if (!dry) await appendFile(LOG, JSON.stringify(line) + "\n").catch(() => {});
   console.log(JSON.stringify(line));
+  // A failure is a failed run, so session-door.service tries again (Restart=
+  // on-failure, a few times) instead of spending the viewer's connect on it
+  // (Codex on #283). "A check holds the browser" is not a failure.
+  if (line.error) process.exitCode = 1;
 }
 
 // Self-test of the rule: node door.mjs --self-test

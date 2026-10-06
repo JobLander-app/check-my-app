@@ -1,6 +1,10 @@
 [Unit]
 Description=One live tab for the person signing in: fresh sign-in form, no stale or duplicate tabs (CHE-419)
 After=session-chrome.service session-server.service
+# A failed tidy (DevTools or the session server briefly unreachable) is tried
+# again a few times rather than spending the viewer's connect on it.
+StartLimitIntervalSec=120
+StartLimitBurst=4
 
 [Service]
 Type=oneshot
@@ -9,4 +13,6 @@ Type=oneshot
 User=session-host
 EnvironmentFile=/etc/session-host/server.env
 ExecStart=/usr/bin/node /opt/session-host/probe/door.mjs
+Restart=on-failure
+RestartSec=5
 TimeoutStartSec=60

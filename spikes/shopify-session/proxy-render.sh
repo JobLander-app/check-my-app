@@ -86,6 +86,15 @@ CONF
 chmod 0600 /etc/tinyproxy/tinyproxy.conf
 printf 'CHROME_PROXY_ARGS=--proxy-server=http://127.0.0.1:3128\n' >/etc/session-host/proxy.env
 chmod 0644 /etc/session-host/proxy.env
-systemctl restart tinyproxy
+# A forwarder that did not start, or starts and forwards nothing, is a failed
+# render (Codex on #283): Chrome would otherwise come up pointing at a dead
+# port. Observed through the forwarder itself, not assumed from the unit.
+# tinyproxy binds its port a moment after systemd reports it started (the first
+# version of this check ran in that moment and failed a healthy forwarder), so
+# the port is given up to 15 s before the request through it.
+systemctl restart tinyproxy || { echo "[proxy-render] FAIL: tinyproxy did not start (journalctl -u tinyproxy)" >&2; exit 1; }
+for _ in $(seq 1 15); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 1; done
+curl -fsS -m 20 -o /dev/null --proxy http://127.0.0.1:3128 https://www.gstatic.com/generate_204 \
+  || { echo "[proxy-render] FAIL: tinyproxy runs but nothing comes back through it (upstream ${rest##*@})" >&2; exit 1; }
 echo "[proxy-render] upstream ${rest##*@}; chrome goes through 127.0.0.1:3128"
 restart_chrome_if_mode_changed
