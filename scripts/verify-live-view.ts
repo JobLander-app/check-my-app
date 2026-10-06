@@ -157,7 +157,9 @@ const site = http.createServer(async (req, res) => {
     res.end(`<!doctype html><meta charset="utf-8"><title>flash</title><script>setTimeout(() => location.replace('/admin'), 300)</script>`);
   } else if (url.pathname === "/popup") {
     res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(`<!doctype html><title>pop-up</title><button id="close" style="position:absolute;left:0;top:0;width:200px;height:40px" onclick="window.close()">close</button>`);
+    // Closes on the press, so the release that follows goes to a tab that is
+    // gone — a command nobody answers (what raced on CI, made certain here).
+    res.end(`<!doctype html><title>pop-up</title><button id="close" style="position:absolute;left:0;top:0;width:200px;height:40px" onmousedown="window.close()">close</button>`);
   } else if (url.pathname === "/done") {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!doctype html><meta charset="utf-8"><title>done</title><p id="email">${url.searchParams.get("email")?.replace(/[<>&]/g, "") ?? ""}</p>`);
