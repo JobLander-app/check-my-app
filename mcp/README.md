@@ -64,7 +64,7 @@ and on Team and Enterprise plans an admin must enable channels
 
 ```bash
 claude mcp add checkmyapp-watch -e CHECKMYAPP_API_KEY=cma_xxxxxxxx \
-  -- npx -y https://checkmyapp.dev/mcp/checkmyapp-watch-1.0.0.tgz
+  -- npx -y https://checkmyapp.dev/mcp/checkmyapp-watch-1.0.1.tgz
 claude --dangerously-load-development-channels server:checkmyapp-watch
 ```
 
