@@ -513,42 +513,53 @@ export interface ReportedStep {
   // reads it to gate its summary.
   selfCheckGuardSeen?: boolean;
   // CHE-393: whether the step ran signed in — written by report_step from
-  // where the walk stands (signedInNow), never by the model. Null only on a
-  // bare ToolEnv with no page to read.
+  // where the walk stands (signedInNow), never by the model. Null when the
+  // page gives no evidence either way; the readers then fall back to the
+  // inference from the trail.
   signedIn?: boolean | null;
 }
 
-// CHE-393: is the walk signed in, right now? Read from where it stands, not
-// inferred later from a placeholder in the trail (src/lib/audience.ts was that
-// inference, and it read a carried session as a visitor and a failed sign-in
-// as signed in):
-//   - a person's signed-in session (session-browser.ts) — always;
-//   - a test account this journey signed in as, unless that account was turned
-//     away (CHE-100 records the rejection; each journey runs in a fresh
-//     context, so the fill belongs to this journey);
-//   - a sign-out control on the page — a session the browser carried in, a
-//     magic link, SSO: the page says so even when we typed no credential.
+// CHE-393: is the walk signed in, right now? A fact only where there is
+// positive evidence; null where there is none, and the readers fall back to
+// the inference from the trail (src/lib/audience.ts) — which is weaker, and
+// says so by giving way to this when it is written (Codex on #280: a
+// credential the fill tool was handed is not a sign-in; the fill may have been
+// refused, the account turned away, the step skipped).
+//   true  — a person's signed-in session (session-browser.ts), or a sign-out
+//           control / address on the page: a session the browser carried in, a
+//           magic link, SSO all show one even when we typed no credential;
+//   false — no sign-out anywhere and a sign-in control on the page: the page
+//           is offering to sign us in, so we are not;
+//   null  — neither; a page with its account menu folded away says nothing.
 // The page is asked for the names of its pressable things only; the words are
-// judged here with the same rule the sign-out gate uses (isSignOutText).
-export async function signedInNow(env: Pick<ToolEnv, "page" | "activeAccount" | "credentials">): Promise<boolean> {
+// judged here with the rules the sign-out gate uses (isSignOutText,
+// isSignOutAddress), and a question ("How do I log out?") is not a sign-out
+// (hands-off.ts asksQuestion — the same distinction the click gate draws).
+const SIGN_IN_CONTROL = /\b(log ?in|sign ?in|log ?on|sign ?on)\b/i;
+
+export async function signedInNow(env: Pick<ToolEnv, "page">): Promise<boolean | null> {
   if (inSignedInSession(env.page)) return true;
-  if (env.activeAccount && !accountRejected(env.credentials, env.activeAccount)) return true;
   try {
     const names = await env.page.evaluate(() => {
-      const out: string[] = [];
+      const out: Array<{ text: string; href: string | null }> = [];
       const nodes = document.querySelectorAll('a[href], button, [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]');
       for (const el of Array.from(nodes).slice(0, 400)) {
         const h = el as HTMLElement;
         const text = `${h.innerText ?? h.textContent ?? ""} ${h.getAttribute("aria-label") ?? ""} ${h.getAttribute("title") ?? ""} ${(h as HTMLInputElement).value ?? ""}`;
-        out.push(text.replace(/\s+/g, " ").trim().slice(0, 80));
-        if (el instanceof HTMLAnchorElement) out.push(el.getAttribute("href") ?? "");
+        out.push({ text: text.replace(/\s+/g, " ").trim().slice(0, 80), href: el instanceof HTMLAnchorElement ? el.getAttribute("href") : null });
       }
       return out;
     });
-    return names.some((n) => isSignOutText(n) || (n.startsWith("/") || n.startsWith("http") ? isSignOutAddress(n, env.page.url()) : false));
+    const here = env.page.url();
+    const signsOut = names.some(
+      (n) => (!asksQuestion(n.text) && isSignOutText(n.text)) || (n.href !== null && n.href !== "" && isSignOutAddress(n.href, here)),
+    );
+    if (signsOut) return true;
+    const offersSignIn = names.some((n) => !asksQuestion(n.text) && SIGN_IN_CONTROL.test(n.text));
+    return offersSignIn ? false : null;
   } catch {
-    // A page mid-navigation, or one that is gone: nothing says signed in.
-    return false;
+    // A page mid-navigation, or one that is gone: nothing can be said.
+    return null;
   }
 }
 

@@ -366,17 +366,24 @@ async function main() {
         check("surfaceScan: outside a signed-in session a redirect to another host is not 'signed out'", ordinaryScan.signedOut === null && ordinaryScan.status === 200, JSON.stringify({ signedOut: ordinaryScan.signedOut, status: ordinaryScan.status }));
         // CHE-393: where an ordinary walk stands, read from the page and from
         // the account it signed in as — the fact Step.signedIn is written from.
+        // Positive evidence only (Codex on #280): a sign-out control → true, a
+        // sign-in control and no sign-out → false, neither → null (the readers
+        // fall back to the trail); a question about signing out is neither.
         const { signedInNow } = await import("@/agent/tools");
         const plain = await own.newPage();
         await plain.goto(`${SITE}/admin/menu`);
-        const fromPage = await signedInNow({ page: plain, credentials: { rejected: false } } as unknown as ToolEnv);
+        const fromPage = await signedInNow({ page: plain } as unknown as ToolEnv);
         await plain.goto(`${SITE}/admin`);
-        const noSign = await signedInNow({ page: plain, credentials: { rejected: false } } as unknown as ToolEnv);
-        const asAccount = await signedInNow({ page: plain, activeAccount: "default", credentials: { rejected: false } } as unknown as ToolEnv);
-        const turnedAway = await signedInNow({ page: plain, activeAccount: "default", credentials: { rejected: true } } as unknown as ToolEnv);
-        check("signedInNow: a page with a sign-out control is signed in; one without, and no account filled, is not; an account filled is — unless it was turned away",
-          fromPage === true && noSign === false && asAccount === true && turnedAway === false,
-          JSON.stringify({ fromPage, noSign, asAccount, turnedAway }));
+        const saysNothing = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<nav><a href="/login">Log in</a> <a href="/pricing">Pricing</a></nav>');
+        const offersSignIn = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<a href="/login">Log in</a> <button>How do I log out?</button>');
+        const faq = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<a href="/login">Log in</a> <a href="/account/logout">Leave</a>');
+        const byAddress = await signedInNow({ page: plain } as unknown as ToolEnv);
+        check("signedInNow: a sign-out control → true; a sign-in control and no sign-out → false; neither → null; \"How do I log out?\" is a question, not a sign-out; a link to a sign-out address counts whatever it is called",
+          fromPage === true && saysNothing === null && offersSignIn === false && faq === false && byAddress === true,
+          JSON.stringify({ fromPage, saysNothing, offersSignIn, faq, byAddress }));
         await plain.close();
       } finally {
         await own.close();

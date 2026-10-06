@@ -11,12 +11,14 @@
 //
 // Two sources, the fact first (CHE-393):
 //   Step.signedIn — written by the walk when the step was reported, from where
-//                   it stood: a person's signed-in session, a test account it
-//                   signed in as and was not turned away, a sign-out control on
-//                   the page (src/agent/tools.ts signedInNow). A session the
-//                   browser carried in, a magic link, SSO all read as signed in
-//                   here, where the inference below reads them as a visitor.
-//   the inference — for rows written before the column (signedIn null): each
+//                   it stood, and only on positive evidence: a person's
+//                   signed-in session or a sign-out control on the page → true;
+//                   a sign-in control and no sign-out → false; otherwise null
+//                   (src/agent/tools.ts signedInNow). A session the browser
+//                   carried in, a magic link, SSO all read as signed in here,
+//                   where the inference below reads them as a visitor.
+//   the inference — for rows the walk could not decide (signedIn null), and
+//                   rows written before the column: each
 //                   journey runs in a fresh browser (src/agent/workflow.ts), so a
 //                   session is signed in only if this journey filled a test
 //                   credential, and the walk records that fill as the
