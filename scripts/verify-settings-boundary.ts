@@ -112,6 +112,8 @@ const PER_APP_MARKERS = [
   "posthogProjectId",
   "setTrackerTeam",
   "updateAppSettings",
+  // CHE-369: the app's GitHub repository is the app's own setting.
+  "setAppGitHubRepo",
 ];
 for (const [label, source] of [["team", teamSource], ["personal", accountSource]] as const) {
   const found = PER_APP_MARKERS.filter((m) => source.includes(m));
