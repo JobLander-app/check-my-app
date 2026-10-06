@@ -42,7 +42,12 @@ function reduce(state: State, action: Action): State {
       return { ...state, dialog: action.dialog };
     case "closed":
       // Signed in stays signed in: the socket closing after that is not news.
-      return state.status.kind === "signed_in" ? state : { ...state, status: { kind: "closed", message: action.message } };
+      // And the first reason wins: the host says why (busy, idle…) and then
+      // closes the socket, whose generic "connection ended" must not replace
+      // it (Codex on #287).
+      return state.status.kind === "signed_in" || state.status.kind === "closed"
+        ? state
+        : { ...state, status: { kind: "closed", message: action.message } };
   }
 }
 
@@ -196,17 +201,17 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
         )}
         {status.kind === "closed" && <span>{status.message}</span>}
         <span className="flex gap-2">
-          <button type="button" className="rounded border border-ink-700 px-2 py-1 text-[13px] hover:text-accent" onClick={() => say({ t: "nav", action: "back" })}>Back</button>
-          <button type="button" className="rounded border border-ink-700 px-2 py-1 text-[13px] hover:text-accent" onClick={() => say({ t: "nav", action: "reload" })}>Reload</button>
+          <button type="button" className="rounded border border-ink-700 px-2 py-1 text-[13px] hover:text-accent" onClick={() => say({ t: "nav", action: "back" })}>{SIGN_IN_COPY.back}</button>
+          <button type="button" className="rounded border border-ink-700 px-2 py-1 text-[13px] hover:text-accent" onClick={() => say({ t: "nav", action: "reload" })}>{SIGN_IN_COPY.reload}</button>
         </span>
       </div>
       {dialog && (
         <div className="mb-3 flex items-center justify-between gap-4 rounded border border-ink-700 p-3 text-sm">
           <span>{dialog.message}</span>
           <span className="flex gap-2">
-            <button type="button" className="rounded border border-ink-700 px-2 py-1" onClick={() => { say({ t: "dialog", accept: true }); dispatch({ t: "dialog", dialog: null }); }}>OK</button>
+            <button type="button" className="rounded border border-ink-700 px-2 py-1" onClick={() => { say({ t: "dialog", accept: true }); dispatch({ t: "dialog", dialog: null }); }}>{SIGN_IN_COPY.ok}</button>
             {dialog.kind !== "alert" && (
-              <button type="button" className="rounded border border-ink-700 px-2 py-1" onClick={() => { say({ t: "dialog", accept: false }); dispatch({ t: "dialog", dialog: null }); }}>Cancel</button>
+              <button type="button" className="rounded border border-ink-700 px-2 py-1" onClick={() => { say({ t: "dialog", accept: false }); dispatch({ t: "dialog", dialog: null }); }}>{SIGN_IN_COPY.cancel}</button>
             )}
           </span>
         </div>

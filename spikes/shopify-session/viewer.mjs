@@ -295,18 +295,27 @@ export async function startViewer({
     // answers it with the sign-in page, so seeing it once proves nothing — the
     // person would be told "signed in" and close the page. Signed in is THIS
     // store's admin still loaded, and loaded completely, a few seconds later.
+    //
+    // An admin that is still loading is looked at again (Codex on #287: load
+    // completion fires no navigation, so one look at a slow admin left the
+    // person on the sign-in instructions for good) — for as long as the
+    // address stays this store's admin, up to two minutes.
     let confirming = false;
     async function confirmSignedIn() {
       confirming = true;
       try {
-        await new Promise((resolve) => setTimeout(resolve, signedInSettleMs));
-        const shown = top();
-        if (!shown || ended) return;
-        const { result } = await send("Runtime.evaluate", { expression: "[location.href, document.readyState]", returnByValue: true }, shown.sessionId).catch(() => ({ result: {} }));
-        const [href, ready] = Array.isArray(result?.value) ? result.value : [];
-        if (ready === "complete" && signedIn(href, store) && !signedInSent) {
-          signedInSent = true;
-          out({ t: "signed_in", store });
+        for (let look = 0; look < Math.ceil(120_000 / signedInSettleMs); look++) {
+          await new Promise((resolve) => setTimeout(resolve, signedInSettleMs));
+          const shown = top();
+          if (!shown || ended || signedInSent) return;
+          const { result } = await send("Runtime.evaluate", { expression: "[location.href, document.readyState]", returnByValue: true }, shown.sessionId).catch(() => ({ result: {} }));
+          const [href, ready] = Array.isArray(result?.value) ? result.value : [];
+          if (typeof href !== "string" || !signedIn(href, store)) return;
+          if (ready === "complete") {
+            signedInSent = true;
+            out({ t: "signed_in", store });
+            return;
+          }
         }
       } finally {
         confirming = false;
@@ -415,6 +424,12 @@ export async function startViewer({
           const back = top();
           void send("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: 1600, maxHeight: 1200, everyNthFrame: 1 }, back.sessionId).catch(() => {});
           void send("Target.activateTarget", { targetId: back.targetId }).catch(() => {});
+          // Where the tab is now: a "sign in with …" window often moves its
+          // opener to the admin before it closes, and that navigation was not
+          // the shown tab's while the window was on top (Codex on #287).
+          void send("Runtime.evaluate", { expression: "location.href", returnByValue: true }, back.sessionId)
+            .then(({ result }) => { if (typeof result?.value === "string") page(result.value); })
+            .catch(() => {});
         }
       }
     }

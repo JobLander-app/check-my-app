@@ -353,8 +353,12 @@ await check("a pop-up the tab opens is shown while it is open, then the tab agai
   const before = v.seen.messages.filter((m) => m.t === "page" && m.path === "/admin").length;
   const popup = await waitFor(() => fixtureTab("/popup"), "the pop-up tab");
   await waitFor(async () => (await evaluate(popup, "document.readyState")) === "complete", "the pop-up loaded");
+  const pagesBefore = v.seen.messages.filter((m) => m.t === "page").length;
   v.click(100, 20);
   await waitFor(async () => !(await fixtureTab("/popup")), "the pop-up closed");
+  // The tab it returns to is read again and named (a sign-in window may have
+  // moved it on) — and only then does input go to it.
+  await v.until(() => v.seen.messages.slice(pagesBefore).some((m) => m.t === "page" && m.path === "/admin"), "the tab named again after the pop-up");
   // Back on the tab: input reaches it again.
   const tab = await fixtureTab("/admin");
   v.click(150, 20);

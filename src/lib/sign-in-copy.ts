@@ -18,6 +18,10 @@ export const SIGN_IN_COPY = {
   signedIn: (store: string) => `Signed in to ${store}. Checks of this app will open it from your admin. You can close this page —`,
   backToApp: "back to the app",
   connectionEnded: "The connection ended. Reload this page to continue.",
+  back: "Back",
+  reload: "Reload",
+  ok: "OK",
+  cancel: "Cancel",
 } as const;
 
 export type SignInErrorCode = "busy" | "idle" | "failed" | "closed";
@@ -44,6 +48,10 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.signedIn(store),
     SIGN_IN_COPY.backToApp,
     SIGN_IN_COPY.connectionEnded,
+    SIGN_IN_COPY.back,
+    SIGN_IN_COPY.reload,
+    SIGN_IN_COPY.ok,
+    SIGN_IN_COPY.cancel,
     ...Object.values(SIGN_IN_ERRORS),
   ];
 }
