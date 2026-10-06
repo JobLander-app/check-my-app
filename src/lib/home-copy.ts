@@ -3,11 +3,19 @@
 // Owner, 2026-10-06: the page used to be a form with a slogan and eight lines
 // of small grey caveats — it explained our mechanics and asked the visitor to
 // try before it said anything about them. It now says what the visitor is
-// afraid of and what they get, in the words the audience uses about itself
-// (Notion «Shopify app devs — исследование рынка», 2026-10-01: app review,
-// rejected, works on my dev store, fresh dev store, 404s, silently break,
-// merchants notified me). Nothing here describes how we check — the verdict
-// is the product and our machinery is invisible (CLAUDE.md §1).
+// afraid of and what they get. Nothing here describes how we check — the
+// verdict is the product and our machinery is invisible (CLAUDE.md §1).
+//
+// Positioning (owner, 2026-10-06, second pass — the first spoke Shopify:
+// «херня, а не сообщения… почему выскакивает store? shopify apps ещё не
+// готовы»): CheckMyApp is the QA a small team shipping a web app does not
+// have. It uses the app the way a new user would — once, after a release,
+// every day — and says what's broken, where, and how to know it's fixed, with
+// no tests to write. The pains are the research's (Notion «Shopify app devs —
+// исследование рынка», 2026-10-01) with the Shopify-only ones taken out: the
+// biggest pain there, App Review, needs a check inside a store's admin, which
+// the product does not do for customers yet. Until it does, no word of that
+// world is on this page (scripts/verify-home-copy.ts refuses them).
 //
 // Pure on purpose: no React, no imports with side effects, so
 // scripts/verify-home-copy.ts can run every string through the leak gates in
@@ -15,35 +23,38 @@
 // customer-facing source. A sentence that is not in this file is not on the
 // page.
 
-export type HeroVariant = { key: "reviewer" | "hear-first" | "not-you"; headline: string; line: string };
+export type HeroVariant = { key: "new-user" | "no-qa" | "before-users"; pain: string; headline: string; line: string };
 
-// Three first screens for the owner to compare (A/B is the mental model). One
-// phrase runs through all three — "someone who isn't you" — because every pain
-// in the research is that one: the reviewer, the merchant, the first visitor.
+// Three first screens for the owner to compare (A/B is the mental model).
+// Each opens on one of the pains below — `pain` names which — and all three
+// say the same promise in the line under it.
 export const HERO_VARIANTS: readonly HeroVariant[] = [
   {
-    key: "reviewer",
-    headline: "The reviewer opens your app on a fresh store. Does it work?",
+    key: "new-user",
+    pain: "It works for me",
+    headline: "Your app works for you. Does it work for a new user?",
     line:
-      "Before you submit, someone who isn't you walks your app the way the reviewer will — and tells you what breaks, where, and how to know it's fixed.",
+      "CheckMyApp uses your app the way someone who just found it would, and tells you what's broken, where, and how to know it's fixed. No tests to write.",
   },
   {
-    key: "hear-first",
-    headline: "Will you hear it broke before your customers do?",
+    key: "no-qa",
+    pain: "No QA, no time for tests",
+    headline: "The QA your team doesn't have.",
     line:
-      "Every day your app is checked again — its pages, their errors, and a walk through your journeys by someone who isn't you when something changed. What stopped answering since yesterday is in your inbox the same day.",
+      "Paste a link. CheckMyApp uses your app like a real user and tells you what's broken, where, and how to know it's fixed — no test scripts, no setup.",
   },
   {
-    key: "not-you",
-    headline: "Does your app still work for someone who isn't you?",
+    key: "before-users",
+    pain: "A user told us first",
+    headline: "Find what's broken before your users do.",
     line:
-      "Paste a link. Someone who isn't you opens it and clicks through — signs in too, if you hand over a test login — and you get a verdict: what's broken, where, and how to know it's fixed.",
+      "CheckMyApp uses your app like a real user — after a release, or every day — and tells you what broke, where, and how to know it's fixed. Nothing to write or maintain.",
   },
 ];
 
 // The one the page shows. Switched here and nowhere else once the owner has
 // compared the three on the preview.
-export const HERO: HeroVariant = HERO_VARIANTS[2];
+export const HERO: HeroVariant = HERO_VARIANTS[0];
 
 // One sentence by the button: the three things a visitor asks after deciding
 // to paste a link, not a wall under it. The counter is appended by the form
@@ -52,34 +63,43 @@ export const FORM_NOTE = "Free first run, no signup · anonymous checks are publ
 
 export type Pain = { fear: string; check: string; get: string };
 
-export const PAINS_LABEL = "What people come here afraid of";
+export const PAINS_LABEL = "Where it helps";
 
-// The four pains, by thread count in the research, each in the audience's own
-// words: the fear → what the check does → what you get. No feature list.
+// The four pains, each in the words people use for it: what they say → what
+// the check does → what they get. No feature list. From the research, with
+// what is Shopify's alone taken out (see the header):
+//   1. "works on my dev store, 404 for the reviewer" (~12 threads) and "the
+//      reviewer is a first user who sees an empty store" (~10) → it works for
+//      me, not for a newcomer;
+//   2. "platform changes silently break apps; merchants notified me" (5+) →
+//      a user told us first;
+//   3. "automated tests don't work: flaky, sessions, headed mode" (~20) and
+//      "QA intern" → no QA, no time for tests;
+//   4. "vibe-coded, scared to ship" (the MCP path) → shipping with an agent.
 export const PAINS: readonly Pain[] = [
   {
-    fear: "“Works on my dev store. 404 for the reviewer.”",
+    fear: "“It works for me.”",
     check:
-      "Before you submit, a first-time user opens your app with nothing but its link and the test login you would give the reviewer, and follows your testing instructions to the letter. An app that only opens inside a store's admin can't be reached this way yet; the check says so instead of guessing.",
-    get: "The 404 and the empty screen, found before the reviewer finds them — and no second round at the back of the queue.",
+      "You're signed in, your data is there, you know where to click. A new user has none of that. The check opens your app with just its link — and a test login for the signed-in part — and goes where a newcomer would.",
+    get: "The empty screen, the 404 and the button that does nothing, found before a new user finds them.",
   },
   {
-    fear: "“Will I hear about it before my merchants do?”",
+    fear: "“A user told us it was broken.”",
     check:
-      "Every day your app is checked again: do its pages still answer, do they throw errors — and when something changed, a walk through your journeys again, a few each time. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding the same day.",
-    get: "You hear it from the check, not from a merchant.",
+      "Every day, and after a release if you connect your CI or your coding agent, your app is checked again. When a page stops answering or something you didn't touch breaks, the finding arrives the same day.",
+    get: "You hear it from the check, not from a user.",
   },
   {
-    fear: "“I'm not writing and babysitting browser scripts myself.”",
+    fear: "“We don't have QA, and no time to write tests.”",
     check:
-      "You paste a link and, for the signed-in parts, a test login that signs in without a captcha or a code. What comes back is the verdict: broken or not, what, where, how to know it's gone.",
-    get: "No scripts to write, no sessions to keep alive, no flaky setup that breaks the week you need it.",
+      "There is nothing to write or keep alive. You paste a link; what comes back is a verdict in plain words — what's broken, where, why it matters, and how to know it's fixed.",
+    get: "A second pair of eyes on every release, without a test suite that breaks the week you need it.",
   },
   {
-    fear: "“I vibe-coded it. Can I ship it without the fear?”",
+    fear: "“I build with a coding agent and ship every day.”",
     check:
-      "Your coding agent connects to the check and runs one when you ask — after a release, before a submission. The verdict comes back into the same chat, with the fix for you to decide.",
-    get: "Ship, check, fix — without opening a dashboard, and without wondering what the first user will see.",
+      "Connect the agent once. Ask it to check after it ships, and the findings come back into the same chat — what broke, where, how to know it's fixed.",
+    get: "Ship, check, fix in one loop, without opening a dashboard.",
   },
 ];
 

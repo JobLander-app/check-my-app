@@ -77,6 +77,16 @@ for (const s of sentences) {
   check(`clean: “${s.slice(0, 60)}${s.length > 60 ? "…" : ""}”`, found.length === 0, found.join(", "));
 }
 
+// Owner, 2026-10-06: «почему выскакивает store? shopify apps ещё не готовы».
+// The product does not check an app inside a store's admin for customers yet
+// (CHE-333's 14 days, then a session host per customer — not before
+// 2026-10-19). Until then no word of that world is on the page. Remove a word
+// from this list only when that work is in prod.
+const NOT_YET = /\b(shopify|store|stores|merchants?|reviewer|app review|dev store|storefront|admin)\b/i;
+check("the gate flags the Shopify sentence the owner rejected", NOT_YET.test("The reviewer opens your app on a fresh store. Does it work?"));
+const notYet = sentences.filter((s) => NOT_YET.test(s));
+check("no Shopify-world word on the page until Shopify apps can be checked", notYet.length === 0, notYet.join(" | "));
+
 // ─── 2. The proof is a real check, and the link goes to it ──────────────────
 
 check("proof publicId has the database's shape", /^c[a-z0-9]{24}$/.test(PROOF.publicId), PROOF.publicId);
