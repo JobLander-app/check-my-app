@@ -5,7 +5,7 @@
 // cannot see route groups, so it asks this list. scripts/verify-app-shell.ts
 // holds the two to each other: every top-level folder of (app) is here, and
 // nothing here lacks its folder.
-export const APP_SHELL_PREFIXES = ["/home", "/health", "/release", "/product", "/settings"] as const;
+export const APP_SHELL_PREFIXES = ["/home", "/health", "/release", "/product", "/settings", "/connect"] as const;
 
 export function isAppShellPath(pathname: string): boolean {
   return APP_SHELL_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));

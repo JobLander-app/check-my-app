@@ -6,7 +6,7 @@ import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { OtherTeamApp } from "@/components/other-team-app";
 import { LiveSignIn } from "@/components/live-sign-in";
-import { VIEW_HOST, mintViewToken, storeOfAdminUrl } from "@/lib/session-view";
+import { VIEW_HOST, mintViewToken, shopifySlug, storeOfAdminUrl } from "@/lib/session-view";
 import { SIGN_IN_COPY } from "@/lib/sign-in-copy";
 
 // CHE-419: a person signs in to the Shopify store their app lives in, here,
@@ -44,7 +44,14 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
       <h1 className="mt-3 text-2xl font-semibold">{SIGN_IN_COPY.title(store)}</h1>
       <p className="mt-2 max-w-2xl text-sm text-fg-muted">{SIGN_IN_COPY.intro}</p>
       {token ? (
-        <LiveSignIn url={`${VIEW_HOST}?token=${encodeURIComponent(token)}`} store={store} appHref={appPath.page(app.id)} />
+        <LiveSignIn
+          url={`${VIEW_HOST}?token=${encodeURIComponent(token)}`}
+          store={store}
+          appHref={appPath.page(app.id)}
+          appId={app.id}
+          // A store connected but its app not chosen yet (connect/shopify).
+          choose={app.appSlug === shopifySlug(store)}
+        />
       ) : (
         <p className="mt-6 text-sm">{SIGN_IN_COPY.unavailable}</p>
       )}

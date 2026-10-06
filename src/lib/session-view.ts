@@ -28,6 +28,63 @@ export async function mintViewToken(
   return `${body}.${base64url(mac)}`;
 }
 
+const fromBase64url = (text: string) => Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+export interface Pick {
+  slot: string;
+  store: string;
+  handle: string;
+  name: string;
+  origin: string;
+}
+
+// What the host's viewer read for the person and signed (viewer.mjs signPick):
+// the chosen app's handle, name and the origin of its frame. Null for anything
+// not signed with our secret, expired, or not a pick.
+export async function verifyPick(secret: string, token: string, now = Date.now()): Promise<Pick | null> {
+  if (typeof token !== "string" || token.length > 4096) return null;
+  const [body, mac, extra] = token.split(".");
+  if (!body || !mac || extra !== undefined) return null;
+  try {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    const ok = await crypto.subtle.verify("HMAC", key, fromBase64url(mac), new TextEncoder().encode(body));
+    if (!ok) return null;
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64url(body)));
+    if (payload?.v !== VIEW_TOKEN_VERSION || payload.kind !== "pick") return null;
+    if (typeof payload.exp !== "number" || payload.exp * 1000 <= now) return null;
+    for (const field of ["slot", "store", "handle", "name", "origin"] as const) if (typeof payload[field] !== "string") return null;
+    if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(payload.handle)) return null;
+    return { slot: payload.slot, store: payload.store, handle: payload.handle, name: payload.name.slice(0, 80), origin: payload.origin };
+  } catch {
+    return null;
+  }
+}
+
+// What a person types as their store: "prod-release-1", "prod-release-1.myshopify.com",
+// "https://prod-release-1.myshopify.com/", or an admin address
+// "https://admin.shopify.com/store/prod-release-1/…". The handle, or null.
+export function parseStoreInput(raw: string): string | null {
+  const text = raw.trim().toLowerCase();
+  if (!text) return null;
+  const admin = storeOfAdminUrl(text.startsWith("http") ? text : `https://${text}`);
+  if (admin) return admin;
+  let host = text;
+  try {
+    host = new URL(text.startsWith("http") ? text : `https://${text}`).hostname;
+  } catch {
+    return null;
+  }
+  const handle = host.endsWith(".myshopify.com") ? host.slice(0, -".myshopify.com".length) : host.includes(".") ? null : host;
+  return handle && /^[a-z0-9][a-z0-9-]{0,62}$/.test(handle) ? handle : null;
+}
+
+export const shopifyAdminUrl = (store: string, handle?: string) =>
+  `https://admin.shopify.com/store/${store}${handle ? `/apps/${handle}` : ""}`;
+// One app per store and app handle, the way an extension is one app per id:
+// every Shopify app's address is on admin.shopify.com, so the host alone would
+// make a team's second Shopify app a duplicate of its first.
+export const shopifySlug = (store: string, handle?: string) => `shopify:${store}${handle ? `/${handle}` : ""}`;
+
 // The store handle of an app checked inside the Shopify admin, from its saved
 // address (https://admin.shopify.com/store/<handle>/apps/<app>), or null.
 export function storeOfAdminUrl(targetUrl: string): string | null {

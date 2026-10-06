@@ -31,10 +31,18 @@
 // Frames go out as binary WebSocket messages (JPEG bytes); everything else is
 // JSON:
 //   out: {t:"meta", w, h}  {t:"page", host, path}  {t:"signed_in", store}
-//        {t:"dialog", kind, message}  {t:"busy"}  {t:"error", message}
+//        {t:"dialog", kind, message}  {t:"error", message}
+//        {t:"apps", apps:[{handle, name}]}  {t:"picked", handle, origin, token} | {t:"picked", handle, error}
 //   in:  {t:"mouse", type, x, y, button, clickCount, deltaX, deltaY, modifiers}
 //        {t:"key", type, key, code, keyCode, text, modifiers, commands}
 //        {t:"text", text}  {t:"dialog", accept, promptText}  {t:"nav", action}
+//        {t:"apps"}  {t:"pick", handle}
+//
+// "apps" and "pick" are the onboarding's two questions, answered by the viewer
+// itself in a tab of its own beside the person's: which apps the store has
+// installed, and which origin the chosen one is served from inside the admin.
+// The answer to "pick" is signed (signPick), so the page that carries it back
+// to checkmyapp.dev cannot change what is saved.
 
 import http from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -143,6 +151,27 @@ export function translate(message) {
   if (message.t === "nav" && message.action === "back") return { method: "Runtime.evaluate", params: { expression: "history.back()" } };
   if (message.t === "nav" && message.action === "reload") return { method: "Page.reload", params: {} };
   return null;
+}
+
+// The installed apps, from the admin's own list (settings/apps): each link
+// carries the app's handle, its text the app's name. Measured on prod-release-1,
+// 2026-10-06: /store/<store>/settings/apps/app_installations/app/<handle>.
+export const APP_LINK = /\/apps\/app_installations\/app\/([a-z0-9][a-z0-9-]{0,99})(?:[/?#]|$)/;
+export function appsFromLinks(links) {
+  const apps = [];
+  for (const link of Array.isArray(links) ? links : []) {
+    const handle = APP_LINK.exec(String(link?.href ?? ""))?.[1];
+    const name = String(link?.text ?? "").trim().slice(0, 80);
+    if (handle && name && !apps.some((a) => a.handle === handle)) apps.push({ handle, name });
+  }
+  return apps.slice(0, 50);
+}
+
+// What the viewer read for the person, signed so checkmyapp.dev can save it
+// without trusting the page that carried it: the app's handle and the origin
+// its iframe is served from.
+export function signPick(secret, { slot, store, handle, name, origin, now = Date.now() }) {
+  return signViewToken(secret, { kind: "pick", slot, store, handle, name, origin, exp: Math.floor(now / 1000) + 30 * 60 });
 }
 
 export async function startViewer({
@@ -454,6 +483,72 @@ export async function startViewer({
       }
     }
 
+    // A page of the admin opened beside the person's tab, read, and closed —
+    // never their tab, which keeps showing what they were doing.
+    async function aside(url, read) {
+      const { targetId } = await send("Target.createTarget", { url, background: true });
+      try {
+        const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
+        return await read(sessionId);
+      } finally {
+        await send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    }
+    const evaluate = async (sessionId, expression) =>
+      (await send("Runtime.evaluate", { expression, returnByValue: true }, sessionId).catch(() => ({})))?.result?.value;
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    async function listApps() {
+      const apps = await aside(`${adminUrl}/settings/apps`, async (sessionId) => {
+        let found = [];
+        // The list renders after the admin's own scripts; settled when two
+        // looks a second apart agree.
+        for (let i = 0; i < 40 && !ended; i++) {
+          await pause(1000);
+          const links = await evaluate(sessionId, `[...document.querySelectorAll('a[href]')].map(a => ({ href: a.getAttribute('href'), text: (a.innerText || a.getAttribute('aria-label') || '').trim() }))`);
+          const now = appsFromLinks(links);
+          if (now.length && now.length === found.length) return now;
+          found = now;
+        }
+        return found;
+      });
+      for (const app of apps) names.set(app.handle, app.name);
+      out({ t: "apps", apps });
+    }
+
+    async function pick(handle) {
+      if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(String(handle))) return;
+      const origin = await aside(`${adminUrl}/apps/${handle}`, async (sessionId) => {
+        for (let i = 0; i < 30 && !ended; i++) {
+          await pause(1000);
+          // Cross-origin, so the frame tree has the frame but not its address;
+          // the element's src has it.
+          const src = await evaluate(sessionId, `document.querySelector('iframe[name="app-iframe"]')?.src ?? null`);
+          if (typeof src === "string" && src.startsWith("https://")) return new URL(src).origin;
+        }
+        return null;
+      });
+      if (!origin) {
+        out({ t: "picked", handle, code: "app_not_open" });
+        return;
+      }
+      out({ t: "picked", handle, origin, token: signPick(secret, { slot, store, handle, name: String(names.get(handle) ?? handle), origin }) });
+    }
+    const names = new Map();
+    let busy = false;
+    async function action(run) {
+      if (busy) return;
+      busy = true;
+      try {
+        await run();
+      } catch (error) {
+        log({ action: "failed", detail: String(error?.message ?? error).slice(0, 200) });
+        out({ t: "picked", code: "failed" });
+      } finally {
+        busy = false;
+      }
+    }
+
     client.on("message", (data, binary) => {
       if (binary || ended) return;
       let message;
@@ -463,6 +558,14 @@ export async function startViewer({
         return;
       }
       lastInput = now();
+      if (message?.t === "apps") {
+        void action(() => listApps());
+        return;
+      }
+      if (message?.t === "pick") {
+        void action(() => pick(message.handle));
+        return;
+      }
       const command = translate(message);
       if (!command) return;
       // In order, and a press — the thing that can start a passkey request —

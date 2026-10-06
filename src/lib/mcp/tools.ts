@@ -44,6 +44,8 @@ import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import type { McpDoor } from "@/lib/started-via";
+import { connectStore } from "@/lib/shopify-connect";
+import { appPath } from "@/lib/app-shell";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
 // (as before) or as the entry labelled "default" in `test_accounts` — the same
@@ -85,6 +87,8 @@ export interface McpDeps {
   capture?: typeof captureServer;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
+  // CHE-333: the teams the Shopify session host serves (SESSION_TEAMS).
+  sessionTeams?: () => string | undefined;
 }
 
 export interface ToolResult {
@@ -154,6 +158,13 @@ export const toolSchemas = {
       .optional()
       .describe("For a password-protected store (Shopify's 'Enter store password' page): the store password. Stored encrypted and never returned"),
     frequency: frequency.optional().describe("How often it is checked; default daily"),
+  },
+  connect_shopify_app: {
+    store: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("The store the Shopify app is installed in: its name (my-store), my-store.myshopify.com, or its admin address"),
   },
   update_app: {
     app_id: appId,
@@ -445,6 +456,30 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
               : null,
           };
         }),
+      });
+    },
+
+    // CHE-333: a Shopify app lives inside its store's admin, behind a sign-in
+    // only the person may perform. So the agent names the store and hands the
+    // person a link: they sign in on our page and choose the app there, and
+    // its first check starts from that page.
+    async connect_shopify_app(args: { store: string }): Promise<ToolResult> {
+      const denied = deny("app.credentials.write");
+      if (denied) return denied;
+      const result = await connectStore(db, { userId: caller.user.id, teamId: team.id, plan }, { SESSION_TEAMS: deps.sessionTeams?.() }, args.store);
+      if ("error" in result) {
+        const code = result.code === "duplicate" ? "invalid_input" : result.code;
+        return fail(code, result.error, HINTS[code]);
+      }
+      return text({
+        ok: true,
+        app_id: result.appId,
+        store: result.store,
+        sign_in_url: `${deps.origin}${appPath.signIn(result.appId)}`,
+        hint:
+          "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password), " +
+          "choose the app, and its first check starts on that page; it is checked daily after that. " +
+          "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
       });
     },
 
@@ -875,6 +910,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(or, on a paid plan, the next monthly credit) " +
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
+  connect_shopify_app:
+    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass the store it is installed in; " +
+    "the result's sign_in_url is for the user: they sign in to their store on that page (CheckMyApp never asks for their " +
+    "Shopify password, and neither should you), choose the app, and its first check starts there; after that it is " +
+    "checked daily like any app. Use this instead of create_app for an app inside the Shopify admin.",
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
@@ -926,6 +966,11 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools): void
   );
   server.registerTool("create_app", { description: DESCRIPTIONS.create_app, inputSchema: toolSchemas.create_app }, (a) =>
     tools.create_app(a),
+  );
+  server.registerTool(
+    "connect_shopify_app",
+    { description: DESCRIPTIONS.connect_shopify_app, inputSchema: toolSchemas.connect_shopify_app },
+    (a) => tools.connect_shopify_app(a),
   );
   server.registerTool("update_app", { description: DESCRIPTIONS.update_app, inputSchema: toolSchemas.update_app }, (a) =>
     tools.update_app(a),

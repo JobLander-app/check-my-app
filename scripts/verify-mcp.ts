@@ -101,7 +101,7 @@ async function main() {
   // 1 — tools and instructions.
   const bridged = (await client.listTools()).tools.map((t) => t.name).sort();
   check("bridge: lists exactly the remote server's tools",
-    remoteTools.length === 12 && JSON.stringify(bridged) === JSON.stringify(remoteTools), bridged.join(", "));
+    remoteTools.length === 13 && JSON.stringify(bridged) === JSON.stringify(remoteTools), bridged.join(", "));
   check("bridge: passes the remote instructions on",
     (client.getInstructions() ?? "").includes("own.test"), (client.getInstructions() ?? "").slice(0, 120));
 

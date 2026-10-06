@@ -26,6 +26,7 @@ export default function robots(): MetadataRoute.Robots {
         "/product",
         "/onboarding",
         "/settings",
+        "/connect",
         "/team",
         "/invite",
         "/watch",
