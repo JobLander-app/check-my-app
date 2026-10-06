@@ -40,14 +40,16 @@ export default async function Home({
     <main className="flex flex-col items-center gap-20 px-4 pb-24 pt-16 sm:gap-24 sm:pt-24">
       {/* First screen: the fear in the visitor's words, one line of what they
           get, and the link field as the way in — not as the headline. */}
-      <section className="stagger flex w-full max-w-xl flex-col gap-8">
+      <section className="stagger flex w-full max-w-2xl flex-col gap-8">
         <div className="space-y-4 text-center">
           <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-[2.75rem]">
             {HERO.headline}
           </h1>
-          <p className="text-pretty text-[15px] leading-7 text-fg-muted sm:text-base">{HERO.line}</p>
+          <p className="mx-auto max-w-xl text-pretty text-[15px] leading-7 text-fg-muted sm:text-base">{HERO.line}</p>
         </div>
-        <SubmitForm initialUrl={url ?? ""} extensionCheck={extensionCheck} />
+        <div className="mx-auto w-full max-w-xl">
+          <SubmitForm initialUrl={url ?? ""} extensionCheck={extensionCheck} />
+        </div>
         {/* CHE-324: the coding agent is the interface (CHE-313). One line for
             the visitor who would rather never open this page again. */}
         <p className="text-center font-mono text-[13px] leading-6 text-fg-faint">
