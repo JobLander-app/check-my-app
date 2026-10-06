@@ -59,8 +59,13 @@ export async function buildChannel() {
     banner: { js: "#!/usr/bin/env node" },
     logLevel: "warning",
     // Paths in the bundle's comments are relative to this, so the output does
-    // not depend on which checkout built it.
+    // not depend on which checkout built it…
     absWorkingDir: repoRoot,
+    // …including a worktree whose node_modules is a symlink to the main
+    // checkout's (the way every worktree here is set up): without this esbuild
+    // follows the link and writes "../../../node_modules/…" into the comments,
+    // and the tarball differs from CI's by path alone (Codex on #278).
+    preserveSymlinks: true,
   });
   const pkg = {
     name: "checkmyapp-watch",
