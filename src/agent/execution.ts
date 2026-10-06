@@ -33,7 +33,7 @@ import { adjudicateStep } from "./judge";
 import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
-import { summarizeWalk } from "./summary";
+import { summarizeWalk, unrecordedWalkSummary } from "./summary";
 import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
@@ -427,7 +427,18 @@ export async function walkOneJourney(args: {
       // cap cut mid-action (run #144: "Let me try the Reset to Defaults
       // button") is asked once more for the summary alone.
       const status = journeyStatus(stepStatuses);
-      const written = await summarizeWalk(llm, result, usage, status);
+      // CHE-420: a walk that recorded no step has nothing a customer could
+      // open behind anything it says. Run cmuvu9xhl (Securify admin): the model
+      // drove the Visitor Logs page, never called report_step, and its prose
+      // summary ("the search count never reflects a match") grew a published
+      // finding with no step, no screenshot, no trail. With no step, the
+      // summary is the fixed coverage sentence — never the model's words — so
+      // synthesis has nothing to grow a finding from.
+      const unrecorded = unrecordedWalkSummary(stepStatuses.length, status);
+      if (unrecorded) {
+        console.warn(`[walk] journey "${proposed.title}" recorded no step — its summary is the fixed coverage sentence, not the model's prose`);
+      }
+      const written = unrecorded ?? (await summarizeWalk(llm, result, usage, status));
       // CHE-219: run #159's journey 0 summary said the notes field "fails to
       // accept input — the fill operation times out", about a control this
       // journey never drove. The phrase tables cannot see that sentence; the

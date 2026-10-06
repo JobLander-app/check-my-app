@@ -101,6 +101,15 @@ export const SUMMARY_INSTRUCTION =
 // does for a plan. A reply that is a finished statement with nothing left
 // once the walker's words are gone is not a plan — it gets the fixed
 // sentence for the journey's roll-up (`status`), never an empty summary.
+// CHE-420: a walk that recorded no step gets the fixed coverage sentence for
+// its roll-up instead of a summary — nothing a customer could open stands
+// behind the model's words, and synthesis grows findings from summaries (run
+// cmuvu9xhl, Securify admin: a published finding from such a walk). Null when
+// the walk recorded steps: then the summary is written as always.
+export function unrecordedWalkSummary(stepCount: number, status?: string): string | null {
+  return stepCount === 0 ? summaryFallback(status) : null;
+}
+
 export async function summarizeWalk(
   llm: LlmConfig,
   result: Pick<AgentLoopResult, "finalText" | "messages" | "endedBy">,

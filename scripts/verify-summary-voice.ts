@@ -20,7 +20,9 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { LlmConfig } from "@/agent/llm";
 import { emptyUsage } from "@/agent/llm";
-import { SUMMARY_INSTRUCTION, summarizeWalk } from "@/agent/summary";
+import { SUMMARY_INSTRUCTION, summarizeWalk, unrecordedWalkSummary } from "@/agent/summary";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   hasNarration,
   HOMEWORK_FALLBACK,
@@ -397,6 +399,17 @@ async function main() {
   {
     const r = await walk("The dashboard greeted me by name.", "The dashboard shows the account name after sign-in.");
     check("closing text all narration: asked once more, the reply is the summary", r.summary === "The dashboard shows the account name after sign-in." && r.calls === 1, `${r.calls}: ${r.summary}`);
+  }
+
+  // CHE-420: a walk with no recorded step publishes no words of the model's —
+  // run cmuvu9xhl grew a finding from such a summary. And the walk asks for
+  // the fixed sentence before it would ask the model for a summary at all.
+  check("a walk that recorded no step: the fixed coverage sentence, whatever its status", unrecordedWalkSummary(0, "skipped") === HOMEWORK_FALLBACK && unrecordedWalkSummary(0) === HOMEWORK_FALLBACK);
+  check("a walk that recorded steps: written as always (null here)", unrecordedWalkSummary(3, "ok") === null);
+  {
+    const source = readFileSync(join(process.cwd(), "src/agent/execution.ts"), "utf8");
+    check("execution.ts uses the fixed sentence before it summarizes a walk",
+      /unrecordedWalkSummary\(stepStatuses\.length, status\)[\s\S]{0,400}unrecorded \?\? \(await summarizeWalk\(/.test(source));
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
