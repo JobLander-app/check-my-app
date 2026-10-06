@@ -2,11 +2,14 @@
 // in their words — and nothing about our machinery. This proves, without a
 // browser, a server or PostHog:
 //
-//   1. every sentence on the page lives in src/lib/home-copy.ts and passes the
-//      same gates as a verdict (src/lib/verdict-language.ts): no homework for
-//      the customer, no environment leak, no machinery narration — and none of
-//      the §10 pricing words (scripts/verify-public-copy.ts reads the module
-//      too; this is the belt to its braces);
+//   1. every sentence on the page passes the same gates as a verdict
+//      (src/lib/verdict-language.ts): no homework for the customer, no
+//      environment leak, no machinery narration — and none of the §10 pricing
+//      words (scripts/verify-public-copy.ts reads the module too; this is the
+//      belt to its braces). The page's and its sections' words live in
+//      src/lib/home-copy.ts and nothing may be typed into their JSX; the
+//      form's own sentences (validation, quota, the login panel) predate the
+//      module and are read out of its source with the TypeScript parser;
 //   2. the proof is a real check: a publicId of the shape the database issues,
 //      a verdict and a severity the product knows, a price with cents, and the
 //      "Open the verdict" link goes to that same run (src/lib/example-verdict.ts
@@ -25,6 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
@@ -144,8 +148,45 @@ check("rendered form carries the one-line note", formHtml.includes(escapeHtml(FO
 check("rendered form has no headline", !/<h1/.test(formHtml));
 check("nothing rendered is a script", ![pains, proof, formHtml].some((h) => /<script/.test(h)));
 
+// The form's own sentences (validation, quota, the login panel) are typed into
+// its JSX — they predate the module and move there when they next change.
+// Until then they go through the same gates here, read out of the source:
+// text between tags, and the strings its messages and placeholders carry.
+// Read with the TypeScript parser, not a regex: every JSX text node, every
+// string given to a JSX attribute (placeholder, aria-label…), every string
+// under a `message:` key and every string handed to a set…Error call.
+const formSentences = customerStrings("src/components/submit-form.tsx");
+check("the form's sentences were found", formSentences.length >= 15, `${formSentences.length}`);
+for (const s of formSentences) {
+  const found = leaks(s);
+  check(`form, clean: “${s.slice(0, 60)}${s.length > 60 ? "…" : ""}”`, found.length === 0, found.join(", "));
+}
+
 const publicCopy = source("scripts/verify-public-copy.ts");
 check("verify-public-copy reads the module as customer-facing", publicCopy.includes('"src/lib/home-copy.ts"'));
+
+function customerStrings(file: string): string[] {
+  const sf = ts.createSourceFile(file, source(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const out: string[] = [];
+  const add = (s: string) => {
+    const t = s.replace(/&apos;/g, "'").replace(/\s+/g, " ").trim();
+    if (/[A-Za-z]{3,}/.test(t) && !out.includes(t)) out.push(t);
+  };
+  // Attributes a reader never sees.
+  const silent = new Set(["className", "type", "href", "autoComplete", "inputMode", "key", "data-ph-unmask", "rel", "target"]);
+  const isString = (n: ts.Node): n is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral =>
+    ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n);
+  const visit = (n: ts.Node) => {
+    if (ts.isJsxText(n)) add(n.text);
+    else if (ts.isJsxExpression(n) && n.expression && isString(n.expression)) add(n.expression.text);
+    else if (ts.isJsxAttribute(n) && n.initializer && isString(n.initializer) && !silent.has(n.name.getText())) add(n.initializer.text);
+    else if (ts.isPropertyAssignment(n) && n.name.getText() === "message" && isString(n.initializer)) add(n.initializer.text);
+    else if (ts.isCallExpression(n) && /^set\w*Error$/.test(n.expression.getText())) for (const a of n.arguments) if (isString(a)) add(a.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");

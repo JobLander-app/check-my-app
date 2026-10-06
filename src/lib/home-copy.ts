@@ -31,13 +31,13 @@ export const HERO_VARIANTS: readonly HeroVariant[] = [
     key: "hear-first",
     headline: "Will you hear it broke before your customers do?",
     line:
-      "Every day your app is checked again — its pages, their errors, and a walk through your journeys by someone who isn't you when something changed. What stopped answering overnight is in your inbox that morning.",
+      "Every day your app is checked again — its pages, their errors, and a walk through your journeys by someone who isn't you when something changed. What stopped answering since yesterday is in your inbox the same day.",
   },
   {
     key: "not-you",
     headline: "Does your app still work for someone who isn't you?",
     line:
-      "Paste a link. Someone who isn't you opens it, signs in, clicks through — and you get a verdict: what's broken, where, and how to know it's fixed.",
+      "Paste a link. Someone who isn't you opens it and clicks through — signs in too, if you hand over a test login — and you get a verdict: what's broken, where, and how to know it's fixed.",
   },
 ];
 
@@ -60,13 +60,13 @@ export const PAINS: readonly Pain[] = [
   {
     fear: "“Works on my dev store. 404 for the reviewer.”",
     check:
-      "Before you submit, a first-time user opens your app with nothing but the link and the test login you would give the reviewer, and follows your testing instructions to the letter.",
+      "Before you submit, a first-time user opens your app with nothing but its link and the test login you would give the reviewer, and follows your testing instructions to the letter. An app that only opens inside a store's admin can't be reached this way yet; the check says so instead of guessing.",
     get: "The 404 and the empty screen, found before the reviewer finds them — and no second round at the back of the queue.",
   },
   {
     fear: "“Will I hear about it before my merchants do?”",
     check:
-      "Every day your app is checked again: do its pages still answer, do they throw errors — and when something changed, a walk through your journeys again, a few each time. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding that morning.",
+      "Every day your app is checked again: do its pages still answer, do they throw errors — and when something changed, a walk through your journeys again, a few each time. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding the same day.",
     get: "You hear it from the check, not from a merchant.",
   },
   {
