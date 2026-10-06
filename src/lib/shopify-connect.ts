@@ -1,25 +1,28 @@
-// CHE-333: connecting a Shopify app is not connecting a website. A Shopify app
-// developer has no "address of the app": the app lives inside their store's
-// admin, in a frame whose origin they never think about, behind a sign-in our
-// checker must never perform. So the input is the STORE, and the rest is read
-// from the admin after the person signs in on our page (CHE-419):
+// CHE-333: connecting a Shopify app is not connecting a website. The app lives
+// inside a store's admin, in a frame whose origin its developer never thinks
+// about, behind a sign-in our checker must never perform. So the input is the
+// link to the app INSIDE the store admin (owner, 2026-10-06: «онбординг должен
+// просить ссылку сразу на апп внутри стора») — what anyone gets by opening
+// their app in Shopify and copying the address. The rest is read from the
+// admin after the person signs in on our page (CHE-419):
 //
-//   1. connectStore — the store becomes a pending app (kind "session", slug
-//      shopify:<store>, its daily check off) and the person is sent to sign in;
-//   2. chooseApp — after sign-in, the session host lists the store's installed
-//      apps; the person picks one, the host reads the origin it is served from
-//      and signs what it read; we save it (slug shopify:<store>/<handle>, the
-//      admin and the app's origin allowed), switch the daily check on and
-//      start the first one.
+//   1. connectApp — the link becomes a pending app (kind "session", slug
+//      shopify:<store>, no daily check, no check can start) whose address is
+//      the app in the admin, and the person is sent to sign in;
+//   2. chooseApp — after sign-in the session host opens that app, reads the
+//      origin it is served from and signs what it read; we save it (slug
+//      shopify:<store>/<handle>, the admin and the app's origin allowed),
+//      switch the daily check on and start the first one.
 //
-// One implementation behind the site's pages and MCP create_app.
+// One implementation behind the site's pages and MCP connect_shopify_app.
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { createAppForTeam, type AppActor, type AppRefusal } from "@/lib/app-settings";
 import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { enableWatchForApp } from "@/lib/watch-enable";
-import { isPendingShopifyApp, parseStoreInput, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
+import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
+import { appHandleOfAdminUrl, isPendingShopifyApp, parseAppLink, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 
@@ -29,29 +32,38 @@ export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 export function sessionTeamAllowed(env: { SESSION_TEAMS?: string }, teamId: string): boolean {
   return (env.SESSION_TEAMS ?? "").split(",").map((t) => t.trim()).filter(Boolean).includes(teamId);
 }
-export const NOT_OPEN_YET = "Checking Shopify apps is not open for your team yet.";
-export const BAD_STORE = "Enter your store — its name, like my-store, or its address, like my-store.myshopify.com.";
+// The words are in the guarded copy module (src/lib/sign-in-copy.ts).
+export const NOT_OPEN_YET = CONNECT_ERRORS.notOpen;
+export const BAD_LINK = CONNECT_ERRORS.badLink;
 
-export async function connectStore(
+export async function connectApp(
   db: PrismaClient,
   actor: AppActor,
   env: { SESSION_TEAMS?: string },
-  rawStore: string,
-): Promise<{ ok: true; appId: string; store: string; reused: boolean } | AppRefusal> {
+  rawLink: string,
+): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal> {
   if (!sessionTeamAllowed(env, actor.teamId)) return { error: NOT_OPEN_YET, code: "invalid_input" };
-  const store = parseStoreInput(rawStore);
-  if (!store) return { error: BAD_STORE, code: "invalid_input" };
-  // A store already waiting for its app is the same pending app: opening the
-  // connect page twice must not leave two.
+  const link = parseAppLink(rawLink);
+  if (!link) return { error: BAD_LINK, code: "invalid_input" };
+  const { store, handle } = link;
+  // This app already connected: its page, not a second row.
+  const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true } });
+  if (existing) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
+  // A store already waiting for its app is the same pending app — pointed at
+  // the app asked for now: opening the connect page twice must not leave two.
+  const targetUrl = shopifyAdminUrl(store, handle);
   const pending = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store) }, select: { id: true } });
-  if (pending) return { ok: true, appId: pending.id, store, reused: true };
+  if (pending) {
+    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: pending.id }, data: { targetUrl } });
+    return { ok: true, appId: pending.id, store, handle, reused: true, connected: false };
+  }
   const created = await createAppForTeam(db, actor, {
-    targetUrl: shopifyAdminUrl(store),
+    targetUrl,
     session: { slug: shopifySlug(store) },
     allowedOrigins: [SHOPIFY_ADMIN_ORIGIN],
   });
   if (!("ok" in created)) return created;
-  return { ok: true, appId: created.app.id, store, reused: false };
+  return { ok: true, appId: created.app.id, store, handle, reused: false, connected: false };
 }
 
 export type ChooseResult =
@@ -65,17 +77,21 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
     where: { ...teamOwned(actor.teamId), id: appId },
     select: { id: true, targetUrl: true, targetKind: true, appSlug: true },
   });
-  if (!app || app.targetKind !== "session") return { error: "App not found.", code: "not_found" };
+  if (!app || app.targetKind !== "session") return { error: CONNECT_ERRORS.notFound, code: "not_found" };
   const store = storeOfAdminUrl(app.targetUrl);
-  if (!store || store !== pick.store) return { error: "That app belongs to another store.", code: "invalid_input" };
+  if (!store || store !== pick.store) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
   // Only a store still waiting for its app takes a choice: a connected app is
   // not repointed at another one by a stale page.
-  if (!isPendingShopifyApp(app)) return { error: "This store's app is already chosen.", code: "invalid_input" };
+  if (!isPendingShopifyApp(app)) return { error: CONNECT_ERRORS.alreadyChosen, code: "invalid_input" };
+  // The app the person linked to is the app saved — not another one a stale
+  // page or a pick of something else would name.
+  const linked = appHandleOfAdminUrl(app.targetUrl);
+  if (linked && linked !== pick.handle) return { error: CONNECT_ERRORS.notLinked, code: "invalid_input" };
   const origins = parseAllowedOriginsInput([SHOPIFY_ADMIN_ORIGIN, pick.origin]);
-  if (!origins.ok) return { error: "This app cannot be checked: the address it is served from is not one we can open.", code: "invalid_input" };
+  if (!origins.ok) return { error: CONNECT_ERRORS.cannotOpen, code: "invalid_input" };
   const appSlug = shopifySlug(store, pick.handle);
   const other = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug, NOT: { id: app.id } }, select: { id: true } });
-  if (other) return { error: `${pick.name} is already connected.`, code: "duplicate", appId: other.id };
+  if (other) return { error: CONNECT_ERRORS.alreadyConnected(pick.name), code: "duplicate", appId: other.id };
   const targetUrl = shopifyAdminUrl(store, pick.handle);
   await db.app.update({
     ...alreadyScoped("the App was just scoped to this team"),

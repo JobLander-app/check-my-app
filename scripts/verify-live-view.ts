@@ -22,8 +22,8 @@ import { PICK_ERRORS, SIGN_IN_COPY, allSignInSentences, signInError } from "../s
 import WebSocket from "ws";
 import { chromium } from "playwright";
 // @ts-ignore — the host's own modules are plain JavaScript.
-import { signViewToken, verifyViewToken, signedInStore, startViewer, storeAdminUrl, translate } from "../spikes/shopify-session/viewer.mjs";
-import { mintViewToken, parseStoreInput, shopifySlug, storeOfAdminUrl, verifyPick } from "../src/lib/session-view";
+import { appNameFromTitle, signViewToken, verifyViewToken, signedInStore, startViewer, storeAdminUrl, translate } from "../spikes/shopify-session/viewer.mjs";
+import { mintViewToken, parseAppLink, shopifySlug, storeOfAdminUrl, verifyPick } from "../src/lib/session-view";
 
 async function main() {
 let failures = 0;
@@ -92,19 +92,25 @@ await check("the sign-in page's every sentence is about the person's store, and 
   assert.doesNotMatch(source, /t: "picked"[^}]*error:/, "the host still sends a pick sentence of its own");
 });
 
-await check("what a person types as their store is read as its handle, and nothing else is", () => {
+await check("the link to an app in a store's admin gives the store and the app, and nothing else does", () => {
+  const both = (store: string, handle: string) => ({ store, handle });
   for (const [raw, want] of [
-    ["prod-release-1", "prod-release-1"],
-    ["Prod-Release-1.myshopify.com", "prod-release-1"],
-    ["https://prod-release-1.myshopify.com/", "prod-release-1"],
-    ["https://admin.shopify.com/store/prod-release-1/apps/x", "prod-release-1"],
-    ["  my-store ", "my-store"],
-    ["joblander.app", null],
-    ["https://evil.dev/store/x", null],
+    ["https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country", both("prod-release-1", "easy-block-customer-ip-country")],
+    ["https://admin.shopify.com/store/Prod-Release-1/apps/securify/settings/blocks?embedded=1#x", both("prod-release-1", "securify")],
+    ["admin.shopify.com/store/my-store/apps/my-app", both("my-store", "my-app")],
+    ["  https://my-store.myshopify.com/admin/apps/my-app/  ", both("my-store", "my-app")],
+    ["https://admin.shopify.com/store/prod-release-1", null],
+    ["https://admin.shopify.com/store/prod-release-1/settings/apps", null],
+    ["prod-release-1", null],
+    ["https://my-store.myshopify.com/", null],
+    ["https://admin.shopify.com.evil.dev/store/x/apps/y", null],
+    ["https://evil.dev/store/x/apps/y", null],
     ["", null],
-    ["a b", null],
-    ["-x", null],
-  ] as const) assert.equal(parseStoreInput(raw), want, JSON.stringify(raw));
+  ] as const) assert.deepEqual(parseAppLink(raw), want, JSON.stringify(raw));
+  assert.equal(appNameFromTitle("prod-release-1 · Securify · Shopify"), "Securify");
+  assert.equal(appNameFromTitle("prod-release-1 · Gorgias · Live Chat · Shopify"), "Gorgias · Live Chat");
+  assert.equal(appNameFromTitle("Shopify"), null);
+  assert.equal(appNameFromTitle(null), null);
   assert.equal(shopifySlug("s"), "shopify:s");
   assert.equal(shopifySlug("s", "h"), "shopify:s/h");
 });

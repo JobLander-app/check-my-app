@@ -167,6 +167,12 @@ export function appsFromLinks(links) {
   return apps.slice(0, 50);
 }
 
+// "prod-release-1 · Securify · Shopify" → "Securify"; anything else → null.
+export function appNameFromTitle(title) {
+  const parts = String(title ?? "").split(" · ").map((p) => p.trim()).filter(Boolean);
+  return parts.length >= 3 && parts[parts.length - 1] === "Shopify" ? parts.slice(1, -1).join(" · ").slice(0, 80) : null;
+}
+
 // What the viewer read for the person, signed so checkmyapp.dev can save it
 // without trusting the page that carried it: the app's handle and the origin
 // its iframe is served from.
@@ -518,13 +524,17 @@ export async function startViewer({
 
     async function pick(handle) {
       if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(String(handle))) return;
+      let title = null;
       const origin = await aside(`${adminUrl}/apps/${handle}`, async (sessionId) => {
         for (let i = 0; i < 30 && !ended; i++) {
           await pause(1000);
           // Cross-origin, so the frame tree has the frame but not its address;
           // the element's src has it.
           const src = await evaluate(sessionId, `document.querySelector('iframe[name="app-iframe"]')?.src ?? null`);
-          if (typeof src === "string" && src.startsWith("https://")) return new URL(src).origin;
+          if (typeof src === "string" && src.startsWith("https://")) {
+            title = await evaluate(sessionId, "document.title");
+            return new URL(src).origin;
+          }
         }
         return null;
       });
@@ -532,7 +542,11 @@ export async function startViewer({
         out({ t: "picked", handle, code: "app_not_open" });
         return;
       }
-      out({ t: "picked", handle, origin, token: signPick(secret, { slot, store, handle, name: String(names.get(handle) ?? handle), origin }) });
+      // The app's name: from the list, when the person chose from it; else the
+      // admin's own title for the app's page ("<store> · <App> · Shopify",
+      // measured on prod-release-1).
+      const name = names.get(handle) ?? appNameFromTitle(title) ?? handle;
+      out({ t: "picked", handle, origin, name, token: signPick(secret, { slot, store, handle, name: String(name), origin }) });
     }
     const names = new Map();
     let busy = false;

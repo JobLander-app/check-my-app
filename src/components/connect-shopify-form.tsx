@@ -1,18 +1,20 @@
 "use client";
 
 import { useActionState } from "react";
-import { connectShopifyStore } from "@/app/(app)/connect/shopify/actions";
+import { connectShopifyApp } from "@/app/(app)/connect/shopify/actions";
 import { CONNECT_COPY } from "@/lib/sign-in-copy";
 import { Button } from "./ui/button";
 
 export function ConnectShopifyForm() {
-  const [state, action, pending] = useActionState(connectShopifyStore, null);
+  const [state, action, pending] = useActionState(connectShopifyApp, null);
   return (
-    <form action={action} className="mt-6 flex max-w-md flex-col gap-3">
-      <label htmlFor="store" className="text-sm font-medium">{CONNECT_COPY.label}</label>
+    <form action={action} className="mt-6 flex max-w-xl flex-col gap-3">
+      <label htmlFor="link" className="text-sm font-medium">{CONNECT_COPY.label}</label>
       <input
-        id="store"
-        name="store"
+        id="link"
+        name="link"
+        type="text"
+        inputMode="url"
         required
         autoFocus
         autoComplete="off"

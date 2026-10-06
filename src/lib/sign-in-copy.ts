@@ -24,16 +24,49 @@ export const SIGN_IN_COPY = {
   cancel: "Cancel",
 } as const;
 
-// /connect/shopify: the store comes first (src/lib/shopify-connect.ts).
+// /connect/shopify: the link to the app inside the store's admin — the store
+// and the app are both read from it (src/lib/shopify-connect.ts).
 export const CONNECT_COPY = {
   title: "Check a Shopify app",
   intro:
-    "Tell us the store your app is installed in. Next you sign in to that store here, the way you always do, and choose " +
-    "the app. Its first check starts right away, and it is checked every day after that.",
-  label: "Your store",
-  placeholder: "my-store.myshopify.com",
+    "Open your app in your store's Shopify admin and paste its address here. Next you sign in to that store here, the way " +
+    "you always do. The app's first check starts right away, and it is checked every day after that.",
+  label: "Link to your app in the Shopify admin",
+  placeholder: "https://admin.shopify.com/store/my-store/apps/my-app",
   submit: "Continue",
   submitting: "Opening…",
+} as const;
+
+// What the customer's agent reads from MCP connect_shopify_app
+// (src/lib/mcp/tools.ts): the tool's description and its hints.
+export const MCP_CONNECT_COPY = {
+  description:
+    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass app_url, the link to the app " +
+    "in the admin (the store and the app are both read from it); the result's sign_in_url is for the user: they sign in " +
+    "to their store on that page (CheckMyApp never asks for their Shopify password, and neither should you), the app is " +
+    "picked up and its first check starts there; after that it is checked daily like any app. Use this instead of " +
+    "create_app for an app inside the Shopify admin.",
+  signIn:
+    "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password); " +
+    "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
+    "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
+  alreadyConnected: "This app is already connected — list_apps has it; start_check checks it.",
+  appUrl:
+    "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
+    "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
+} as const;
+
+// What connecting and choosing refuse with (src/lib/shopify-connect.ts).
+export const CONNECT_ERRORS = {
+  notOpen: "Checking Shopify apps is not open for your team yet.",
+  badLink:
+    "Paste the link to your app inside your store's admin — open the app in Shopify and copy the address, like https://admin.shopify.com/store/my-store/apps/my-app.",
+  notFound: "App not found.",
+  otherStore: "That app belongs to another store.",
+  alreadyChosen: "This store's app is already chosen.",
+  notLinked: "That is not the app you linked to.",
+  cannotOpen: "This app cannot be checked: the address it is served from is not one we can open.",
+  alreadyConnected: (name: string) => `${name} is already connected.`,
 } as const;
 
 export type SignInErrorCode = "busy" | "idle" | "failed" | "closed";
@@ -51,6 +84,7 @@ export const CHOOSE_COPY = {
   signedIn: (store: string) => `Signed in to ${store}.`,
   listing: (store: string) => `Reading the apps installed in ${store}…`,
   question: "Which app should we check?",
+  retry: "Try again",
   noApps: "No apps are installed in this store yet. Install yours, then reload this page.",
   picking: (name: string) => `Opening ${name} in your admin…`,
   openIt: "Open it",
@@ -91,6 +125,9 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.ok,
     SIGN_IN_COPY.cancel,
     ...Object.values(CONNECT_COPY),
+    ...Object.values(CONNECT_ERRORS).map((v) => (typeof v === "function" ? v("Securify") : v)),
+    ...Object.values(MCP_CONNECT_COPY),
+    CHOOSE_COPY.retry,
     ...Object.values(SIGN_IN_ERRORS),
     CHOOSE_COPY.signedIn(store),
     CHOOSE_COPY.listing(store),

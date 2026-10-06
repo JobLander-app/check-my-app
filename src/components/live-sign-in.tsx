@@ -87,7 +87,22 @@ const COMMANDS: Record<string, string> = { a: "selectAll", z: "undo", x: "cut", 
 const modifiers = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
   (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 
-export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string; store: string; appHref: string; appId: string; choose: boolean }) {
+export function LiveSignIn({
+  url,
+  store,
+  appHref,
+  appId,
+  choose,
+  handle = null,
+}: {
+  url: string;
+  store: string;
+  appHref: string;
+  appId: string;
+  choose: boolean;
+  // The app the person linked to (connect/shopify): picked once they are in.
+  handle?: string | null;
+}) {
   const [state, dispatch] = useReducer(reduce, { status: { kind: "connecting" }, dialog: null, choice: { kind: "idle" } });
   const names = useRef(new Map<string, string>());
   const listed = useRef<{ handle: string; name: string }[]>([]);
@@ -102,8 +117,8 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
 
   // What the host read and signed for the chosen app, saved by the server.
   const save = useCallback(
-    async (handle: string, token: string) => {
-      const name = names.current.get(handle) ?? handle;
+    async (handle: string, token: string, named?: string) => {
+      const name = named ?? names.current.get(handle) ?? handle;
       const result = await chooseShopifyApp(appId, token);
       if ("error" in result) {
         dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href, apps: listed.current } });
@@ -146,8 +161,12 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
         } else if (message.t === "page") dispatch({ t: "page", host: message.host });
         else if (message.t === "signed_in") {
           dispatch({ t: "signed_in", store: message.store });
-          // The store's apps are asked for the moment the admin opens.
-          if (choose) {
+          // The moment the admin opens: the linked app is opened and read; a
+          // store with no app named lists its apps to choose from.
+          if (choose && handle) {
+            dispatch({ t: "choice", choice: { kind: "picking", name: handle } });
+            ws.send(JSON.stringify({ t: "pick", handle }));
+          } else if (choose) {
             dispatch({ t: "choice", choice: { kind: "listing" } });
             ws.send(JSON.stringify({ t: "apps" }));
           }
@@ -157,7 +176,7 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
           dispatch({ t: "choice", choice: message.apps.length ? { kind: "list", apps: message.apps } : { kind: "error", message: CHOOSE_COPY.noApps } });
         } else if (message.t === "picked") {
           if (message.code || !message.token) dispatch({ t: "choice", choice: { kind: "error", message: pickError(message.code), apps: listed.current } });
-          else void save(message.handle, message.token);
+          else void save(message.handle, message.token, typeof message.name === "string" ? message.name : undefined);
         }
         else if (message.t === "dialog") dispatch({ t: "dialog", dialog: { kind: message.kind, message: message.message } });
         else if (message.t === "error") dispatch({ t: "closed", message: signInError(message.code) });
@@ -169,7 +188,7 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
         ws.close();
       };
     },
-    [url, choose, save],
+    [url, choose, handle, save],
   );
 
   const pickApp = (handle: string) => {
@@ -250,6 +269,13 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
               {choice.message}
               {choice.href && <> <Link href={choice.href} className="underline">{CHOOSE_COPY.openIt}</Link>.</>}
             </p>
+          )}
+          {/* The linked app could not be read: try it again, here (Codex on
+              #290 — the host says "signed in" once, so nothing else would). */}
+          {choice.kind === "error" && handle && !choice.href && !choice.apps?.length && (
+            <button type="button" className="rounded border border-ink-700 px-3 py-1.5 hover:border-accent hover:text-accent" onClick={() => pickApp(handle)}>
+              {CHOOSE_COPY.retry}
+            </button>
           )}
           {(choice.kind === "list" || (choice.kind === "error" && choice.apps?.length)) && (
             <>

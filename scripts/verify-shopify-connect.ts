@@ -19,7 +19,7 @@ process.env.CREDENTIALS_SECRET ??= "verify-shopify-connect-secret";
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { createAppForTeam } from "@/lib/app-settings";
-import { NOT_OPEN_YET, chooseApp, connectStore } from "@/lib/shopify-connect";
+import { BAD_LINK, NOT_OPEN_YET, chooseApp, connectApp } from "@/lib/shopify-connect";
 import type { Pick } from "@/lib/session-view";
 import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 import { startSavedApp } from "@/lib/start-saved-app";
@@ -50,15 +50,19 @@ async function main() {
     const env = { SESSION_TEAMS: "team_a" };
     const pick = (over: Partial<Pick> = {}): Pick => ({ slot: "main", store: "prod-release-1", handle: "securify", name: "Securify", origin: "https://securify.example.app", ...over });
 
-    const closed = await connectStore(db, zed, env, "zed-store");
+    const APP = (store: string, handle: string) => `https://admin.shopify.com/store/${store}/apps/${handle}`;
+    const closed = await connectApp(db, zed, env, APP("zed-store", "zapp"));
     check("a team the session host does not serve is told so", "error" in closed && closed.error === NOT_OPEN_YET, JSON.stringify(closed));
-    const bad = await connectStore(db, ann, env, "joblander.app");
-    check("an address that is not a store is refused", "error" in bad && bad.code === "invalid_input", JSON.stringify(bad));
+    const bad = await connectApp(db, ann, env, "joblander.app");
+    check("an address that is not a link to an app in a store's admin is refused", "error" in bad && bad.error === BAD_LINK, JSON.stringify(bad));
+    const storeOnly = await connectApp(db, ann, env, "https://admin.shopify.com/store/prod-release-1");
+    check("a store's admin with no app in the link is refused, naming the link it wants", "error" in storeOnly && storeOnly.error === BAD_LINK, JSON.stringify(storeOnly));
 
-    const first = await connectStore(db, ann, env, "Prod-Release-1.myshopify.com");
+    // As copied from the address bar: deeper in the app, with a query.
+    const first = await connectApp(db, ann, env, `${APP("Prod-Release-1", "securify")}/settings?embedded=1`);
     const appId = "ok" in first ? first.appId : "";
     const pending = await db.app.findUnique({ where: { id: appId }, select: { targetKind: true, appSlug: true, targetUrl: true, allowedOrigins: true, watch: { select: { active: true } } } });
-    check("the store becomes a pending app checked inside the session", pending?.targetKind === "session" && pending.appSlug === "shopify:prod-release-1" && pending.targetUrl === "https://admin.shopify.com/store/prod-release-1", JSON.stringify(pending));
+    check("the link becomes a pending app — store and app both read from it", "ok" in first && first.store === "prod-release-1" && first.handle === "securify" && pending?.targetKind === "session" && pending.appSlug === "shopify:prod-release-1" && pending.targetUrl === APP("prod-release-1", "securify"), JSON.stringify({ first, pending }));
     check("…with the admin allowed and no daily check until the app is chosen", pending?.allowedOrigins === JSON.stringify(["https://admin.shopify.com"]) && pending?.watch === null, JSON.stringify(pending));
     // Codex on #288: nothing may check a store whose app is not chosen.
     let triggered = 0;
@@ -69,9 +73,11 @@ async function main() {
     const earlyWatch = await enableWatchForApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, { frequency: "daily" });
     const watches = await db.watch.count({ where: { appId } });
     check("a daily check for a store whose app is not chosen is refused, and no watch appears", earlyWatch.kind === "gated" && earlyWatch.reason === PENDING_SHOPIFY_APP && watches === 0, JSON.stringify({ earlyWatch, watches }));
-    const again = await connectStore(db, ann, env, "prod-release-1");
-    check("the same store asked again is the same pending app", "ok" in again && again.appId === appId && again.reused, JSON.stringify(again));
+    const again = await connectApp(db, ann, env, "prod-release-1.myshopify.com/admin/apps/securify");
+    check("the same app by the older link form is the same pending app", "ok" in again && again.appId === appId && again.reused && !again.connected, JSON.stringify(again));
 
+    const notLinked = await chooseApp(db, ann, appId, pick({ handle: "flow", name: "Flow", origin: "https://flow.example.app" }));
+    check("a pick of another app than the one linked is refused", "error" in notLinked && notLinked.code === "invalid_input", JSON.stringify(notLinked));
     const otherStore = await chooseApp(db, ann, appId, pick({ store: "someone-else" }));
     check("a pick from another store is refused", "error" in otherStore && otherStore.code === "invalid_input", JSON.stringify(otherStore));
     const ours = await chooseApp(db, ann, appId, pick({ origin: "https://checkmyapp.dev" }));
@@ -89,19 +95,19 @@ async function main() {
     const started = await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, startDeps);
     check("once chosen, the app's check starts", "publicId" in started && triggered === 1, JSON.stringify(started));
 
-    const second = await connectStore(db, ann, env, "prod-release-1");
+    const dupe = await connectApp(db, ann, env, APP("prod-release-1", "securify"));
+    check("linking an app already connected leads to it, and makes no second row", "ok" in dupe && dupe.connected && dupe.appId === appId && (await db.app.count({ where: { teamId: "team_a", appSlug: { startsWith: "shopify:" } } })) === 1, JSON.stringify(dupe));
+    const second = await connectApp(db, ann, env, APP("prod-release-1", "flow"));
     const secondId = "ok" in second ? second.appId : "";
-    check("connecting the store again starts a second app", "ok" in second && secondId !== appId && !second.reused, JSON.stringify(second));
-    const dupe = await chooseApp(db, ann, secondId, pick());
-    check("the same app chosen twice is a duplicate that names the first", "error" in dupe && dupe.code === "duplicate" && dupe.appId === appId, JSON.stringify(dupe));
+    check("another app of the same store is a second app", "ok" in second && secondId !== appId && !second.reused, JSON.stringify(second));
     const flow = await chooseApp(db, ann, secondId, pick({ handle: "flow", name: "Flow", origin: "https://flow.example.app" }));
-    check("another app of the same store is its own app", "ok" in flow && flow.appSlug === "shopify:prod-release-1/flow", JSON.stringify(flow));
+    check("…saved under its own name", "ok" in flow && flow.appSlug === "shopify:prod-release-1/flow", JSON.stringify(flow));
 
     // Every refusal above is a sentence a person reads on the connect page or
     // the sign-in page (rule 1: about their store, never our machinery or
     // homework).
-    const refusals = [closed, bad, otherStore, ours, foreign, dupe].map((r) => ("error" in r ? r.error : "")).filter(Boolean);
-    check("every refusal reads as being about the person's store", refusals.length === 6 && refusals.every((s) => !hasEnvironmentLeak(s) && !hasHomework(s) && !/\b(browser|session host|VNC)\b/i.test(s)), refusals.join(" | "));
+    const refusals = [closed, bad, storeOnly, notLinked, otherStore, ours, foreign].map((r) => ("error" in r ? r.error : "")).filter(Boolean);
+    check("every refusal reads as being about the person's store", refusals.length === 7 && refusals.every((s) => !hasEnvironmentLeak(s) && !hasHomework(s) && !/\b(browser|session host|VNC)\b/i.test(s)), refusals.join(" | "));
 
     // Codex on #288: a Free team with two stores waiting gets one daily check,
     // not two — the watch cap is asked when the app is chosen.
@@ -110,8 +116,8 @@ async function main() {
     await db.membership.create({ data: { teamId: "team_f", userId: "fay", scope: "admin" } as never });
     const fay = { userId: "fay", teamId: "team_f", plan: "free" as const };
     const envF = { SESSION_TEAMS: "team_a,team_f" };
-    const s1 = await connectStore(db, fay, envF, "store-one");
-    const s2 = await connectStore(db, fay, envF, "store-two");
+    const s1 = await connectApp(db, fay, envF, APP("store-one", "securify"));
+    const s2 = await connectApp(db, fay, envF, APP("store-two", "securify"));
     const c1 = "ok" in s1 ? await chooseApp(db, fay, s1.appId, pick({ store: "store-one" })) : s1;
     const c2 = "ok" in s2 ? await chooseApp(db, fay, s2.appId, pick({ store: "store-two" })) : s2;
     const activeF = await db.watch.count({ where: { teamId: "team_f", active: true } });

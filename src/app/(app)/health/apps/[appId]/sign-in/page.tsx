@@ -6,7 +6,7 @@ import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { OtherTeamApp } from "@/components/other-team-app";
 import { LiveSignIn } from "@/components/live-sign-in";
-import { VIEW_HOST, mintViewToken, shopifySlug, storeOfAdminUrl } from "@/lib/session-view";
+import { VIEW_HOST, appHandleOfAdminUrl, mintViewToken, shopifySlug, storeOfAdminUrl } from "@/lib/session-view";
 import { SIGN_IN_COPY } from "@/lib/sign-in-copy";
 
 // CHE-419: a person signs in to the Shopify store their app lives in, here,
@@ -49,8 +49,10 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
           store={store}
           appHref={appPath.page(app.id)}
           appId={app.id}
-          // A store connected but its app not chosen yet (connect/shopify).
+          // A store connected but its app not chosen yet (connect/shopify);
+          // the app the person linked to is picked as soon as they are in.
           choose={app.appSlug === shopifySlug(store)}
+          handle={appHandleOfAdminUrl(app.targetUrl)}
         />
       ) : (
         <p className="mt-6 text-sm">{SIGN_IN_COPY.unavailable}</p>
