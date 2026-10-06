@@ -30,12 +30,16 @@ export interface SessionHost {
   accessClientId: string;
   accessClientSecret: string;
   token: string;
+  // CHE-426: which browser on the host — the run's team's slot
+  // (src/lib/session-slots.ts). "main" is ours.
+  slot: string;
 }
 
 // The four values arrive together or the kind cannot run at all — an internal
 // error (rule 4), never something a customer reads.
 export function sessionHost(
   bindings: Pick<AgentBindings, "SESSION_HOST_URL" | "SESSION_ACCESS_CLIENT_ID" | "SESSION_ACCESS_CLIENT_SECRET" | "SESSION_SERVER_TOKEN">,
+  slot = "main",
 ): SessionHost {
   const url = bindings.SESSION_HOST_URL?.trim().replace(/\/+$/, "");
   const accessClientId = bindings.SESSION_ACCESS_CLIENT_ID?.trim();
@@ -44,7 +48,7 @@ export function sessionHost(
   if (!url || !/^https:\/\//.test(url) || !accessClientId || !accessClientSecret || !token) {
     throw new Error("internal: the session host is not configured");
   }
-  return { url, accessClientId, accessClientSecret, token };
+  return { url, accessClientId, accessClientSecret, token, slot };
 }
 
 // Another run holds the host. Not a verdict and not a failure of the product:
@@ -87,9 +91,10 @@ function headers(host: SessionHost, extra?: HeadersInit): Headers {
   return out;
 }
 
-async function call(host: SessionHost, fetchImpl: SessionFetch, method: string, path: string, body: unknown): Promise<Response> {
+// Every lease request names the slot: the host keeps one lease per slot.
+async function call(host: SessionHost, fetchImpl: SessionFetch, method: string, path: string, body: Record<string, unknown>): Promise<Response> {
   const h = headers(host, { "Content-Type": "application/json" });
-  return fetchImpl(`${host.url}${path}`, { method, headers: h, body: JSON.stringify(body) });
+  return fetchImpl(`${host.url}${path}`, { method, headers: h, body: JSON.stringify({ ...body, slot: host.slot }) });
 }
 
 // Take the lease, or renew it: the same call. → the lease's session id.

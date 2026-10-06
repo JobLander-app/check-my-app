@@ -563,6 +563,15 @@ model GeneratedTest {
   @@index([appSlug])
 }
 
+// ─── Session host slots (CHE-426) ────────────────────────────────────────────
+// One browser per team on the session host: a slot is one Chrome there, held
+// by at most one team. "main" is ours. Assigned by src/lib/session-slots.ts.
+model SessionSlot {
+  slot       String    @id
+  teamId     String?   @unique
+  assignedAt DateTime?
+}
+
 // ─── Daily Watch ─────────────────────────────────────────────────────────────
 // frequency: WatchFrequency — see src/lib/enums.ts
 

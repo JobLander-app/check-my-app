@@ -41,6 +41,7 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
+import { sessionSlotForRun } from "@/lib/session-slots";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -244,13 +245,17 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // browser — would meet the sign-in page and call it the product, so a
     // session run takes none of those shortcuts: it walks, in the session.
     const isSession = isSessionTarget(run);
+    // CHE-426: which browser on the host — the run's team's slot. Asked once,
+    // as a step, so a replayed workflow names the same slot; a team with no
+    // slot fails the run with an internal reason (rule 4), never borrows one.
+    const sessionSlot = isSession ? await step.do("session-slot", () => sessionSlotForRun(env.db, run.id)) : "main";
     // The host is leased to one run at a time. Given back at every way out of
     // this function; the lease's own expiry is the backstop. Never fails a run.
     const releaseSessionHost = async (stepName: string) => {
       if (!isSession) return;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings), run.id);
+          return await releaseSession(sessionHost(env.bindings, sessionSlot), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -268,7 +273,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, sessionSlot), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
