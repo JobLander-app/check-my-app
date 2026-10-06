@@ -19,6 +19,8 @@ export const appPath = {
   schedule: (appId: string) => `/health/apps/${appId}/settings/schedule`,
   section: (appId: string, section: string) => `/health/apps/${appId}/settings/${section}`,
   check: (appId: string, runNumber: number) => `/health/apps/${appId}/checks/${runNumber}`,
+  // CHE-419: where a person signs in to the store an app lives in.
+  signIn: (appId: string) => `/health/apps/${appId}/sign-in`,
 };
 
 // Where a check opens from inside the app (CHE-371): on its app's page tree,

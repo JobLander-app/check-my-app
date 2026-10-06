@@ -9,8 +9,8 @@
 // sat on accounts.shopify.com/lookup?rid=… for an hour and Shopify had
 // expired the rid.
 //
-// What it does, only while no check holds the browser (the session server's
-// lease is null — a check's own tab is never touched):
+// What it does (while a check holds the browser — the session server's lease
+// is set — it only keeps or opens, and closes nothing):
 //   - a tab already in the admin (admin.shopify.com) is kept;
 //   - else a sign-in tab younger than STALE_MINUTES is kept — the person may
 //     be in the middle of signing in, and a viewer reconnect must not wipe it;
@@ -37,6 +37,7 @@
 //   argv --plan            print the decision, change nothing
 
 import { appendFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
 const CDP = process.env.DOOR_CDP ?? "http://127.0.0.1:9222";
@@ -61,7 +62,7 @@ const isChromeUi = (t) => t.url.startsWith("chrome://") && !isBlank(t);
 // The decision, apart from the browser: tabs (page targets in /json order, each
 // with ageMinutes or null) → { keep, open, close }. Pure, so --plan and the
 // self-test read the same rule the live run acts on.
-export function plan(tabs) {
+export function plan(tabs, storeUrl = STORE_URL) {
   const pages = tabs.filter((t) => t.type === "page" && !isChromeUi(t));
   // The person's admin tab is the one that has been open longest — a probe's
   // or a check's is minutes old at most.
@@ -73,11 +74,11 @@ export function plan(tabs) {
   const closable = (t) =>
     (isSignIn(t) && old(t, STALE_MINUTES)) || ((isAdmin(t) || isBlank(t)) && old(t, MIN_CLOSE_MINUTES));
   const close = pages.filter((t) => t !== keep && closable(t)).map((t) => t.id);
-  return { keep: keep?.id ?? null, open: keep ? null : STORE_URL, close };
+  return { keep: keep?.id ?? null, open: keep ? null : storeUrl, close };
 }
 
-async function json(path, init) {
-  const response = await fetch(`${CDP}${path}`, init);
+async function json(cdp, path, init) {
+  const response = await fetch(`${cdp}${path}`, init);
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
   return response.headers.get("content-type")?.includes("json") ? response.json() : response.text();
 }
@@ -110,7 +111,7 @@ function ageMinutes(target) {
   });
 }
 
-async function leaseHeld() {
+async function leaseHeldOverHttp() {
   const token = process.env.SESSION_SERVER_TOKEN;
   if (!token) throw new Error("SESSION_SERVER_TOKEN is not set");
   const response = await fetch(`${SERVER}/state`, { headers: { authorization: `Bearer ${token}` } });
@@ -119,42 +120,54 @@ async function leaseHeld() {
   return state.lease !== null;
 }
 
-async function main() {
-  const dry = process.argv.includes("--plan");
+// The door itself, shared by the VNC trigger (main) and the live view
+// (viewer.mjs, which runs inside the session server and asks its lease book
+// directly). Returns the log line; `keep` — the tab the person is given — is
+// on it, unlogged, whenever one was kept or opened.
+//
+// While a check holds the browser nothing is closed (its tabs are never ours
+// to touch), but the person is still given a tab: kept, or opened beside the
+// check's — a new tab disturbs nobody.
+export async function openDoor({ dry = false, cdp = CDP, leaseHeld = leaseHeldOverHttp, storeUrl = STORE_URL, log = LOG } = {}) {
   const at = new Date().toISOString();
   const line = { at };
   try {
-    if (await leaseHeld()) {
-      line.skipped = "a check holds the browser";
-    } else {
-      const targets = await json("/json");
-      const tabs = [];
-      for (const t of targets) {
-        if (t.type !== "page" || isChromeUi(t)) continue;
-        const relevant = isAdmin(t) || isSignIn(t) || isBlank(t);
-        tabs.push({ id: t.id, type: t.type, url: t.url, ageMinutes: relevant ? await ageMinutes(t) : null });
+    const held = await leaseHeld();
+    if (held) line.skipped = "a check holds the browser";
+    const targets = await json(cdp, "/json");
+    const tabs = [];
+    for (const t of targets) {
+      if (t.type !== "page" || isChromeUi(t)) continue;
+      const relevant = isAdmin(t) || isSignIn(t) || isBlank(t);
+      tabs.push({ id: t.id, type: t.type, url: t.url, ageMinutes: relevant ? await ageMinutes(t) : null });
+    }
+    const decision = plan(tabs, storeUrl);
+    if (held) decision.close = [];
+    line.tabs = tabs.map((t) => ({ host: hostOf(t.url) || t.url.slice(0, 20), age: t.ageMinutes }));
+    line.decision = { keep: decision.keep !== null, open: decision.open !== null, close: decision.close.length };
+    if (!dry) {
+      // Asked again: a check that took the lease while we measured ages is
+      // left its browser. (Its tab would be too young to close anyway.)
+      if (decision.close.length && (await leaseHeld())) {
+        line.skipped = "a check took the browser while the tabs were read";
+        decision.close = [];
       }
-      const decision = plan(tabs);
-      line.tabs = tabs.map((t) => ({ host: hostOf(t.url) || t.url.slice(0, 20), age: t.ageMinutes }));
-      line.decision = { keep: decision.keep !== null, open: decision.open !== null, close: decision.close.length };
-      if (!dry) {
-        // Asked again: a check that took the lease while we measured ages is
-        // left its browser. (Its tab would be too young to close anyway.)
-        if (decision.close.length && (await leaseHeld())) {
-          line.skipped = "a check took the browser while the tabs were read";
-        } else {
-          let keep = decision.keep;
-          if (decision.open) keep = (await json(`/json/new?${decision.open}`, { method: "PUT" })).id;
-          for (const id of decision.close) await json(`/json/close/${id}`).catch(() => {});
-          if (keep) await json(`/json/activate/${keep}`).catch(() => {});
-        }
-      }
+      let keep = decision.keep;
+      if (decision.open) keep = (await json(cdp, `/json/new?${decision.open}`, { method: "PUT" })).id;
+      for (const id of decision.close) await json(cdp, `/json/close/${id}`).catch(() => {});
+      if (keep) await json(cdp, `/json/activate/${keep}`).catch(() => {});
+      if (keep) Object.defineProperty(line, "keep", { value: keep, enumerable: false });
     }
   } catch (error) {
     line.error = String(error.message).split("\n")[0].slice(0, 200);
   }
   if (dry) line.dry = true;
-  if (!dry) await appendFile(LOG, JSON.stringify(line) + "\n").catch(() => {});
+  if (!dry && log) await appendFile(log, JSON.stringify(line) + "\n").catch(() => {});
+  return line;
+}
+
+async function main() {
+  const line = await openDoor({ dry: process.argv.includes("--plan") });
   console.log(JSON.stringify(line));
   // A failure is a failed run, so session-door.service tries again (Restart=
   // on-failure, a few times) instead of spending the viewer's connect on it
@@ -190,5 +203,7 @@ function selfTest() {
   process.exit(failed ? 1 : 0);
 }
 
-if (process.argv.includes("--self-test")) selfTest();
-else main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.argv.includes("--self-test")) selfTest();
+  else main();
+}

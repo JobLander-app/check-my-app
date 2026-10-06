@@ -299,15 +299,33 @@ export async function startSessionServer({
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const token = process.env.SESSION_SERVER_TOKEN;
+  const viewSecret = process.env.SESSION_VIEW_SECRET;
   delete process.env.SESSION_SERVER_TOKEN;
-  // Never the token itself — only whether one arrived.
-  console.log(`[session-server] boot node=${process.version} token=${typeof token === "string" ? token.length : 0}ch`);
+  delete process.env.SESSION_VIEW_SECRET;
+  // Never the secrets themselves — only whether they arrived.
+  console.log(`[session-server] boot node=${process.version} token=${typeof token === "string" ? token.length : 0}ch view=${typeof viewSecret === "string" ? viewSecret.length : 0}ch`);
+  const cdp = process.env.SESSION_SERVER_CDP ?? "http://127.0.0.1:9222";
   const started = await startSessionServer({
     token,
     port: Number(process.env.SESSION_SERVER_PORT ?? 9090),
-    cdp: process.env.SESSION_SERVER_CDP ?? "http://127.0.0.1:9222",
+    cdp,
     probeLog: process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl",
   });
   console.log(`[session-server] listening on 127.0.0.1:${started.port}`);
-  process.on("SIGTERM", () => void started.close().finally(() => process.exit(0)));
+  // CHE-419: the live view a person signs in through, on its own port and
+  // hostname (viewer.mjs). Off until the secret is set.
+  let viewer = null;
+  if (viewSecret) {
+    const { startViewer } = await import("./viewer.mjs");
+    viewer = await startViewer({
+      secret: viewSecret,
+      origins: (process.env.VIEW_ORIGINS ?? "https://checkmyapp.dev").split(",").map((o) => o.trim()).filter(Boolean),
+      cdp,
+      port: Number(process.env.SESSION_VIEW_PORT ?? 9091),
+      slot: process.env.SESSION_SLOT ?? "main",
+      leaseHeld: async () => started.book.current() !== null,
+    });
+    console.log(`[session-server] viewer on 127.0.0.1:${viewer.port}`);
+  }
+  process.on("SIGTERM", () => void Promise.all([started.close(), viewer?.close()]).finally(() => process.exit(0)));
 }
