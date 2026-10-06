@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { TeamGitHub } from "@/lib/github-mapping";
-import { OFFERED_POLICIES, POLICY_LABELS } from "@/lib/github-mapping";
+import { GITHUB_PANEL_COPY as COPY, OFFERED_POLICIES, POLICY_LABELS, repoStatusLine } from "@/lib/github-mapping";
 import { setGitHubRepo } from "@/app/(app)/settings/integrations/actions";
 
 // The GitHub App on Integrations (CHE-369): install it once, then say which
@@ -10,7 +10,8 @@ import { setGitHubRepo } from "@/app/(app)/settings/integrations/actions";
 //
 // Server component; each row is a plain form posting to a server action, so
 // it works before any script loads. One row per repository, wrapping on a
-// phone — no table that scrolls sideways.
+// phone — no table that scrolls sideways. Every sentence comes from
+// src/lib/github-mapping.ts, which the language gates read.
 export function GitHubAppPanel({
   github,
   canConnect,
@@ -26,13 +27,9 @@ export function GitHubAppPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 basis-64 space-y-1">
           <p className="text-sm font-medium text-fg">
-            GitHub App <span className="text-xs font-normal text-fg-faint">· every deploy checked, no YAML</span>
+            {COPY.title} <span className="text-xs font-normal text-fg-faint">· {COPY.tagline}</span>
           </p>
-          <p className="text-xs text-fg-muted">
-            {installed
-              ? "Choose which app each repository deploys. A successful production deploy of it starts a check of that app, and the verdict appears on the commit."
-              : "Install it on the GitHub account your apps deploy from. Each successful production deploy is then checked, and the verdict appears on the commit."}
-          </p>
+          <p className="text-xs text-fg-muted">{installed ? COPY.installedIntro : COPY.emptyIntro}</p>
         </div>
         {canConnect && installable && (
           <Link
@@ -40,22 +37,22 @@ export function GitHubAppPanel({
             prefetch={false}
             className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
           >
-            {installed ? "Add an account →" : "Install →"}
+            {installed ? COPY.addAccount : COPY.install}
           </Link>
         )}
       </div>
 
-      {!installable && !installed && <p className="text-xs text-fg-faint">The GitHub App isn&apos;t available yet.</p>}
-      {installable && !canConnect && !installed && <p className="text-xs text-fg-faint">An admin of the team installs it.</p>}
+      {!installable && !installed && <p className="text-xs text-fg-faint">{COPY.unavailable}</p>}
+      {installable && !canConnect && !installed && <p className="text-xs text-fg-faint">{COPY.adminInstalls}</p>}
 
       {github.installations.map((inst) => (
         <div key={inst.id} className="space-y-2">
           <p className="font-mono text-xs text-fg-faint">
             {inst.accountLogin}
-            {inst.suspended && <span className="text-status-risky"> · suspended on GitHub — nothing is checked</span>}
+            {inst.suspended && <span className="text-status-risky">{` · ${COPY.suspended}`}</span>}
           </p>
           {inst.repos.length === 0 ? (
-            <p className="text-xs text-fg-faint">No repositories yet — choose them in the App&apos;s settings on GitHub.</p>
+            <p className="text-xs text-fg-faint">{COPY.noRepos}</p>
           ) : (
             <ul className="divide-y divide-ink-700">
               {inst.repos.map((repo) => {
@@ -66,7 +63,7 @@ export function GitHubAppPanel({
                       <input type="hidden" name="repoId" value={repo.id} />
                       <span className="min-w-0 flex-1 basis-48 break-all font-mono text-sm text-fg">{repo.repoFullName}</span>
                       <label className="sr-only" htmlFor={`app-${repo.id}`}>
-                        App this repository deploys
+                        {COPY.appLabel}
                       </label>
                       <select
                         id={`app-${repo.id}`}
@@ -75,7 +72,7 @@ export function GitHubAppPanel({
                         disabled={!canConnect}
                         className="min-w-0 max-w-full rounded-md border border-ink-600 bg-ink-850 px-2 py-1.5 text-xs text-fg"
                       >
-                        <option value="">Not an app here</option>
+                        <option value="">{COPY.notAnApp}</option>
                         {github.apps.map((a) => (
                           <option key={a.id} value={a.id}>
                             {a.appSlug}
@@ -83,7 +80,7 @@ export function GitHubAppPanel({
                         ))}
                       </select>
                       <label className="sr-only" htmlFor={`policy-${repo.id}`}>
-                        When its deploys are checked
+                        {COPY.policyLabel}
                       </label>
                       <select
                         id={`policy-${repo.id}`}
@@ -103,15 +100,11 @@ export function GitHubAppPanel({
                           type="submit"
                           className="rounded-md border border-ink-600 px-2.5 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                         >
-                          Save
+                          {COPY.save}
                         </button>
                       )}
                       <span className="basis-full text-xs text-fg-faint">
-                        {app && repo.policy === "production"
-                          ? `Checked on every production deploy — ${app.priceLine}.`
-                          : app
-                            ? `Deploys of ${app.appSlug} are not checked.`
-                            : "Not mapped — its deploys start nothing."}
+                        {repoStatusLine({ appSlug: app?.appSlug ?? null, priceLine: app?.priceLine ?? null, policy: repo.policy, suspended: inst.suspended })}
                       </span>
                     </form>
                   </li>

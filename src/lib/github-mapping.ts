@@ -83,6 +83,49 @@ export async function teamGitHub(db: PrismaClient, team: { id: string; plan: Use
   };
 }
 
+// Every sentence the GitHub App panel shows (src/components/github-app-panel.tsx),
+// here so scripts/verify-github-app.ts can run them through the verdict's own
+// language gates (CODE_STANDARDS R18).
+export const GITHUB_PANEL_COPY = {
+  title: "GitHub App",
+  tagline: "every deploy checked, no YAML",
+  installedIntro:
+    "Choose which app each repository deploys. A successful production deploy of it starts a check of that app, and the verdict appears on the commit.",
+  emptyIntro:
+    "Install it on the GitHub account your apps deploy from. Each successful production deploy is then checked, and the verdict appears on the commit.",
+  install: "Install →",
+  addAccount: "Add an account →",
+  unavailable: "The GitHub App isn't available yet.",
+  adminInstalls: "An admin of the team installs it.",
+  suspended: "suspended on GitHub — nothing is checked",
+  noRepos: "No repositories yet — choose them in the App's settings on GitHub.",
+  appLabel: "App this repository deploys",
+  policyLabel: "When its deploys are checked",
+  notAnApp: "Not an app here",
+  save: "Save",
+} as const;
+
+// The line under a repository's row: what its deploys do now. A suspended
+// installation starts nothing, whatever the row says (src/lib/github-webhook.ts
+// answers "suspended" before any run), so it never promises a check.
+export function repoStatusLine(row: { appSlug: string | null; priceLine: string | null; policy: OfferedPolicy; suspended: boolean }): string {
+  if (!row.appSlug) return "Not mapped — its deploys start nothing.";
+  if (row.suspended) return `Deploys of ${row.appSlug} are not checked while the App is suspended on GitHub.`;
+  if (row.policy === "production") return `Checked on every production deploy — ${row.priceLine}.`;
+  return `Deploys of ${row.appSlug} are not checked.`;
+}
+
+export function allPanelSentences(): string[] {
+  return [
+    ...Object.values(GITHUB_PANEL_COPY),
+    ...Object.values(POLICY_LABELS),
+    repoStatusLine({ appSlug: null, priceLine: null, policy: "production", suspended: false }),
+    repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "production", suspended: false }),
+    repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "off", suspended: false }),
+    repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "production", suspended: true }),
+  ];
+}
+
 export type MappingInput = { repoId: string; appId: string | null; policy: OfferedPolicy };
 
 // The form → a mapping, or the reason it is not one. An empty app means

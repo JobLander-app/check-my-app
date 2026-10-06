@@ -39,7 +39,11 @@ import {
   type Fetch,
 } from "../src/lib/github-app";
 import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
-import { OFFERED_POLICIES, mappingFromForm, priceLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
+import { OFFERED_POLICIES, allPanelSentences, mappingFromForm, priceLine, repoStatusLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
+import { hasEnvironmentLeak, hasHomework, narrationIn } from "../src/lib/verdict-language";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -343,6 +347,27 @@ function tables() {
     priceLine(null, { low: 0.3, high: 1.5 }),
   ], ["usually $0.48–$0.80 a check", "usually $0.61 a check", "a check is typically $0.30–$1.50"]);
   eq("the switch offers production and off — previews arrive with their runs", [...OFFERED_POLICIES], ["production", "off"]);
+
+  // The panel's words (R18): every sentence through the verdict's own gates,
+  // and none typed straight into its JSX.
+  const sentences = allPanelSentences();
+  check("the panel's sentences are listed", sentences.length >= 18, String(sentences.length));
+  for (const s of sentences) {
+    const found = [hasHomework(s) && "homework", hasEnvironmentLeak(s) && "environment", narrationIn(s).length > 0 && "narration", /\b(cost|multiplier|mark-?up|margin|tokens?)\b/i.test(s) && "cost word"].filter(Boolean);
+    check(`panel, clean: “${s.slice(0, 60)}${s.length > 60 ? "…" : ""}”`, found.length === 0, found.join(", "));
+  }
+  eq("a suspended installation never promises a check", repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48 a check", policy: "production", suspended: true }), "Deploys of shop.example are not checked while the App is suspended on GitHub.");
+  // Read with the TypeScript parser: a JSX text node with a word in it is a
+  // sentence typed into the component.
+  const file = "src/components/github-app-panel.tsx";
+  const sf = ts.createSourceFile(file, readFileSync(join(process.cwd(), file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const typed: string[] = [];
+  const visit = (n: ts.Node) => {
+    if (ts.isJsxText(n) && /[A-Za-z]{2,}/.test(n.text)) typed.push(n.text.trim());
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  check("the panel types no sentence into its JSX", typed.length === 0, typed.join(" | "));
   const now = Date.parse("2026-10-06T12:00:00Z");
   eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
     installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
