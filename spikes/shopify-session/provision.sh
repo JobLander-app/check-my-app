@@ -16,8 +16,9 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -q
 # tinyproxy: the local forwarder to the residential egress (proxy-render.sh).
+# jq: proxy-render.sh reads the metadata token and the secret with it.
 # xsel: reads the display's clipboard when a paste does not land (CHE-419).
-apt-get install -y -q ca-certificates curl gnupg xvfb x11vnc websockify nftables tinyproxy xsel \
+apt-get install -y -q ca-certificates curl gnupg jq xvfb x11vnc websockify nftables tinyproxy xsel \
   fonts-liberation fonts-noto-color-emoji
 
 install -d -m 0755 /etc/apt/keyrings

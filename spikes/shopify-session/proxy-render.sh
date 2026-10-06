@@ -36,12 +36,29 @@ response="$(curl -sS -m 20 -w '\n%{http_code}' -H "Authorization: Bearer $token"
 code="${response##*$'\n'}"
 body="${response%$'\n'*}"
 
+# Chrome takes --proxy-server at start only. When the mode flips — a proxy
+# added, or removed — a Chrome already running keeps the old flag and either
+# bypasses the new egress or points at a forwarder that is gone (Codex on
+# #283). It is restarted then, and only then: that ends the person's sign-in,
+# so it happens only on the deliberate change of mode, never on a rerender with
+# the same mode. --no-block: session-chrome is ordered after this unit, and
+# waiting for its restart from inside this unit's start would deadlock.
+before="$(cat /etc/session-host/proxy.env 2>/dev/null || true)"
+restart_chrome_if_mode_changed() {
+  after="$(cat /etc/session-host/proxy.env 2>/dev/null || true)"
+  if [ "$before" != "$after" ] && systemctl is-active -q session-chrome; then
+    echo "[proxy-render] egress mode changed while Chrome ran: restarting Chrome — the sign-in must be done again"
+    systemctl --no-block try-restart session-chrome
+  fi
+}
+
 case "$code" in
   200) ;;
   404)
     rm -f /etc/session-host/proxy.env
     systemctl stop tinyproxy 2>/dev/null || true
     echo "[proxy-render] no session-host-proxy secret: direct egress"
+    restart_chrome_if_mode_changed
     exit 0 ;;
   *) fail "Secret Manager answered HTTP $code (is roles/secretmanager.secretAccessor granted on session-host-proxy?)" ;;
 esac
@@ -71,3 +88,4 @@ printf 'CHROME_PROXY_ARGS=--proxy-server=http://127.0.0.1:3128\n' >/etc/session-
 chmod 0644 /etc/session-host/proxy.env
 systemctl restart tinyproxy
 echo "[proxy-render] upstream ${rest##*@}; chrome goes through 127.0.0.1:3128"
+restart_chrome_if_mode_changed

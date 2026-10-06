@@ -21,10 +21,21 @@ directory is the instrument that measures it.
 The VM's own address is Google Cloud's, and Cloudflare challenges it on
 accounts.shopify.com in a loop — for a person as much as for a script
 (2026-10-04). Through the residential egress (IPRoyal, Germany, sticky 7 days,
-bought by the owner) the plain sign-in form appears. The proxy is the host's
-Chrome's egress for a human sign-in only; a check's own browser contexts never
-use one. The firewall lets `session-browser` open exactly one local port,
-`3128`, and tinyproxy forwards nothing locally.
+bought by the owner) the plain sign-in form appears.
+
+It is this machine's egress, so everything in this Chrome goes through it: the
+person's sign-in and the checks that run inside the signed-in session (CHE-389
+— a session check opens its tab in this same browser, and a Shopify session is
+used from the network it lives on). That is the same as the PoC on the owner's
+Mac, where the checks went out through his home connection. What never uses a
+proxy is the checker's own browser: Cloudflare Browser Rendering contexts, for
+every ordinary check, are refused one in code. The firewall lets
+`session-browser` open exactly one local port, `3128`, and tinyproxy forwards
+nothing locally.
+
+Switching the mode — adding the secret or removing it — restarts Chrome
+(`proxy-render.sh`): a running Chrome keeps the `--proxy-server` it started
+with. That ends the sign-in. A new upstream URL in the same mode does not.
 
 Nothing on the host listens on a public address: Chrome DevTools (`9222`),
 VNC (`5900`) and noVNC (`6080`) are bound to `127.0.0.1`. The project's
