@@ -44,7 +44,7 @@ import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import type { McpDoor } from "@/lib/started-via";
-import { connectStore } from "@/lib/shopify-connect";
+import { connectApp } from "@/lib/shopify-connect";
 import { appPath } from "@/lib/app-shell";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
@@ -160,11 +160,14 @@ export const toolSchemas = {
     frequency: frequency.optional().describe("How often it is checked; default daily"),
   },
   connect_shopify_app: {
-    store: z
+    app_url: z
       .string()
       .min(1)
-      .max(200)
-      .describe("The store the Shopify app is installed in: its name (my-store), my-store.myshopify.com, or its admin address"),
+      .max(500)
+      .describe(
+        "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
+          "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
+      ),
   },
   update_app: {
     app_id: appId,
@@ -460,25 +463,29 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     },
 
     // CHE-333: a Shopify app lives inside its store's admin, behind a sign-in
-    // only the person may perform. So the agent names the store and hands the
-    // person a link: they sign in on our page and choose the app there, and
-    // its first check starts from that page.
-    async connect_shopify_app(args: { store: string }): Promise<ToolResult> {
+    // only the person may perform. So the agent passes the link to the app in
+    // the admin and hands the person a page: they sign in there, the app is
+    // picked up, and its first check starts from that page.
+    async connect_shopify_app(args: { app_url: string }): Promise<ToolResult> {
       const denied = deny("app.credentials.write");
       if (denied) return denied;
-      const result = await connectStore(db, { userId: caller.user.id, teamId: team.id, plan }, { SESSION_TEAMS: deps.sessionTeams?.() }, args.store);
+      const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, { SESSION_TEAMS: deps.sessionTeams?.() }, args.app_url);
       if ("error" in result) {
         const code = result.code === "duplicate" ? "invalid_input" : result.code;
         return fail(code, result.error, HINTS[code]);
+      }
+      if (result.connected) {
+        return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: "This app is already connected — list_apps has it; start_check checks it." });
       }
       return text({
         ok: true,
         app_id: result.appId,
         store: result.store,
+        app: result.handle,
         sign_in_url: `${deps.origin}${appPath.signIn(result.appId)}`,
         hint:
-          "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password), " +
-          "choose the app, and its first check starts on that page; it is checked daily after that. " +
+          "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password); " +
+          "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
           "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
       });
     },
@@ -911,10 +918,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   connect_shopify_app:
-    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass the store it is installed in; " +
-    "the result's sign_in_url is for the user: they sign in to their store on that page (CheckMyApp never asks for their " +
-    "Shopify password, and neither should you), choose the app, and its first check starts there; after that it is " +
-    "checked daily like any app. Use this instead of create_app for an app inside the Shopify admin.",
+    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass app_url, the link to the app " +
+    "in the admin (the store and the app are both read from it); the result's sign_in_url is for the user: they sign in " +
+    "to their store on that page (CheckMyApp never asks for their Shopify password, and neither should you), the app is " +
+    "picked up and its first check starts there; after that it is checked daily like any app. Use this instead of " +
+    "create_app for an app inside the Shopify admin.",
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +

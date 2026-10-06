@@ -24,14 +24,15 @@ export const SIGN_IN_COPY = {
   cancel: "Cancel",
 } as const;
 
-// /connect/shopify: the store comes first (src/lib/shopify-connect.ts).
+// /connect/shopify: the link to the app inside the store's admin — the store
+// and the app are both read from it (src/lib/shopify-connect.ts).
 export const CONNECT_COPY = {
   title: "Check a Shopify app",
   intro:
-    "Tell us the store your app is installed in. Next you sign in to that store here, the way you always do, and choose " +
-    "the app. Its first check starts right away, and it is checked every day after that.",
-  label: "Your store",
-  placeholder: "my-store.myshopify.com",
+    "Open your app in your store's Shopify admin and paste its address here. Next you sign in to that store here, the way " +
+    "you always do. The app's first check starts right away, and it is checked every day after that.",
+  label: "Link to your app in the Shopify admin",
+  placeholder: "https://admin.shopify.com/store/my-store/apps/my-app",
   submit: "Continue",
   submitting: "Opening…",
 } as const;

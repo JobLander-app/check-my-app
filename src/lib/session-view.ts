@@ -60,22 +60,43 @@ export async function verifyPick(secret: string, token: string, now = Date.now()
   }
 }
 
-// What a person types as their store: "prod-release-1", "prod-release-1.myshopify.com",
-// "https://prod-release-1.myshopify.com/", or an admin address
-// "https://admin.shopify.com/store/prod-release-1/…". The handle, or null.
-export function parseStoreInput(raw: string): string | null {
-  const text = raw.trim().toLowerCase();
+// The link to an app inside a store's admin, as a person copies it from the
+// address bar: https://admin.shopify.com/store/<store>/apps/<handle>[/…], or
+// the older https://<store>.myshopify.com/admin/apps/<handle>[/…]; with or
+// without the scheme. The store and the app's handle, or null.
+export function parseAppLink(raw: string): { store: string; handle: string } | null {
+  const text = raw.trim();
   if (!text) return null;
-  const admin = storeOfAdminUrl(text.startsWith("http") ? text : `https://${text}`);
-  if (admin) return admin;
-  let host = text;
+  let url: URL;
   try {
-    host = new URL(text.startsWith("http") ? text : `https://${text}`).hostname;
+    url = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`);
   } catch {
     return null;
   }
-  const handle = host.endsWith(".myshopify.com") ? host.slice(0, -".myshopify.com".length) : host.includes(".") ? null : host;
-  return handle && /^[a-z0-9][a-z0-9-]{0,62}$/.test(handle) ? handle : null;
+  const host = url.hostname.toLowerCase();
+  const STORE = "([a-z0-9][a-z0-9-]{0,62})";
+  const HANDLE = "([a-z0-9][a-z0-9-]{0,99})";
+  if (host === "admin.shopify.com") {
+    const m = new RegExp(`^/store/${STORE}/apps/${HANDLE}(?:/|$)`).exec(url.pathname.toLowerCase());
+    return m ? { store: m[1], handle: m[2] } : null;
+  }
+  if (host.endsWith(".myshopify.com")) {
+    const store = host.slice(0, -".myshopify.com".length);
+    const m = new RegExp(`^/admin/apps/${HANDLE}(?:/|$)`).exec(url.pathname.toLowerCase());
+    return m && new RegExp(`^${STORE}$`).test(store) ? { store, handle: m[1] } : null;
+  }
+  return null;
+}
+
+// The app's handle in a saved admin address, or null (a store's own address).
+export function appHandleOfAdminUrl(targetUrl: string): string | null {
+  try {
+    const url = new URL(targetUrl);
+    if (url.hostname !== "admin.shopify.com") return null;
+    return /^\/store\/[a-z0-9][a-z0-9-]{0,62}\/apps\/([a-z0-9][a-z0-9-]{0,99})(?:\/|$)/.exec(url.pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export const shopifyAdminUrl = (store: string, handle?: string) =>
