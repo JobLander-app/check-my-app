@@ -163,6 +163,7 @@ export async function startViewer({
   // fixture's page.
   signedIn = (href, store) => signedInStore(href) === storeAdminUrl(store)?.split("/").pop(),
   signedInSettleMs = 3_000,
+  commandTimeoutMs = 5_000,
   log = (line) => console.log(`[viewer] ${JSON.stringify(line)}`),
 } = {}) {
   if (typeof secret !== "string" || secret.length < 32) throw new Error("A view secret of at least 32 characters is required");
@@ -215,11 +216,24 @@ export async function startViewer({
     const out = (value) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(value));
     };
+    // Every command gets an answer or gives up: a command sent to a tab that
+    // closed meanwhile (the click that closes a pop-up, sent to the pop-up) is
+    // never answered, and input waits in order — so one such click held every
+    // later key and paste back for good (CI, 2026-10-06; Linux closes the
+    // window faster than the click's answer).
     const send = (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
         if (!upstream || upstream.readyState !== WebSocket.OPEN) return reject(new Error("browser connection closed"));
         const id = nextId++;
-        pending.set(id, { resolve, reject });
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`${method}: no answer`));
+        }, commandTimeoutMs);
+        timer.unref?.();
+        pending.set(id, {
+          resolve: (value) => { clearTimeout(timer); resolve(value); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        });
         upstream.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       });
 
@@ -269,6 +283,11 @@ export async function startViewer({
       await send("Page.enable", {}, sessionId);
       await send("Runtime.enable", {}, sessionId).catch(() => {});
       await keyless(stack[stack.length - 1]);
+      // The shown tab behaves as focused whatever the window system thinks:
+      // after a pop-up closes, a browser whose window focus went elsewhere
+      // takes the person's click and drops their typing (seen on CI's
+      // headless Chrome, 2026-10-06).
+      await send("Emulation.setFocusEmulationEnabled", { enabled: true }, sessionId).catch(() => {});
       await send("Target.activateTarget", { targetId }).catch(() => {});
       await send("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: 1600, maxHeight: 1200, everyNthFrame: 1 }, sessionId);
       const { result } = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }, sessionId).catch(() => ({ result: {} }));
@@ -424,6 +443,7 @@ export async function startViewer({
           const back = top();
           void send("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: 1600, maxHeight: 1200, everyNthFrame: 1 }, back.sessionId).catch(() => {});
           void send("Target.activateTarget", { targetId: back.targetId }).catch(() => {});
+          void send("Page.bringToFront", {}, back.sessionId).catch(() => {});
           // Where the tab is now: a "sign in with …" window often moves its
           // opener to the admin before it closes, and that navigation was not
           // the shown tab's while the window was on top (Codex on #287).
