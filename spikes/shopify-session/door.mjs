@@ -58,6 +58,14 @@ const isAdmin = (t) => hostOf(t.url) === "admin.shopify.com";
 const isSignIn = (t) => hostOf(t.url) === "accounts.shopify.com";
 const isBlank = (t) => t.url === "about:blank" || t.url.startsWith("chrome://newtab");
 const isChromeUi = (t) => t.url.startsWith("chrome://") && !isBlank(t);
+// This store's admin, and no other's (Codex on #287: a viewer for store A was
+// given the oldest admin tab, which could be store B's). Its address is the
+// store's admin address followed by nothing, a path, a query or a fragment.
+const isStoreAdmin = (t, storeUrl) => {
+  if (!isAdmin(t) || !t.url.startsWith(storeUrl)) return false;
+  const rest = t.url.slice(storeUrl.length);
+  return rest === "" || /^[/?#]/.test(rest);
+};
 
 // The decision, apart from the browser: tabs (page targets in /json order, each
 // with ageMinutes or null) → { keep, open, close }. Pure, so --plan and the
@@ -66,13 +74,13 @@ export function plan(tabs, storeUrl = STORE_URL) {
   const pages = tabs.filter((t) => t.type === "page" && !isChromeUi(t));
   // The person's admin tab is the one that has been open longest — a probe's
   // or a check's is minutes old at most.
-  const admins = pages.filter(isAdmin);
+  const admins = pages.filter((t) => isStoreAdmin(t, storeUrl));
   const admin = [...admins].sort((a, b) => (b.ageMinutes ?? -1) - (a.ageMinutes ?? -1))[0];
   const freshSignIn = pages.find((t) => isSignIn(t) && t.ageMinutes !== null && t.ageMinutes < STALE_MINUTES);
   const keep = admin ?? freshSignIn ?? null;
   const old = (t, minutes) => t.ageMinutes !== null && t.ageMinutes >= minutes;
   const closable = (t) =>
-    (isSignIn(t) && old(t, STALE_MINUTES)) || ((isAdmin(t) || isBlank(t)) && old(t, MIN_CLOSE_MINUTES));
+    (isSignIn(t) && old(t, STALE_MINUTES)) || ((isStoreAdmin(t, storeUrl) || isBlank(t)) && old(t, MIN_CLOSE_MINUTES));
   const close = pages.filter((t) => t !== keep && closable(t)).map((t) => t.id);
   return { keep: keep?.id ?? null, open: keep ? null : storeUrl, close };
 }
@@ -123,40 +131,39 @@ async function leaseHeldOverHttp() {
 // The door itself, shared by the VNC trigger (main) and the live view
 // (viewer.mjs, which runs inside the session server and asks its lease book
 // directly). Returns the log line; `keep` — the tab the person is given — is
-// on it, unlogged, whenever one was kept or opened.
-//
-// While a check holds the browser nothing is closed (its tabs are never ours
-// to touch), but the person is still given a tab: kept, or opened beside the
-// check's — a new tab disturbs nobody.
+// on it, unlogged, whenever one was kept or opened. While a check holds the
+// browser it does nothing at all: the live view refuses the person before it
+// gets here, and the VNC door leaves the screen as it is.
 export async function openDoor({ dry = false, cdp = CDP, leaseHeld = leaseHeldOverHttp, storeUrl = STORE_URL, log = LOG } = {}) {
   const at = new Date().toISOString();
   const line = { at };
   try {
-    const held = await leaseHeld();
-    if (held) line.skipped = "a check holds the browser";
-    const targets = await json(cdp, "/json");
-    const tabs = [];
-    for (const t of targets) {
-      if (t.type !== "page" || isChromeUi(t)) continue;
-      const relevant = isAdmin(t) || isSignIn(t) || isBlank(t);
-      tabs.push({ id: t.id, type: t.type, url: t.url, ageMinutes: relevant ? await ageMinutes(t) : null });
-    }
-    const decision = plan(tabs, storeUrl);
-    if (held) decision.close = [];
-    line.tabs = tabs.map((t) => ({ host: hostOf(t.url) || t.url.slice(0, 20), age: t.ageMinutes }));
-    line.decision = { keep: decision.keep !== null, open: decision.open !== null, close: decision.close.length };
-    if (!dry) {
-      // Asked again: a check that took the lease while we measured ages is
-      // left its browser. (Its tab would be too young to close anyway.)
-      if (decision.close.length && (await leaseHeld())) {
-        line.skipped = "a check took the browser while the tabs were read";
-        decision.close = [];
+    if (await leaseHeld()) {
+      line.skipped = "a check holds the browser";
+    } else {
+      const targets = await json(cdp, "/json");
+      const tabs = [];
+      for (const t of targets) {
+        if (t.type !== "page" || isChromeUi(t)) continue;
+        const relevant = isAdmin(t) || isSignIn(t) || isBlank(t);
+        tabs.push({ id: t.id, type: t.type, url: t.url, ageMinutes: relevant ? await ageMinutes(t) : null });
       }
-      let keep = decision.keep;
-      if (decision.open) keep = (await json(cdp, `/json/new?${decision.open}`, { method: "PUT" })).id;
-      for (const id of decision.close) await json(cdp, `/json/close/${id}`).catch(() => {});
-      if (keep) await json(cdp, `/json/activate/${keep}`).catch(() => {});
-      if (keep) Object.defineProperty(line, "keep", { value: keep, enumerable: false });
+      const decision = plan(tabs, storeUrl);
+      line.tabs = tabs.map((t) => ({ host: hostOf(t.url) || t.url.slice(0, 20), age: t.ageMinutes }));
+      line.decision = { keep: decision.keep !== null, open: decision.open !== null, close: decision.close.length };
+      if (!dry) {
+        // Asked again: a check that took the lease while we measured ages is
+        // left its browser. (Its tab would be too young to close anyway.)
+        if (await leaseHeld()) {
+          line.skipped = "a check took the browser while the tabs were read";
+        } else {
+          let keep = decision.keep;
+          if (decision.open) keep = (await json(cdp, `/json/new?${decision.open}`, { method: "PUT" })).id;
+          for (const id of decision.close) await json(cdp, `/json/close/${id}`).catch(() => {});
+          if (keep) await json(cdp, `/json/activate/${keep}`).catch(() => {});
+          if (keep) Object.defineProperty(line, "keep", { value: keep, enumerable: false });
+        }
+      }
     }
   } catch (error) {
     line.error = String(error.message).split("\n")[0].slice(0, 200);
@@ -178,12 +185,17 @@ async function main() {
 // Self-test of the rule: node door.mjs --self-test
 function selfTest() {
   const t = (id, url, ageMinutes = null) => ({ id, type: "page", url, ageMinutes });
+  const STORE_URL = "https://admin.shopify.com/store/x";
   const cases = [
     ["signed in: keep the admin, close an old blank and a stale sign-in", [t("a", "https://admin.shopify.com/store/x", 300), t("b", "about:blank", 30), t("c", "https://accounts.shopify.com/lookup?rid=1", 90)], { keep: "a", open: null, close: ["b", "c"] }],
     ["a stale sign-in only: open a fresh one, close the stale", [t("c", "https://accounts.shopify.com/lookup?rid=1", 61)], { keep: null, open: STORE_URL, close: ["c"] }],
     ["a sign-in five minutes old: keep it (the person may be typing)", [t("c", "https://accounts.shopify.com/login?rid=2", 5)], { keep: "c", open: null, close: [] }],
     ["a sign-in whose age could not be read: not trusted as fresh, and not closed either", [t("c", "https://accounts.shopify.com/login?rid=2", null)], { keep: null, open: STORE_URL, close: [] }],
     ["nothing at all: open the store", [], { keep: null, open: STORE_URL, close: [] }],
+    // Codex on #287: another store's admin is never the person's tab for this
+    // store, and never closed by this store's door.
+    ["another store's admin tab: not kept, not closed — this store's admin is opened", [t("o", "https://admin.shopify.com/store/other", 300), t("p", "https://admin.shopify.com/store/xy", 300)], { keep: null, open: STORE_URL, close: [] }],
+    ["this store's admin beside another store's: this one is kept", [t("o", "https://admin.shopify.com/store/other", 400), t("a", "https://admin.shopify.com/store/x/orders?x=1", 300)], { keep: "a", open: null, close: [] }],
     ["Chrome's own UI and other sites are left alone", [t("a", "https://admin.shopify.com/store/x", 300), t("u", "chrome://tab-search.top-chrome/"), t("d", "https://help.shopify.com/en")], { keep: "a", open: null, close: [] }],
     ["two old admin tabs: keep the one open longest, close the other", [t("b", "https://admin.shopify.com/store/x/apps", 40), t("a", "https://admin.shopify.com/store/x", 300)], { keep: "a", open: null, close: ["b"] }],
     // Codex on #283: the probe's tab (seconds old) and a check's tab opened
@@ -194,7 +206,7 @@ function selfTest() {
   ];
   let failed = 0;
   for (const [name, tabs, want] of cases) {
-    const got = plan(tabs);
+    const got = plan(tabs, STORE_URL);
     const ok = JSON.stringify(got) === JSON.stringify(want);
     if (!ok) failed++;
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}${ok ? "" : `  →  ${JSON.stringify(got)}`}`);

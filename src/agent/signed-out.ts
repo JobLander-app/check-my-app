@@ -192,7 +192,7 @@ export function signedOutSendId(appId: string, reachedAt: Date | null): string {
 export function signedOutMessage(appSlug: string, host: string, signInUrl: string | null): string {
   return (
     `Проверки ${appSlug} остановились: вход в аккаунт закончился, адрес приложения ведёт на ${host}. ` +
-    `Нужно войти заново в браузере сессии${signInUrl ? ` — ${signInUrl}` : ""}. ` +
+    `Нужно войти заново${signInUrl ? ` — ${signInUrl}` : " в браузере сессии"}. ` +
     "Отвечать не нужно: следующая проверка пойдёт сама, как только вход будет на месте."
   );
 }
@@ -206,7 +206,16 @@ export type OwnerTold =
   // Not sent, or possibly sent — said in `detail`, never retried here.
   | { told: "failed" | "unknown"; sendId: string; detail: string };
 
-type TellBindings = Pick<AgentBindings, "DB" | "TELEGRAM_BOT_TOKEN" | "OWNER_TELEGRAM_CHAT_ID" | "SESSION_SIGN_IN_URL">;
+type TellBindings = Pick<AgentBindings, "DB" | "TELEGRAM_BOT_TOKEN" | "OWNER_TELEGRAM_CHAT_ID" | "SESSION_SIGN_IN_URL" | "APP_URL">;
+
+// CHE-419: where the person signs in again — the app's own sign-in page on
+// checkmyapp.dev (a live view of the session browser, paste that works), not
+// the VNC console. A run with no saved app has no such page; it keeps the
+// configured address.
+export function signInUrlFor(bindings: Pick<TellBindings, "SESSION_SIGN_IN_URL" | "APP_URL">, appId: string | null): string | null {
+  if (appId) return `${(bindings.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/health/apps/${appId}/sign-in`;
+  return bindings.SESSION_SIGN_IN_URL?.trim() || null;
+}
 
 function sendDeps(bindings: TellBindings, token: string): SendDeps {
   return {
@@ -259,7 +268,7 @@ export async function tellOwnerSignedOut(
     const sent = await sendRecorded(
       deps ?? sendDeps(env.bindings, token as string),
       chatId,
-      signedOutMessage(run.appSlug, host, env.bindings.SESSION_SIGN_IN_URL?.trim() || null),
+      signedOutMessage(run.appSlug, host, signInUrlFor(env.bindings, run.appId)),
       sendId,
     );
     return sent.status === "sent" ? { told: "sent", sendId } : { told: "unknown", sendId, detail: sent.warning ?? "outcome unknown" };

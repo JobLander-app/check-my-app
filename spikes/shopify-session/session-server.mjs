@@ -50,6 +50,11 @@ export async function startSessionServer({
   // Told every method the gate refused or answered itself, and in which scope:
   // the first thing to read when a client that used to work stops working.
   onGate = (action, method, scope) => console.log(`[session-server] ${action} ${method} (${scope ?? "unknown session"})`),
+  // CHE-419: a person is signing in through the live view (viewer.mjs). No
+  // check is given the browser meanwhile — the person's clicks and a check's
+  // measurements must not share it (Codex on #287). The check is told 409 and
+  // asks again later, as it does when another check holds the lease.
+  personPresent = () => false,
 } = {}) {
   if (typeof token !== "string" || token.length < 32) throw new Error("A bearer token of at least 32 characters is required");
   const book = new LeaseBook(now);
@@ -110,6 +115,12 @@ export async function startSessionServer({
           browser = (await chrome()).browser;
         } catch {
           send(503, { error: "The browser on the session host is not running" });
+          return;
+        }
+        // A run renewing the lease it already holds keeps it: the person was
+        // refused while it held it, so they cannot be here because of it.
+        if (personPresent() && book.current()?.ownerRunId !== input.ownerRunId) {
+          send(409, { error: "A person is signing in on this host" });
           return;
         }
         const taken = book.take(input.ownerRunId, input.maxDurationSeconds);
@@ -305,16 +316,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // Never the secrets themselves — only whether they arrived.
   console.log(`[session-server] boot node=${process.version} token=${typeof token === "string" ? token.length : 0}ch view=${typeof viewSecret === "string" ? viewSecret.length : 0}ch`);
   const cdp = process.env.SESSION_SERVER_CDP ?? "http://127.0.0.1:9222";
+  // CHE-419: the live view a person signs in through, on its own port and
+  // hostname (viewer.mjs). Off until the secret is set.
+  let viewer = null;
   const started = await startSessionServer({
     token,
     port: Number(process.env.SESSION_SERVER_PORT ?? 9090),
     cdp,
     probeLog: process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl",
+    personPresent: () => viewer?.present() ?? false,
   });
   console.log(`[session-server] listening on 127.0.0.1:${started.port}`);
-  // CHE-419: the live view a person signs in through, on its own port and
-  // hostname (viewer.mjs). Off until the secret is set.
-  let viewer = null;
   if (viewSecret) {
     const { startViewer } = await import("./viewer.mjs");
     viewer = await startViewer({

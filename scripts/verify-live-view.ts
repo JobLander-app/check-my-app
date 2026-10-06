@@ -160,12 +160,14 @@ const debugPort = await freePort();
 const CDP = `http://127.0.0.1:${debugPort}`;
 const browser = await launchProfile(profile, debugPort);
 const log = [];
+let held = false;
 const viewer = await startViewer({
   secret: SECRET,
   origins: [ORIGIN],
   cdp: CDP,
   port: 0,
   adminUrlFor: (store) => (store === "fixture" ? `${SITE}/admin` : null),
+  leaseHeld: async () => held,
   doorLog: null,
   log: (line) => log.push(line),
 });
@@ -232,6 +234,24 @@ await check("no token, a forged one, another origin or another slot: the socket 
   assert.equal(await refused(token({ store: "unknown" }), ORIGIN), true, "a store with no admin address was let in");
 });
 
+// Codex on #287: while a check holds the browser, the person is told so and
+// given nothing — not a tab beside the measurement, never the check's own.
+await check("while a check holds the browser, the viewer is refused with a sentence, and no tab is opened", async () => {
+  held = true;
+  try {
+    const tabsBefore = (await (await fetch(`${CDP}/json`)).json()).length;
+    const w = connect();
+    await w.opened;
+    await w.until(() => w.seen.messages.some((m) => m.t === "error" && /check is running/.test(m.message)), "the refusal");
+    await new Promise<void>((resolve) => { if (w.ws.readyState === WebSocket.CLOSED) resolve(); else w.ws.once("close", () => resolve()); });
+    assert.equal(w.seen.frames, 0, "frames were sent while a check held the browser");
+    assert.equal((await (await fetch(`${CDP}/json`)).json()).length, tabsBefore, "a tab was opened");
+    assert.equal(viewer.present(), false, "a refused viewer still counts as present");
+  } finally {
+    held = false;
+  }
+});
+
 let v;
 await check("a viewer with a token sees the tab: its size, its address, its frames", async () => {
   v = connect();
@@ -239,6 +259,7 @@ await check("a viewer with a token sees the tab: its size, its address, its fram
   await v.until(() => v.seen.messages.some((m) => m.t === "meta" && m.w > 0), "the frame size");
   await v.until(() => v.seen.frames > 0, "a frame");
   await v.until(() => v.seen.messages.some((m) => m.t === "page" && m.path === "/admin"), "the address");
+  assert.equal(viewer.present(), true, "a connected viewer is not reported present — a check could take the browser from under the person");
 });
 
 // Chrome drops a tab's virtual authenticators when any other DevTools client
@@ -307,6 +328,25 @@ await check("a second viewer replaces the first", async () => {
   });
   await second.until(() => second.seen.frames > 0, "a frame for the second viewer");
   second.ws.close();
+});
+
+await check("a viewer left without input closes itself, so a person who walked away holds no check out", async () => {
+  const quiet = await startViewer({
+    secret: SECRET, origins: [ORIGIN], cdp: CDP, port: 0, idleMs: 1_500,
+    adminUrlFor: (store) => (store === "fixture" ? `${SITE}/admin` : null), doorLog: null, log: () => {},
+  });
+  try {
+    const ws = new WebSocket(`ws://127.0.0.1:${quiet.port}/v1/view?token=${encodeURIComponent(token())}`, { origin: ORIGIN });
+    const messages = [];
+    ws.on("message", (data, binary) => { if (!binary) messages.push(JSON.parse(String(data))); });
+    await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+    assert.equal(quiet.present(), true);
+    await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    assert.ok(messages.some((m) => m.t === "error" && /without activity/.test(m.message)), JSON.stringify(messages));
+    assert.equal(quiet.present(), false, "still present after it closed");
+  } finally {
+    await quiet.close();
+  }
 });
 
 await viewer.close();

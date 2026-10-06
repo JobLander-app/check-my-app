@@ -158,6 +158,7 @@ export async function startViewer({
   leaseHeld = async () => false,
   doorLog = "/var/lib/session-host/door.jsonl",
   now = Date.now,
+  idleMs = 10 * 60_000,
   log = (line) => console.log(`[viewer] ${JSON.stringify(line)}`),
 } = {}) {
   if (typeof secret !== "string" || secret.length < 32) throw new Error("A view secret of at least 32 characters is required");
@@ -192,6 +193,16 @@ export async function startViewer({
     let lastPage = "";
     let signedInSent = false;
     let input = Promise.resolve();
+    // A person who walked away must not hold checks out: ten quiet minutes and
+    // the view closes (the page says how to come back).
+    let lastInput = now();
+    const idle = setInterval(() => {
+      if (now() - lastInput < idleMs) return;
+      out({ t: "error", message: "Closed after a while without activity. Reload this page to continue." });
+      log({ viewer: "idle" });
+      void end();
+    }, Math.min(30_000, idleMs));
+    idle.unref();
 
     const out = (value) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(value));
@@ -208,6 +219,7 @@ export async function startViewer({
       if (ended) return;
       ended = true;
       clearInterval(keep);
+      clearInterval(idle);
       if (current?.end === end) current = null;
       for (const { sessionId } of stack) await send("Page.stopScreencast", {}, sessionId).catch(() => {});
       upstream?.close();
@@ -277,6 +289,17 @@ export async function startViewer({
 
     void (async () => {
       try {
+        // A check working in this browser keeps it until it is done: the
+        // person is told, not given a tab beside a measurement (Codex on #287).
+        // From here on the session server refuses a new check while the
+        // person is present (present() below), so the check cannot start in
+        // between.
+        if (await leaseHeld()) {
+          out({ t: "error", message: "A check is running in this browser right now. Try again in a few minutes." });
+          log({ viewer: "refused", reason: "lease held" });
+          void end();
+          return;
+        }
         const line = await openDoor({ cdp, leaseHeld, storeUrl: adminUrl, log: doorLog });
         if (!line.keep) throw new Error(line.error ?? "no tab to show");
         const version = await (await fetch(`${cdp}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
@@ -367,6 +390,7 @@ export async function startViewer({
       } catch {
         return;
       }
+      lastInput = now();
       const command = translate(message);
       if (!command) return;
       // In order, and a press — the thing that can start a passkey request —
@@ -392,6 +416,9 @@ export async function startViewer({
 
   return {
     port: server.address().port,
+    // A person is in the browser: the session server gives no check the lease
+    // while this is true.
+    present: () => current !== null,
     async close() {
       await current?.end();
       wss.close();
