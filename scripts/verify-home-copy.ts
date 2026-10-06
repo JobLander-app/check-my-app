@@ -117,6 +117,19 @@ for (const f of ["src/app/page.tsx", "src/components/home-proof.tsx", "src/compo
   check(`${f}: no useEffect, inline script, dangerouslySetInnerHTML or sideways scroll`, !/useEffect|<script|dangerouslySetInnerHTML|overflow-x-(auto|scroll)/.test(s));
 }
 
+// A sentence typed into JSX never meets the gates above (Codex on #279: the
+// pains heading sat in the component). So the page and its two components
+// carry no literal text between tags — every word is an expression from the
+// module. Comments are blanked first; a `{" "}` or a `·` is punctuation.
+const jsxLiteral = /(^|>)\s*(?![A-Za-z-]+=)[A-Za-z“”"'][^<{\n]*(<|\{|$)/m;
+for (const f of ["src/app/page.tsx", "src/components/home-proof.tsx", "src/components/home-pains.tsx"]) {
+  const clean = source(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+  const at = clean.indexOf("return (");
+  const jsx = at === -1 ? "" : clean.slice(at + "return (".length);
+  const hit = jsxLiteral.exec(jsx);
+  check(`${f}: no sentence typed into the JSX`, jsx.length > 0 && hit === null, hit?.[0].trim());
+}
+
 const router = { back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {} };
 const pains = renderToString(createElement(HomePains));
 for (const p of PAINS) check(`rendered pains carry “${p.fear.slice(1, 40)}…”`, pains.includes(escapeHtml(p.fear)));

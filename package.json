@@ -140,6 +140,7 @@
     "verify:team-scoped-app-writes": "tsx --tsconfig tsconfig.json scripts/verify-team-scoped-app-writes.ts",
     "verify:open-issues": "tsx --tsconfig tsconfig.json scripts/verify-open-issues.ts",
     "verify:github-app": "tsx --tsconfig tsconfig.json scripts/verify-github-app.ts",
+    "verify:home-copy": "tsx --tsconfig tsconfig.json scripts/verify-home-copy.ts",
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts"
   },
   "dependencies": {

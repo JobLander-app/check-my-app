@@ -31,7 +31,7 @@ export function HomeProof() {
           <span className={`rounded-full border px-2.5 py-0.5 font-mono text-xs ${verdict.pillClassName}`}>{verdict.label}</span>
           <span className="font-mono text-[13px] text-fg-muted">{PROOF.app}</span>
           <span className="font-mono text-xs text-fg-faint">
-            check #{PROOF.runNumber} · {checkedOn} · ${PROOF.priceUsd.toFixed(2)}
+            {`${PROOF_COPY.check(PROOF.runNumber)} · ${checkedOn} · $${PROOF.priceUsd.toFixed(2)}`}
           </span>
         </header>
         <p className="text-[15px] leading-7 text-fg">{PROOF.bottomLine}</p>

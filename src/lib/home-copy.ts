@@ -31,7 +31,7 @@ export const HERO_VARIANTS: readonly HeroVariant[] = [
     key: "hear-first",
     headline: "Will you hear it broke before your customers do?",
     line:
-      "Every day, someone who isn't you opens your app and tries to use it. If something stopped working overnight, you get the finding that morning — what, where, how to know it's gone.",
+      "Every day your app is checked again — its pages, their errors, and the full walk by someone who isn't you the moment something changed. What stopped answering overnight is in your inbox that morning.",
   },
   {
     key: "not-you",
@@ -52,6 +52,8 @@ export const FORM_NOTE = "Free first run, no signup · anonymous checks are publ
 
 export type Pain = { fear: string; check: string; get: string };
 
+export const PAINS_LABEL = "What people come here afraid of";
+
 // The four pains, by thread count in the research, each in the audience's own
 // words: the fear → what the check does → what you get. No feature list.
 export const PAINS: readonly Pain[] = [
@@ -64,8 +66,8 @@ export const PAINS: readonly Pain[] = [
   {
     fear: "“Will I hear about it before my merchants do?”",
     check:
-      "Every day, the same walk through your app. When something you did not touch stops working — a platform change, a dependency, a quiet deploy — you get the finding that morning.",
-    get: "The “merchants notified me” message never arrives, because you already knew.",
+      "Every day your app is checked again: do its pages still answer, do they throw errors — and the moment something changed, the full walk through every journey, again. A platform change, a dependency, a quiet deploy: when a page stops answering, you get the finding that morning.",
+    get: "You hear it from the check, not from a merchant.",
   },
   {
     fear: "“I'm not fighting captchas and 2FA myself.”",
@@ -109,6 +111,8 @@ export const PROOF_COPY = {
   label: "What a verdict looks like",
   intro: "A real check of a real app — ours.",
   open: "Open the verdict →",
+  // "check #312 · Oct 3 · $0.80" — the page fills the number, the day and the price.
+  check: (n: number) => `check #${n}`,
   where: "Where",
   happened: "What happened",
   matters: "Why it matters",
@@ -129,13 +133,14 @@ export function allHomeSentences(): string[] {
   return [
     ...HERO_VARIANTS.flatMap((v) => [v.headline, v.line]),
     FORM_NOTE,
+    PAINS_LABEL,
     ...PAINS.flatMap((p) => [p.fear, p.check, p.get]),
     PROOF.bottomLine,
     PROOF.finding.title,
     PROOF.finding.where,
     PROOF.finding.happened,
     PROOF.finding.matters,
-    ...Object.values(PROOF_COPY),
+    ...Object.values(PROOF_COPY).map((v) => (typeof v === "function" ? v(312) : v)),
     WAYS_IN.agent,
     WAYS_IN.agentLink,
     `${WAYS_IN.signInLink} ${WAYS_IN.signInRest(3)}`,
