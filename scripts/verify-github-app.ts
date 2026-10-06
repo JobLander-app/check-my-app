@@ -221,8 +221,30 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("GitHub unreachable at the start: the run still starts", await deliver("deployment_status", deploymentStatus({ deploymentId: 502, sha: "2222222222222222" })), "started");
     eq("…two runs now", triggered.length, 2);
     const noCheck = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 502 } } });
-    eq("…with no Check Run recorded, so the answer step knows", noCheck?.githubCheckId, null);
-    eq("…and the answer step says so instead of throwing", await answerGitHub(db, env, noCheck!.runId!, { baseUrl: "https://checkmyapp.dev", fetch: gh.fetch }), "no-check-run");
+    eq("…with no Check Run recorded yet", noCheck?.githubCheckId, null);
+    await db.run.update({ where: { id: noCheck!.runId! }, data: { status: "completed", verdict: "all_good", bottomLine: "Fine.", priceUsd: 0.04 } });
+    eq("…and when the run ends, the answer opens the Check Run itself, completed", await answerGitHub(db, env, noCheck!.runId!, { baseUrl: "https://checkmyapp.dev", fetch: gh.fetch }), "created");
+    const late = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 502 } } });
+    const lateRun = gh.checkRuns.get(late!.githubCheckId!);
+    eq("…on the deploy's commit, success, with the price", [lateRun?.status, lateRun?.conclusion, lateRun?.output.title, gh.calls.at(-1)?.body?.head_sha], ["completed", "success", "All good · nothing to fix · $0.04", "2222222222222222"]);
+
+    // The hand-off to the agent throws after the run row exists (the route
+    // answers 500, GitHub retries): the claim already names its run, so the
+    // retry does not read that run as "another check already running".
+    await db.run.updateMany({ where: { appId: "a" }, data: { status: "completed" } });
+    const failingTrigger: WebhookDeps = { ...deps, trigger: async () => { throw new Error("workflow binding unavailable"); } };
+    let threw = false;
+    try {
+      await handleDelivery(db, env, { deliveryId: "d-trigger", event: "deployment_status", payload: deploymentStatus({ deploymentId: 506, sha: "6666666666666666" }) }, failingTrigger);
+    } catch {
+      threw = true;
+    }
+    const bound = await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 506 } } });
+    check("a hand-off that throws: the delivery fails (500) …", threw);
+    check("…but the claim already names the run it created", bound?.runId !== null && bound?.refusal === null, JSON.stringify(bound));
+    eq("…and GitHub's retry finds the claim finished, not a refusal", await handleDelivery(db, env, { deliveryId: "d-trigger", event: "deployment_status", payload: deploymentStatus({ deploymentId: 506, sha: "6666666666666666" }) }, deps), "duplicate-deployment");
+    eq("…the claim still names that run, no refusal written", [(await db.gitHubDeploymentCheck.findUnique({ where: { id: bound!.id } }))?.runId === bound?.runId, (await db.gitHubDeploymentCheck.findUnique({ where: { id: bound!.id } }))?.refusal], [true, null]);
+    await db.run.updateMany({ where: { appId: "a" }, data: { status: "completed" } });
 
     // The first attempt threw between the claim and the run (the route
     // answered 500): GitHub's retry resumes the claim instead of skipping it.
@@ -266,8 +288,8 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("a mapping survives a re-list", (await db.gitHubRepo.findUnique({ where: { id: "r" } }))?.appId, "a");
     eq("installation deleted", await deliver("installation", { action: "deleted", installation: { id: 777 } }), "installation-removed");
     eq("…its repositories and deployment rows go with it", [await db.gitHubInstallation.count(), await db.gitHubRepo.count(), await db.gitHubDeploymentCheck.count()], [0, 0, 0]);
-    eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 3);
-    eq("every delivery is on record (the n numbered ones plus d-retry), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 1, 0]);
+    eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 4);
+    eq("every delivery is on record (the n numbered ones plus d-retry and d-trigger), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 2, 0]);
   } finally {
     await real.dispose();
   }

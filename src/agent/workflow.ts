@@ -120,7 +120,7 @@ async function answerGitHubSafely(step: WorkflowStep, name: string, env: AgentEn
           baseUrl: env.bindings.APP_URL ?? "https://checkmyapp.dev",
           fetch: (url, init) => fetch(url, init),
         });
-        if (outcome === "answered") console.log(`[github-app] run ${runId}: check run completed`);
+        if (outcome === "answered" || outcome === "created") console.log(`[github-app] run ${runId}: check run ${outcome === "created" ? "created completed" : "completed"}`);
         return outcome;
       } catch (err) {
         if (retryableGitHub(err)) throw err;

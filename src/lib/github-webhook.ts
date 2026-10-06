@@ -144,11 +144,19 @@ async function onDeploymentStatus(db: PrismaClient, env: GitHubAppEnv, payload: 
     claim = { id: existing.id };
   }
 
+  // The run is bound to the claim the moment it exists — before it is handed
+  // to the agent — so a hand-off that throws (the route answers 500, GitHub
+  // retries) leaves a claim that names its run, and the retry finds it
+  // finished instead of reading the run as "another check already running".
+  const bindThenTrigger = async (runId: string) => {
+    await db.gitHubDeploymentCheck.update({ where: { id: claim.id }, data: { runId } });
+    await deps.trigger(runId);
+  };
   const started = await startSavedApp(
     db,
     { id: repo.installation.connectedById, teamId: repo.teamId, plan: repo.installation.team.plan as UserPlan },
     appId,
-    { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: "github" },
+    { trigger: bindThenTrigger, siteCap: deps.siteCap, capture: deps.capture, source: "github" },
     { deploy: { sha: event.sha, env: event.environment } },
   );
 

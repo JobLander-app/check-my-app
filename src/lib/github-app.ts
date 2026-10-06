@@ -397,14 +397,13 @@ export async function answerGitHub(
   env: GitHubAppEnv,
   runId: string,
   opts: { baseUrl: string; fetch: Fetch },
-): Promise<"answered" | "not-a-deploy" | "unconfigured" | "no-check-run"> {
+): Promise<"answered" | "created" | "not-a-deploy" | "unconfigured"> {
   const deploy = await db.gitHubDeploymentCheck.findFirst({
     where: { runId },
-    select: { id: true, githubCheckId: true, repo: { select: { repoFullName: true, installation: { select: { installationId: true } } } } },
+    select: { id: true, githubCheckId: true, sha: true, repo: { select: { repoFullName: true, installation: { select: { installationId: true } } } } },
   });
   if (!deploy) return "not-a-deploy";
   if (!appConfigured(env)) return "unconfigured";
-  if (deploy.githubCheckId === null) return "no-check-run";
   // The deploy row names its run; the row was reached through the signed
   // delivery's installation (or the agent's own workflow, which is acting for
   // the run it is finishing).
@@ -422,6 +421,15 @@ export async function answerGitHub(
   if (!run) return "not-a-deploy";
   const url = reviewUrl(opts.baseUrl, run.publicId);
   const token = await installationToken(env, deploy.repo.installation.installationId, opts.fetch);
-  await completeCheckRun(token, deploy.repo.repoFullName, deploy.githubCheckId, { conclusion: conclusionFor(run), detailsUrl: url, output: checkRunOutput(run, url) }, opts.fetch);
-  return "answered";
+  const answer = { conclusion: conclusionFor(run), detailsUrl: url, output: checkRunOutput(run, url) };
+  if (deploy.githubCheckId !== null) {
+    await completeCheckRun(token, deploy.repo.repoFullName, deploy.githubCheckId, answer, opts.fetch);
+    return "answered";
+  }
+  // GitHub was unreachable when the deploy arrived, so no Check Run was
+  // opened: the answer opens it now, already completed. The commit gets its
+  // answer either way.
+  const created = await createCheckRun(token, deploy.repo.repoFullName, { headSha: deploy.sha, status: "completed", ...answer }, opts.fetch);
+  await db.gitHubDeploymentCheck.update({ where: { id: deploy.id }, data: { githubCheckId: created.id } });
+  return "created";
 }
