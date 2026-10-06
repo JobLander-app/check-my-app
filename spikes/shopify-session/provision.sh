@@ -107,6 +107,8 @@ install -d -o session-browser -g session-browser -m 0755 /var/lib/session-door
 # Chrome goes out directly, as before. tinyproxy is started by it (session-
 # proxy.service, before Chrome), never at boot with the package's own config —
 # and NOT stopped here: a running forwarder is the owner's session's egress.
+proxy_changed=0
+cmp -s "$SRC/proxy-render.sh" /opt/session-host/proxy-render.sh || proxy_changed=1
 install -m 0755 "$SRC/proxy-render.sh" /opt/session-host/proxy-render.sh
 systemctl disable tinyproxy 2>/dev/null || true
 
@@ -153,6 +155,13 @@ systemctl daemon-reload
 nft -f /etc/session-host/firewall.nft
 systemctl enable --now session-firewall
 systemctl enable session-proxy
+# A changed renderer is run again (Codex on #283): session-proxy is a oneshot
+# that stays "active", so enabling it alone would leave the old forwarder
+# config in place. Re-rendering restarts tinyproxy only — Chrome keeps its
+# flag and its session. A render that fails is a failed provision.
+if [ "$proxy_changed" = 1 ] || ! systemctl is-active -q session-proxy; then
+  systemctl restart session-proxy || { echo "provision: FAIL — proxy-render.sh (journalctl -u session-proxy)"; exit 1; }
+fi
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer session-door.path
 if [ ${#changed[@]} -gt 0 ]; then
   echo "provision: unit files changed: ${changed[*]}"
@@ -194,6 +203,12 @@ for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:90
 done
 if as session-browser bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — the browser's user can reach VNC"; fail=1; fi
 reach session-browser https://admin.shopify.com/ || { echo "provision: FAIL — the browser's user cannot reach the public web (DNS or routing)"; fail=1; }
+# CHE-333: with a proxy configured, the browser's user goes out through it —
+# observed, by where the request comes out.
+if [ -s /etc/session-host/proxy.env ]; then
+  egress="$(as session-browser curl -s -m 20 --proxy http://127.0.0.1:3128 https://ipinfo.io/org || true)"
+  if [ -n "$egress" ]; then echo "provision: residential egress — $egress"; else echo "provision: FAIL — the browser's user cannot go out through 127.0.0.1:3128"; fail=1; fi
+fi
 chrome_uids="$(ps -o uid= -C chrome | sort -u | tr -d ' ' | tr '\n' ' ')"
 [ "$chrome_uids" = "$(id -u session-browser) " ] || { echo "provision: FAIL — Chrome is not running as session-browser alone (uids: $chrome_uids)"; fail=1; }
 if [ "$fail" = 0 ]; then echo "provision: isolation holds — the browser's user reaches the public web and nothing on this host or its private network"; fi

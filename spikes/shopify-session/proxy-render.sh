@@ -7,25 +7,49 @@
 # session is not in cookies DevTools can read), so the sign-in happens here,
 # and here must look like a home: an upstream residential proxy, bought by the
 # owner, whose URL lives in Secret Manager as `session-host-proxy`
-# (http://user:pass@host:port).
+# (http://user:pass@host:port). The VM's service account holds
+# roles/secretmanager.secretAccessor on that one secret (README, "Residential
+# egress").
 #
 # This renders tinyproxy to forward EVERYTHING to that upstream — no local
 # exceptions, so a page inside the browser cannot reach this host's own ports
 # through the forwarder — and hands session-chrome the --proxy-server flag
-# through /etc/session-host/proxy.env. Without the secret: no proxy, direct
-# egress, as before. Run by session-proxy.service before session-chrome.
+# through /etc/session-host/proxy.env. Run by session-proxy.service before
+# session-chrome.
+#
+# Read with the metadata server's token and Secret Manager's REST API, the
+# probe's way — no gcloud CLI needed on the host (Codex on #283). Three answers,
+# kept apart (the first version folded all three into "direct egress"):
+#   200 — render and start the forwarder;
+#   404 — there is no proxy secret: direct egress, on purpose;
+#   anything else (no permission, no network) — FAIL loudly and change
+#   nothing: the last good forwarder and flag stay in place.
 set -u
 umask 077
-url="$(gcloud secrets versions access latest --secret=session-host-proxy --project=meet-assistant-6d8ad 2>/dev/null || true)"
-if [ -z "$url" ]; then
-  rm -f /etc/session-host/proxy.env
-  systemctl stop tinyproxy 2>/dev/null || true
-  echo "[proxy-render] no secret: direct egress"
-  exit 0
-fi
+MD=http://metadata.google.internal/computeMetadata/v1
+fail() { echo "[proxy-render] FAIL: $1 — the current egress is left as it was" >&2; exit 1; }
+
+token="$(curl -fsS -m 10 -H Metadata-Flavor:Google "$MD/instance/service-accounts/default/token" | jq -r .access_token)" || fail "no service-account token"
+project="$(curl -fsS -m 10 -H Metadata-Flavor:Google "$MD/project/project-id")" || fail "no project id"
+response="$(curl -sS -m 20 -w '\n%{http_code}' -H "Authorization: Bearer $token" \
+  "https://secretmanager.googleapis.com/v1/projects/$project/secrets/session-host-proxy/versions/latest:access")" || fail "Secret Manager unreachable"
+code="${response##*$'\n'}"
+body="${response%$'\n'*}"
+
+case "$code" in
+  200) ;;
+  404)
+    rm -f /etc/session-host/proxy.env
+    systemctl stop tinyproxy 2>/dev/null || true
+    echo "[proxy-render] no session-host-proxy secret: direct egress"
+    exit 0 ;;
+  *) fail "Secret Manager answered HTTP $code (is roles/secretmanager.secretAccessor granted on session-host-proxy?)" ;;
+esac
+
+url="$(printf '%s' "$body" | jq -r '.payload.data' | base64 -d | tr -d '\r\n')"
 case "$url" in
-  http://*) ;;
-  *) echo "[proxy-render] the secret is not an http://user:pass@host:port URL; direct egress"; rm -f /etc/session-host/proxy.env; exit 0 ;;
+  http://*@*:*) ;;
+  *) fail "the secret is not an http://user:pass@host:port URL" ;;
 esac
 rest="${url#http://}"
 cat >/etc/tinyproxy/tinyproxy.conf <<CONF

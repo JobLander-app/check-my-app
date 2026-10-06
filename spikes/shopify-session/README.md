@@ -34,10 +34,21 @@ so this host carries the tag `checkmyapp-session-host`, which
 `allow-iap-ssh` (priority 900, `35.235.240.0/20` tcp:22) apply to. SSH works
 through IAP only (`gcloud compute ssh … --tunnel-through-iap`).
 
-The VM's service account `checkmyapp-session-host@meet-assistant-6d8ad` has one
-binding: `roles/secretmanager.secretAccessor` on the single secret
-`checkmyapp-telegram-bot-token`. No project role. It cannot read the Shopify
-login secrets — those are for the owner to type, never a script.
+The VM's service account `checkmyapp-session-host@meet-assistant-6d8ad` has two
+bindings, both `roles/secretmanager.secretAccessor` on a single secret:
+`checkmyapp-telegram-bot-token` (the probe's message) and `session-host-proxy`
+(the residential egress, read by `proxy-render.sh`). No project role. It cannot
+read the Shopify login secrets — those are for the owner to type, never a
+script. A host rebuilt from scratch needs the second binding again:
+
+```bash
+gcloud secrets add-iam-policy-binding session-host-proxy --project meet-assistant-6d8ad \
+  --member serviceAccount:checkmyapp-session-host@meet-assistant-6d8ad.iam.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+```
+
+Without it `proxy-render.sh` fails loudly (HTTP 403) and `provision.sh` fails
+with it; a missing secret (404) means direct egress on purpose.
 
 ## Signing in (the owner, once)
 
