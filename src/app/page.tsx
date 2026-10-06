@@ -43,7 +43,12 @@ export default async function Home({
       <section className="stagger flex w-full max-w-2xl flex-col gap-8">
         <div className="space-y-4 text-center">
           <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-[2.75rem]">
-            {HERO.headline}
+            {/* The visitor's own sentence, crossed out, then our answer. Two
+                block spans, so the strike never wraps into the answer. */}
+            {HERO.struck && (
+              <s className="block text-[0.7em] font-medium text-fg-muted decoration-status-broken decoration-[3px]">{HERO.struck}</s>
+            )}
+            <span className={HERO.struck ? "mt-2 block" : undefined}>{HERO.headline}</span>
           </h1>
           <p className="mx-auto max-w-xl text-pretty text-[15px] leading-7 text-fg-muted sm:text-base">{HERO.line}</p>
         </div>

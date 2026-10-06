@@ -104,7 +104,9 @@ check("the proof names our own product, nobody else's", PROOF.app === "joblander
 const sentencesIn = (s: string) => (s.trim().match(/[.!?](\s|$)/g) ?? []).length;
 const wordsIn = (s: string) => s.trim().split(/\s+/).length;
 check("HERO is one of the compared variants", HERO_VARIANTS.includes(HERO), HERO.key);
+check("the shown first screen crosses out the visitor's sentence and answers it", HERO.key === "no-more" && /^“.+”$/.test(HERO.struck ?? "") && /<s\b[^>]*>\{HERO\.struck\}<\/s>/.test(source("src/app/page.tsx")), HERO.key);
 for (const v of HERO_VARIANTS) {
+  if (v.struck) check(`${v.key}: the crossed-out sentence is a quote of ≤ 10 words`, /^“.+”$/.test(v.struck) && wordsIn(v.struck) <= 10, v.struck);
   check(`${v.key}: headline is ≤ 2 sentences and ≤ 12 words, no line break`, sentencesIn(v.headline) <= 2 && wordsIn(v.headline) <= 12 && !v.headline.includes("\n"), `${wordsIn(v.headline)} words`);
   check(`${v.key}: the line is ≤ 2 sentences and ≤ 40 words`, sentencesIn(v.line) <= 2 && wordsIn(v.line) <= 40, `${sentencesIn(v.line)} sentences, ${wordsIn(v.line)} words`);
 }

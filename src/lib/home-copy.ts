@@ -23,12 +23,23 @@
 // customer-facing source. A sentence that is not in this file is not on the
 // page.
 
-export type HeroVariant = { key: "new-user" | "no-qa" | "before-users"; pain: string; headline: string; line: string };
+// `struck`: a sentence the visitor says today, shown crossed out above our
+// answer (owner, 2026-10-06: «A user told us it was broken — зачеркнуто, и
+// написано что-то ободряющее с нашей стороны, типа "no more"»).
+export type HeroVariant = { key: "new-user" | "no-qa" | "before-users" | "no-more"; pain: string; struck?: string; headline: string; line: string };
 
 // Three first screens for the owner to compare (A/B is the mental model).
 // Each opens on one of the pains below — `pain` names which — and all three
 // say the same promise in the line under it.
 export const HERO_VARIANTS: readonly HeroVariant[] = [
+  {
+    key: "no-more",
+    pain: "A user told us first",
+    struck: "“A user told us it was broken.”",
+    headline: "No more.",
+    line:
+      "CheckMyApp uses your app like a real user — after a release, or every day — and tells you what broke, where, and how to know it's fixed. Before a user finds it.",
+  },
   {
     key: "new-user",
     pain: "It works for me",
@@ -52,8 +63,8 @@ export const HERO_VARIANTS: readonly HeroVariant[] = [
   },
 ];
 
-// The one the page shows. Switched here and nowhere else once the owner has
-// compared the three on the preview.
+// The one the page shows — the owner's pick, 2026-10-06. Switched here and
+// nowhere else.
 export const HERO: HeroVariant = HERO_VARIANTS[0];
 
 // One sentence by the button: the three things a visitor asks after deciding
@@ -84,7 +95,8 @@ export const PAINS: readonly Pain[] = [
     get: "The empty screen, the 404 and the button that does nothing, found before a new user finds them.",
   },
   {
-    fear: "“A user told us it was broken.”",
+    // Not "A user told us it was broken" — the first screen already says it.
+    fear: "“It broke overnight, and nobody on the team noticed.”",
     check:
       "Every day, and after a release if you connect your CI or your coding agent, your app is checked again. When a page stops answering or something you didn't touch breaks, the finding arrives the same day.",
     get: "You hear it from the check, not from a user.",
@@ -151,7 +163,7 @@ export const WAYS_IN = {
 // Every customer-visible sentence in this module, flat, for the guard.
 export function allHomeSentences(): string[] {
   return [
-    ...HERO_VARIANTS.flatMap((v) => [v.headline, v.line]),
+    ...HERO_VARIANTS.flatMap((v) => [...(v.struck ? [v.struck] : []), v.headline, v.line]),
     FORM_NOTE,
     PAINS_LABEL,
     ...PAINS.flatMap((p) => [p.fear, p.check, p.get]),
