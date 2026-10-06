@@ -7,7 +7,7 @@ import { PAINS, PAINS_LABEL } from "@/lib/home-copy";
 export function HomePains() {
   return (
     <section aria-labelledby="home-pains" className="w-full max-w-4xl">
-      <h2 id="home-pains" className="section-label mb-6 text-center">
+      <h2 id="home-pains" className="mb-8 text-balance text-center text-2xl font-semibold tracking-tight text-fg sm:text-3xl">
         {PAINS_LABEL}
       </h2>
       <ul className="grid gap-4 sm:grid-cols-2">

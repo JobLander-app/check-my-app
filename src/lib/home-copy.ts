@@ -74,7 +74,10 @@ export const FORM_NOTE = "Free first run, no signup · anonymous checks are publ
 
 export type Pain = { fear: string; check: string; get: string };
 
-export const PAINS_LABEL = "Where it helps";
+// Owner, 2026-10-06: «the QA your team does not have (but need) — тоже
+// классное». The heading over the four pains: each block is a job that QA
+// would do.
+export const PAINS_LABEL = "The QA your team doesn't have. But needs.";
 
 // The four pains, each in the words people use for it: what they say → what
 // the check does → what they get. No feature list. From the research, with
