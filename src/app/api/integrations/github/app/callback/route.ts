@@ -16,7 +16,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
 import { activeTeamContext } from "@/lib/teams";
 import { can, refusal } from "@/lib/scopes";
-import { GITHUB_INSTALL_NONCE_COOKIE, appConfigured, getGitHubAppEnv, installationInfo } from "@/lib/github-app";
+import { GITHUB_INSTALL_NONCE_COOKIE, appConfigured, getGitHubAppEnv, installationInfo, installationIsFresh } from "@/lib/github-app";
 import { syncInstallationRepos } from "@/lib/github-webhook";
 import { alreadyScoped } from "@/lib/tenant-db";
 
@@ -67,9 +67,13 @@ export async function GET(req: NextRequest) {
 
   // A reinstall on the same account keeps its mapping (the rows beneath); a
   // second team claiming someone else's installation is refused — the
-  // installation belongs to whoever connected it first.
+  // installation belongs to whoever connected it first. A first claim is
+  // accepted only for an installation GitHub made just now: with a valid
+  // state of their own, a person could still type another installation's id
+  // into the URL, and the App's confirmation says only that it exists.
   const existing = await db.gitHubInstallation.findUnique({ ...alreadyScoped("a signed GitHub delivery names the installation"), where: { installationId }, select: { teamId: true } });
   if (existing && existing.teamId !== teamId) return back(req, "github_failed");
+  if (!existing && !installationIsFresh(info)) return back(req, "github_failed");
   await db.gitHubInstallation.upsert({
     where: { installationId },
     create: { installationId, accountLogin: info.account.login, accountType: info.account.type, teamId, connectedById: user.id, suspendedAt: null },

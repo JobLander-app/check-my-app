@@ -131,8 +131,17 @@ async function onDeploymentStatus(db: PrismaClient, env: GitHubAppEnv, payload: 
       select: { id: true },
     });
   } catch (err) {
-    if (isUniqueViolation(err)) return "duplicate-deployment";
-    throw err;
+    if (!isUniqueViolation(err)) throw err;
+    // The claim exists. Finished — a run or a refusal on it — means this
+    // status is a repeat. Unfinished means the first attempt threw between
+    // the claim and its outcome (the route answered 500, GitHub retried):
+    // the work resumes on the same row rather than being skipped.
+    const existing = await db.gitHubDeploymentCheck.findUnique({
+      where: { repoId_deploymentId: { repoId: repo.id, deploymentId: event.deploymentId } },
+      select: { id: true, runId: true, refusal: true },
+    });
+    if (!existing || existing.runId !== null || existing.refusal !== null) return "duplicate-deployment";
+    claim = { id: existing.id };
   }
 
   const started = await startSavedApp(
@@ -230,7 +239,7 @@ export async function syncInstallationRepos(db: PrismaClient, env: GitHubAppEnv,
   const row = await db.gitHubInstallation.findUnique({ ...alreadyScoped("a signed GitHub delivery names the installation"), where: { installationId }, select: { id: true, teamId: true } });
   if (!row) return 0;
   const token = await installationToken(env, installationId, fetchImpl);
-  const repos = await installationRepos(token, fetchImpl);
+  const { repos, complete } = await installationRepos(token, fetchImpl);
   for (const r of repos) {
     await db.gitHubRepo.upsert({
       where: { installationId_repoId: { installationId: row.id, repoId: r.id } },
@@ -238,6 +247,9 @@ export async function syncInstallationRepos(db: PrismaClient, env: GitHubAppEnv,
       update: { repoFullName: r.full_name },
     });
   }
+  // Only a complete listing says what is gone; a partial one would delete
+  // mappings that merely sit beyond the last page read.
+  if (!complete) return repos.length;
   // Up to D1's parameter cap per statement; an installation with more
   // repositories than that is deleted-from in chunks.
   const keep = repos.map((r) => r.id);

@@ -30,6 +30,7 @@ import {
   checkRunTitle,
   conclusionFor,
   deploymentWanted,
+  installationIsFresh,
   isProductionEnv,
   parseDeploymentStatus,
   signBody,
@@ -37,7 +38,7 @@ import {
   toPkcs8,
   type Fetch,
 } from "../src/lib/github-app";
-import { handleDelivery, refusalTitle, type WebhookDeps } from "../src/lib/github-webhook";
+import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -93,10 +94,11 @@ interface FakeGitHub {
   calls: Array<{ method: string; path: string; body: unknown }>;
   checkRuns: Map<number, { status: string; conclusion?: string; output: { title: string; summary: string; text?: string } }>;
   failNext: boolean;
+  truncated: boolean;
 }
 
 function fakeGitHub(): FakeGitHub {
-  const gh: FakeGitHub = { calls: [], checkRuns: new Map(), failNext: false, fetch: async () => new Response() };
+  const gh: FakeGitHub = { calls: [], checkRuns: new Map(), failNext: false, truncated: false, fetch: async () => new Response() };
   let nextCheckRun = 100;
   gh.fetch = async (url, init) => {
     const method = init?.method ?? "GET";
@@ -108,8 +110,13 @@ function fakeGitHub(): FakeGitHub {
       return new Response("boom", { status: 502 });
     }
     if (/^\/app\/installations\/\d+\/access_tokens$/.test(path)) return Response.json({ token: `ghs_${path.split("/")[3]}` });
-    if (/^\/app\/installations\/\d+$/.test(path)) return Response.json({ id: Number(path.split("/")[3]), account: { login: "acme", type: "Organization" } });
-    if (path.startsWith("/installation/repositories")) return Response.json({ total_count: 2, repositories: [{ id: 11, full_name: "acme/shop" }, { id: 12, full_name: "acme/site" }] });
+    if (/^\/app\/installations\/\d+$/.test(path)) return Response.json({ id: Number(path.split("/")[3]), account: { login: "acme", type: "Organization" }, created_at: new Date().toISOString() });
+    if (path.startsWith("/installation/repositories")) {
+      // `gh.truncated`: GitHub says three, lists two, then an empty page.
+      const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1);
+      const all = [{ id: 11, full_name: "acme/shop" }, { id: 12, full_name: "acme/site" }];
+      return Response.json({ total_count: gh.truncated ? 3 : 2, repositories: page === 1 ? all : [] });
+    }
     const create = /^\/repos\/([^/]+\/[^/]+)\/check-runs$/.exec(path);
     if (create && method === "POST") {
       const id = nextCheckRun++;
@@ -217,6 +224,23 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("…with no Check Run recorded, so the answer step knows", noCheck?.githubCheckId, null);
     eq("…and the answer step says so instead of throwing", await answerGitHub(db, env, noCheck!.runId!, { baseUrl: "https://checkmyapp.dev", fetch: gh.fetch }), "no-check-run");
 
+    // The first attempt threw between the claim and the run (the route
+    // answered 500): GitHub's retry resumes the claim instead of skipping it.
+    await db.run.updateMany({ where: { appId: "a" }, data: { status: "completed" } });
+    await db.gitHubDeploymentCheck.create({ data: { repoId: "r", deploymentId: 505, environment: "Production", sha: "5555555555555555" } });
+    eq("an unfinished claim is resumed on redelivery", await deliver("deployment_status", deploymentStatus({ deploymentId: 505, sha: "5555555555555555" })), "started");
+    eq("…three runs now, the resumed one bound to its deploy", [triggered.length, (await db.gitHubDeploymentCheck.findUnique({ where: { repoId_deploymentId: { repoId: "r", deploymentId: 505 } } }))?.runId !== null], [3, true]);
+    await db.run.updateMany({ where: { appId: "a" }, data: { status: "completed" } });
+
+    // A full sync whose listing stopped short deletes nothing.
+    gh.truncated = true;
+    await db.gitHubRepo.create({ data: { id: "r9", installationId: "i", repoFullName: "acme/beyond", repoId: 99, appId: "a", teamId: "t" } });
+    await syncInstallationRepos(db, env, 777, gh.fetch);
+    eq("a truncated listing keeps the mappings it did not reach", await db.gitHubRepo.count({ where: { id: "r9" } }), 1);
+    gh.truncated = false;
+    await syncInstallationRepos(db, env, 777, gh.fetch);
+    eq("a complete listing removes what the App no longer sees", await db.gitHubRepo.count({ where: { id: "r9" } }), 0);
+
     // A failed run closes neutral and says nothing about why.
     await db.run.update({ where: { id: run!.id }, data: { status: "failed", errorMessage: "internal: LLM budget exhausted" } });
     await answerGitHub(db, env, run!.id, { baseUrl: "https://checkmyapp.dev", fetch: gh.fetch });
@@ -242,7 +266,7 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     eq("a mapping survives a re-list", (await db.gitHubRepo.findUnique({ where: { id: "r" } }))?.appId, "a");
     eq("installation deleted", await deliver("installation", { action: "deleted", installation: { id: 777 } }), "installation-removed");
     eq("…its repositories and deployment rows go with it", [await db.gitHubInstallation.count(), await db.gitHubRepo.count(), await db.gitHubDeploymentCheck.count()], [0, 0, 0]);
-    eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 2);
+    eq("…the runs stay", await db.run.count({ where: { appId: "a" } }), 3);
     eq("every delivery is on record (the n numbered ones plus d-retry), all finished", [await db.gitHubDelivery.count(), await db.gitHubDelivery.count({ where: { handledAt: null } })], [n + 1, 0]);
   } finally {
     await real.dispose();
@@ -266,6 +290,13 @@ function tables() {
   eq("refusal title", refusalTitle("Your team's balance is used up."), "Not checked — Your team's balance is used up");
   const out = checkRunOutput({ ...run, status: "failed" }, "https://checkmyapp.dev/verdict/p");
   check("a failed run's summary charges nothing and names the review", /Nothing was charged/.test(out.summary) && out.summary.includes("/verdict/p"));
+  const now = Date.parse("2026-10-06T12:00:00Z");
+  eq("a first claim binds only an installation GitHub made just now (the nonce's window plus slack)", [
+    installationIsFresh({ created_at: "2026-10-06T11:52:00Z" }, now),
+    installationIsFresh({ created_at: "2026-10-06T11:40:00Z" }, now),
+    installationIsFresh({ created_at: "2026-10-05T12:00:00Z" }, now),
+    installationIsFresh({ created_at: "not a date" }, now),
+  ], [true, false, false, false]);
 }
 
 (async () => {

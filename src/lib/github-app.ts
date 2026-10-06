@@ -190,20 +190,42 @@ export interface InstallationRepo {
   full_name: string;
 }
 
-// Every repository the installation may see, page by page.
-export async function installationRepos(token: string, fetchImpl: Fetch): Promise<InstallationRepo[]> {
-  const out: InstallationRepo[] = [];
-  for (let page = 1; page <= 20; page++) {
+// Every repository the installation may see, page by page, until GitHub's
+// own count is reached. `complete` is false when the listing stopped short
+// (GitHub returned an empty page early, or the page cap below); a caller that
+// removes what is missing from the list must not do so on a partial one.
+export const REPO_PAGE_CAP = 200;
+
+export async function installationRepos(token: string, fetchImpl: Fetch): Promise<{ repos: InstallationRepo[]; complete: boolean }> {
+  const repos: InstallationRepo[] = [];
+  let total = Infinity;
+  for (let page = 1; page <= REPO_PAGE_CAP; page++) {
     const r = await api<{ repositories: InstallationRepo[]; total_count: number }>(fetchImpl, token, "GET", `/installation/repositories?per_page=100&page=${page}`);
-    out.push(...r.repositories.map((x) => ({ id: x.id, full_name: x.full_name })));
-    if (out.length >= r.total_count || r.repositories.length === 0) break;
+    total = r.total_count;
+    repos.push(...r.repositories.map((x) => ({ id: x.id, full_name: x.full_name })));
+    if (repos.length >= total) return { repos, complete: true };
+    if (r.repositories.length === 0) return { repos, complete: false };
   }
-  return out;
+  return { repos, complete: repos.length >= total };
 }
 
 export interface InstallationInfo {
   id: number;
   account: { login: string; type: string };
+  created_at: string;
+}
+
+// How long after GitHub created an installation this product will bind it
+// to a team for the first time. The setup URL's installation id can be typed
+// by anyone (GitHub's own warning): the nonce proves the person began an
+// install here, and this proves the installation they name is the one that
+// was just made — not an older, unclaimed one that belongs to someone else.
+// The nonce cookie lives ten minutes; this is that window plus slack.
+export const FRESH_INSTALL_MS = 15 * 60 * 1000;
+
+export function installationIsFresh(info: Pick<InstallationInfo, "created_at">, now = Date.now()): boolean {
+  const created = Date.parse(info.created_at);
+  return Number.isFinite(created) && now - created >= -60_000 && now - created <= FRESH_INSTALL_MS;
 }
 
 export async function installationInfo(env: { GITHUB_APP_ID: string; GITHUB_APP_PRIVATE_KEY: string }, installationId: number, fetchImpl: Fetch): Promise<InstallationInfo> {
