@@ -134,11 +134,30 @@ export const MAPPING_ERRORS = {
   otherApp: "That app is not one of this team's websites.",
 } as const;
 
+export type MappingErrorCode = keyof typeof MAPPING_ERRORS;
+
+// The page shows a refusal by its code, never by a sentence carried in the
+// URL: a crafted ?error= must not put words under our name.
+export function mappingErrorText(code: string | undefined): string | null {
+  return code && Object.hasOwn(MAPPING_ERRORS, code) ? MAPPING_ERRORS[code as MappingErrorCode] : null;
+}
+
+// The team's activity log line for a saved row (/settings/team shows it). It
+// records the setting, not an outcome the webhook does not guarantee.
+export function mappingEventSummary(row: { repoFullName: string; appSlug: string | null; policy: OfferedPolicy }): string {
+  if (!row.appSlug) return `unmapped ${row.repoFullName}`;
+  if (row.policy === "production") return `set successful production deploys of ${row.repoFullName} to start checks of ${row.appSlug}`;
+  return `mapped ${row.repoFullName} to ${row.appSlug}, its deploys start no checks`;
+}
+
 export function allPanelSentences(): string[] {
   return [
     ...Object.values(GITHUB_PANEL_COPY),
     ...Object.values(POLICY_LABELS),
     ...Object.values(MAPPING_ERRORS),
+    mappingEventSummary({ repoFullName: "acme/shop", appSlug: null, policy: "production" }),
+    mappingEventSummary({ repoFullName: "acme/shop", appSlug: "shop.example", policy: "production" }),
+    mappingEventSummary({ repoFullName: "acme/shop", appSlug: "shop.example", policy: "off" }),
     repoStatusLine({ appSlug: null, priceLine: null, policy: "production", suspended: false }),
     repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "production", suspended: false }),
     repoStatusLine({ appSlug: "shop.example", priceLine: "usually $0.48–$0.80 a check", policy: "off", suspended: false }),
@@ -150,12 +169,12 @@ export type MappingInput = { repoId: string; appId: string | null; policy: Offer
 
 // The form → a mapping, or the reason it is not one. An empty app means
 // "not mapped" (nothing happens on its deploys).
-export function mappingFromForm(form: FormData): MappingInput | { error: string } {
+export function mappingFromForm(form: FormData): MappingInput | { error: MappingErrorCode } {
   const repoId = String(form.get("repoId") ?? "");
   const appId = String(form.get("appId") ?? "");
   const policy = String(form.get("policy") ?? "");
-  if (!repoId) return { error: MAPPING_ERRORS.noRepo };
-  if (!(OFFERED_POLICIES as readonly string[]).includes(policy)) return { error: MAPPING_ERRORS.noPolicy };
+  if (!repoId) return { error: "noRepo" };
+  if (!(OFFERED_POLICIES as readonly string[]).includes(policy)) return { error: "noPolicy" };
   return { repoId, appId: appId || null, policy: policy as OfferedPolicy };
 }
 
@@ -163,13 +182,13 @@ export function mappingFromForm(form: FormData): MappingInput | { error: string 
 // not one of the team's websites — the form offers only those, and the action
 // is an entry point anyone can post to, so the server says it again (a deploy
 // cannot be checked as a Chrome extension).
-export async function saveRepoMapping(db: PrismaClient, teamId: string, input: MappingInput): Promise<{ ok: true; repoFullName: string; appSlug: string | null } | { error: string }> {
+export async function saveRepoMapping(db: PrismaClient, teamId: string, input: MappingInput): Promise<{ ok: true; repoFullName: string; appSlug: string | null } | { error: MappingErrorCode }> {
   const repo = await db.gitHubRepo.findFirst({ where: { ...teamOwned(teamId), id: input.repoId }, select: { id: true, repoFullName: true } });
-  if (!repo) return { error: MAPPING_ERRORS.otherRepo };
+  if (!repo) return { error: "otherRepo" };
   let appSlug: string | null = null;
   if (input.appId) {
     const app = await db.app.findFirst({ where: { ...teamOwned(teamId), id: input.appId, targetKind: "website" }, select: { appSlug: true } });
-    if (!app) return { error: MAPPING_ERRORS.otherApp };
+    if (!app) return { error: "otherApp" };
     appSlug = app.appSlug;
   }
   await db.gitHubRepo.update({ where: { id: repo.id }, data: { appId: input.appId, policy: input.policy } });

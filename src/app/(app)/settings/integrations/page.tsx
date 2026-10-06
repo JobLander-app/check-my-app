@@ -12,7 +12,7 @@ import { integrationsLabel } from "@/lib/app-page";
 import { appsRunningTheAction, teamRunsTheAction } from "@/lib/release-action";
 import { GitHubCard } from "@/components/github-card";
 import { GitHubAppPanel } from "@/components/github-app-panel";
-import { teamGitHub } from "@/lib/github-mapping";
+import { mappingErrorText, teamGitHub } from "@/lib/github-mapping";
 import { getGitHubAppEnv } from "@/lib/github-app";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { can } from "@/lib/scopes";
@@ -59,9 +59,9 @@ async function analyticsConnection(
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string; error?: string }>;
+  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string; github_error?: string }>;
 }) {
-  const { integration, installation_id, setup_action, state, error } = await searchParams;
+  const { integration, installation_id, setup_action, state, github_error } = await searchParams;
   // CHE-369: this page is the GitHub App's setup URL — where GitHub sends the
   // person after installing it. The binding happens in the callback route;
   // this only carries GitHub's parameters there.
@@ -88,7 +88,9 @@ export default async function IntegrationsPage({
     appsRunningTheAction(db, team.id),
     teamGitHub(db, { id: team.id, plan: team.plan as UserPlan }),
   ]);
-  const notice = integrationNotice(integration) ?? (error ? { text: error, ok: false } : null);
+  // A refusal arrives as a code and is shown only if it is one of ours.
+  const refused = mappingErrorText(github_error);
+  const notice = integrationNotice(integration) ?? (refused ? { text: refused, ok: false } : null);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">

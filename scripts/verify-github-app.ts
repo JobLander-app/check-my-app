@@ -39,7 +39,7 @@ import {
   type Fetch,
 } from "../src/lib/github-app";
 import { handleDelivery, refusalTitle, syncInstallationRepos, type WebhookDeps } from "../src/lib/github-webhook";
-import { OFFERED_POLICIES, allPanelSentences, mappingFromForm, priceLine, repoStatusLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
+import { OFFERED_POLICIES, allPanelSentences, mappingErrorText, mappingEventSummary, mappingFromForm, priceLine, repoStatusLine, saveRepoMapping, teamGitHub } from "../src/lib/github-mapping";
 import { hasEnvironmentLeak, hasHomework, narrationIn } from "../src/lib/verdict-language";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -305,16 +305,21 @@ async function deliveries(keys: ReturnType<typeof keyPair>) {
     await db.gitHubRepo.create({ data: { id: "mo", installationId: "io", repoFullName: "other/repo", repoId: 21, teamId: "o" } });
     eq("map a repository to the team's app, every production deploy", await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" }), { ok: true, repoFullName: "acme/shop", appSlug: "shop.example" });
     eq("…stored", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
-    eq("another team's repository is refused", await saveRepoMapping(db, "t", { repoId: "mo", appId: "a", policy: "production" }), { error: "That repository is not connected to this team." });
-    eq("another team's app is refused", await saveRepoMapping(db, "t", { repoId: "m1", appId: "oa", policy: "production" }), { error: "That app is not one of this team's websites." });
+    eq("another team's repository is refused", await saveRepoMapping(db, "t", { repoId: "mo", appId: "a", policy: "production" }), { error: "otherRepo" });
+    eq("another team's app is refused", await saveRepoMapping(db, "t", { repoId: "m1", appId: "oa", policy: "production" }), { error: "otherApp" });
     await db.app.create({ data: { id: "ext", teamId: "t", ownerId: "u", appSlug: "extension:abc", targetUrl: "https://chromewebstore.google.com/detail/abc", targetKind: "extension" } });
-    eq("the team's own extension is refused — a deploy is not an extension check", await saveRepoMapping(db, "t", { repoId: "m1", appId: "ext", policy: "production" }), { error: "That app is not one of this team's websites." });
+    eq("the team's own extension is refused — a deploy is not an extension check", await saveRepoMapping(db, "t", { repoId: "m1", appId: "ext", policy: "production" }), { error: "otherApp" });
     eq("…and the row kept its app", (await db.gitHubRepo.findUnique({ where: { id: "m1" } }))?.appId, "a");
     eq("unmap: an empty app clears it", (await saveRepoMapping(db, "t", { repoId: "m1", appId: null, policy: "off" })) as unknown, { ok: true, repoFullName: "acme/shop", appSlug: null });
     const form = (o: Record<string, string>) => { const f = new FormData(); for (const [k, v] of Object.entries(o)) f.set(k, v); return f; };
     eq("form: production with an app", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "production" })), { repoId: "m1", appId: "a", policy: "production" });
-    eq("form: previews are not offered yet", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "all" })), { error: "Choose when this repository's deploys are checked." });
-    eq("form: no repository", mappingFromForm(form({ appId: "a", policy: "off" })), { error: "No repository was named." });
+    eq("form: previews are not offered yet", mappingFromForm(form({ repoId: "m1", appId: "a", policy: "all" })), { error: "noPolicy" });
+    eq("form: no repository", mappingFromForm(form({ appId: "a", policy: "off" })), { error: "noRepo" });
+    eq("a refusal code resolves to its guarded sentence; anything else shows nothing", [mappingErrorText("otherApp"), mappingErrorText("You have been hacked, call +1 555"), mappingErrorText("toString"), mappingErrorText(undefined)], ["That app is not one of this team's websites.", null, null, null]);
+    const page = readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/page.tsx"), "utf8");
+    check("the page shows no sentence from its URL — only codes resolved against the guarded list", /mappingErrorText\(github_error\)/.test(page) && !/text: error\b/.test(page) && !/\berror\?: string/.test(page));
+    eq("the activity line records the setting, not a promise", mappingEventSummary({ repoFullName: "acme/shop", appSlug: "shop.example", policy: "production" }), "set successful production deploys of acme/shop to start checks of shop.example");
+    check("…and the action writes that line, not one of its own", /summary: mappingEventSummary\(/.test(readFileSync(join(process.cwd(), "src/app/(app)/settings/integrations/actions.ts"), "utf8")));
     await saveRepoMapping(db, "t", { repoId: "m1", appId: "a", policy: "production" });
     const gh2 = await teamGitHub(db, { id: "t", plan: "business" });
     eq("the screen sees the team's installations only", gh2.installations.map((i) => i.accountLogin).sort(), ["acme"]);
