@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { teamOwned } from "@/lib/tenant-db";
 import { isStranded } from "@/lib/posthog/token";
@@ -52,9 +53,16 @@ async function analyticsConnection(
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ integration?: string }>;
+  searchParams: Promise<{ integration?: string; installation_id?: string; setup_action?: string; state?: string }>;
 }) {
-  const { integration } = await searchParams;
+  const { integration, installation_id, setup_action, state } = await searchParams;
+  // CHE-369: this page is the GitHub App's setup URL — where GitHub sends the
+  // person after installing it. The binding happens in the callback route;
+  // this only carries GitHub's parameters there.
+  if (installation_id) {
+    const q = new URLSearchParams({ installation_id, ...(setup_action ? { setup_action } : {}), ...(state ? { state } : {}) });
+    redirect(`/api/integrations/github/app/callback?${q}`);
+  }
   const { db, team } = await requireUser();
   // GitHub twice: once for the team's card, and per app for the list — the
   // same fact the app's own card states.

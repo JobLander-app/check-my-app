@@ -742,6 +742,8 @@ model Team {
   // CHE-236: the team's analytics connection, at most one.
   posthog     PostHogIntegration?
   testAccounts TestAccount[]
+  // CHE-369: the GitHub App installations this team connected.
+  githubInstallations GitHubInstallation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1013,6 +1015,8 @@ model App {
   tracker TrackerIntegration?
   repo    RepoIntegration?
   policy  TicketPolicy?
+  // CHE-369: the repositories whose successful deploys check this app.
+  githubRepos GitHubRepo[]
   runs    Run[]
   issues  IssueLink[]
   // CHE-231: the app's journeys — the units its runs are made of.
@@ -1093,6 +1097,109 @@ model RepoIntegration {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// CHE-369: the GitHub App "checkmyapp", installed once on an account; every
+// successful deploy of a mapped repository then checks the app it deploys and
+// answers on the commit, with no YAML. One row per installation; the team that
+// connected it owns every row beneath it (src/lib/github-app.ts).
+model GitHubInstallation {
+  id             String    @id @default(cuid())
+  // GitHub's installation id — what the App's token endpoint and every
+  // webhook delivery name. Unique: an account installs the App once.
+  installationId Int       @unique
+  accountLogin   String
+  // "User" | "Organization".
+  accountType    String
+  team           Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId         String
+  // The person who connected it: a run the webhook starts is attributed to
+  // them (startSavedApp wants a person — isOwnRun reads the person).
+  connectedById  String
+  // GitHub `installation.suspend` → set; `unsuspend` → cleared. A suspended
+  // installation starts nothing.
+  suspendedAt    DateTime?
+  repos          GitHubRepo[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([teamId])
+}
+
+// A repository the installation can see, and which CheckMyApp app its deploys
+// check. `appId` null = not mapped yet (nothing happens on its deploys).
+model GitHubRepo {
+  id             String  @id @default(cuid())
+  installation   GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  installationId String
+  // "owner/name", as `repository.full_name` arrives in every delivery.
+  repoFullName   String
+  // GitHub's repository id, stable across renames.
+  repoId         Int
+  app            App?    @relation(fields: [appId], references: [id], onDelete: SetNull)
+  appId          String?
+  // "production" — only deployments to a production environment (below);
+  // "all" — production and previews (previews as ephemeral runs, later);
+  // "off" — mapped, but nothing is checked.
+  policy         String  @default("production")
+  // Comma-separated environment names that count as production; GitHub's
+  // `deployment.environment` is matched case-insensitively.
+  productionEnvs String  @default("production,Production")
+  // Stamped from the installation, so a webhook can scope by team without the
+  // join (the tenant rule, CHE-256).
+  teamId         String
+  deployments    GitHubDeploymentCheck[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // GitHub's id is the identity (a rename keeps the mapping; the name is
+  // refreshed from the next delivery or sync).
+  @@unique([installationId, repoId])
+  @@index([teamId])
+  @@index([repoFullName])
+}
+
+// Every webhook delivery GitHub sent us, by its id. GitHub redelivers (its
+// retries and the "Redeliver" button) under the same X-GitHub-Delivery: a
+// second arrival of one we finished is a no-op; one we did not finish (the
+// handler threw, the route answered 500) is handled again — the claim is the
+// row, the proof of work is handledAt.
+model GitHubDelivery {
+  deliveryId String    @id
+  event      String
+  receivedAt DateTime  @default(now())
+  handledAt  DateTime?
+}
+
+// One GitHub Deployment → at most one check. A deployment reports several
+// statuses (in_progress, success, …) and a status may be delivered more than
+// once; the unique key is what makes "one deploy, one run" true whatever
+// arrives. Created before the run is started (insert-first): the row is the
+// claim, the run follows.
+model GitHubDeploymentCheck {
+  id           String   @id @default(cuid())
+  repo         GitHubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  repoId       String
+  // GitHub's deployment id.
+  deploymentId Int
+  environment  String
+  sha          String
+  // The run this deploy started; null when the start was refused (the Check
+  // Run then says why — balance, a private address).
+  runId        String?
+  // GitHub's id of the Check Run on the commit, once created; completed when
+  // the run ends. (Not a Run of ours — hence not "…RunId".)
+  githubCheckId Int?
+  // Why no run was started, in the words the Check Run shows. Null = started.
+  refusal      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([repoId, deploymentId])
+  @@index([runId])
 }
 
 // How a 🔴 regression becomes a ticket the owner's automation will pick up.

@@ -45,6 +45,10 @@ const SOURCES = [
   "src/lib/app-page.ts",
   "src/components",
   "src/lib/email.ts",
+  // CHE-369: the Check Run on the customer's commit and the notices around it.
+  "src/lib/github-app.ts",
+  "src/lib/github-webhook.ts",
+  "src/lib/integration-notice.ts",
 ];
 
 const SOURCE_EXT = new Set([".ts", ".tsx"]);

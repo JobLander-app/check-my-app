@@ -43,6 +43,9 @@ const PAYLOAD_SOURCES = [
   // CHE-354 / CHE-367: recurring issues and releases (Health, Release lens).
   "src/lib/recurring.ts",
   "src/lib/releases.ts",
+  // CHE-369: the Check Run on the customer's commit.
+  "src/lib/github-app.ts",
+  "src/lib/github-webhook.ts",
 ];
 
 // Identifiers that carry our side of the invoice. `priceUsd` / `price_usd` —
