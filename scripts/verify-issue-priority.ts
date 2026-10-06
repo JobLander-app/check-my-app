@@ -41,32 +41,32 @@ const eq = (name: string, got: unknown, want: unknown) => check(name, got === wa
 // ── 1. The rule ─────────────────────────────────────────────────────────────
 const p = (o: Partial<PriorityInput>) => issuePriority({ category: "broken", severity: "high", where: "/about", timesSeen: 1, audience: "unknown", ...o });
 
-eq("P0: broken for existing users at the checkout", p({ where: "/checkout → Pay", audience: "existing_users" }), "P0");
-eq("P0: broken for existing users on sign-in (a request)", p({ where: "POST /api/auth/session → 500", audience: "existing_users" }), "P0");
-eq("P0: broken for existing users on billing, path inside a sentence", p({ where: "Settings → Billing (/account/billing)", audience: "existing_users" }), "P0");
+eq("P0: broken for existing users at the checkout", p({ where: "/checkout → Pay", audience: "seen_signed_in" }), "P0");
+eq("P0: broken for existing users on sign-in (a request)", p({ where: "POST /api/auth/session → 500", audience: "seen_signed_in" }), "P0");
+eq("P0: broken for existing users on billing, path inside a sentence", p({ where: "Settings → Billing (/account/billing)", audience: "seen_signed_in" }), "P0");
 eq("P0: broken three checks in a row, wherever", p({ where: "/about", timesSeen: 3 }), "P0");
 eq("P0: exposed three checks in a row", p({ category: "exposed", timesSeen: 3 }), "P0");
 eq("P0: risky three checks in a row", p({ category: "risky", severity: "medium", timesSeen: 3 }), "P0");
 eq("not P0: broken at the checkout, who hit it unknown → P1 (unknown is never promoted)", p({ where: "/checkout" }), "P1");
-eq("not P0: broken at the checkout for new visitors → P1", p({ where: "/checkout", audience: "new_visitors" }), "P1");
-eq("not P0: broken for existing users on a page that is none of money, sign-in, data → P1", p({ where: "/blog/launch", audience: "existing_users" }), "P1");
+eq("not P0: broken at the checkout for new visitors → P1", p({ where: "/checkout", audience: "seen_as_visitor" }), "P1");
+eq("not P0: broken for existing users on a page that is none of money, sign-in, data → P1", p({ where: "/blog/launch", audience: "seen_signed_in" }), "P1");
 eq("P1: broken anywhere", p({ where: "/blog" }), "P1");
 eq("P1: exposed anywhere", p({ category: "exposed", where: "/api/users" }), "P1");
-eq("P1: risky for existing users", p({ category: "risky", severity: "medium", audience: "existing_users" }), "P1");
-eq("P1: a critical confusing for new visitors is lifted one step, not two", p({ category: "confusing", severity: "critical", audience: "new_visitors" }), "P1");
-eq("P2: risky for new visitors", p({ category: "risky", severity: "medium", audience: "new_visitors" }), "P2");
+eq("P1: risky for existing users", p({ category: "risky", severity: "medium", audience: "seen_signed_in" }), "P1");
+eq("P1: a critical confusing for new visitors is lifted one step, not two", p({ category: "confusing", severity: "critical", audience: "seen_as_visitor" }), "P1");
+eq("P2: risky for new visitors", p({ category: "risky", severity: "medium", audience: "seen_as_visitor" }), "P2");
 eq("P2: risky, who hit it unknown", p({ category: "risky", severity: "medium" }), "P2");
-eq("P2: confusing for new visitors", p({ category: "confusing", severity: "medium", audience: "new_visitors" }), "P2");
+eq("P2: confusing for new visitors", p({ category: "confusing", severity: "medium", audience: "seen_as_visitor" }), "P2");
 eq("P2: confusing that keeps coming back (two checks), whoever hit it", p({ category: "confusing", severity: "medium", timesSeen: 2 }), "P2");
 eq("P2: confusing that keeps coming back stays P2 at three — the streak lifts defects, not confusion", p({ category: "confusing", severity: "medium", timesSeen: 3 }), "P2");
-eq("P3: confusing once, for existing users", p({ category: "confusing", severity: "medium", audience: "existing_users" }), "P3");
+eq("P3: confusing once, for existing users", p({ category: "confusing", severity: "medium", audience: "seen_signed_in" }), "P3");
 eq("P3: polish", p({ category: "polish", severity: "low" }), "P3");
-eq("P3: polish seen ten times — polish never rises", p({ category: "polish", severity: "low", timesSeen: 10, audience: "existing_users", where: "/checkout" }), "P3");
+eq("P3: polish seen ten times — polish never rises", p({ category: "polish", severity: "low", timesSeen: 10, audience: "seen_signed_in", where: "/checkout" }), "P3");
 eq("P3: polish rated critical is still polish", p({ category: "polish", severity: "critical" }), "P3");
 eq("a category the scale does not know: by severity alone (critical → P1)", p({ category: "odd", severity: "critical" }), "P1");
 eq("…medium → P2", p({ category: "odd", severity: "medium" }), "P2");
 eq("…low → P3", p({ category: "odd", severity: "low" }), "P3");
-eq("no place at all is not a sensitive place", p({ where: null, audience: "existing_users" }), "P1");
+eq("no place at all is not a sensitive place", p({ where: null, audience: "seen_signed_in" }), "P1");
 check("the four levels, in order", PRIORITIES.join(",") === "P0,P1,P2,P3" && PRIORITIES.every((x, i) => priorityRank(x) === i));
 
 // Money, sign-in, the user's data — and what is not.
@@ -80,7 +80,7 @@ for (const where of ["/payload", "/accountant-jobs", "/authors", "/blog/paying-a
 for (const where of ["Checkout → Pay", "Sign-in form", "Log in button", "Account menu → Delete", "Billing tab", "POST payment → 500", "Profile form", "Data export"]) {
   check(`sensitive, said in words: ${where}`, sensitivePlace(where), where);
 }
-eq("P0: broken for existing users at a checkout named in words", p({ where: "Checkout → Pay", audience: "existing_users" }), "P0");
+eq("P0: broken for existing users at a checkout named in words", p({ where: "Checkout → Pay", audience: "seen_signed_in" }), "P0");
 check("the whole sentence counts, not its first path", sensitivePlace("/pricing → /checkout fails") && !sensitivePlace("/checkout-guide → /pricing"));
 
 // ── 2. Who hit it ───────────────────────────────────────────────────────────
@@ -89,14 +89,23 @@ eq("fill: a credential", stepFill('[{"type":"fill","value":"{{TEST_EMAIL}}"}]'),
 eq("fill: a labelled credential", stepFill('[{"fill":"{{TEST_PASSWORD:admin}}"}]'), "credential");
 eq("fill: actions, none a credential", stepFill('[{"type":"click"}]'), "none");
 eq("fill: no actions recorded", stepFill(null), "unrecorded");
-eq("audience: a credential filled before the step → existing users", audienceAt([signed("{{TEST_EMAIL}}"), signed("[]"), signed("[]")], 2), "existing_users");
-eq("audience: filled on a skipped step does not count", audienceAt([signed("{{TEST_EMAIL}}", "skipped"), signed("[]")], 1), "new_visitors");
-eq("audience: filled after the step does not count", audienceAt([signed("[]"), signed("{{TEST_EMAIL}}")], 0), "new_visitors");
+eq("audience: a credential filled before the step → existing users", audienceAt([signed("{{TEST_EMAIL}}"), signed("[]"), signed("[]")], 2), "seen_signed_in");
+eq("audience: filled on a skipped step does not count", audienceAt([signed("{{TEST_EMAIL}}", "skipped"), signed("[]")], 1), "seen_as_visitor");
+eq("audience: filled after the step does not count", audienceAt([signed("[]"), signed("{{TEST_EMAIL}}")], 0), "seen_as_visitor");
 eq("audience: nothing recorded at all → unknown", audienceAt([signed(null), signed(null)], 1), "unknown");
 check("one rule over actions and over the one-word fill D1 reduces them to",
-  audienceOf([{ status: "ok", fill: "credential" }, { status: "ok", fill: "none" }], 1) === "existing_users" &&
-    audienceOf([{ status: "ok", fill: "none" }], 0) === "new_visitors" &&
+  audienceOf([{ status: "ok", fill: "credential" }, { status: "ok", fill: "none" }], 1) === "seen_signed_in" &&
+    audienceOf([{ status: "ok", fill: "none" }], 0) === "seen_as_visitor" &&
     audienceOf([{ status: "ok", fill: "unrecorded" }], 0) === "unknown");
+// CHE-393: the recorded fact outranks the inference — a carried session that
+// filled nothing is seen signed in; a failed sign-in that filled a credential
+// is seen as a visitor; a row before the column falls back to the fill.
+check("Step.signedIn decides when the walk wrote it, the fill only when it did not",
+  audienceAt([signed("[]"), { ...signed("[]"), signedIn: true }], 1) === "seen_signed_in" &&
+    audienceAt([{ ...signed("{{TEST_EMAIL}}"), signedIn: false }], 0) === "seen_as_visitor" &&
+    audienceAt([{ ...signed("{{TEST_EMAIL}}"), signedIn: null }, signed("[]")], 1) === "seen_signed_in" &&
+    audienceOf([{ status: "ok", fill: "unrecorded", signedIn: true }], 0) === "seen_signed_in" &&
+    audienceOf([{ status: "ok", fill: "unrecorded", signedIn: null }], 0) === "unknown");
 
 // ── 3. One scale on three surfaces ──────────────────────────────────────────
 async function surfaces() {
@@ -182,7 +191,7 @@ const run = (runNumber: number, fills: boolean): RecurrenceRun => ({
 const app = { id: "a", appSlug: "shop.test" };
 const once = recurrence(app, [run(1, true)], [])[0];
 eq("Issues: the latest sighting's place", once.issue.where, "/checkout → Pay");
-eq("Issues: who hit it, from the fills the loader carried", once.issue.audience, "existing_users");
+eq("Issues: who hit it, from the fills the loader carried", once.issue.audience, "seen_signed_in");
 eq("Issues: one sighting, signed in, at the checkout → P0", issuePriorityOf(once.issue), "P0");
 const noFills = recurrence(app, [run(1, false)], [])[0];
 eq("Issues: without fills the audience is unknown and the row is P1 — the same answer the review gives", `${noFills.issue.audience}/${issuePriorityOf(noFills.issue)}`, "unknown/P1");

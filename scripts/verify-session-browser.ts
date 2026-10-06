@@ -364,6 +364,46 @@ async function main() {
       try {
         const ordinaryScan = await surfaceScan({ db: {}, bindings: {} } as unknown as AgentEnv, own as unknown as Browser, { targetUrl: `${SITE}/expired`, id: RUN_B, storePasswordEnc: null });
         check("surfaceScan: outside a signed-in session a redirect to another host is not 'signed out'", ordinaryScan.signedOut === null && ordinaryScan.status === 200, JSON.stringify({ signedOut: ordinaryScan.signedOut, status: ordinaryScan.status }));
+        // CHE-393: where an ordinary walk stands, read from the page and from
+        // the account it signed in as — the fact Step.signedIn is written from.
+        // Positive evidence only (Codex on #280): a sign-out control → true, a
+        // sign-in control and no sign-out → false, neither → null (the readers
+        // fall back to the trail); a question about signing out is neither.
+        const { signedInNow, settleSignedIn } = await import("@/agent/tools");
+        // …and the row never holds null from a walk that ran with the column:
+        // a page that says nothing keeps what the journey knew, a page that
+        // offers to sign us in ends it, nothing known at all is "not seen".
+        check("settleSignedIn: this step's evidence wins; a silent page keeps the journey's last word; no word at all is false, never null",
+          settleSignedIn(true, null) === true && settleSignedIn(false, true) === false && settleSignedIn(null, true) === true &&
+            settleSignedIn(null, false) === false && settleSignedIn(null, null) === false);
+        const plain = await own.newPage();
+        await plain.goto(`${SITE}/admin/menu`);
+        const fromPage = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.goto(`${SITE}/admin`);
+        const saysNothing = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<nav><a href="/login">Log in</a> <a href="/pricing">Pricing</a></nav>');
+        const offersSignIn = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<a href="/login">Log in</a> <button>How do I log out?</button>');
+        const faq = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.setContent('<a href="/login">Log in</a> <a href="/account/logout">Leave</a>');
+        const byAddress = await signedInNow({ page: plain } as unknown as ToolEnv);
+        check("signedInNow: a sign-out control → true; a sign-in control and no sign-out → false; neither → null; \"How do I log out?\" is a question, not a sign-out; a link to a sign-out address counts whatever it is called",
+          fromPage === true && saysNothing === null && offersSignIn === false && faq === false && byAddress === true,
+          JSON.stringify({ fromPage, saysNothing, offersSignIn, faq, byAddress }));
+        // Codex on #280, round 3: what the markup hides for the other state is
+        // not evidence; what the target app shows inside its own frame is.
+        await plain.setContent('<nav><a href="/login">Log in</a><div style="display:none"><a href="/logout">Log out</a></div><a href="/logout" style="visibility:hidden">Log out</a></nav>');
+        const hidden = await signedInNow({ page: plain } as unknown as ToolEnv);
+        await plain.goto(`${SITE}/admin`);
+        await plain.setContent(`<h1>Host shell</h1><iframe name="app" src="${SITE}/admin/menu"></iframe>`);
+        await plain.waitForSelector("iframe");
+        await plain.frame("app")?.waitForLoadState();
+        const inFrame = await signedInNow({ page: plain, targetOrigin: SITE, allowedOrigins: [] } as unknown as ToolEnv);
+        const frameNotOurs = await signedInNow({ page: plain, targetOrigin: "https://elsewhere.test", allowedOrigins: [] } as unknown as ToolEnv);
+        check("signedInNow: a hidden sign-out (display:none, visibility:hidden) is no evidence — the visible Log in decides; a sign-out inside the target app's own frame is read; a frame of another origin is not",
+          hidden === false && inFrame === true && frameNotOurs === null,
+          JSON.stringify({ hidden, inFrame, frameNotOurs }));
+        await plain.close();
       } finally {
         await own.close();
       }
@@ -454,6 +494,9 @@ async function main() {
       reported[0]?.status === "skipped" && reported[0]?.unverifiedReason === "not_applicable" && reported[0]?.observed === SELF_CHECK_REFUSED_OBSERVED, JSON.stringify(reported[0]));
     await executeTool(toolEnv, "report_step", { label: "Read the rules", status: "confusing", attempted: "Read the list", observed: "Two rules have the same name." });
     check("…and it is spent on that step: the next one is the walk's own", reported[1]?.status === "confusing" && reported[1]?.observed === "Two rules have the same name.", JSON.stringify(reported[1]));
+    // CHE-393: inside a person's session every step is reported signed in —
+    // written by the tool, whatever the model sent (here: nothing).
+    check("a step reported inside the session carries signedIn = true, written by the tool", reported[0]?.signedIn === true && reported[1]?.signedIn === true, JSON.stringify([reported[0]?.signedIn, reported[1]?.signedIn]));
     // What only reads is still pressed, on the same page.
     const tab = await executeTool(toolEnv, "click", { selector: "#tab" });
     const view = await executeTool(toolEnv, "click", { role: "button", name: "View details" });

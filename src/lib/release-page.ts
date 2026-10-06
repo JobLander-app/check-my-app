@@ -51,8 +51,8 @@ export function releaseDeltaLine(r: Pick<Release, "firstRelease" | "delta" | "pr
 
 /** Who would have hit a problem, when the walk recorded enough to say. */
 export const AUDIENCE_LABEL: Record<Audience, string | null> = {
-  existing_users: "signed-in users",
-  new_visitors: "new visitors",
+  seen_signed_in: "signed-in users",
+  seen_as_visitor: "new visitors",
   unknown: null,
 };
 

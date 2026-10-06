@@ -53,7 +53,7 @@ export function priorityFromHistory(finding: Omit<PriorityFinding, "runId">, rec
   });
 }
 
-type StepRows = Array<{ status: string; actions: string | null }>;
+type StepRows = Array<{ status: string; actions: string | null; signedIn?: boolean | null }>;
 
 const stepRef = (finding: Pick<PriorityFinding, "anchor">) =>
   parseJson<{ stepRef?: { journeyIndex?: number; stepIndex?: number } | null }>(finding.anchor ?? null)?.stepRef;
@@ -80,7 +80,7 @@ export async function priorityFromCheck(db: PrismaClient, finding: PriorityFindi
   if (typeof ref?.journeyIndex === "number") {
     const journey = await db.journey.findFirst({
       where: { runId: finding.runId, order: ref.journeyIndex },
-      select: { steps: { orderBy: { order: "asc" }, select: { status: true, actions: true } } },
+      select: { steps: { orderBy: { order: "asc" }, select: { status: true, actions: true, signedIn: true } } },
     });
     if (journey) journeys[ref.journeyIndex] = journey;
   }

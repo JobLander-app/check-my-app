@@ -471,6 +471,13 @@ model Step {
   // {{TEST_EMAIL}}/{{TEST_PASSWORD}} placeholders. NULL when the step reported
   // nothing executable (a read-only observation) or predates the column.
   actions String?
+  // CHE-393: whether this step ran signed in, read when the step was reported
+  // from where the walk stood, on positive evidence only — a person's signed-in
+  // session or a sign-out control on the page (true), a sign-in control and no
+  // sign-out (false). NULL when the page said nothing, and on rows before the
+  // column; the Release lens and Issues then fall back to the inference from a
+  // credential placeholder in `actions`.
+  signedIn Boolean?
 
   evidence   Evidence[]
 

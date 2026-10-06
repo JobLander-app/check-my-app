@@ -512,6 +512,98 @@ export interface ReportedStep {
   // product's own 5xx/exception beside the refusal keeps its status). The walk
   // reads it to gate its summary.
   selfCheckGuardSeen?: boolean;
+  // CHE-393: whether the step ran signed in — written by report_step from
+  // where the walk stands (signedInNow), never by the model. Null when the
+  // page gives no evidence either way; the readers then fall back to the
+  // inference from the trail.
+  signedIn?: boolean | null;
+}
+
+// CHE-393: is the walk signed in, right now? A fact only where there is
+// positive evidence; null where there is none, and the readers fall back to
+// the inference from the trail (src/lib/audience.ts) — which is weaker, and
+// says so by giving way to this when it is written (Codex on #280: a
+// credential the fill tool was handed is not a sign-in; the fill may have been
+// refused, the account turned away, the step skipped).
+//   true  — a person's signed-in session (session-browser.ts), or a sign-out
+//           control / address on the page: a session the browser carried in, a
+//           magic link, SSO all show one even when we typed no credential;
+//   false — no sign-out anywhere and a sign-in control on the page: the page
+//           is offering to sign us in, so we are not;
+//   null  — neither; a page with its account menu folded away says nothing.
+// The page is asked for the names of its pressable things only; the words are
+// judged here with the rules the sign-out gate uses (isSignOutText,
+// isSignOutAddress), and a question ("How do I log out?") is not a sign-out
+// (hands-off.ts asksQuestion — the same distinction the click gate draws).
+const SIGN_IN_CONTROL = /\b(log ?in|sign ?in|log ?on|sign ?on)\b/i;
+
+// What the row gets, from what this step's page said and what the journey
+// already knew (Codex on #280, round 2): a journey runs in one browser context,
+// so a session seen on an earlier step is still there on a page that says
+// nothing, and a page that offers to sign us in ends it. With no evidence on
+// this step and none before it, the step was not seen signed in — false, never
+// null: a NULL row means "written before the column", and only such rows are
+// read by the trail inference (src/lib/audience.ts).
+export function settleSignedIn(now: boolean | null, before: boolean | null): boolean {
+  return now ?? before ?? false;
+}
+
+// The pressable things a person can see on one document — not what the markup
+// also holds for the other state and hides (Codex on #280, round 3: a
+// signed-out page that keeps its signed-in menu in the DOM, display:none).
+async function visibleControls(frame: Frame): Promise<Array<{ text: string; href: string | null }>> {
+  return frame.evaluate(() => {
+    const out: Array<{ text: string; href: string | null }> = [];
+    const nodes = document.querySelectorAll('a[href], button, [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]');
+    for (const el of Array.from(nodes).slice(0, 600)) {
+      const h = el as HTMLElement;
+      // Rendered at all, and not hidden by style: getClientRects is empty for
+      // display:none and for anything inside it; visibility:hidden and
+      // opacity:0 keep a box but show nothing.
+      if (h.getClientRects().length === 0) continue;
+      const style = getComputedStyle(h);
+      if (style.visibility === "hidden" || style.opacity === "0") continue;
+      const text = `${h.innerText ?? h.textContent ?? ""} ${h.getAttribute("aria-label") ?? ""} ${h.getAttribute("title") ?? ""} ${(h as HTMLInputElement).value ?? ""}`;
+      out.push({ text: text.replace(/\s+/g, " ").trim().slice(0, 80), href: el instanceof HTMLAnchorElement ? el.getAttribute("href") : null });
+      if (out.length >= 400) break;
+    }
+    return out;
+  });
+}
+
+export async function signedInNow(env: Pick<ToolEnv, "page"> & Partial<Pick<ToolEnv, "targetOrigin" | "allowedOrigins">>): Promise<boolean | null> {
+  if (inSignedInSession(env.page)) return true;
+  try {
+    // The page, and the embedded frames of the target app the tools act in
+    // (CHE-373): a journey that lives inside one finds its sign-out there, not
+    // in the host shell around it. Frames of other origins are not read.
+    const frames = env.page.frames().filter((f) => {
+      if (f === env.page.mainFrame()) return true;
+      if (!env.targetOrigin) return false;
+      try {
+        return isAllowedOrigin(env as ToolEnv, new URL(f.url()).origin);
+      } catch {
+        return false;
+      }
+    });
+    const seen: Array<{ text: string; href: string | null; base: string }> = [];
+    for (const frame of frames) {
+      try {
+        for (const c of await visibleControls(frame)) seen.push({ ...c, base: frame.url() });
+      } catch {
+        /* a frame mid-navigation or gone says nothing */
+      }
+    }
+    const signsOut = seen.some(
+      (n) => (!asksQuestion(n.text) && isSignOutText(n.text)) || (n.href !== null && n.href !== "" && isSignOutAddress(n.href, n.base)),
+    );
+    if (signsOut) return true;
+    const offersSignIn = seen.some((n) => !asksQuestion(n.text) && SIGN_IN_CONTROL.test(n.text));
+    return offersSignIn ? false : null;
+  } catch {
+    // A page mid-navigation, or one that is gone: nothing can be said.
+    return null;
+  }
 }
 
 export const BROWSER_TOOLS: Anthropic.Tool[] = [
@@ -819,6 +911,8 @@ async function executeToolUnscrubbed(
         // CHE-190 after both: a risky step is never judged (CHE-169) and never
         // classified above, so a link we could not reach had no gate at all.
         coerceUnreachable(step, env);
+        // CHE-393: where the walk stands, read now — never the model's word.
+        step.signedIn = await signedInNow(env);
         // CHE-180: the step leaves here with the model's words intact — the
         // judge (CHE-169) rules on them. productizeStep runs in the walk's
         // onReportStep, after the judge and before the row is written.

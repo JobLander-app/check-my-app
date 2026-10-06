@@ -64,7 +64,7 @@ export function sensitivePlace(where: string | null | undefined): boolean {
 const DEFECT = new Set(["broken", "exposed", "risky"]);
 
 export function issuePriority(i: PriorityInput): Priority {
-  const existing = i.audience === "existing_users";
+  const existing = i.audience === "seen_signed_in";
   const defect = DEFECT.has(i.category);
   if (defect && i.timesSeen >= 3) return "P0";
   if (i.category === "broken" && existing && sensitivePlace(i.where)) return "P0";
@@ -73,7 +73,7 @@ export function issuePriority(i: PriorityInput): Priority {
   if (i.category === "polish") return "P3";
   // Risky elsewhere, or confusing.
   const confusing = i.category === "confusing";
-  if (i.category === "risky" || (confusing && (i.audience === "new_visitors" || i.timesSeen >= 2))) {
+  if (i.category === "risky" || (confusing && (i.audience === "seen_as_visitor" || i.timesSeen >= 2))) {
     return i.severity === "critical" ? "P1" : "P2";
   }
   if (confusing) return i.severity === "critical" ? "P1" : "P3";

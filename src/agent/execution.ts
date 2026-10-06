@@ -12,6 +12,7 @@ import {
   prepareAgentPage,
   productizeStep,
   scrubSecrets,
+  settleSignedIn,
   type RecordedAction,
   type UndrivenControl,
   type ToolEnv,
@@ -201,6 +202,9 @@ export async function walkOneJourney(args: {
     // CHE-334: this walk met our own self-check guard, so its summary may not
     // retell that refusal as the product's.
     let metOwnGuard = false;
+    // CHE-393: what this journey last knew about being signed in — one browser
+    // context, so it carries to a step whose page says nothing.
+    let lastSignedIn: boolean | null = null;
 
     const toolEnv: ToolEnv = {
       page,
@@ -261,6 +265,13 @@ export async function walkOneJourney(args: {
         // time (a control our hands could not drive) is evidence, not a guess.
         // Captured before adjudication, which may hand back a different object.
         const machineClass = reported.gapClass;
+        // CHE-393: the same — read at report time by the tool, kept past the
+        // judge, settled against what this journey already knew (one browser
+        // context: a session seen earlier is still there on a page that says
+        // nothing), written to the row. Never null from here on: null is a row
+        // from before the column.
+        const signedIn = settleSignedIn(reported.signedIn ?? null, lastSignedIn);
+        lastSignedIn = signedIn;
         // CHE-169: a negative step gets its second opinion BEFORE anything is
         // written — the status that lands in the row is the adjudicated one.
         // With the judge off this returns the step untouched.
@@ -320,6 +331,7 @@ export async function walkOneJourney(args: {
             unverifiedReason: step.unverifiedReason ?? null,
             gapClass: step.gapClass ?? null,
             actions: trail.length ? JSON.stringify(trail) : null,
+            signedIn,
             screenshotUrl: lastScreenshot?.storageUrl ?? null,
             evidence: lastScreenshot
               ? { create: [{ type: "screenshot", ...lastScreenshot }] }

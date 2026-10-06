@@ -129,6 +129,9 @@ export interface ReviewSourceStep {
   // credential filled before the step makes it an existing user's. Never in
   // the payload.
   actions?: string | null;
+  // CHE-393: what the walk recorded about being signed in on this step; read
+  // for who hit a finding before `actions` is. Never in the payload.
+  signedIn?: boolean | null;
 }
 
 export interface ReviewSourceJourney {
@@ -212,6 +215,8 @@ export const REVIEW_SELECT = {
           unverifiedReason: true,
           networkLog: true,
           actions: true,
+          // CHE-393: who was seen hitting a finding, as the walk recorded it.
+          signedIn: true,
         },
       },
     },
@@ -330,7 +335,7 @@ export function reviewPriority(
 ): Priority {
   return priorityOfCheckAlone(
     finding,
-    run.journeys.map((j) => ({ steps: j.steps.map((s) => ({ status: s.status, actions: s.actions ?? null })) })),
+    run.journeys.map((j) => ({ steps: j.steps.map((s) => ({ status: s.status, actions: s.actions ?? null, signedIn: s.signedIn ?? null })) })),
   );
 }
 

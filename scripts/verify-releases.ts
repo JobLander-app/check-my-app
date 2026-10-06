@@ -95,7 +95,7 @@ const out = computeReleases(RELEASES);
 const byRun = new Map(out.map((r) => [r.runNumber, r]));
 // A missing release fails its checks instead of crashing the script.
 const zero = { broke: 0, fixed: 0, unchanged: 0 };
-const MISSING = { summary: { existing_users: zero, new_visitors: zero, unknown: zero } } as unknown as Release;
+const MISSING = { summary: { seen_signed_in: zero, seen_as_visitor: zero, unknown: zero } } as unknown as Release;
 const release = (n: number): Release => byRun.get(n) ?? MISSING;
 
 // ── 1. The feed ───────────────────────────────────────────────────────────────
@@ -259,25 +259,50 @@ check("isRelease: an ephemeral PR preview with a sha is one", isRelease({ deploy
 const aud = (xs: { title: string; audience: string }[] | undefined) =>
   Object.fromEntries((xs ?? []).map((x) => [x.title, x.audience]));
 check("#12: X broke for existing (signed-in) users, Y for new visitors",
-  aud(r12.delta?.broke)["Order total ignores the discount"] === "existing_users" &&
-    aud(r12.delta?.broke)["Sign-up button does nothing"] === "new_visitors",
+  aud(r12.delta?.broke)["Order total ignores the discount"] === "seen_signed_in" &&
+    aud(r12.delta?.broke)["Sign-up button does nothing"] === "seen_as_visitor",
   JSON.stringify(aud(r12.delta?.broke)));
 check("#12 summary: broke 1 for existing users, 1 for new visitors",
-  r12.summary.existing_users.broke === 1 && r12.summary.new_visitors.broke === 1, JSON.stringify(r12.summary));
+  r12.summary.seen_signed_in.broke === 1 && r12.summary.seen_as_visitor.broke === 1, JSON.stringify(r12.summary));
 check("#14 summary: fixed 1 for existing users; unchanged 1 for new visitors",
-  r14.summary.existing_users.fixed === 1 && r14.summary.new_visitors.unchanged === 1, JSON.stringify(r14.summary));
+  r14.summary.seen_signed_in.fixed === 1 && r14.summary.seen_as_visitor.unchanged === 1, JSON.stringify(r14.summary));
 
-check("audienceAt: a step after a sign-in in the same journey → existing_users", audienceAt(account().steps, 1) === "existing_users");
-check("audienceAt: the sign-in step itself counts as signed in", audienceAt(account().steps, 0) === "existing_users");
-check("audienceAt: actions recorded and no sign-in up to the step → new_visitors", audienceAt(signup().steps, 0) === "new_visitors");
+check("audienceAt: a step after a sign-in in the same journey → seen_signed_in", audienceAt(account().steps, 1) === "seen_signed_in");
+check("audienceAt: the sign-in step itself counts as signed in", audienceAt(account().steps, 0) === "seen_signed_in");
+check("audienceAt: actions recorded and no sign-in up to the step → seen_as_visitor", audienceAt(signup().steps, 0) === "seen_as_visitor");
 check("audienceAt: a sign-in AFTER the step does not count",
-  audienceAt([{ status: "ok", actions: SIGNUP }, { status: "ok", actions: SIGN_IN }], 0) === "new_visitors");
+  audienceAt([{ status: "ok", actions: SIGNUP }, { status: "ok", actions: SIGN_IN }], 0) === "seen_as_visitor");
 check("audienceAt: a skipped sign-in does not sign in",
-  audienceAt([{ status: "skipped", actions: SIGN_IN }, { status: "ok", actions: ORDERS }], 1) === "new_visitors");
+  audienceAt([{ status: "skipped", actions: SIGN_IN }, { status: "ok", actions: ORDERS }], 1) === "seen_as_visitor");
 check("audienceAt: a named account ({{TEST_EMAIL:admin}}) signs in too",
-  audienceAt([{ status: "ok", actions: JSON.stringify([{ kind: "fill", value: "{{TEST_EMAIL:admin}}" }]) }], 0) === "existing_users");
+  audienceAt([{ status: "ok", actions: JSON.stringify([{ kind: "fill", value: "{{TEST_EMAIL:admin}}" }]) }], 0) === "seen_signed_in");
 check("audienceAt: a journey with no recorded actions at all (before CHE-129) → unknown",
   audienceAt([{ status: "ok", actions: null }, { status: "ok", actions: null }], 1) === "unknown");
+// CHE-393: the column path and the fallback. A session the browser carried in
+// filled nothing and is still seen signed in; a sign-in that was turned away
+// filled a credential and is still seen as a visitor; a row before the column
+// (signedIn null) is read the old way.
+check("audienceAt: Step.signedIn true on a step that filled nothing → seen_signed_in (a carried session, SSO, a magic link)",
+  audienceAt([{ status: "ok", actions: ORDERS, signedIn: true }], 0) === "seen_signed_in");
+check("audienceAt: Step.signedIn false after a credential fill → seen_as_visitor (the sign-in was turned away)",
+  audienceAt([{ status: "ok", actions: SIGN_IN, signedIn: false }, { status: "ok", actions: ORDERS, signedIn: false }], 1) === "seen_as_visitor");
+check("audienceAt: Step.signedIn null (a row before the column) falls back to the inference",
+  audienceAt([{ status: "ok", actions: SIGN_IN, signedIn: null }, { status: "ok", actions: ORDERS, signedIn: null }], 1) === "seen_signed_in" &&
+    audienceAt([{ status: "ok", actions: null, signedIn: null }], 0) === "unknown");
+// …and through computeReleases: the same two findings as #12, but the walk
+// recorded the account journey's sign-in as turned away (signedIn false) and
+// the sign-up page as reached signed in (a carried session). The fact wins.
+const withFact = (j: J, signedIn: boolean): J => ({ ...j, steps: j.steps.map((s) => ({ ...s, signedIn })) });
+const recorded = computeReleases([
+  run({ runNumber: 30, findings: [] }),
+  run({ runNumber: 32, journeys: [withFact(account(), false), withFact(signup(), true)], findings: [X(32), Y(32)] }),
+]);
+const r32 = recorded.find((r) => r.runNumber === 32) ?? MISSING;
+check("a release reads Step.signedIn when the walk wrote it: X (after a credential fill) is seen as a visitor, Y (no fill) seen signed in",
+  aud(r32.delta?.broke)["Order total ignores the discount"] === "seen_as_visitor" &&
+    aud(r32.delta?.broke)["Sign-up button does nothing"] === "seen_signed_in" &&
+    r32.summary.seen_as_visitor.broke === 1 && r32.summary.seen_signed_in.broke === 1,
+  JSON.stringify({ broke: aud(r32.delta?.broke), summary: r32.summary }));
 
 console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
