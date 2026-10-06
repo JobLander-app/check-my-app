@@ -97,6 +97,12 @@ export interface AgentBindings {
   TELEGRAM_BOT_TOKEN?: string;
   OWNER_TELEGRAM_CHAT_ID?: string;
   SESSION_SIGN_IN_URL?: string;
+  // CHE-369: the GitHub App, for the answer on the commit when a run it
+  // started ends (src/lib/github-app.ts). Absent = no answer, the run is
+  // unaffected.
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_APP_WEBHOOK_SECRET?: string;
 }
 
 export interface AgentEnv {

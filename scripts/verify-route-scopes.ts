@@ -171,7 +171,8 @@ check(
 // (cross-review of #221, CHE-375).
 const VERIFIED_BY: Record<string, string[]> = {
   "secret-token-verified webhook": ["secretMatches("],
-  "signature-verified webhook": ["constructEventAsync(", "verifyWebhook("],
+  // CHE-369: the GitHub App's HMAC (src/lib/github-app.ts).
+  "signature-verified webhook": ["constructEventAsync(", "verifyWebhook(", "signatureMatches("],
 };
 const unverified = Object.entries(ROUTE_RULES).filter(([key, rule]) => {
   if (rule.kind !== "public" || !(rule.why in VERIFIED_BY)) return false;

@@ -64,7 +64,10 @@ export type ScopedReason =
   | "the App was just scoped to this team"
   | "the previous run names its own app"
   | "the caller resolved this app"
-  | "settled signatures outlive the app they describe";
+  | "settled signatures outlive the app they describe"
+  // CHE-369: a signed GitHub delivery names its installation and repository;
+  // the team is whoever connected that installation, read from the row.
+  | "a signed GitHub delivery names the installation";
 
 export function alreadyScoped(why: ScopedReason): Record<string, never> {
   void why;

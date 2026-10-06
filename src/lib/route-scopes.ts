@@ -86,6 +86,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   // CHE-375: the owner's chat with @checkmyapp_bot, stored in D1. Only chats on
   // TELEGRAM_ALLOWED_CHAT_IDS are written.
   "POST /api/webhooks/telegram": { kind: "public", why: "secret-token-verified webhook" },
+  // CHE-369: the GitHub App's deliveries, signed with its webhook secret; the
+  // team is whoever connected the installation the delivery names.
+  "POST /api/webhooks/github": { kind: "public", why: "signature-verified webhook" },
 
   // CHE-315: the remote MCP server. One URL, many actions: the API key names
   // the team and the scope, and each tool asks the scope table for its own
@@ -113,6 +116,10 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "DELETE /api/integrations/github": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/start": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/callback": { kind: "team", action: "integration.connect" },
+  // CHE-369: installing the GitHub App lets the team's deploys start checks
+  // the team pays for — the same gate as a tracker.
+  "GET /api/integrations/github/app/start": { kind: "team", action: "integration.connect" },
+  "GET /api/integrations/github/app/callback": { kind: "team", action: "integration.connect" },
   // CHE-236: the analytics connection. Team-scoped like the tracker pair —
   // the token it stores is read by every app the team watches.
   "GET /api/integrations/posthog/start": { kind: "team", action: "integration.connect" },

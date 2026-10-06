@@ -21,6 +21,10 @@ const NOTICES: Record<string, { text: string; ok: boolean }> = {
     ok: false,
   },
   posthog_failed: { text: "Couldn't connect PostHog — please try again.", ok: false },
+  // CHE-369: the GitHub App.
+  github_installed: { text: "The GitHub App is installed — choose which app each repository deploys, and every successful deploy is checked.", ok: true },
+  github_unconfigured: { text: "The GitHub App isn't available yet — it is being set up.", ok: false },
+  github_failed: { text: "Couldn't connect the GitHub App — please try again.", ok: false },
 };
 
 export function integrationNotice(outcome: string | undefined): { text: string; ok: boolean } | null {

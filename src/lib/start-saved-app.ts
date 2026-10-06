@@ -33,14 +33,15 @@ export async function startSavedApp(
   db: PrismaClient,
   owner: { id: string; teamId: string; plan: UserPlan },
   appId: string,
-  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "action" | "api" } = {
+  // CHE-369: "github" is a deploy the GitHub App heard about.
+  deps: { trigger: (runId: string) => Promise<void>; siteCap: () => number; capture?: typeof captureServer; source?: "ui" | "mcp" | "action" | "api" | "github" } = {
     trigger: triggerRun,
     siteCap: effectiveSiteCap,
     capture: captureServer,
     source: "ui",
   },
   extras: SavedAppRunExtras = {},
-): Promise<{ publicId: string; alreadyRunning?: true } | { error: string; code?: RunRefusalCode }> {
+): Promise<{ publicId: string; id?: string; alreadyRunning?: true } | { error: string; code?: RunRefusalCode }> {
   // CHE-395: the app is the team's, whoever added it. Both doors gate on
   // `run.start` before they get here, so a filter on the person who added the
   // app protected nothing — it answered "App not found." to a teammate the
@@ -97,5 +98,5 @@ export async function startSavedApp(
     select: { id: true, publicId: true },
   });
   await deps.trigger(run.id);
-  return { publicId: run.publicId };
+  return { publicId: run.publicId, id: run.id };
 }
