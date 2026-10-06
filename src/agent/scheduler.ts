@@ -17,6 +17,7 @@ import { recipientsForApp } from "@/lib/recipients";
 import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
+import { isPendingShopifyApp } from "@/lib/session-view";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -138,6 +139,14 @@ export async function runDueWatches(
       if (isPrivateTarget(watch.targetUrl)) {
         skipped++;
         console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — private-network address`);
+        continue;
+      }
+      // CHE-333: a Shopify store whose app is not chosen. No door makes such a
+      // watch (enableWatchForApp refuses, chooseApp creates it once chosen);
+      // this is the backstop for a row made any other way.
+      if (watch.app && isPendingShopifyApp({ targetKind: watch.app.targetKind, appSlug: watch.appSlug })) {
+        skipped++;
+        console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — Shopify app not chosen`);
         continue;
       }
 

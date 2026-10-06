@@ -23,6 +23,7 @@ import { NOT_OPEN_YET, chooseApp, connectStore } from "@/lib/shopify-connect";
 import type { Pick } from "@/lib/session-view";
 import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 import { startSavedApp } from "@/lib/start-saved-app";
+import { enableWatchForApp } from "@/lib/watch-enable";
 import { PENDING_SHOPIFY_APP } from "@/lib/session-view";
 
 let failures = 0;
@@ -64,6 +65,10 @@ async function main() {
     const startDeps = { trigger: async () => { triggered++; }, siteCap: () => 1000, source: "mcp" as const };
     const early = await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, startDeps);
     check("a check of a store whose app is not chosen is refused, and nothing starts", "error" in early && early.error === PENDING_SHOPIFY_APP && triggered === 0, JSON.stringify(early));
+    // Codex on #288: nor may a daily check be switched on for it (MCP enable_watch).
+    const earlyWatch = await enableWatchForApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, { frequency: "daily" });
+    const watches = await db.watch.count({ where: { appId } });
+    check("a daily check for a store whose app is not chosen is refused, and no watch appears", earlyWatch.kind === "gated" && earlyWatch.reason === PENDING_SHOPIFY_APP && watches === 0, JSON.stringify({ earlyWatch, watches }));
     const again = await connectStore(db, ann, env, "prod-release-1");
     check("the same store asked again is the same pending app", "ok" in again && again.appId === appId && again.reused, JSON.stringify(again));
 

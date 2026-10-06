@@ -29,7 +29,9 @@ type Choice =
   | { kind: "listing" }
   | { kind: "list"; apps: { handle: string; name: string }[] }
   | { kind: "picking"; name: string }
-  | { kind: "error"; message: string; href?: string }
+  // `apps`: the list stays under the error, so the person can choose again
+  // (Codex on #288: the host lists them once, after sign-in).
+  | { kind: "error"; message: string; href?: string; apps?: { handle: string; name: string }[] }
   | { kind: "done"; name: string; runHref: string; appHref: string; watchRefused?: string };
 type State = { status: Status; dialog: Dialog; choice: Choice };
 type Action =
@@ -88,6 +90,7 @@ const modifiers = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shi
 export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string; store: string; appHref: string; appId: string; choose: boolean }) {
   const [state, dispatch] = useReducer(reduce, { status: { kind: "connecting" }, dialog: null, choice: { kind: "idle" } });
   const names = useRef(new Map<string, string>());
+  const listed = useRef<{ handle: string; name: string }[]>([]);
   const socket = useRef<WebSocket | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const field = useRef<HTMLTextAreaElement | null>(null);
@@ -103,7 +106,7 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
       const name = names.current.get(handle) ?? handle;
       const result = await chooseShopifyApp(appId, token);
       if ("error" in result) {
-        dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href } });
+        dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href, apps: listed.current } });
         return;
       }
       dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, appHref: result.appHref, watchRefused: result.watchRefused } });
@@ -150,9 +153,10 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
           }
         } else if (message.t === "apps") {
           for (const app of message.apps) names.current.set(app.handle, app.name);
+          listed.current = message.apps;
           dispatch({ t: "choice", choice: message.apps.length ? { kind: "list", apps: message.apps } : { kind: "error", message: CHOOSE_COPY.noApps } });
         } else if (message.t === "picked") {
-          if (message.code || !message.token) dispatch({ t: "choice", choice: { kind: "error", message: pickError(message.code) } });
+          if (message.code || !message.token) dispatch({ t: "choice", choice: { kind: "error", message: pickError(message.code), apps: listed.current } });
           else void save(message.handle, message.token);
         }
         else if (message.t === "dialog") dispatch({ t: "dialog", dialog: { kind: message.kind, message: message.message } });
@@ -241,11 +245,17 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
       {choice.kind !== "idle" && (
         <div className="mb-4 rounded border border-ink-700 p-4 text-sm">
           {choice.kind === "listing" && <p className="text-fg-muted">{CHOOSE_COPY.listing(store)}</p>}
-          {choice.kind === "list" && (
+          {choice.kind === "error" && (
+            <p className="mb-3">
+              {choice.message}
+              {choice.href && <> <Link href={choice.href} className="underline">{CHOOSE_COPY.openIt}</Link>.</>}
+            </p>
+          )}
+          {(choice.kind === "list" || (choice.kind === "error" && choice.apps?.length)) && (
             <>
               <p className="font-medium">{CHOOSE_COPY.question}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {choice.apps.map((app) => (
+                {(choice.kind === "list" ? choice.apps : choice.apps ?? []).map((app) => (
                   <button key={app.handle} type="button" className="rounded border border-ink-700 px-3 py-1.5 hover:border-accent hover:text-accent" onClick={() => pickApp(app.handle)}>
                     {app.name}
                   </button>
@@ -254,12 +264,6 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
             </>
           )}
           {choice.kind === "picking" && <p className="text-fg-muted">{CHOOSE_COPY.picking(choice.name)}</p>}
-          {choice.kind === "error" && (
-            <p>
-              {choice.message}
-              {choice.href && <> <Link href={choice.href} className="underline">{CHOOSE_COPY.openIt}</Link>.</>}
-            </p>
-          )}
           {choice.kind === "done" && (
             <p className="text-accent">
               {CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>.{" "}
