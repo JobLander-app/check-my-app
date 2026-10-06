@@ -499,6 +499,30 @@ const call = async (method, path, body, headers = AUTH) => {
 const wsUrl = (sessionId) => `ws://127.0.0.1:${started.port}/v1/devtools/browser/${sessionId}`;
 const lease = async (run = RUN_A, seconds = 300) => (await call("POST", "/lease", { ownerRunId: run, maxDurationSeconds: seconds })).json.sessionId;
 
+// CHE-419 (Codex on #287): while a person signs in through the live view, no
+// check is given the browser — it is told 409 and asks again later.
+await check("while a person is signing in, a check is refused the lease (409) and given it once they leave", async () => {
+  let present = true;
+  const guarded = await startSessionServer({
+    token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, probeLog: join(profile, "no-probe.jsonl"),
+    personPresent: () => present, onGate: () => {},
+  });
+  try {
+    const ask = () => fetch(`http://127.0.0.1:${guarded.port}/lease`, {
+      method: "POST", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify({ ownerRunId: RUN_A, maxDurationSeconds: 60 }),
+    });
+    const refused = await ask();
+    assert.equal(refused.status, 409);
+    assert.match((await refused.json()).error, /person is signing in/);
+    assert.equal(guarded.book.current(), null, "the refused check holds the lease anyway");
+    present = false;
+    assert.equal((await ask()).status, 200);
+    await fetch(`http://127.0.0.1:${guarded.port}/lease`, { method: "DELETE", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify({ ownerRunId: RUN_A }) });
+  } finally {
+    await guarded.close();
+  }
+});
+
 // What the person would see: the tabs open in the profile, by address — asked
 // of Chrome directly, not through the server.
 const pageTargets = async () => (await (await fetch(`http://127.0.0.1:${debugPort}/json`)).json()).filter((t) => t.type === "page");

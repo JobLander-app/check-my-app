@@ -37,6 +37,7 @@ import {
   signedOutMessage,
   signedOutObserved,
   signedOutSendId,
+  signInUrlFor,
   tellOwnerSignedOut,
 } from "@/agent/signed-out";
 import { priceRun } from "@/agent/pricing";
@@ -187,10 +188,17 @@ async function main() {
     check("told: the first run that meets the sign-in page sends one message, recorded as sent",
       first.told === "sent" && sends === 1 && rows().length === 1 && rows()[0].status === "sent" && rows()[0].direction === "out" && rows()[0].chatId === CHAT,
       JSON.stringify(first));
-    check("told: the message says what stopped, where the address leads, where to sign in — and asks for no reply",
-      rows()[0].text === signedOutMessage("admin.shopify.com", HOST, "https://session.checkmyapp.dev") &&
-        rows()[0].text.includes("admin.shopify.com") && rows()[0].text.includes(HOST) && rows()[0].text.includes("https://session.checkmyapp.dev") && /Отвечать не нужно/.test(rows()[0].text),
+    // CHE-419: the link is the app's own sign-in page on checkmyapp.dev, never
+    // the VNC console the binding still names.
+    const PAGE = "https://checkmyapp.dev/health/apps/app_admin/sign-in";
+    check("told: the message says what stopped, where the address leads, where to sign in (the app's own page) — and asks for no reply",
+      rows()[0].text === signedOutMessage("admin.shopify.com", HOST, PAGE) &&
+        rows()[0].text.includes("admin.shopify.com") && rows()[0].text.includes(HOST) && rows()[0].text.includes(PAGE) &&
+        !rows()[0].text.includes("session.checkmyapp.dev") && /Отвечать не нужно/.test(rows()[0].text),
       rows()[0].text);
+    check("told: a run with no saved app keeps the configured address",
+      signInUrlFor({ SESSION_SIGN_IN_URL: "https://session.checkmyapp.dev" }, null) === "https://session.checkmyapp.dev" &&
+        signInUrlFor({ APP_URL: "https://staging.checkmyapp.dev/" }, "a1") === "https://staging.checkmyapp.dev/health/apps/a1/sign-in");
     check("told: the id is the sign-in that ended — the app, and when a check last reached it (never yet)",
       "sendId" in first && first.sendId === signedOutSendId("app_admin", null) && first.sendId === "session-signed-out:app_admin:never");
 

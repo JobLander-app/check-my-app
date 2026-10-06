@@ -90,10 +90,10 @@ install -d -m 0755 /opt/session-host/probe
 # and one node_modules. It is restarted only when one of its own files changed —
 # a restart drops the check that is connected at that moment.
 server_changed=0
-for file in session-server.mjs lease.mjs classify.mjs package.json; do
+for file in session-server.mjs lease.mjs classify.mjs viewer.mjs door.mjs package.json; do
   cmp -s "$SRC/$file" "/opt/session-host/probe/$file" || server_changed=1
 done
-install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/session-server.mjs" "$SRC/lease.mjs" "$SRC/door.mjs" "$SRC/package.json" /opt/session-host/probe/
+install -m 0644 "$SRC/probe.mjs" "$SRC/classify.mjs" "$SRC/session-server.mjs" "$SRC/lease.mjs" "$SRC/door.mjs" "$SRC/viewer.mjs" "$SRC/package.json" /opt/session-host/probe/
 (cd /opt/session-host/probe && npm install --omit=dev --no-audit --no-fund --silent)
 runuser -u session-host -- node /opt/session-host/probe/door.mjs --self-test >/dev/null || { echo "provision: FAIL — door.mjs self-test"; exit 1; }
 
@@ -198,7 +198,7 @@ reach() { as "$1" curl -s -o /dev/null -m 5 "$2"; }
 for i in $(seq 1 30); do as session-host curl -s -o /dev/null -m 2 http://127.0.0.1:9222/json/version && break; sleep 1; done
 fail=0
 reach session-host http://127.0.0.1:9222/json/version || { echo "provision: FAIL — session-host cannot reach DevTools (the probe and the session server need it)"; fail=1; }
-for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://169.254.169.254/computeMetadata/v1/ \
+for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://127.0.0.1:9091/ http://169.254.169.254/computeMetadata/v1/ \
   "http://$(hostname -I | awk '{print $1}'):22/" http://0.0.0.0:9222/json 'http://[::ffff:127.0.0.1]:9222/json' http://localhost:9222/json 'http://[::1]:5900/'; do
   if reach session-browser "$url"; then echo "provision: FAIL — the browser's user can reach $url"; fail=1; fi
 done

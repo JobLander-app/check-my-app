@@ -8,5 +8,9 @@ Type=oneshot
 User=session-host
 Group=session-host
 WorkingDirectory=/opt/session-host/probe
+# CHE-419: where the person signs in again — the app's own page on
+# checkmyapp.dev (live view, paste that works), not the VNC console. One host,
+# one store for now: the Securify admin app.
+Environment=PROBE_SIGN_IN_URL=https://checkmyapp.dev/health/apps/cmuql5t4y0001rt1oin6btbc6/sign-in
 ExecStart=/usr/bin/node /opt/session-host/probe/probe.mjs
 TimeoutStartSec=300
