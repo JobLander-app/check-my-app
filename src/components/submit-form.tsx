@@ -460,7 +460,7 @@ export function SubmitForm({ initialUrl = "", extensionCheck = false }: { initia
 
       {/* One line, not a wall (CHE-421): the three things a visitor asks after
           deciding to paste a link, and today's counter when it is known. */}
-      <p className="text-center font-mono text-[13px] leading-6 text-fg-faint">
+      <p className="text-balance text-center font-mono text-[13px] leading-6 text-fg-faint">
         {FORM_NOTE}
         {today && (
           <>
