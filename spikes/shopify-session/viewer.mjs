@@ -200,14 +200,23 @@ export async function startViewer({
   signedInSettleMs = 3_000,
   commandTimeoutMs = 5_000,
   log = (line) => console.log(`[viewer] ${JSON.stringify(line)}`),
+  // CHE-426: one browser per team. Each slot is its own Chrome with its own
+  // lease; the token names the slot, and a viewer only ever reaches that
+  // slot's browser. Without `slots`, the single slot above.
+  slots,
 } = {}) {
   if (typeof secret !== "string" || secret.length < 32) throw new Error("A view secret of at least 32 characters is required");
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_IN });
-  let current = null; // { end() }
-  // Which store each tab the door opened for a viewer was opened for: a
-  // sign-in address names no store, so this is the only way to know whose a
+  // Per slot: its browser, its lease, the viewer now connected, and which
+  // store each tab the door opened for a viewer was opened for — a sign-in
+  // address names no store, so this is the only way to know whose a
   // half-finished sign-in is (door.mjs signInIsOurs).
-  const openedFor = new Map();
+  const places = new Map(
+    (slots ?? [{ name: slot, cdp, leaseHeld, doorLog }]).map((p) => [
+      String(p.name),
+      { name: String(p.name), cdp: p.cdp, leaseHeld: p.leaseHeld ?? (async () => false), doorLog: p.doorLog ?? null, current: null, openedFor: new Map() },
+    ]),
+  );
 
   const server = http.createServer((_req, res) => res.writeHead(404).end());
   server.on("upgrade", (req, socket, head) => {
@@ -215,18 +224,20 @@ export async function startViewer({
     const payload = url.pathname === "/v1/view" ? verifyViewToken(secret, url.searchParams.get("token"), now()) : null;
     const origin = req.headers.origin ?? "";
     const adminUrl = payload ? adminUrlFor(payload.store) : null;
-    if (!payload || payload.slot !== slot || !adminUrl || !origins.includes(origin)) {
-      log({ refused: !payload ? "token" : payload.slot !== slot ? "slot" : !adminUrl ? "store" : "origin" });
+    const place = payload ? places.get(payload.slot) : null;
+    if (!payload || !place || !adminUrl || !origins.includes(origin)) {
+      log({ refused: !payload ? "token" : !place ? "slot" : !adminUrl ? "store" : "origin" });
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (client) => {
-      void current?.end();
-      current = attach(client, adminUrl, payload.store);
+      void place.current?.end();
+      place.current = attach(client, adminUrl, payload.store, place);
     });
   });
 
-  function attach(client, adminUrl, store) {
+  function attach(client, adminUrl, store, place) {
+    const { cdp, leaseHeld, doorLog, openedFor } = place;
     let upstream = null;
     let ended = false;
     let nextId = 1;
@@ -277,7 +288,7 @@ export async function startViewer({
       ended = true;
       clearInterval(keep);
       clearInterval(idle);
-      if (current?.end === end) current = null;
+      if (place.current?.end === end) place.current = null;
       for (const { sessionId } of stack) await send("Page.stopScreencast", {}, sessionId).catch(() => {});
       upstream?.close();
       if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) client.close();
@@ -546,7 +557,7 @@ export async function startViewer({
       // admin's own title for the app's page ("<store> · <App> · Shopify",
       // measured on prod-release-1).
       const name = names.get(handle) ?? appNameFromTitle(title) ?? handle;
-      out({ t: "picked", handle, origin, name, token: signPick(secret, { slot, store, handle, name: String(name), origin }) });
+      out({ t: "picked", handle, origin, name, token: signPick(secret, { slot: place.name, store, handle, name: String(name), origin }) });
     }
     const names = new Map();
     let busy = false;
@@ -607,9 +618,10 @@ export async function startViewer({
     port: server.address().port,
     // A person is in the browser: the session server gives no check the lease
     // while this is true.
-    present: () => current !== null,
+    // Per slot; with no slot named, the first (the single slot before CHE-426).
+    present: (name) => (places.get(name ?? places.keys().next().value)?.current ?? null) !== null,
     async close() {
-      await current?.end();
+      for (const place of places.values()) await place.current?.end();
       wss.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
