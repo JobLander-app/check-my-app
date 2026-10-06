@@ -126,6 +126,7 @@
     "verify:shopify-session": "node scripts/verify-shopify-session.mjs",
     "verify:session-server": "node scripts/verify-session-server.mjs",
     "verify:live-view": "tsx --tsconfig tsconfig.json scripts/verify-live-view.ts",
+    "verify:shopify-connect": "tsx --tsconfig tsconfig.json scripts/verify-shopify-connect.ts",
     "verify:session-browser": "tsx --tsconfig tsconfig.json scripts/verify-session-browser.ts",
     "verify:signed-out": "tsx --tsconfig tsconfig.json scripts/verify-signed-out.ts",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",

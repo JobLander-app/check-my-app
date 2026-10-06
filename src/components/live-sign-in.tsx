@@ -32,7 +32,7 @@ type Choice =
   // `apps`: the list stays under the error, so the person can choose again
   // (Codex on #288: the host lists them once, after sign-in).
   | { kind: "error"; message: string; href?: string; apps?: { handle: string; name: string }[] }
-  | { kind: "done"; name: string; runHref: string; appHref: string; watchRefused?: string };
+  | { kind: "done"; name: string; runHref: string | null; runRefused?: string; appHref: string; watchRefused?: string };
 type State = { status: Status; dialog: Dialog; choice: Choice };
 type Action =
   | { t: "live" }
@@ -109,7 +109,7 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
         dispatch({ t: "choice", choice: { kind: "error", message: result.error, href: result.href, apps: listed.current } });
         return;
       }
-      dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, appHref: result.appHref, watchRefused: result.watchRefused } });
+      dispatch({ t: "choice", choice: { kind: "done", name, runHref: result.runHref, runRefused: result.runRefused, appHref: result.appHref, watchRefused: result.watchRefused } });
       // The host gives no check the browser while a person is in it: leave,
       // so the first check can start.
       socket.current?.close();
@@ -266,7 +266,11 @@ export function LiveSignIn({ url, store, appHref, appId, choose }: { url: string
           {choice.kind === "picking" && <p className="text-fg-muted">{CHOOSE_COPY.picking(choice.name)}</p>}
           {choice.kind === "done" && (
             <p className="text-accent">
-              {CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>.{" "}
+              {choice.runHref ? (
+                <>{CHOOSE_COPY.done(choice.name)} <Link href={choice.runHref} className="underline">{CHOOSE_COPY.watchIt}</Link>.</>
+              ) : (
+                <>{CHOOSE_COPY.connected(choice.name)} {choice.runRefused}</>
+              )}{" "}
               {choice.watchRefused ?? CHOOSE_COPY.daily}{" "}
               <Link href={choice.appHref} className="underline">{CHOOSE_COPY.appPage}</Link>.
             </p>

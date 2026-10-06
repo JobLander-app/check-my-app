@@ -55,13 +55,15 @@ export const CHOOSE_COPY = {
   picking: (name: string) => `Opening ${name} in your admin…`,
   openIt: "Open it",
   done: (name: string) => `${name} is connected and its first check has started —`,
+  connected: (name: string) => `${name} is connected.`,
   watchIt: "watch it",
   daily: "It is checked every day from now on;",
   appPage: "the app's page",
 } as const;
 
-export type PickErrorCode = "app_not_open" | "failed";
+export type PickErrorCode = "app_not_open" | "failed" | "expired";
 export const PICK_ERRORS: Record<PickErrorCode, string> = {
+  expired: "That choice has expired. Choose the app again.",
   app_not_open: "The app did not open inside your admin. Open it once in the page above, then choose it again.",
   failed: "That did not work. Choose the app again in a minute.",
 };
@@ -97,6 +99,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     CHOOSE_COPY.picking("Securify"),
     CHOOSE_COPY.openIt,
     CHOOSE_COPY.done("Securify"),
+    CHOOSE_COPY.connected("Securify"),
     CHOOSE_COPY.watchIt,
     CHOOSE_COPY.daily,
     CHOOSE_COPY.appPage,
