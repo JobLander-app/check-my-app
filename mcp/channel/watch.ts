@@ -17,7 +17,7 @@ export const CHANNEL_NAME = "checkmyapp-watch";
 // local server, 2026-09-27). And a URL that stops answering breaks them: npx
 // fetches it on every start. So each version is its own file, and old files
 // stay (scripts/build-channel.mjs refuses to overwrite one).
-export const CHANNEL_VERSION = "1.0.0";
+export const CHANNEL_VERSION = "1.0.1";
 export const CHANNEL_TARBALL_PATH = `/mcp/checkmyapp-watch-${CHANNEL_VERSION}.tgz`;
 
 // A result this old is not "waiting for you" when a session opens — it is
