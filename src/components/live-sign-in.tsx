@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useReducer, useRef } from "react";
+import { SIGN_IN_COPY, signInError } from "@/lib/sign-in-copy";
 
 // CHE-419: the live view a person signs in through. Frames of one tab come in
 // as JPEG; mouse, keys and pasted text go out as a closed list of messages the
@@ -107,9 +108,9 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
         } else if (message.t === "page") dispatch({ t: "page", host: message.host });
         else if (message.t === "signed_in") dispatch({ t: "signed_in", store: message.store });
         else if (message.t === "dialog") dispatch({ t: "dialog", dialog: { kind: message.kind, message: message.message } });
-        else if (message.t === "error") dispatch({ t: "closed", message: message.message });
+        else if (message.t === "error") dispatch({ t: "closed", message: signInError(message.code) });
       };
-      ws.onclose = () => dispatch({ t: "closed", message: "The connection ended. Reload this page to continue." });
+      ws.onclose = () => dispatch({ t: "closed", message: SIGN_IN_COPY.connectionEnded });
       field.current?.focus();
       return () => {
         socket.current = null;
@@ -185,12 +186,12 @@ export function LiveSignIn({ url, store, appHref }: { url: string; store: string
   return (
     <div className="mt-6">
       <div className="mb-3 flex min-h-6 items-center justify-between gap-4 text-sm">
-        {status.kind === "connecting" && <span className="text-fg-muted">Opening the browser…</span>}
-        {status.kind === "live" && <span className="text-fg-muted">Click into the page and sign in. Paste works as usual (⌘V / Ctrl+V).</span>}
+        {status.kind === "connecting" && <span className="text-fg-muted">{SIGN_IN_COPY.connecting}</span>}
+        {status.kind === "live" && <span className="text-fg-muted">{SIGN_IN_COPY.live}</span>}
         {status.kind === "signed_in" && (
           <span className="text-accent">
-            Signed in to {status.store}. Checks of this app will open it from your admin. You can close this page —{" "}
-            <Link href={appHref} className="underline">back to the app</Link>.
+            {SIGN_IN_COPY.signedIn(status.store)}{" "}
+            <Link href={appHref} className="underline">{SIGN_IN_COPY.backToApp}</Link>.
           </span>
         )}
         {status.kind === "closed" && <span>{status.message}</span>}

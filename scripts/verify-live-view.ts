@@ -13,9 +13,12 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
+import { SIGN_IN_COPY, allSignInSentences, signInError } from "../src/lib/sign-in-copy";
 import WebSocket from "ws";
 import { chromium } from "playwright";
 // @ts-ignore — the host's own modules are plain JavaScript.
@@ -67,6 +70,22 @@ await check("the token checkmyapp.dev mints is the token the host accepts", asyn
   assert.equal(storeOfAdminUrl("https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country"), "prod-release-1");
   assert.equal(storeOfAdminUrl("https://prod-release-1.myshopify.com/"), null);
   assert.equal(storeOfAdminUrl("https://admin.shopify.com.evil.dev/store/x"), null);
+});
+
+// Codex on #287: every sentence of the sign-in page comes from one module and
+// passes the customer-language guards; the host sends codes, each of which
+// has its sentence there.
+await check("the sign-in page's every sentence is about the person's store, and every code the host sends has one", async () => {
+  for (const sentence of allSignInSentences("prod-release-1")) {
+    assert.equal(hasEnvironmentLeak(sentence), false, `leaks our machinery: ${sentence}`);
+    assert.equal(hasHomework(sentence), false, `homework: ${sentence}`);
+    assert.doesNotMatch(sentence, /\b(browser|tab|screencast|VNC|DevTools|session host)\b/i, `names our machinery: ${sentence}`);
+  }
+  const source = readFileSync(join(process.cwd(), "spikes/shopify-session/viewer.mjs"), "utf8");
+  const codes = [...source.matchAll(/t: "error", code: "([a-z]+)"/g)].map((m) => m[1]);
+  assert.ok(codes.length >= 4, `codes found: ${codes}`);
+  for (const code of codes) assert.notEqual(signInError(code), SIGN_IN_COPY.connectionEnded, `no sentence for "${code}"`);
+  assert.doesNotMatch(source, /t: "error", message:/, "the host still sends a sentence of its own");
 });
 
 await check("a store becomes its admin address, and nothing else does", () => {
@@ -131,6 +150,11 @@ const site = http.createServer(async (req, res) => {
 ">passkey</button>
 <button id="popup" style="position:absolute;left:0;top:200px;width:200px;height:40px" onclick="window.open('/popup', 'p', 'width=400,height=400')">pop-up</button>
 </body>`);
+  } else if (url.pathname === "/flash") {
+    // An admin address that turns into the sign-in form a moment later — what
+    // Shopify does with the admin's address when the session has ended.
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!doctype html><meta charset="utf-8"><title>flash</title><script>setTimeout(() => location.replace('/admin'), 300)</script>`);
   } else if (url.pathname === "/popup") {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!doctype html><title>pop-up</title><button id="close" style="position:absolute;left:0;top:0;width:200px;height:40px" onclick="window.close()">close</button>`);
@@ -168,6 +192,10 @@ const viewer = await startViewer({
   port: 0,
   adminUrlFor: (store) => (store === "fixture" ? `${SITE}/admin` : null),
   leaseHeld: async () => held,
+  // The fixture's "signed in": its /done page (and /flash, which leaves for
+  // the form a moment after it loads — a sign-in that did not hold).
+  signedIn: (href: string) => ["/done", "/flash"].includes(new URL(href).pathname),
+  signedInSettleMs: 1_000,
   doorLog: null,
   log: (line) => log.push(line),
 });
@@ -242,7 +270,7 @@ await check("while a check holds the browser, the viewer is refused with a sente
     const tabsBefore = (await (await fetch(`${CDP}/json`)).json()).length;
     const w = connect();
     await w.opened;
-    await w.until(() => w.seen.messages.some((m) => m.t === "error" && /check is running/.test(m.message)), "the refusal");
+    await w.until(() => w.seen.messages.some((m) => m.t === "error" && m.code === "busy"), "the refusal");
     await new Promise<void>((resolve) => { if (w.ws.readyState === WebSocket.CLOSED) resolve(); else w.ws.once("close", () => resolve()); });
     assert.equal(w.seen.frames, 0, "frames were sent while a check held the browser");
     assert.equal((await (await fetch(`${CDP}/json`)).json()).length, tabsBefore, "a tab was opened");
@@ -285,6 +313,17 @@ await check("a passkey request fails at once instead of waiting on a window nobo
   assert.equal(title, "passkey:NotAllowedError", JSON.stringify(log));
 });
 
+// Codex on #287: the admin's address shows for a moment before Shopify turns
+// it into the sign-in form. That moment is not a sign-in.
+await check("an admin address that does not hold is not reported as signed in", async () => {
+  const tab = await waitFor(() => fixtureTab("/admin"), "the fixture tab");
+  await evaluate(tab, "location.href = '/flash'");
+  await v.until(() => v.seen.messages.some((m) => m.t === "page" && m.path === "/flash"), "the flash page shown");
+  await v.until(() => v.seen.messages.filter((m) => m.t === "page" && m.path === "/admin").length >= 2, "back on the form");
+  await new Promise((r) => setTimeout(r, 1_800));
+  assert.equal(v.seen.messages.filter((m) => m.t === "signed_in").length, 0, "told signed in by an address that did not hold");
+});
+
 await check("keys and pasted text land in the focused field; Enter submits", async () => {
   const tab = await waitFor(() => fixtureTab("/admin"), "the fixture tab");
   v.click(150, 20);
@@ -297,6 +336,9 @@ await check("keys and pasted text land in the focused field; Enter submits", asy
   v.say({ t: "key", type: "keyDown", key: "Enter", code: "Enter", keyCode: 13, text: "\r" });
   v.say({ t: "key", type: "keyUp", key: "Enter", code: "Enter", keyCode: 13 });
   await v.until(() => v.seen.messages.some((m) => m.t === "page" && m.path === "/done"), "the form submitted");
+  // The signed-in page held: now, and only now, it is said — once, for the token's store.
+  await v.until(() => v.seen.messages.some((m) => m.t === "signed_in"), "signed in, once the page held", 5_000);
+  assert.deepEqual(v.seen.messages.filter((m) => m.t === "signed_in"), [{ t: "signed_in", store: "fixture" }]);
   const done = await waitFor(() => fixtureTab("/done"), "the submitted page");
   assert.equal(await evaluate(done, "document.getElementById('email').textContent"), "ab-pässwörd!");
   v.say({ t: "nav", action: "back" });
@@ -304,6 +346,8 @@ await check("keys and pasted text land in the focused field; Enter submits", asy
 });
 
 await check("a pop-up the tab opens is shown while it is open, then the tab again", async () => {
+  const form = await waitFor(() => fixtureTab("/admin"), "the form tab");
+  await waitFor(async () => (await evaluate(form, "document.readyState + ':' + Boolean(document.getElementById('popup'))")) === "complete:true", "the form loaded");
   v.click(100, 220);
   await v.until(() => v.seen.messages.some((m) => m.t === "page" && m.path === "/popup"), "the pop-up shown");
   const before = v.seen.messages.filter((m) => m.t === "page" && m.path === "/admin").length;
@@ -342,7 +386,7 @@ await check("a viewer left without input closes itself, so a person who walked a
     await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
     assert.equal(quiet.present(), true);
     await new Promise<void>((resolve) => ws.once("close", () => resolve()));
-    assert.ok(messages.some((m) => m.t === "error" && /without activity/.test(m.message)), JSON.stringify(messages));
+    assert.ok(messages.some((m) => m.t === "error" && m.code === "idle"), JSON.stringify(messages));
     assert.equal(quiet.present(), false, "still present after it closed");
   } finally {
     await quiet.close();

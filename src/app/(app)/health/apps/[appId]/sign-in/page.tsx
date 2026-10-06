@@ -7,6 +7,7 @@ import { appPath } from "@/lib/app-shell";
 import { OtherTeamApp } from "@/components/other-team-app";
 import { LiveSignIn } from "@/components/live-sign-in";
 import { VIEW_HOST, mintViewToken, storeOfAdminUrl } from "@/lib/session-view";
+import { SIGN_IN_COPY } from "@/lib/sign-in-copy";
 
 // CHE-419: a person signs in to the Shopify store their app lives in, here,
 // on our page — a live view of the browser the checks of this app run in.
@@ -40,15 +41,12 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <Link href={appPath.page(app.id)} className="text-[13px] text-fg-muted hover:text-accent">← {app.appSlug}</Link>
-      <h1 className="mt-3 text-2xl font-semibold">Sign in to {store}</h1>
-      <p className="mt-2 max-w-2xl text-sm text-fg-muted">
-        Sign in the way you always do. Checks of this app open it from inside your admin, so they need you signed in once;
-        when the sign-in ends, we will ask you to come back here.
-      </p>
+      <h1 className="mt-3 text-2xl font-semibold">{SIGN_IN_COPY.title(store)}</h1>
+      <p className="mt-2 max-w-2xl text-sm text-fg-muted">{SIGN_IN_COPY.intro}</p>
       {token ? (
         <LiveSignIn url={`${VIEW_HOST}?token=${encodeURIComponent(token)}`} store={store} appHref={appPath.page(app.id)} />
       ) : (
-        <p className="mt-6 text-sm">Signing in is not available right now. Try again in a few minutes.</p>
+        <p className="mt-6 text-sm">{SIGN_IN_COPY.unavailable}</p>
       )}
     </div>
   );

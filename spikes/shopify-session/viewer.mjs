@@ -159,11 +159,19 @@ export async function startViewer({
   doorLog = "/var/lib/session-host/door.jsonl",
   now = Date.now,
   idleMs = 10 * 60_000,
+  // Whether an address is the token's store signed in; the guard names its
+  // fixture's page.
+  signedIn = (href, store) => signedInStore(href) === storeAdminUrl(store)?.split("/").pop(),
+  signedInSettleMs = 3_000,
   log = (line) => console.log(`[viewer] ${JSON.stringify(line)}`),
 } = {}) {
   if (typeof secret !== "string" || secret.length < 32) throw new Error("A view secret of at least 32 characters is required");
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_IN });
   let current = null; // { end() }
+  // Which store each tab the door opened for a viewer was opened for: a
+  // sign-in address names no store, so this is the only way to know whose a
+  // half-finished sign-in is (door.mjs signInIsOurs).
+  const openedFor = new Map();
 
   const server = http.createServer((_req, res) => res.writeHead(404).end());
   server.on("upgrade", (req, socket, head) => {
@@ -198,7 +206,7 @@ export async function startViewer({
     let lastInput = now();
     const idle = setInterval(() => {
       if (now() - lastInput < idleMs) return;
-      out({ t: "error", message: "Closed after a while without activity. Reload this page to continue." });
+      out({ t: "error", code: "idle" });
       log({ viewer: "idle" });
       void end();
     }, Math.min(30_000, idleMs));
@@ -280,10 +288,28 @@ export async function startViewer({
         lastPage = key;
         out({ t: "page", host: u.hostname, path: u.pathname });
       }
-      const signed = signedInStore(href);
-      if (signed && !signedInSent) {
-        signedInSent = true;
-        out({ t: "signed_in", store: signed });
+      if (!signedInSent && !confirming && signedIn(href, store)) void confirmSignedIn();
+    }
+
+    // Codex on #287: the admin's own address is requested before Shopify
+    // answers it with the sign-in page, so seeing it once proves nothing — the
+    // person would be told "signed in" and close the page. Signed in is THIS
+    // store's admin still loaded, and loaded completely, a few seconds later.
+    let confirming = false;
+    async function confirmSignedIn() {
+      confirming = true;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, signedInSettleMs));
+        const shown = top();
+        if (!shown || ended) return;
+        const { result } = await send("Runtime.evaluate", { expression: "[location.href, document.readyState]", returnByValue: true }, shown.sessionId).catch(() => ({ result: {} }));
+        const [href, ready] = Array.isArray(result?.value) ? result.value : [];
+        if (ready === "complete" && signedIn(href, store) && !signedInSent) {
+          signedInSent = true;
+          out({ t: "signed_in", store });
+        }
+      } finally {
+        confirming = false;
       }
     }
 
@@ -295,12 +321,23 @@ export async function startViewer({
         // person is present (present() below), so the check cannot start in
         // between.
         if (await leaseHeld()) {
-          out({ t: "error", message: "A check is running in this browser right now. Try again in a few minutes." });
+          out({ t: "error", code: "busy" });
           log({ viewer: "refused", reason: "lease held" });
           void end();
           return;
         }
-        const line = await openDoor({ cdp, leaseHeld, storeUrl: adminUrl, log: doorLog });
+        const line = await openDoor({
+          cdp,
+          leaseHeld,
+          storeUrl: adminUrl,
+          log: doorLog,
+          signInIsOurs: (tab) => openedFor.get(tab.id) === adminUrl,
+          opened: (targetId, url) => {
+            openedFor.set(targetId, url);
+            // A record for every tab ever opened would only grow; the recent ones matter.
+            if (openedFor.size > 50) openedFor.delete(openedFor.keys().next().value);
+          },
+        });
         if (!line.keep) throw new Error(line.error ?? "no tab to show");
         const version = await (await fetch(`${cdp}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
         upstream = new WebSocket(version.webSocketDebuggerUrl, { maxPayload: 64 * 1024 * 1024 });
@@ -319,7 +356,7 @@ export async function startViewer({
         await show(line.keep);
         log({ viewer: "attached", store });
       } catch (error) {
-        out({ t: "error", message: "The browser could not be opened. Try again in a minute." });
+        out({ t: "error", code: "failed" });
         log({ viewer: "failed", detail: String(error?.message ?? error).split("\n")[0].slice(0, 200) });
         void end();
       }
@@ -372,7 +409,7 @@ export async function startViewer({
         const wasTop = index === stack.length - 1;
         stack.splice(index, 1);
         if (stack.length === 0) {
-          out({ t: "error", message: "The tab was closed. Reload this page to get a new one." });
+          out({ t: "error", code: "closed" });
           void end();
         } else if (wasTop) {
           const back = top();
