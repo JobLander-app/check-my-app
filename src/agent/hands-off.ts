@@ -155,8 +155,15 @@ const READS_ONLY =
 const ASKS =
   /^(?:how|what|why|when|where|which|who|whom|whose|can|could|do|does|did|is|are|was|were|should|shall|will|would|may|might|need|want|forgot|looking|having|wondering|not sure)\b[^?]*\?[^\p{L}\p{N}]*$/iu;
 
+// → the text asks a question. The name gates in tools.ts click read it too,
+// so a question the walk names is not refused by its words before the
+// control is read (Codex on #277, round 3).
+export function asksQuestion(text: string | null | undefined): boolean {
+  return Boolean(text) && ASKS.test((text as string).trim());
+}
+
 function named(texts: string[], verbs: RegExp): string | null {
-  const hit = texts.find((t) => !ASKS.test(t) && verbs.test(t.replace(READS_ONLY, " ")));
+  const hit = texts.find((t) => !asksQuestion(t) && verbs.test(t.replace(READS_ONLY, " ")));
   return hit ? hit.replace(/\s+/g, " ").trim().slice(0, 80) : null;
 }
 
