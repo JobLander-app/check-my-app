@@ -24,7 +24,7 @@ export function GitHubAppPanel({
   return (
     <section id="github" className="card space-y-4 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
+        <div className="min-w-0 flex-1 basis-64 space-y-1">
           <p className="text-sm font-medium text-fg">
             GitHub App <span className="text-xs font-normal text-fg-faint">· every deploy checked, no YAML</span>
           </p>
