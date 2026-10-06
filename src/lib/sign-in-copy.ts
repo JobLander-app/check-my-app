@@ -59,6 +59,7 @@ export const MCP_CONNECT_COPY = {
 // What connecting and choosing refuse with (src/lib/shopify-connect.ts).
 export const CONNECT_ERRORS = {
   notOpen: "Checking Shopify apps is not open for your team yet.",
+  full: "Checking Shopify apps is full right now. Try again in a day or two.",
   badLink:
     "Paste the link to your app inside your store's admin — open the app in Shopify and copy the address, like https://admin.shopify.com/store/my-store/apps/my-app.",
   notFound: "App not found.",
