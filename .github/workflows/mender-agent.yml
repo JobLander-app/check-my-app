@@ -1,0 +1,54 @@
+# Mender — the OpenCode agent that takes CHE tickets (owner, 2026-10-07; CHE-445,
+# the ticket that names this workflow). Label a CHE issue `mender`; within half
+# an hour Mender reads it (Linear + Notion over MCP), opens a PR, asks CodeRabbit
+# to review, works through up to three review rounds, and reports on the ticket.
+# A person merges. scripts/mender/agent.mjs is the whole procedure.
+#
+# The model is OpenRouter's, paid in dollars (OPENROUTER_API_KEY), never the
+# owner's Claude subscription. The PR is opened with a personal token because a
+# pull request opened with GITHUB_TOKEN does not start CI on itself.
+
+name: Mender
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "A CHE identifier to take now (e.g. CHE-123); empty = the queue"
+        required: false
+
+# One unit of work at a time: two ticks would take the same ticket.
+concurrency:
+  group: mender-agent
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MENDER_GH_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm install -g opencode-ai@1.18.35
+      - name: Mender
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.MENDER_NOTION_TOKEN }}
+          GH_TOKEN: ${{ secrets.MENDER_GH_TOKEN }}
+          TICKET: ${{ inputs.ticket }}
+          MENDER_MODEL: anthropic/claude-sonnet-5.5
+          MENDER_BUDGET: "5"
+        run: node scripts/mender/agent.mjs
