@@ -39,7 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
-import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
+import { completeSignedOut, noteSessionReached, OUR_SLOT, SIGNED_OUT_FEED, tellOwnerSignedOut, tellTeamSignedOut } from "./signed-out";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { sessionSlotForRun } from "@/lib/session-slots";
 import { prepareExtensionPublication } from "./extension-publication";
@@ -667,7 +667,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("count-open-issues-signed-out", () => countOpenIssues(env, run));
         // Its own step, so a retry of anything around it cannot send twice; the
         // send itself is refused a second time by its id. Never fails the run.
+        // CHE-428: our own slot tells our owner; a team's slot tells the team.
         await step.do("tell-signed-out", async () => {
+          if (sessionSlot && sessionSlot !== OUR_SLOT) {
+            const told = await tellTeamSignedOut(env, { appId: run.appId, appSlug: run.appSlug }, host);
+            console.log(`[session] run ${runId}: sign-in ended (${host}) in slot ${sessionSlot}; team ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}${"recipients" in told ? ` — ${told.recipients}` : ""}`);
+            return told.told;
+          }
           const told = await tellOwnerSignedOut(env, { id: runId, appId: run.appId, appSlug: run.appSlug }, host);
           console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
           return told.told;

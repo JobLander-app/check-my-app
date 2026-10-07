@@ -24,6 +24,9 @@
 // scripts/verify-signed-out.ts drives these exact functions.
 
 import { AlreadySentError, NotSentError, sendRecorded, type SendDeps } from "@/lib/telegram-send";
+import { noticeIdempotencyKey, sendSignInEnded } from "@/lib/email";
+import { describeRecipients, recipientsForApp, type RecipientResolution } from "@/lib/recipients";
+import type { PrismaClient } from "@/generated/prisma/client";
 import type { AgentBindings, AgentEnv } from "./env";
 
 /** Where the app's address led when it did not lead to the app; null = it led to the app. */
@@ -277,4 +280,85 @@ export async function tellOwnerSignedOut(
     const detail = error instanceof Error ? error.message : String(error);
     return { told: error instanceof NotSentError ? "failed" : "unknown", sendId, detail };
   }
+}
+
+// ─── Telling a team (CHE-428) ────────────────────────────────────────────────
+//
+// Since each team signs in in a browser of its own (CHE-426), the person who
+// signs in is not always our owner. Slot "main" is ours: its message stays the
+// Telegram one above. Any other slot is a team's, and it is told by mail — the
+// people who hear the app's verdicts (src/lib/recipients.ts), the same list and
+// not a new address — once per ended sign-in, with the app's sign-in page.
+//
+// Once: the provider's idempotency key forgets a repeat after a day, and a
+// daily check meets the same ended sign-in every day. So the app's row keeps
+// the ended sign-in its recipients were mailed about (App.sessionEndedTold),
+// written only when every mail went out; a failure is mailed again by the next
+// run, and the key keeps a same-day retry from reaching anyone twice.
+
+export const OUR_SLOT = "main";
+
+export type SignInMail = (to: string, mail: { appSlug: string; host: string; signInUrl: string }, idempotencyKey: string) => Promise<void>;
+
+type MailBindings = Pick<AgentBindings, "EMAIL_API_KEY" | "EMAIL_FROM" | "EMAIL_REPLY_TO" | "APP_URL" | "SESSION_SIGN_IN_URL">;
+
+export type TeamTold =
+  | { told: "sent"; sendId: string; recipients: string }
+  | { told: "already"; sendId: string }
+  | { told: "off"; detail: string }
+  | { told: "failed"; sendId: string; detail: string };
+
+export async function tellTeamSignedOut(
+  env: { db: AgentEnv["db"]; bindings: MailBindings },
+  run: { appId: string | null; appSlug: string },
+  host: string,
+  deps?: { mail?: SignInMail; recipients?: (appId: string) => Promise<RecipientResolution> },
+): Promise<TeamTold> {
+  if (!run.appId) return { told: "off", detail: "no saved app, so no one to mail" };
+  const appId = run.appId;
+  const key = env.bindings.EMAIL_API_KEY;
+  const from = env.bindings.EMAIL_FROM;
+  const mail: SignInMail | null =
+    deps?.mail ??
+    (key && from
+      ? (to, m, idempotencyKey) =>
+          sendSignInEnded({ to, ...m, apiKey: key, from, replyTo: env.bindings.EMAIL_REPLY_TO, baseUrl: env.bindings.APP_URL, idempotencyKey })
+      : null);
+  if (!mail) return { told: "off", detail: "this worker has no EMAIL_API_KEY or EMAIL_FROM" };
+
+  let sendId: string;
+  try {
+    const app = await env.db.app.findUnique({ where: { id: appId }, select: { sessionReachedAt: true, sessionEndedTold: true } });
+    sendId = signedOutSendId(appId, app?.sessionReachedAt ? new Date(app.sessionReachedAt) : null);
+    if (app?.sessionEndedTold === sendId) return { told: "already", sendId };
+  } catch (error) {
+    return { told: "failed", sendId: "", detail: `could not tell which sign-in ended: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  const signInUrl = signInUrlFor(env.bindings, appId)!;
+  let resolution: RecipientResolution;
+  try {
+    resolution = await (deps?.recipients ?? ((id) => recipientsForApp(env.db as unknown as PrismaClient, id)))(appId);
+  } catch (error) {
+    return { told: "failed", sendId, detail: `could not resolve recipients: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (resolution.to.length === 0) return { told: "failed", sendId, detail: describeRecipients(resolution) };
+
+  const failed: string[] = [];
+  for (const to of resolution.to) {
+    try {
+      await mail(to, { appSlug: run.appSlug, host, signInUrl }, noticeIdempotencyKey(sendId, to));
+    } catch (error) {
+      failed.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (failed.length) return { told: "failed", sendId, detail: `${failed.length} of ${resolution.to.length} not sent: ${failed[0]}` };
+  try {
+    await env.db.app.update({ where: { id: appId }, data: { sessionEndedTold: sendId } });
+  } catch (error) {
+    // Sent, but not recorded: the next run mails again (within a day the
+    // provider's key still holds it). Said, so it is seen.
+    return { told: "sent", sendId, recipients: `${describeRecipients(resolution)}; not recorded: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  return { told: "sent", sendId, recipients: describeRecipients(resolution) };
 }

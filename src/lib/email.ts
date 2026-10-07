@@ -356,6 +356,71 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, rep
   await refuseUnlessRepeat(res, idempotencyKey);
 }
 
+interface SignInEndedArgs {
+  to: string;
+  appSlug: string;
+  // Where the address led instead of the app (signed-out.ts).
+  host: string;
+  // The app's sign-in page on checkmyapp.dev.
+  signInUrl: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  baseUrl?: string;
+  idempotencyKey?: string;
+}
+
+export function signInEndedSubject(appSlug: string): string {
+  return `Sign in again so checks of ${appSlug} can continue`;
+}
+
+export function signInEndedBody(appSlug: string, host: string): string {
+  return (
+    `The sign-in that checks of ${appSlug} use has ended: the app's address now leads to ${host}. ` +
+    "Until someone signs in again, its checks come back Not verified, and they are not charged."
+  );
+}
+
+// CHE-428: sent by the agent once per ended sign-in of a Shopify app checked in
+// a team's own session browser, to the people who hear the app's verdicts.
+// Signing in is access, the one thing we may ask for (rule 2); the page it
+// links to is where they do it, the way they always do.
+export async function sendSignInEnded({ to, appSlug, host, signInUrl, apiKey, from, replyTo, baseUrl, idempotencyKey }: SignInEndedArgs): Promise<void> {
+  const subject = signInEndedSubject(appSlug);
+  if (!apiKey || !from) {
+    console.log(`[email:dev] to=${to} subject="${subject}" url=${signInUrl}`);
+    return;
+  }
+  const base = baseUrl ?? "http://localhost:3000";
+  const body = signInEndedBody(appSlug, host);
+  const why = whyThisMail({ appSlug, recurring: true, base });
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      ...replyToField(replyTo),
+      html: htmlDocument(
+        subject,
+        `<p>${escapeHtml(body)}</p>` +
+          `<p><a href="${signInUrl}">Sign in again</a></p>` +
+          `<p>The next check runs as usual once the sign-in is back. This is the only message about this sign-in.</p><p>— CheckMyApp</p>`,
+        why.html,
+      ),
+      text:
+        `${body}\n\nSign in again: ${signInUrl}\n\nThe next check runs as usual once the sign-in is back. ` +
+        `This is the only message about this sign-in.\n\n— CheckMyApp\n\n${why.text}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, idempotencyKey);
+}
+
 interface TeamInviteArgs {
   to: string;
   teamName: string;

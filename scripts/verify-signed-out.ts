@@ -39,7 +39,12 @@ import {
   signedOutSendId,
   signInUrlFor,
   tellOwnerSignedOut,
+  tellTeamSignedOut,
+  OUR_SLOT,
+  type SignInMail,
 } from "@/agent/signed-out";
+import { noticeIdempotencyKey, signInEndedBody, signInEndedSubject } from "@/lib/email";
+import { NO_RECIPIENTS, resolveRecipients } from "@/lib/recipients";
 import { priceRun } from "@/agent/pricing";
 import { hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
 import type { SendDeps } from "@/lib/telegram-send";
@@ -257,6 +262,63 @@ async function main() {
         (await tellOwnerSignedOut(env, { id: "run_oneoff", appId: null, appSlug: "admin.shopify.com" }, HOST, deps)).told === "already", JSON.stringify(appless));
   }
 
+  // ── 4b — CHE-428: a team's slot tells the team, by mail, once ────────────
+  {
+    const stub = createStubDb({ app: [{ id: "app_team", sessionReachedAt: null, sessionEndedTold: null }] });
+    const sent: { to: string; key: string; url: string; host: string; slug: string }[] = [];
+    let failFor: string | null = null;
+    const mail: SignInMail = async (to, m, key) => {
+      if (to === failFor) throw new Error("Resend send failed: 500 upstream");
+      sent.push({ to, key, url: m.signInUrl, host: m.host, slug: m.appSlug });
+    };
+    let people = ["owner@otp.plus", "ops@otp.plus"];
+    const recipients = async () => resolveRecipients({ chosen: people });
+    const env = { db: stub.db, bindings: { EMAIL_API_KEY: "re_test", EMAIL_FROM: "CheckMyApp <hi@checkmyapp.dev>" } } as unknown as AgentEnv;
+    const tellTeam = () => tellTeamSignedOut(env, { appId: "app_team", appSlug: "shopify:otp-store/my-app" }, HOST, { mail, recipients });
+    const told = async () => (await stub.db.app.findUnique({ where: { id: "app_team" } }))?.sessionEndedTold;
+
+    const first = await tellTeam();
+    const PAGE = "https://checkmyapp.dev/health/apps/app_team/sign-in";
+    check("team: the first run that meets the ended sign-in mails each of the app's verdict recipients, with the app's sign-in page",
+      first.told === "sent" && sent.length === 2 && sent.map((s) => s.to).join() === "owner@otp.plus,ops@otp.plus" &&
+        sent.every((s) => s.url === PAGE && s.host === HOST && s.slug === "shopify:otp-store/my-app"),
+      `${JSON.stringify(first)} ${JSON.stringify(sent)}`);
+    const sendId = signedOutSendId("app_team", null);
+    check("team: one idempotency key per ended sign-in and recipient, and the app remembers it was told",
+      sent[0].key === noticeIdempotencyKey(sendId, "owner@otp.plus") && sent[0].key !== sent[1].key && (await told()) === sendId,
+      `${sent.map((s) => s.key).join(" ")} / ${String(await told())}`);
+    const later = await Promise.all([1, 2, 3].map(() => tellTeam()));
+    check("team: every later run that meets the same ended sign-in mails nobody — a daily check does not mail daily",
+      later.every((t) => t.told === "already") && sent.length === 2, `${later.map((t) => t.told).join()} — ${sent.length} mails`);
+
+    await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-20T06:00:00.000Z"));
+    failFor = "ops@otp.plus";
+    const partial = await tellTeam();
+    check("team: a sign-in restored and ended again is mailed again — and one refused mail leaves it untold",
+      partial.told === "failed" && sent.length === 3 && (await told()) === sendId, `${JSON.stringify(partial)} — ${sent.length} mails`);
+    failFor = null;
+    const retry = await tellTeam();
+    const again = signedOutSendId("app_team", new Date("2026-10-20T06:00:00.000Z"));
+    check("team: …so the next run mails it, under the same keys (the provider drops a same-day repeat), and then it is told",
+      retry.told === "sent" && sent.length === 5 && sent[3].key === sent[2].key && (await told()) === again, `${JSON.stringify(retry)} — ${sent.length} mails`);
+
+    people = [];
+    await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-25T06:00:00.000Z"));
+    const nobody = await tellTeam();
+    check("team: an app nobody hears is a failure said in the log, not a silent success", nobody.told === "failed" && "detail" in nobody && nobody.detail === NO_RECIPIENTS, JSON.stringify(nobody));
+    const noKey = await tellTeamSignedOut({ db: stub.db, bindings: {} } as unknown as AgentEnv, { appId: "app_team", appSlug: "x" }, HOST);
+    check("team: a worker without the mail key sends nothing and throws nothing", noKey.told === "off", JSON.stringify(noKey));
+    const noApp = await tellTeamSignedOut(env, { appId: null, appSlug: "x" }, HOST, { mail, recipients });
+    check("team: a run with no saved app has no one to mail", noApp.told === "off" && sent.length === 5, JSON.stringify(noApp));
+
+    for (const text of [signInEndedSubject("shopify:otp-store/my-app"), signInEndedBody("shopify:otp-store/my-app", HOST)]) {
+      check(`team mail, rule 1: no homework, narration or machinery — "${text.slice(0, 60)}…"`, !hasHomework(text) && !hasNarration(text) && !hasEnvironmentLeak(text), text);
+    }
+    check("team mail: says what ended, where the address leads, that checks are not charged meanwhile",
+      signInEndedBody("a", HOST).includes(HOST) && /not charged/.test(signInEndedBody("a", HOST)));
+    check("our slot is the one named main", OUR_SLOT === "main");
+  }
+
   // ── 5 — the workflow takes that exit before discovery ────────────────────
   // The workflow runs only inside the Workers runtime, so its wiring is held
   // by shape.
@@ -271,6 +333,8 @@ async function main() {
         /notifyAndRecord\([^)]*"unverified"\)/.test(block) && /clearedCredentials\(run\)/.test(block) && /\n {8}return;\n/.test(block));
     check("workflow: the message is a step of its own, the host is given back, and no gap is filed on our board for missing access",
       /step\.do\("tell-signed-out"/.test(block) && /tellOwnerSignedOut\(/.test(block) && /releaseSessionHost\("release-session-signed-out"\)/.test(block) && !/fileCapabilityGaps\(/.test(block));
+    check("workflow (CHE-428): a team's slot mails the team; only our own slot tells our owner",
+      /if \(sessionSlot && sessionSlot !== OUR_SLOT\) \{\s*const told = await tellTeamSignedOut\(/.test(block));
     check("workflow: a sign-in page's status, stack and links are not reported as the app's",
       /if \(r\.signedOut\) return \{ \.\.\.r, extensionIdentity: null \};[\s\S]{0,400}?await appendEvent\(env, runId, "surface_scan", \{\s*icon: "ok",\s*text: `Loaded homepage/.test(workflow));
     // Reaching the app is recorded by the scan step itself, for a session run
