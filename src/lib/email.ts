@@ -370,15 +370,18 @@ interface SignInEndedArgs {
   idempotencyKey?: string;
 }
 
-export function signInEndedSubject(appSlug: string): string {
-  return `Sign in again so checks of ${appSlug} can continue`;
-}
-
-export function signInEndedBody(appSlug: string, host: string): string {
-  return (
-    `The sign-in that checks of ${appSlug} use has ended: the app's address now leads to ${host}. ` +
-    "Until someone signs in again, its checks come back Not verified, and they are not charged."
-  );
+// Every sentence of the mail, built here and nowhere else, so the language
+// guards see all of it (docs/CODE_STANDARDS.md R18; Codex on #292).
+export function signInEndedMail(appSlug: string, host: string) {
+  return {
+    subject: `Sign in again so checks of ${appSlug} can continue`,
+    body:
+      `The sign-in that checks of ${appSlug} use has ended: the app's address now leads to ${host}. ` +
+      "Until someone signs in again, its checks come back Not verified, and they are not charged.",
+    action: "Sign in again",
+    after: "The next check runs as usual once the sign-in is back. This is the only message about this sign-in.",
+    sign: "— CheckMyApp",
+  };
 }
 
 // CHE-428: sent by the agent once per ended sign-in of a Shopify app checked in
@@ -386,13 +389,13 @@ export function signInEndedBody(appSlug: string, host: string): string {
 // Signing in is access, the one thing we may ask for (rule 2); the page it
 // links to is where they do it, the way they always do.
 export async function sendSignInEnded({ to, appSlug, host, signInUrl, apiKey, from, replyTo, baseUrl, idempotencyKey }: SignInEndedArgs): Promise<void> {
-  const subject = signInEndedSubject(appSlug);
+  const copy = signInEndedMail(appSlug, host);
+  const subject = copy.subject;
   if (!apiKey || !from) {
     console.log(`[email:dev] to=${to} subject="${subject}" url=${signInUrl}`);
     return;
   }
   const base = baseUrl ?? "http://localhost:3000";
-  const body = signInEndedBody(appSlug, host);
   const why = whyThisMail({ appSlug, recurring: true, base });
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -408,14 +411,12 @@ export async function sendSignInEnded({ to, appSlug, host, signInUrl, apiKey, fr
       ...replyToField(replyTo),
       html: htmlDocument(
         subject,
-        `<p>${escapeHtml(body)}</p>` +
-          `<p><a href="${signInUrl}">Sign in again</a></p>` +
-          `<p>The next check runs as usual once the sign-in is back. This is the only message about this sign-in.</p><p>— CheckMyApp</p>`,
+        `<p>${escapeHtml(copy.body)}</p>` +
+          `<p><a href="${escapeHtml(signInUrl)}">${escapeHtml(copy.action)}</a></p>` +
+          `<p>${escapeHtml(copy.after)}</p><p>${escapeHtml(copy.sign)}</p>`,
         why.html,
       ),
-      text:
-        `${body}\n\nSign in again: ${signInUrl}\n\nThe next check runs as usual once the sign-in is back. ` +
-        `This is the only message about this sign-in.\n\n— CheckMyApp\n\n${why.text}`,
+      text: `${copy.body}\n\n${copy.action}: ${signInUrl}\n\n${copy.after}\n\n${copy.sign}\n\n${why.text}`,
     }),
   });
   await refuseUnlessRepeat(res, idempotencyKey);

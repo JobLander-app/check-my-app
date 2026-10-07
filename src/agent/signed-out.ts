@@ -327,10 +327,11 @@ export async function tellTeamSignedOut(
   if (!mail) return { told: "off", detail: "this worker has no EMAIL_API_KEY or EMAIL_FROM" };
 
   let sendId: string;
+  let toldBefore: string[];
   try {
     const app = await env.db.app.findUnique({ where: { id: appId }, select: { sessionReachedAt: true, sessionEndedTold: true } });
     sendId = signedOutSendId(appId, app?.sessionReachedAt ? new Date(app.sessionReachedAt) : null);
-    if (app?.sessionEndedTold === sendId) return { told: "already", sendId };
+    toldBefore = toldAbout(app?.sessionEndedTold ?? null, sendId);
   } catch (error) {
     return { told: "failed", sendId: "", detail: `could not tell which sign-in ended: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -338,27 +339,50 @@ export async function tellTeamSignedOut(
   const signInUrl = signInUrlFor(env.bindings, appId)!;
   let resolution: RecipientResolution;
   try {
+    // A saved app's runs are mailed by its team, never by an address on the
+    // run (CHE-413, scripts/verify-no-escalation-email.ts).
     resolution = await (deps?.recipients ?? ((id) => recipientsForApp(env.db as unknown as PrismaClient, id)))(appId);
   } catch (error) {
     return { told: "failed", sendId, detail: `could not resolve recipients: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (resolution.to.length === 0) return { told: "failed", sendId, detail: describeRecipients(resolution) };
+  // Only the people this ended sign-in has not reached yet (Codex on #292):
+  // one bad address must not mail everyone else again every day.
+  const pending = resolution.to.filter((to) => !toldBefore.includes(to));
+  if (pending.length === 0) return { told: "already", sendId };
 
+  const reached = [...toldBefore];
   const failed: string[] = [];
-  for (const to of resolution.to) {
+  for (const to of pending) {
     try {
       await mail(to, { appSlug: run.appSlug, host, signInUrl }, noticeIdempotencyKey(sendId, to));
+      reached.push(to);
     } catch (error) {
       failed.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if (failed.length) return { told: "failed", sendId, detail: `${failed.length} of ${resolution.to.length} not sent: ${failed[0]}` };
-  try {
-    await env.db.app.update({ where: { id: appId }, data: { sessionEndedTold: sendId } });
-  } catch (error) {
-    // Sent, but not recorded: the next run mails again (within a day the
-    // provider's key still holds it). Said, so it is seen.
-    return { told: "sent", sendId, recipients: `${describeRecipients(resolution)}; not recorded: ${error instanceof Error ? error.message : String(error)}` };
+  let unrecorded = "";
+  if (reached.length > toldBefore.length) {
+    try {
+      await env.db.app.update({ where: { id: appId }, data: { sessionEndedTold: JSON.stringify({ id: sendId, to: reached }) } });
+    } catch (error) {
+      // Sent, but not recorded: the next run mails them again (within a day
+      // the provider's key still holds it). Said, so it is seen.
+      unrecorded = `; not recorded: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
-  return { told: "sent", sendId, recipients: describeRecipients(resolution) };
+  if (failed.length) return { told: "failed", sendId, detail: `${failed.length} of ${pending.length} not sent: ${failed[0]}${unrecorded}` };
+  return { told: "sent", sendId, recipients: `${describeRecipients(resolution)}${unrecorded}` };
+}
+
+/** Who has been mailed about this ended sign-in (App.sessionEndedTold); empty for another one. */
+export function toldAbout(record: string | null, sendId: string): string[] {
+  if (!record) return [];
+  try {
+    const parsed = JSON.parse(record) as { id?: unknown; to?: unknown };
+    if (parsed.id !== sendId || !Array.isArray(parsed.to)) return [];
+    return parsed.to.filter((t): t is string => typeof t === "string");
+  } catch {
+    return [];
+  }
 }

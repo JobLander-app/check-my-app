@@ -41,9 +41,10 @@ import {
   tellOwnerSignedOut,
   tellTeamSignedOut,
   OUR_SLOT,
+  toldAbout,
   type SignInMail,
 } from "@/agent/signed-out";
-import { noticeIdempotencyKey, signInEndedBody, signInEndedSubject } from "@/lib/email";
+import { noticeIdempotencyKey, signInEndedMail } from "@/lib/email";
 import { NO_RECIPIENTS, resolveRecipients } from "@/lib/recipients";
 import { priceRun } from "@/agent/pricing";
 import { hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
@@ -284,8 +285,9 @@ async function main() {
         sent.every((s) => s.url === PAGE && s.host === HOST && s.slug === "shopify:otp-store/my-app"),
       `${JSON.stringify(first)} ${JSON.stringify(sent)}`);
     const sendId = signedOutSendId("app_team", null);
-    check("team: one idempotency key per ended sign-in and recipient, and the app remembers it was told",
-      sent[0].key === noticeIdempotencyKey(sendId, "owner@otp.plus") && sent[0].key !== sent[1].key && (await told()) === sendId,
+    check("team: one idempotency key per ended sign-in and recipient, and the app remembers whom it told",
+      sent[0].key === noticeIdempotencyKey(sendId, "owner@otp.plus") && sent[0].key !== sent[1].key &&
+        toldAbout((await told()) ?? null, sendId).join() === "owner@otp.plus,ops@otp.plus",
       `${sent.map((s) => s.key).join(" ")} / ${String(await told())}`);
     const later = await Promise.all([1, 2, 3].map(() => tellTeam()));
     check("team: every later run that meets the same ended sign-in mails nobody — a daily check does not mail daily",
@@ -294,13 +296,21 @@ async function main() {
     await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-20T06:00:00.000Z"));
     failFor = "ops@otp.plus";
     const partial = await tellTeam();
-    check("team: a sign-in restored and ended again is mailed again — and one refused mail leaves it untold",
-      partial.told === "failed" && sent.length === 3 && (await told()) === sendId, `${JSON.stringify(partial)} — ${sent.length} mails`);
+    const again = signedOutSendId("app_team", new Date("2026-10-20T06:00:00.000Z"));
+    check("team: a sign-in restored and ended again is mailed again — a refused address is reported, the one reached is remembered",
+      partial.told === "failed" && sent.length === 3 && sent[2].to === "owner@otp.plus" && toldAbout((await told()) ?? null, again).join() === "owner@otp.plus",
+      `${JSON.stringify(partial)} — ${sent.length} mails, record ${String(await told())}`);
+    const stillFailing = await tellTeam();
+    check("team: while one address keeps failing, the others are not mailed again (Codex on #292)",
+      stillFailing.told === "failed" && sent.length === 3, `${JSON.stringify(stillFailing)} — ${sent.length} mails`);
     failFor = null;
     const retry = await tellTeam();
-    const again = signedOutSendId("app_team", new Date("2026-10-20T06:00:00.000Z"));
-    check("team: …so the next run mails it, under the same keys (the provider drops a same-day repeat), and then it is told",
-      retry.told === "sent" && sent.length === 5 && sent[3].key === sent[2].key && (await told()) === again, `${JSON.stringify(retry)} — ${sent.length} mails`);
+    check("team: …the next run mails only the address it missed, under its own key, and then everyone is told",
+      retry.told === "sent" && sent.length === 4 && sent[3].to === "ops@otp.plus" && sent[3].key === noticeIdempotencyKey(again, "ops@otp.plus") &&
+        toldAbout((await told()) ?? null, again).join() === "owner@otp.plus,ops@otp.plus" && (await tellTeam()).told === "already" && sent.length === 4,
+      `${JSON.stringify(retry)} — ${sent.length} mails`);
+    check("team: a record of another sign-in, or no record, means nobody was told about this one",
+      toldAbout(JSON.stringify({ id: "other", to: ["a@b.co"] }), again).length === 0 && toldAbout(null, again).length === 0 && toldAbout("not json", again).length === 0);
 
     people = [];
     await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-25T06:00:00.000Z"));
@@ -309,13 +319,20 @@ async function main() {
     const noKey = await tellTeamSignedOut({ db: stub.db, bindings: {} } as unknown as AgentEnv, { appId: "app_team", appSlug: "x" }, HOST);
     check("team: a worker without the mail key sends nothing and throws nothing", noKey.told === "off", JSON.stringify(noKey));
     const noApp = await tellTeamSignedOut(env, { appId: null, appSlug: "x" }, HOST, { mail, recipients });
-    check("team: a run with no saved app has no one to mail", noApp.told === "off" && sent.length === 5, JSON.stringify(noApp));
+    check("team: a run with no saved app has no one to mail", noApp.told === "off" && sent.length === 4, JSON.stringify(noApp));
 
-    for (const text of [signInEndedSubject("shopify:otp-store/my-app"), signInEndedBody("shopify:otp-store/my-app", HOST)]) {
-      check(`team mail, rule 1: no homework, narration or machinery — "${text.slice(0, 60)}…"`, !hasHomework(text) && !hasNarration(text) && !hasEnvironmentLeak(text), text);
+    // Every sentence of the mail (Codex on #292: the call to action and the
+    // closing lines were outside the guard).
+    const copy = signInEndedMail("shopify:otp-store/my-app", HOST);
+    for (const [field, text] of Object.entries(copy)) {
+      check(`team mail, rule 1 (${field}): no homework, narration or machinery — "${text.slice(0, 50)}…"`, !hasHomework(text) && !hasNarration(text) && !hasEnvironmentLeak(text), text);
     }
     check("team mail: says what ended, where the address leads, that checks are not charged meanwhile",
-      signInEndedBody("a", HOST).includes(HOST) && /not charged/.test(signInEndedBody("a", HOST)));
+      copy.body.includes(HOST) && /not charged/.test(copy.body));
+    const emailSource = readFileSync(join(ROOT, "src/lib/email.ts"), "utf8");
+    const sender = emailSource.slice(emailSource.indexOf("export async function sendSignInEnded"), emailSource.indexOf("interface TeamInviteArgs"));
+    check("team mail: the sender writes no sentence of its own — every line comes from signInEndedMail",
+      sender.length > 0 && !/`<p>[A-Z]/.test(sender) && !/"[A-Z][a-z]+ [a-z]+ [a-z]+/.test(sender.replace(/"Content-Type"|"Idempotency-Key"/g, "")), sender.slice(0, 120));
     check("our slot is the one named main", OUR_SLOT === "main");
   }
 
@@ -334,7 +351,9 @@ async function main() {
     check("workflow: the message is a step of its own, the host is given back, and no gap is filed on our board for missing access",
       /step\.do\("tell-signed-out"/.test(block) && /tellOwnerSignedOut\(/.test(block) && /releaseSessionHost\("release-session-signed-out"\)/.test(block) && !/fileCapabilityGaps\(/.test(block));
     check("workflow (CHE-428): a team's slot mails the team; only our own slot tells our owner",
-      /if \(sessionSlot && sessionSlot !== OUR_SLOT\) \{\s*const told = await tellTeamSignedOut\(/.test(block));
+      /const teamSlot = Boolean\(sessionSlot && sessionSlot !== OUR_SLOT\);/.test(block) && /if \(teamSlot\) \{\s*const told = await tellTeamSignedOut\(/.test(block));
+    check("workflow (CHE-428): where the team's sign-in mail went out, the Not verified verdict mail is not sent beside it (Codex on #292)",
+      /if \(teamSlot && \(toldTeam === "sent" \|\| toldTeam === "already"\)\) \{[\s\S]{0,200}?SKIP_SIGN_IN_MAILED[\s\S]{0,120}?\} else if \(run\.notifyEmail \|\| run\.appId\) \{\s*await step\.do\("notify-signed-out", \(\) => notifyAndRecord/.test(block));
     check("workflow: a sign-in page's status, stack and links are not reported as the app's",
       /if \(r\.signedOut\) return \{ \.\.\.r, extensionIdentity: null \};[\s\S]{0,400}?await appendEvent\(env, runId, "surface_scan", \{\s*icon: "ok",\s*text: `Loaded homepage/.test(workflow));
     // Reaching the app is recorded by the scan step itself, for a session run

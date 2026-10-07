@@ -80,6 +80,7 @@ import {
   notifyOutcomeCode,
   notifyVerdictReady,
   recordNotifyOutcome,
+  SKIP_SIGN_IN_MAILED,
   type NotifiableRun,
 } from "./notify-verdict";
 import { RUNAWAY_COST_USD } from "@/lib/plans";
@@ -668,8 +669,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // Its own step, so a retry of anything around it cannot send twice; the
         // send itself is refused a second time by its id. Never fails the run.
         // CHE-428: our own slot tells our owner; a team's slot tells the team.
-        await step.do("tell-signed-out", async () => {
-          if (sessionSlot && sessionSlot !== OUR_SLOT) {
+        const teamSlot = Boolean(sessionSlot && sessionSlot !== OUR_SLOT);
+        const toldTeam = await step.do("tell-signed-out", async () => {
+          if (teamSlot) {
             const told = await tellTeamSignedOut(env, { appId: run.appId, appSlug: run.appSlug }, host);
             console.log(`[session] run ${runId}: sign-in ended (${host}) in slot ${sessionSlot}; team ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}${"recipients" in told ? ` — ${told.recipients}` : ""}`);
             return told.told;
@@ -678,7 +680,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
           return told.told;
         });
-        if (run.notifyEmail || run.appId) {
+        // One mail about one ended sign-in (Codex on #292): where the team's
+        // sign-in mail went out — or already had — it is the message, and the
+        // Not verified verdict mail is not sent beside it. Where it could not
+        // go, the verdict mail still does, as before.
+        if (teamSlot && (toldTeam === "sent" || toldTeam === "already")) {
+          await step.do("notify-signed-out", async () => {
+            await recordNotifyOutcome(env, run.publicId, { kind: "skipped", reason: SKIP_SIGN_IN_MAILED });
+            return "skipped";
+          });
+        } else if (run.notifyEmail || run.appId) {
           await step.do("notify-signed-out", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
         }
         if (run.appId) await answerGitHubSafely(step, "answer-github-signed-out", env, runId);

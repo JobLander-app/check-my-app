@@ -988,9 +988,10 @@ model App {
   // (src/agent/signed-out.ts). Null = no check has reached the app yet.
   sessionReachedAt DateTime?
   // CHE-428: the ended sign-in (signedOutSendId) the app's verdict recipients
-  // were last mailed about. Mail has no ledger like the owner's Telegram, and
-  // the provider forgets a repeat after a day; a daily check must not mail
-  // every day. Null = never mailed.
+  // were last mailed about, and which of them it reached — JSON {id, to[]}.
+  // Mail has no ledger like the owner's Telegram, and the provider forgets a
+  // repeat after a day; a daily check must not mail every day, nor everyone
+  // again because one address failed. Null = never mailed.
   sessionEndedTold String?
   // CHE-399: how many problems are open in the app's latest check — the number
   // Health → Issues' first filter shows for it — stored where it changes (a
