@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decideTick, branchFor, isDoerBranch, STOP_LABEL } from "./eligibility.mjs";
 import { ROUND_ANSWER_MARKER, roundState } from "./machine.mjs";
-import { COMMIT_IDENTITY, WITHDRAWN_TITLE_PREFIX, isWithdrawnAttempt, outcomeOf, runMender, ticketFor } from "./mender.mjs";
+import { COMMIT_IDENTITY, WITHDRAWN_TITLE_PREFIX, outcomeOf, runMender, ticketFor, tierModel, withdrawnByModel } from "./mender.mjs";
 import { partition } from "./queue.mjs";
 
 const DRY = process.argv.includes("--dry-run");
@@ -79,10 +79,13 @@ for (const u of board.unknown ?? []) {
 // ticket's own branch, titled as such, and that is the history. Merged ones are
 // not counted — those are attempts that ended in work — and neither are the
 // Codex-era claims nobody ever attempted (mender.mjs isWithdrawnAttempt).
+// Counted per model: a ticket the t1 model gave up on twice is fresh for t2
+// (mender.mjs withdrawnByModel).
+const model = tierModel();
 const closedDoerPrs = gh([
   "pr", "list", "--repo", REPO, "--state", "closed", "--limit", "100",
-  "--json", "headRefName,mergedAt,title",
-]).filter((p) => isDoerBranch(p.headRefName) && isWithdrawnAttempt(p));
+  "--json", "headRefName,mergedAt,title,body",
+]).filter((p) => isDoerBranch(p.headRefName) && withdrawnByModel(p, model));
 
 const withdrawnByTicket = {};
 for (const p of closedDoerPrs) {
