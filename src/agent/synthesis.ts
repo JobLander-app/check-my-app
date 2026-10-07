@@ -122,6 +122,41 @@ export function synthesisSystem(knowledge?: AppKnowledge | null): string {
   return [APP_LENS_RULES, block, APP_LENS_CONTRACT].filter(Boolean).join("\n\n");
 }
 
+// CHE-429: a step the walker itself marked as our incapacity (`our_capability`) is not
+// evidence about the product: it is the case CLAUDE.md rule 8 names — we could
+// not tell our failure from theirs, so there is a ticket on our board and no
+// claim in the verdict. Securify's run on 2026-10-06 is why this is code: the
+// walker skipped "Apply visit filters" as our_capability, its observed text
+// described the filter chips as misbehaving, and the bottom line published that
+// as a fact about the merchant's app with no finding behind it. The model now
+// sees the step's label and that it went unconfirmed — enough for a coverage
+// clause, nothing to build a claim on. `attempted` goes too: the walker writes
+// it, and "Clicked Save repeatedly, but it never submitted" is the claim again
+// (Codex on #294).
+export const UNCONFIRMED_STEP = "We could not confirm this step this run.";
+
+export function observedForVerdict(step: {
+  label: string;
+  status: string;
+  attempted: string | null;
+  observed: string | null;
+  consoleLog: string | null;
+  networkLog: string | null;
+  unverifiedReason: string | null;
+  actions?: unknown;
+}) {
+  const { actions: _actions, unverifiedReason, ...rest } = step;
+  if (unverifiedReason !== "our_capability") return rest;
+  return { label: rest.label, status: rest.status, observed: UNCONFIRMED_STEP };
+}
+
+// The journey's summary is written from the same walk, so it can repeat what
+// such a step claimed (Codex on #294). A journey with one is passed without
+// its summary: its steps already say what was seen and what went unconfirmed.
+export function summaryForVerdict(steps: { unverifiedReason: string | null }[], summary: string | null): string | null {
+  return steps.some((s) => s.unverifiedReason === "our_capability") ? null : summary;
+}
+
 export interface SynthesizedFinding {
   errorSignature?: string;
   title: string;
@@ -224,9 +259,9 @@ export async function synthesizeVerdict(args: {
     journeys: journeys.map((j) => ({
       title: j.title,
       status: j.status,
-      summary: j.summary,
+      summary: summaryForVerdict(j.steps, j.summary),
       ...(j.carriedFromRunId ? { carried: true } : {}),
-      steps: j.steps.map(({ actions: _actions, unverifiedReason: _reason, ...step }) => step),
+      steps: j.steps.map(observedForVerdict),
     })),
   });
 
