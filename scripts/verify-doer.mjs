@@ -23,11 +23,8 @@ import {
   unpricedAttempt,
   findMenderHome,
   isWithdrawnAttempt,
-  withdrawnByModel,
-  tierModel,
   WITHDRAWN_TITLE_PREFIX,
 } from "./doer/mender.mjs";
-import { readFileSync } from "node:fs";
 import { ROUND_MARKER, ROUND_ANSWER_MARKER, roundState } from "./doer/machine.mjs";
 import { codexSummaryState, reviewRequestNeeded, askedSinceHead } from "./doer/review.mjs";
 import { mayUnpark, unparkOurRuns, DOER_PR_AUTHOR, PARKED_STATUS } from "./doer/unpark.mjs";
@@ -302,23 +299,6 @@ const approved = [{ state: "APPROVED", headSha: "aaa" }];
     isWithdrawnAttempt({ title: "[doer] Checker cannot drive file upload/download flows", mergedAt: null }) === false);
   check("a merged attempt is work, not a withdrawal",
     isWithdrawnAttempt({ title: `${WITHDRAWN_TITLE_PREFIX} — x`, mergedAt: "2026-09-18T00:00:00Z" }) === false);
-}
-{
-  // Withdrawals count per model (2026-10-07). The body is #284's, verbatim:
-  // two such t1 attempts per ticket stalled the whole queue from 2026-10-04.
-  const t1 = { title: `${WITHDRAWN_TITLE_PREFIX} — x`, mergedAt: null,
-    body: "**Attempt withdrawn.** Mender's gate was truncated at `test` · $0.01147 · 40 steps · deepseek/deepseek-v4-flash" };
-  check("a t1 withdrawal counts against the t1 model", withdrawnByModel(t1, "deepseek/deepseek-v4-flash") === true);
-  check("…and not against t2, which the ladder brings in for exactly these tickets",
-    withdrawnByModel(t1, "minimax/minimax-m3") === false);
-  check("no model named counts nothing", withdrawnByModel(t1, "") === false);
-  check("the tier names its model", tierModel({ MENDER_TIER: "t2", MENDER_T2: "minimax/minimax-m3" }) === "minimax/minimax-m3");
-  const tick = readFileSync(new URL("./doer/tick.mjs", import.meta.url), "utf8");
-  check("the tick counts withdrawals by its own model, reading each attempt's body",
-    /withdrawnByModel\(p, model\)/.test(tick) && /headRefName,mergedAt,title,body/.test(tick));
-  const wf = readFileSync(new URL("../.github/workflows/doer.yml", import.meta.url), "utf8");
-  const tier = wf.match(/MENDER_TIER:\s*(\w+)/)?.[1] ?? "";
-  check("the workflow's tier has a model named for it", new RegExp(`MENDER_${tier.toUpperCase()}:\\s*\\S+`).test(wf), tier);
 }
 {
   const green = { verdict: "green", failure_stage: "", cost_usd: "0.0312", steps: "24", model: "m", provider: "openrouter" };
