@@ -292,6 +292,100 @@ async function main() {
     check("reply_to text is cut to exactly 200 chars (M7)", reply === "y".repeat(200), `${String(reply).length} chars`);
   }
 
+  // 6b — CHE-427: a file sent with a message is kept, not reduced to "<media>".
+  // On 2026-10-06 the owner's screenshot of an onboarding error became a row
+  // reading "<media>" with nothing to open.
+  {
+    const TOKEN = "fake-bot-token-SECRET";
+    const puts: { key: string; bytes: number; type?: string }[] = [];
+    const store = new Map<string, ArrayBuffer>();
+    const bucket = {
+      put: async (key: string, body: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }) => {
+        puts.push({ key, bytes: body.byteLength, type: opts?.httpMetadata?.contentType });
+        store.set(key, body);
+      },
+      get: async (key: string) => (store.has(key) ? { body: store.get(key), httpMetadata: {}, httpEtag: "e" } : null),
+    };
+    const asked: string[] = [];
+    let telegramDown = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      asked.push(url);
+      if (telegramDown) return new Response('{"ok":false,"description":"Bad Request: wrong file_id"}', { status: 400 });
+      if (url.includes("/getFile?")) {
+        const id = new URL(url).searchParams.get("file_id");
+        const path = id === "doc1" ? "documents/report.pdf" : "photos/file_7.jpg";
+        return new Response(JSON.stringify({ ok: true, result: { file_id: id, file_path: path, file_size: 4096 } }), { status: 200 });
+      }
+      if (url.includes("/file/bot")) return new Response(new Uint8Array(4096), { status: 200 });
+      return new Response("unexpected", { status: 599 });
+    }) as typeof fetch;
+    const saved = fixture.env;
+    fixture.env = { ...saved, TELEGRAM_BOT_TOKEN: TOKEN, EVIDENCE: bucket };
+    const logsBefore = logged.length;
+
+    const sizes = [{ file_id: "small", file_size: 100 }, { file_id: "large", file_size: 5000 }, { file_id: "mid", file_size: 900 }];
+    const photo = await post(message(50, OWNER_CHAT, { text: undefined, photo: sizes, caption: `see ${PRIVATE}` }));
+    const p = rowFor(50);
+    check("photo → 200, stored with the caption as before", photo.status === 200 && p.text === `<media> see ${PRIVATE}`, `${photo.status}`);
+    check("photo → the largest size's file id is kept", p.fileId === "large" && p.fileKind === "photo", `${String(p.fileId)} / ${String(p.fileKind)}`);
+    check("photo → getFile asked for the largest size", asked.some((u) => u.includes("getFile?file_id=large")), asked.map((u) => u.replace(TOKEN, "<t>")).join(" "));
+    const key = String(p.fileKey);
+    check("photo → a copy is kept under private/ in R2, and the row says where",
+      key === `private/telegram/${OWNER_CHAT}/50/photo-file_7.jpg` && puts.some((x) => x.key === key && x.bytes === 4096 && x.type === "image/jpeg"),
+      `${key} ${JSON.stringify(puts)}`);
+
+    await post(message(51, OWNER_CHAT, { text: undefined, document: { file_id: "doc1", file_name: "report.pdf" } }));
+    check("document → kept as a document, as a PDF",
+      rowFor(51).fileKind === "document" && puts.some((x) => x.key === `private/telegram/${OWNER_CHAT}/51/document-report.pdf` && x.type === "application/pdf"),
+      `${String(rowFor(51).fileKind)} ${String(rowFor(51).fileKey)}`);
+
+    const before = puts.length;
+    await post(message(50, OWNER_CHAT, { text: undefined, photo: sizes }));
+    check("a retry of a stored update downloads nothing again", puts.length === before, `${puts.length - before} puts`);
+
+    telegramDown = true;
+    const down = await post(message(52, OWNER_CHAT, { text: undefined, photo: sizes }));
+    telegramDown = false;
+    check("Telegram refuses getFile → the message is still stored, with its file id and no copy",
+      down.status === 200 && rowFor(52).fileId === "large" && rowFor(52).fileKey == null, `${down.status} ${String(rowFor(52).fileKey)}`);
+
+    fixture.env = { ...saved, EVIDENCE: bucket };
+    const askedBefore = asked.length;
+    const noToken = await post(message(53, OWNER_CHAT, { text: undefined, photo: sizes }));
+    check("no bot token → stored with its file id, Telegram never asked",
+      noToken.status === 200 && rowFor(53).fileId === "large" && asked.length === askedBefore, `${noToken.status}`);
+
+    await post(message(54, OWNER_CHAT, { text: `plain ${PRIVATE}` }));
+    check("a text message carries no file", rowFor(54).fileId == null && rowFor(54).fileKey == null);
+
+    const said = logged.slice(logsBefore);
+    check("the bot token never reaches a log", !said.some((l) => l.includes(TOKEN)), said.join(" | ").slice(0, 200) || "nothing logged");
+    check("a file that was not kept is logged by reason", said.some((l) => /update 52 file not kept \(getFile HTTP 400\)/.test(l)), said.join(" | ").slice(0, 200));
+
+    // The copy is never served: /api/evidence refuses private/ keys.
+    const evidence = await bundle<{ GET(req: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> }>(
+      "src/app/api/evidence/[...path]/route.ts",
+      {
+        "@opennextjs/cloudflare": "export const getCloudflareContext = () => ({ env: { EVIDENCE: fixture.bucket }, ctx: { waitUntil() {} } });",
+        "@/lib/storage": "export const getObject = (b, k) => b.get(k); export const contentTypeFor = () => 'application/octet-stream'; export const screenshotKeyOfThumb = () => null;",
+        "@/lib/thumbnail": "export const thumbnail = async () => null;",
+        "next/server": "export const NextResponse = { json: (b, i) => new Response(JSON.stringify(b), { status: (i && i.status) || 200 }) };",
+      },
+    );
+    Object.assign(fixture, { bucket });
+    const served = await evidence.GET(new Request(`https://checkmyapp.dev/api/evidence/${key}`), { params: Promise.resolve({ path: key.split("/") }) });
+    check("/api/evidence does not serve the kept file", served.status === 404, `got ${served.status}`);
+    const control = "screens/x.png";
+    store.set(control, new ArrayBuffer(1));
+    const servedControl = await evidence.GET(new Request(`https://checkmyapp.dev/api/evidence/${control}`), { params: Promise.resolve({ path: control.split("/") }) });
+    check("…while it does serve an ordinary evidence key (control)", servedControl.status === 200, `got ${servedControl.status}`);
+
+    fixture.env = saved;
+    globalThis.fetch = realFetch;
+  }
+
   // 7 — dates Telegram would never send, and a database that is down: the
   // text stays out of every log (cross-review of #221, point 5).
   {

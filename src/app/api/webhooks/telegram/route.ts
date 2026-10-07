@@ -22,6 +22,7 @@ import {
   getTelegramEnv,
   incomingRow,
   isUniqueViolation,
+  keepTelegramFile,
   secretMatches,
 } from "@/lib/telegram";
 
@@ -49,7 +50,28 @@ export async function POST(req: Request) {
   const db = getDb(env as unknown as { DB: D1Database });
   try {
     const existing = await db.telegramMessage.findUnique({ where: { updateId: row.updateId! }, select: { id: true } });
-    if (!existing) await db.telegramMessage.create({ data: row });
+    if (!existing) {
+      // CHE-427: a file is kept before the row is written, so the row says
+      // where. A copy that cannot be made never costs the message: the row is
+      // stored with Telegram's file id, and the reason is logged by label.
+      if (row.fileId) {
+        const bucket = (env as unknown as { EVIDENCE?: R2Bucket }).EVIDENCE;
+        const kept =
+          tg.TELEGRAM_BOT_TOKEN && bucket
+            ? await keepTelegramFile(
+                {
+                  token: tg.TELEGRAM_BOT_TOKEN,
+                  fetch,
+                  put: (key, body, contentType) => bucket.put(key, body, contentType ? { httpMetadata: { contentType } } : undefined),
+                },
+                row,
+              )
+            : { error: tg.TELEGRAM_BOT_TOKEN ? "no bucket" : "no bot token" };
+        if ("key" in kept) row.fileKey = kept.key;
+        else console.warn(`telegram webhook: update ${row.updateId} file not kept (${kept.error})`);
+      }
+      await db.telegramMessage.create({ data: row });
+    }
   } catch (err) {
     // Two deliveries of one update raced past the lookup; the unique key kept
     // one row, which is the outcome we wanted.

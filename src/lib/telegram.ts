@@ -77,6 +77,43 @@ interface TgMessage {
   text?: string;
   caption?: string;
   reply_to_message?: { text?: string; caption?: string };
+  photo?: TgFile[];
+  document?: TgFile;
+  video?: TgFile;
+  animation?: TgFile;
+  voice?: TgFile;
+  audio?: TgFile;
+  video_note?: TgFile;
+  sticker?: TgFile;
+}
+
+interface TgFile {
+  file_id?: string;
+  file_size?: number;
+  width?: number;
+  height?: number;
+}
+
+// CHE-427: which file an incoming message carries. A photo arrives as several
+// sizes; the largest is the one worth keeping (the owner's screenshot of an
+// error is read, not glanced at). The first field present wins, in the order a
+// person is likely to send them.
+const FILE_FIELDS = ["photo", "document", "video", "animation", "voice", "audio", "video_note", "sticker"] as const;
+export type TelegramFileKind = (typeof FILE_FIELDS)[number];
+
+export function attachmentOf(m: TgMessage): { fileId: string; fileKind: TelegramFileKind } | null {
+  for (const kind of FILE_FIELDS) {
+    if (kind === "photo") {
+      const sizes = (Array.isArray(m.photo) ? m.photo : []).filter((p) => typeof p?.file_id === "string" && p.file_id);
+      if (!sizes.length) continue;
+      const area = (p: TgFile) => p.file_size ?? (p.width ?? 0) * (p.height ?? 0);
+      const largest = sizes.reduce((a, b) => (area(b) >= area(a) ? b : a));
+      return { fileId: largest.file_id!, fileKind: "photo" };
+    }
+    const file = m[kind];
+    if (file && typeof file.file_id === "string" && file.file_id) return { fileId: file.file_id, fileKind: kind };
+  }
+  return null;
 }
 
 export interface StoredTelegramMessage {
@@ -91,6 +128,10 @@ export interface StoredTelegramMessage {
   replyToText: string | null;
   edited: boolean;
   sentAt: Date;
+  // Incoming only (CHE-427).
+  fileId?: string | null;
+  fileKind?: TelegramFileKind | null;
+  fileKey?: string | null;
 }
 
 function nameOf(user: TgUser | undefined): string | null {
@@ -138,7 +179,9 @@ export function incomingRow(update: unknown): StoredTelegramMessage | null {
   if (!m || m.chat?.id === undefined || m.chat.id === null) return null;
   const reply = m.reply_to_message;
   const seconds = edited && m.edit_date !== undefined ? m.edit_date : m.date;
+  const file = attachmentOf(m);
   return {
+    ...(file ? { fileId: file.fileId, fileKind: file.fileKind } : {}),
     updateId: String(u.update_id),
     messageId: m.message_id !== undefined ? String(m.message_id) : null,
     chatId: String(m.chat.id),
@@ -164,6 +207,66 @@ export function outgoingRow(result: TgMessage, chatId: string): StoredTelegramMe
     edited: false,
     sentAt: telegramTime(result.date),
   };
+}
+
+// CHE-427: the copy of an incoming file, kept where an agent can open it. Bot
+// API getFile names the file's path, then the file is downloaded once (Bot API
+// files are at most 20 MB) and put under private/ in R2, which /api/evidence
+// never serves. Neither URL is ever logged or returned: both carry the bot
+// token. Returns the R2 key, or a label of why there is none.
+export const TELEGRAM_FILE_MAX_BYTES = 20 * 1024 * 1024;
+
+const FILE_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  pdf: "application/pdf",
+  mp4: "video/mp4",
+  oga: "audio/ogg",
+  ogg: "audio/ogg",
+  mp3: "audio/mpeg",
+  txt: "text/plain",
+};
+
+export function telegramFileKey(row: { chatId: string; updateId: string | null; fileKind?: string | null }, filePath: string): string {
+  const name = (filePath.split("/").pop() || "file").replace(/[^A-Za-z0-9._-]/g, "_");
+  return `private/telegram/${row.chatId}/${row.updateId ?? "none"}/${row.fileKind ?? "file"}-${name}`;
+}
+
+export async function keepTelegramFile(
+  deps: {
+    token: string;
+    fetch: typeof fetch;
+    put: (key: string, body: ArrayBuffer, contentType: string | undefined) => Promise<unknown>;
+  },
+  row: { chatId: string; updateId: string | null; fileId?: string | null; fileKind?: string | null },
+): Promise<{ key: string } | { error: string }> {
+  if (!row.fileId) return { error: "no file" };
+  const api = `https://api.telegram.org/bot${deps.token}`;
+  let filePath: string;
+  try {
+    const answer = await deps.fetch(`${api}/getFile?file_id=${encodeURIComponent(row.fileId)}`);
+    const body = (await answer.json().catch(() => null)) as { ok?: boolean; result?: { file_path?: string; file_size?: number } } | null;
+    if (!answer.ok || !body?.ok || typeof body.result?.file_path !== "string") return { error: `getFile HTTP ${answer.status}` };
+    if ((body.result.file_size ?? 0) > TELEGRAM_FILE_MAX_BYTES) return { error: "file too large" };
+    filePath = body.result.file_path;
+  } catch (err) {
+    return { error: `getFile ${errorLabel(err)}` };
+  }
+  try {
+    const file = await deps.fetch(`https://api.telegram.org/file/bot${deps.token}/${filePath}`);
+    if (!file.ok) return { error: `download HTTP ${file.status}` };
+    const bytes = await file.arrayBuffer();
+    if (bytes.byteLength > TELEGRAM_FILE_MAX_BYTES) return { error: "file too large" };
+    const key = telegramFileKey(row, filePath);
+    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+    await deps.put(key, bytes, FILE_TYPES[ext]);
+    return { key };
+  } catch (err) {
+    return { error: `download ${errorLabel(err)}` };
+  }
 }
 
 export function isUniqueViolation(err: unknown): boolean {
