@@ -59,6 +59,40 @@ export function isWithdrawnAttempt(pr) {
 }
 
 /**
+ * Does this withdrawn attempt count against the model about to try? Only an
+ * attempt by the same model does: the ladder in mender.yml is [t1, t2], and a
+ * ticket two t1 attempts could not do is exactly the ticket t2 exists for.
+ * Counting every model together stalled the queue for good — from 2026-10-04
+ * every admitted ticket (CHE-96, CHE-146, CHE-222) had two withdrawn
+ * deepseek-v4-flash attempts at 40 steps, nine of eleven with no patch at all,
+ * and each tick ended "no implementer is delivering on these".
+ *
+ * The model is read from the attempt's own body: the marker the tick writes on
+ * every withdrawal (modelMarker), whatever the outcome's summary says — a green
+ * gate with no patch is summarised without a model, and an attempt that could
+ * not be attributed would never count, so its ticket would be retried for ever
+ * (Codex, #296 round 2). Bodies written before the marker carry the model in
+ * the summary ("· 40 steps · deepseek/deepseek-v4-flash"). An empty model
+ * counts nothing.
+ */
+export function modelMarker(model) {
+  return `<!-- doer-model: ${model} -->`;
+}
+
+/** The model this tick's tier names (doer.yml: MENDER_TIER=t2 → MENDER_T2). */
+export function tierModel(env = process.env) {
+  const tier = String(env.MENDER_TIER ?? "t1");
+  return String(env[`MENDER_${tier.toUpperCase()}`] ?? "");
+}
+
+export function withdrawnByModel(pr, model) {
+  if (!isWithdrawnAttempt(pr) || !model) return false;
+  const body = String(pr?.body ?? "");
+  if (body.includes("<!-- doer-model: ")) return body.includes(modelMarker(model));
+  return body.includes(`· ${model}`);
+}
+
+/**
  * May Mender run here at all? Pure, because "it silently did nothing" is the
  * failure mode the whole loop is trying to avoid: a tick that finds no Mender
  * must say so by name and stop, never claim a ticket it cannot work on.

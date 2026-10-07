@@ -108,10 +108,14 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           MENDER_T1: deepseek/deepseek-v4-flash
           MENDER_T2: minimax/minimax-m3
-          MENDER_TIER: t1
+          # t2 at 80 steps (2026-10-07). On t1 at 40 steps, 11 attempts since
+          # 2026-09-18 merged nothing: 9 produced no patch, 2 ran out of steps.
+          # t2 at 80 steps produced a usable diff for CHE-369 for $0.26.
+          # Withdrawals count per model, so the t1-exhausted tickets get t2 tries.
+          MENDER_TIER: t2
           MENDER_BUDGET: "1.50"
           MENDER_RUNNER_TIMEOUT: "1800"
-          MENDER_MAX_STEPS: "40"
+          MENDER_MAX_STEPS: "80"
           MENDER_TIMEOUT: "3600"
         run: node scripts/doer/tick.mjs
 
