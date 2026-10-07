@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CHECKS, agentEnv, chooseTicket, forbiddenPaths, pendingReview, stagedPaths, stranded } from "./mender/agent.mjs";
+import { CHECKS, agentEnv, branchFor, chooseTicket, forbiddenPaths, pendingReview, stagedPaths, stranded, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -73,7 +73,19 @@ check("…an ordinary change is not", forbiddenPaths(["src/lib/a.ts", "scripts/v
 check("the model's environment holds no GitHub token",
   Object.keys(agentEnv({ GH_TOKEN: "x", GITHUB_TOKEN: "y", MENDER_GH_TOKEN: "z", LINEAR_API_KEY: "k" })).join() === "LINEAR_API_KEY");
 
+check("the personal token pushes only to mender/che-* branches",
+  validBranch("mender/che-423-a-run-stays-queued") && !validBranch("main") && !validBranch("mender/../main") &&
+    !validBranch("refs/heads/main") && !validBranch("mender/che-1 main"));
+check("a ticket's branch is a valid one, whatever its title",
+  validBranch(branchFor({ identifier: "CHE-9", title: "«Quoted» — weird/title!!" })) && validBranch(branchFor({ identifier: "CHE-9", title: "!!!" })));
+
 const agent = read("scripts/mender/agent.mjs");
+const publishSrc = agent.slice(agent.indexOf("async function publish()"));
+check("publishing takes its targets from GitHub and Linear, not from the artifact the model could rewrite",
+  /const target = await trustedTarget\(job\);/.test(publishSrc) &&
+    publishSrc.indexOf("trustedTarget(job)") < publishSrc.indexOf("stage(job.baseSha)") &&
+    !/job\.pr\.(headRefName|url)|job\.issue\.(identifier|title|url)|job\.ticket/.test(publishSrc));
+check("every page of review comments is read", /"--paginate"/.test(agent) && /per_page=100/.test(agent));
 check("Mender never merges", !/pr["',\s]+merge|merge_pull|gh pr merge/i.test(agent));
 check("AGENTS.md's sequence runs before the patch is taken: prisma generate, both typechecks, lint, verify:all",
   ["generate", "typecheck", "agent:typecheck", "lint", "verify:all"].every((s) => CHECKS.some(([, a]) => a.includes(s))) &&

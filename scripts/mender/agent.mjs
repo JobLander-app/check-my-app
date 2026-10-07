@@ -116,11 +116,14 @@ async function findWork() {
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
   const prs = ghJson(["pr", "list", "--state", "open", "--json", "number,headRefName,url", "--limit", "50"])
     .filter((p) => p.headRefName.startsWith("mender/"));
+  // Every page of every list (GitHub returns 30 by default; Codex, #298 round 3).
+  const pages = (path, jq) => gh(["api", "--paginate", `${path}?per_page=100`, "--jq", `.[] | ${jq} | tojson`])
+    .split("\n").filter(Boolean).map((l) => JSON.parse(l));
   for (const pr of prs) {
-    const lastCommitAt = gh(["api", `repos/${repo}/pulls/${pr.number}/commits`, "--jq", ".[-1].commit.committer.date"]);
-    const inline = ghJson(["api", `repos/${repo}/pulls/${pr.number}/comments`, "--jq", "[.[] | {user: .user.login, createdAt: .created_at, body: (.path + \":\" + ((.line // 0)|tostring) + \" \" + .body)}]"]);
-    const reviews = ghJson(["api", `repos/${repo}/pulls/${pr.number}/reviews`, "--jq", "[.[] | {user: .user.login, createdAt: .submitted_at, body: .body}]"]);
-    const issueComments = ghJson(["api", `repos/${repo}/issues/${pr.number}/comments`, "--jq", "[.[] | {user: .user.login, createdAt: .created_at, body: .body}]"]);
+    const lastCommitAt = pages(`repos/${repo}/pulls/${pr.number}/commits`, ".commit.committer.date").at(-1) ?? "";
+    const inline = pages(`repos/${repo}/pulls/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: (.path + \":\" + ((.line // 0)|tostring) + \" \" + .body)}");
+    const reviews = pages(`repos/${repo}/pulls/${pr.number}/reviews`, "{user: .user.login, createdAt: .submitted_at, body: (.body // \"\")}");
+    const issueComments = pages(`repos/${repo}/issues/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: .body}");
     const rounds = issueComments.filter((c) => c.body.includes(ROUND_MARK));
     const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, lastRoundAt: rounds.at(-1)?.createdAt ?? "", roundsUsed: rounds.length });
     if (pending.length) return { kind: "review", pr, pending, round: rounds.length + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() ?? null };
@@ -266,20 +269,51 @@ function stage(baseSha) {
   return forbiddenPaths(stagedPaths());
 }
 
-function push(branch, message) {
+export function branchFor(issue) {
+  const slug = String(issue.title).toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/^-+|-+$/g, "");
+  return `mender/${String(issue.identifier).toLowerCase()}${slug ? `-${slug}` : ""}`;
+}
+
+/** The only refs the personal token may ever be used to push to. */
+export const validBranch = (b) => /^mender\/che-\d+(-[a-z0-9]+)*$/.test(String(b));
+
+function push(branch, message, { force = false } = {}) {
+  if (!validBranch(branch)) throw new Error(`refusing to push to ${JSON.stringify(branch)}: not a mender/che-* branch`);
   sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
-  sh("git", ["push", "-q", `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
+  sh("git", ["push", "-q", ...(force ? ["--force"] : []), `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
+}
+
+/**
+ * What to publish to, taken from GitHub and Linear — never from the artifact.
+ * The model had a shell on the machine that wrote out.json and could have
+ * rewritten it after work() returned (Codex, #298 round 3); the artifact may
+ * only say WHICH PR or ticket, and each is then checked here: a PR must be
+ * open, ours, on a mender/ branch, with the head the patch was made on; a
+ * ticket must carry the label and be the one this tick claimed; a ticket's
+ * base must be a commit of main.
+ */
+async function trustedTarget(job) {
+  if (job.kind === "review") {
+    const pr = ghJson(["pr", "view", String(Number(job.pr?.number)), "--json", "number,url,state,headRefName,headRefOid,isCrossRepository"]);
+    if (pr.state !== "OPEN" || pr.isCrossRepository || !validBranch(pr.headRefName)) throw new Error(`#${pr.number} is not an open Mender PR`);
+    if (pr.headRefOid !== job.baseSha) throw new Error(`#${pr.number} moved from ${job.baseSha} to ${pr.headRefOid} during the round; nothing pushed`);
+    return { pr, ticket: pr.headRefName.match(/^mender\/(che-\d+)/)[1].toUpperCase() };
+  }
+  const d = await linear(`query($i:String!){issue(id:$i){id identifier title url state{name} labels{nodes{name}}}}`, { i: String(job.issue?.id ?? "") });
+  const issue = d.issue;
+  if (!issue || !issue.labels.nodes.some((l) => l.name === LABEL) || issue.state.name !== "In Progress") throw new Error("the ticket in the artifact is not one Mender claimed");
+  if (job.changed) {
+    try { sh("git", ["merge-base", "--is-ancestor", String(job.baseSha), "origin/main"]); } catch { throw new Error(`base ${job.baseSha} is not a commit of main`); }
+  }
+  return { issue };
 }
 
 async function publish() {
   const job = JSON.parse(readFileSync(OUT, "utf8"));
   if (job.kind === "none") return;
   const r = job.result;
-  if (job.kind === "review" && job.changed) {
-    const head = gh(["pr", "view", job.pr.url, "--json", "headRefOid", "--jq", ".headRefOid"]);
-    if (head !== job.baseSha) throw new Error(`#${job.pr.number} moved from ${job.baseSha} to ${head} during the round; nothing pushed`);
-  }
+  const target = await trustedTarget(job);
   if (job.changed) {
     const bad = stage(job.baseSha);
     if (bad.length) {
@@ -290,8 +324,9 @@ async function publish() {
     }
   }
   if (job.kind === "review") {
-    const { pr, round, ticket } = job;
-    if (job.changed) push(pr.headRefName, `Review round ${round} (${ticket ?? `#${pr.number}`})`);
+    const { pr, ticket } = target;
+    const round = Math.max(1, Math.min(MAX_ROUNDS, Number(job.round) || 1));
+    if (job.changed) push(pr.headRefName, `Review round ${round} (${ticket})`);
     gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${clean(r.text) || "(no report)"}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
     if (ticket) {
       const d = await linear(`query($i:String!){issue(id:$i){id}}`, { i: ticket });
@@ -299,15 +334,18 @@ async function publish() {
     }
     return;
   }
-  const { issue } = job;
+  const { issue } = target;
   if (!job.changed) {
     await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${clean(r.text) || "(no report)"}${footer(r)}`);
     return setState(issue.id, "Todo");
   }
-  const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/-+$/, "");
-  const branch = `mender/${issue.identifier.toLowerCase()}-${slug}`;
-  push(branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`);
-  const url = gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
+  const branch = branchFor(issue);
+  // A retry after a publish that died between the push and the PR finds its own
+  // branch already there: it is Mender's, so it is replaced, and an existing PR
+  // for it is reused rather than failing (Codex, #298 round 3).
+  push(branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`, { force: true });
+  const existing = gh(["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty"]);
+  const url = existing || gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
     "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerged by a person, never by Mender.`]);
   gh(["pr", "comment", url, "--body", "@coderabbitai review"]);
   await comment(issue.id, `${ATTEMPT_MARK}\n**Pull request opened:** ${url}\nCodeRabbit asked to review.\n\n${clean(r.text)}${footer(r)}`);
