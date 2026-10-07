@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decideTick, branchFor, isDoerBranch, STOP_LABEL } from "./eligibility.mjs";
 import { ROUND_ANSWER_MARKER, roundState } from "./machine.mjs";
-import { COMMIT_IDENTITY, WITHDRAWN_TITLE_PREFIX, outcomeOf, runMender, ticketFor, tierModel, withdrawnByModel } from "./mender.mjs";
+import { COMMIT_IDENTITY, WITHDRAWN_TITLE_PREFIX, modelMarker, outcomeOf, runMender, ticketFor, tierModel, withdrawnByModel } from "./mender.mjs";
 import { partition } from "./queue.mjs";
 
 const DRY = process.argv.includes("--dry-run");
@@ -237,7 +237,7 @@ if (attempt.action === "commit") {
   const pr = openPr({
     branch,
     title: `${WITHDRAWN_TITLE_PREFIX} — ${item.label}`,
-    body: `${provenance}\n\n**Attempt withdrawn.** ${attempt.summary}\n\n${attempt.reportText}`,
+    body: `${modelMarker(model)}\n${provenance}\n\n**Attempt withdrawn.** ${attempt.summary}\n\n${attempt.reportText}`,
     draft: true,
   });
   if (attempt.action === "defect") {

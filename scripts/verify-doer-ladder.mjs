@@ -10,7 +10,7 @@
 // Usage: node scripts/verify-doer-ladder.mjs
 
 import { readFileSync } from "node:fs";
-import { WITHDRAWN_TITLE_PREFIX, tierModel, withdrawnByModel } from "./doer/mender.mjs";
+import { WITHDRAWN_TITLE_PREFIX, modelMarker, tierModel, withdrawnByModel } from "./doer/mender.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -33,9 +33,23 @@ check("a merged attempt is never a withdrawal, whatever its model",
 check("the tier names its model",
   tierModel({ MENDER_TIER: "t2", MENDER_T2: "minimax/minimax-m3", MENDER_T1: "deepseek/deepseek-v4-flash" }) === "minimax/minimax-m3");
 
+// A green gate that left no patch is withdrawn with a summary that names no
+// model (outcomeOf's "defect"); the marker is what makes it count (Codex, #296 r2).
+const defect = {
+  title: `${WITHDRAWN_TITLE_PREFIX} — x`,
+  mergedAt: null,
+  body: `${modelMarker("minimax/minimax-m3")}\n**Attempt withdrawn.** Mender's gate went green but left no patch — that is a defect, not a result`,
+};
+check("a withdrawal whose summary names no model still counts, by its marker",
+  withdrawnByModel(defect, "minimax/minimax-m3") === true);
+check("…and only against the model the marker names",
+  withdrawnByModel(defect, "deepseek/deepseek-v4-flash") === false);
+
 const tick = readFileSync(new URL("./doer/tick.mjs", import.meta.url), "utf8");
 check("the tick counts withdrawals by its own model, reading each attempt's body",
   /withdrawnByModel\(p, model\)/.test(tick) && /headRefName,mergedAt,title,body/.test(tick));
+check("every withdrawal the tick records carries its model's marker",
+  /body: `\$\{modelMarker\(model\)\}[^`]*Attempt withdrawn/.test(tick));
 
 const wf = readFileSync(new URL("../.github/workflows/doer.yml", import.meta.url), "utf8");
 const tier = wf.match(/MENDER_TIER:\s*(\w+)/)?.[1] ?? "";

@@ -67,9 +67,18 @@ export function isWithdrawnAttempt(pr) {
  * deepseek-v4-flash attempts at 40 steps, nine of eleven with no patch at all,
  * and each tick ended "no implementer is delivering on these".
  *
- * The model is read from the attempt's own body, where the tick records it
- * ("· 40 steps · deepseek/deepseek-v4-flash"). An empty model counts nothing.
+ * The model is read from the attempt's own body: the marker the tick writes on
+ * every withdrawal (modelMarker), whatever the outcome's summary says — a green
+ * gate with no patch is summarised without a model, and an attempt that could
+ * not be attributed would never count, so its ticket would be retried for ever
+ * (Codex, #296 round 2). Bodies written before the marker carry the model in
+ * the summary ("· 40 steps · deepseek/deepseek-v4-flash"). An empty model
+ * counts nothing.
  */
+export function modelMarker(model) {
+  return `<!-- doer-model: ${model} -->`;
+}
+
 /** The model this tick's tier names (doer.yml: MENDER_TIER=t2 → MENDER_T2). */
 export function tierModel(env = process.env) {
   const tier = String(env.MENDER_TIER ?? "t1");
@@ -78,7 +87,9 @@ export function tierModel(env = process.env) {
 
 export function withdrawnByModel(pr, model) {
   if (!isWithdrawnAttempt(pr) || !model) return false;
-  return String(pr?.body ?? "").includes(`· ${model}`);
+  const body = String(pr?.body ?? "");
+  if (body.includes("<!-- doer-model: ")) return body.includes(modelMarker(model));
+  return body.includes(`· ${model}`);
 }
 
 /**
