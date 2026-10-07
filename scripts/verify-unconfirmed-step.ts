@@ -63,13 +63,22 @@ const env = {
         {
           title: "Manage Blocked and Allowed IP Addresses",
           status: "partial",
-          summary: "The IP page loads with live data.",
+          // Written from the same walk, the summary repeats the step's claim
+          // (Codex on #294).
+          summary: "The IP page loads, but the visit filters behave as additive toggles and the feed goes blank.",
           carriedFromRunId: null,
           steps: [
             step(0, "ok", "Opened Block IPs", OK_OBSERVED, null),
             step(1, "skipped", ATTEMPTED, OBSERVED, "our_capability"),
             step(2, "skipped", "Add a blocked IP", "Stopped here on purpose.", "not_applicable"),
           ],
+        },
+        {
+          title: "Review Dashboard",
+          status: "ok",
+          summary: "The Protection Dashboard loads with live data.",
+          carriedFromRunId: null,
+          steps: [step(0, "ok", "Opened the dashboard", "The dashboard rendered.", null)],
         },
       ],
     },
@@ -119,6 +128,8 @@ async function main() {
   check("our_capability: its console and network logs never reach the model", !observation.includes("chip handler") && !observation.includes("vpn=true"));
   check("our_capability: what was tried still does (for a coverage clause)", observation.includes("Clicked each filter chip"));
   check("our_capability: the model reads that it went unconfirmed", observation.includes(UNCONFIRMED_STEP));
+  check("our_capability: the journey summary that repeats the claim never reaches the model", !observation.includes("additive toggles"));
+  check("a journey without one keeps its summary", observation.includes("The Protection Dashboard loads with live data."));
   check("a confirmed step is passed as observed", observation.includes("Recent Activity feed with real rows"));
   check("a deliberate stop is passed as observed", observation.includes("Stopped here on purpose."));
   check("the reason itself stays ours", !observation.includes("our_capability") && !observation.includes("not_applicable"));

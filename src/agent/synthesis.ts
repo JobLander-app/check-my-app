@@ -148,6 +148,13 @@ export function observedForVerdict(step: {
   return { label: rest.label, status: rest.status, attempted: rest.attempted, observed: UNCONFIRMED_STEP };
 }
 
+// The journey's summary is written from the same walk, so it can repeat what
+// such a step claimed (Codex on #294). A journey with one is passed without
+// its summary: its steps already say what was seen and what went unconfirmed.
+export function summaryForVerdict(steps: { unverifiedReason: string | null }[], summary: string | null): string | null {
+  return steps.some((s) => s.unverifiedReason === "our_capability") ? null : summary;
+}
+
 export interface SynthesizedFinding {
   errorSignature?: string;
   title: string;
@@ -250,7 +257,7 @@ export async function synthesizeVerdict(args: {
     journeys: journeys.map((j) => ({
       title: j.title,
       status: j.status,
-      summary: j.summary,
+      summary: summaryForVerdict(j.steps, j.summary),
       ...(j.carriedFromRunId ? { carried: true } : {}),
       steps: j.steps.map(observedForVerdict),
     })),
