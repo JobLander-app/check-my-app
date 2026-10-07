@@ -1390,6 +1390,14 @@ model TelegramMessage {
   replyToText String?
   // An edit arrives as its own update and is stored as its own row.
   edited      Boolean  @default(false)
+  // CHE-427: a file sent with an incoming message (photo, document, voice…).
+  // fileId is Telegram's (the largest size of a photo), fileKind which field it
+  // came in, fileKey where the webhook kept a copy in R2 (EVIDENCE, under
+  // private/, which /api/evidence never serves). fileKey is NULL when the copy
+  // could not be made; fileId still lets it be fetched with the bot token.
+  fileId      String?
+  fileKind    String?
+  fileKey     String?
   // Outgoing only (src/lib/telegram-send.ts). sendId names one intended send
   // (by default a hash of chat + text), so a re-run cannot deliver it twice.
   // status: "pending" written, not yet attempted · "unknown" attempted, outcome
