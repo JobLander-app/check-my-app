@@ -59,7 +59,10 @@ install -d -m 0700 /etc/session-host
 # once given) adds team slots 1..n beside "main": user sb-<n>, display :1<n>,
 # profile /var/lib/sb-<n>/profile, DevTools 923<n>. A slot is never removed
 # here — it holds a team's sign-in; lowering SLOTS only stops adding.
-SLOTS="${SLOTS:-$(cat /etc/session-host/slots 2>/dev/null || echo 0)}"
+# A fresh host gets the slots migration 0060 seeds (1..3), so a team given
+# one is never refused by its own host (Codex on #292).
+SEEDED_SLOTS=3
+SLOTS="${SLOTS:-$(cat /etc/session-host/slots 2>/dev/null || echo "$SEEDED_SLOTS")}"
 case "$SLOTS" in [0-9]) ;; *) echo "provision: FAIL — SLOTS must be 0..9"; exit 1 ;; esac
 echo "$SLOTS" > /etc/session-host/slots
 browser_users='"session-browser"'

@@ -416,6 +416,13 @@ await check("on the host, the browser has a user of its own and does not start w
   assert.doesNotMatch(provision, /systemctl (try-)?restart[^\n]*session-firewall/, "a provision would restart Chrome every time");
   assert.match(provision, /^nft -f \/etc\/session-host\/firewall\.nft$/m);
   assert.match(provision, /@BROWSER_USERS@/, "the provision no longer renders the browser users into the rules");
+  // A fresh host has every team slot the database hands out (Codex on #292):
+  // a team given slot 3 by migration 0060 on a host with fewer gets 404s.
+  const migration = await readFile(new URL("../../prisma/migrations/0060_session_slot.sql", dir), "utf8");
+  const seeded = [...migration.matchAll(/VALUES \('(\d+)', NULL/g)].length;
+  const defaultSlots = Number(/^SEEDED_SLOTS=(\d+)$/m.exec(provision)?.[1]);
+  assert.ok(seeded > 0 && defaultSlots === seeded, `a fresh host gets ${defaultSlots} team slots, the database seeds ${seeded}`);
+  assert.match(provision, /\|\| echo "\$SEEDED_SLOTS"\)/, "a fresh host no longer defaults to the seeded slots");
   assert.match(rules, /fib daddr type local reject/);
 });
 
