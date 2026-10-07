@@ -297,12 +297,14 @@ async function main() {
     failFor = "ops@otp.plus";
     const partial = await tellTeam();
     const again = signedOutSendId("app_team", new Date("2026-10-20T06:00:00.000Z"));
-    check("team: a sign-in restored and ended again is mailed again — a refused address is reported, the one reached is remembered",
-      partial.told === "failed" && sent.length === 3 && sent[2].to === "owner@otp.plus" && toldAbout((await told()) ?? null, again).join() === "owner@otp.plus",
+    check("team: a sign-in restored and ended again is mailed again — a refused address is reported as partial, the one reached is remembered",
+      partial.told === "partial" && sent.length === 3 && sent[2].to === "owner@otp.plus" && toldAbout((await told()) ?? null, again).join() === "owner@otp.plus",
       `${JSON.stringify(partial)} — ${sent.length} mails, record ${String(await told())}`);
     const stillFailing = await tellTeam();
-    check("team: while one address keeps failing, the others are not mailed again (Codex on #292)",
-      stillFailing.told === "failed" && sent.length === 3, `${JSON.stringify(stillFailing)} — ${sent.length} mails`);
+    // Still "partial": the one reached before has this sign-in's message, so
+    // the workflow sends no verdict mail beside it — to anyone.
+    check("team: while one address keeps failing, the others are not mailed again, and it stays partial (Codex on #292)",
+      stillFailing.told === "partial" && sent.length === 3, `${JSON.stringify(stillFailing)} — ${sent.length} mails`);
     failFor = null;
     const retry = await tellTeam();
     check("team: …the next run mails only the address it missed, under its own key, and then everyone is told",
@@ -314,6 +316,16 @@ async function main() {
 
     people = [];
     await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-25T06:00:00.000Z"));
+    // Nobody reached at all: "failed", and only then does the verdict mail go.
+    {
+      await noteSessionReached(env, { appId: "app_team" }, new Date("2026-10-23T06:00:00.000Z"));
+      people = ["solo@otp.plus"];
+      failFor = "solo@otp.plus";
+      const none = await tellTeam();
+      failFor = null;
+      check("team: a mail that reached nobody is failed — not partial", none.told === "failed", JSON.stringify(none));
+    }
+    people = [];
     const nobody = await tellTeam();
     check("team: an app nobody hears is a failure said in the log, not a silent success", nobody.told === "failed" && "detail" in nobody && nobody.detail === NO_RECIPIENTS, JSON.stringify(nobody));
     const noKey = await tellTeamSignedOut({ db: stub.db, bindings: {} } as unknown as AgentEnv, { appId: "app_team", appSlug: "x" }, HOST);
@@ -353,7 +365,7 @@ async function main() {
     check("workflow (CHE-428): a team's slot mails the team; only our own slot tells our owner",
       /const teamSlot = Boolean\(sessionSlot && sessionSlot !== OUR_SLOT\);/.test(block) && /if \(teamSlot\) \{\s*const told = await tellTeamSignedOut\(/.test(block));
     check("workflow (CHE-428): where the team's sign-in mail went out, the Not verified verdict mail is not sent beside it (Codex on #292)",
-      /if \(teamSlot && \(toldTeam === "sent" \|\| toldTeam === "already"\)\) \{[\s\S]{0,200}?SKIP_SIGN_IN_MAILED[\s\S]{0,120}?\} else if \(run\.notifyEmail \|\| run\.appId\) \{\s*await step\.do\("notify-signed-out", \(\) => notifyAndRecord/.test(block));
+      /if \(teamSlot && \(toldTeam === "sent" \|\| toldTeam === "already" \|\| toldTeam === "partial"\)\) \{[\s\S]{0,200}?SKIP_SIGN_IN_MAILED[\s\S]{0,120}?\} else if \(run\.notifyEmail \|\| run\.appId\) \{\s*await step\.do\("notify-signed-out", \(\) => notifyAndRecord/.test(block));
     check("workflow: a sign-in page's status, stack and links are not reported as the app's",
       /if \(r\.signedOut\) return \{ \.\.\.r, extensionIdentity: null \};[\s\S]{0,400}?await appendEvent\(env, runId, "surface_scan", \{\s*icon: "ok",\s*text: `Loaded homepage/.test(workflow));
     // Reaching the app is recorded by the scan step itself, for a session run

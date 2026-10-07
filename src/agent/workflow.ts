@@ -681,10 +681,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           return told.told;
         });
         // One mail about one ended sign-in (Codex on #292): where the team's
-        // sign-in mail went out — or already had — it is the message, and the
-        // Not verified verdict mail is not sent beside it. Where it could not
-        // go, the verdict mail still does, as before.
-        if (teamSlot && (toldTeam === "sent" || toldTeam === "already")) {
+        // sign-in mail reached anyone — now or before — it is the message, and
+        // the Not verified verdict mail is not sent beside it. Only where it
+        // reached nobody does the verdict mail still go, as before.
+        if (teamSlot && (toldTeam === "sent" || toldTeam === "already" || toldTeam === "partial")) {
           await step.do("notify-signed-out", async () => {
             await recordNotifyOutcome(env, run.publicId, { kind: "skipped", reason: SKIP_SIGN_IN_MAILED });
             return "skipped";

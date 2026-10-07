@@ -306,6 +306,8 @@ export type TeamTold =
   | { told: "sent"; sendId: string; recipients: string }
   | { told: "already"; sendId: string }
   | { told: "off"; detail: string }
+  // Some recipients were reached and some not; the rest are mailed next run.
+  | { told: "partial"; sendId: string; detail: string }
   | { told: "failed"; sendId: string; detail: string };
 
 export async function tellTeamSignedOut(
@@ -371,7 +373,13 @@ export async function tellTeamSignedOut(
       unrecorded = `; not recorded: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
-  if (failed.length) return { told: "failed", sendId, detail: `${failed.length} of ${pending.length} not sent: ${failed[0]}${unrecorded}` };
+  if (failed.length) {
+    // Some were reached: they have their one message, and the ones missed are
+    // mailed by the next run — so nothing else is sent to anyone now (Codex on
+    // #292). Only "failed" — nobody reached — lets the verdict mail go instead.
+    const told = reached.length > 0 ? "partial" : "failed";
+    return { told, sendId, detail: `${failed.length} of ${pending.length} not sent: ${failed[0]}${unrecorded}` };
+  }
   return { told: "sent", sendId, recipients: `${describeRecipients(resolution)}${unrecorded}` };
 }
 
