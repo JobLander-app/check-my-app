@@ -11,6 +11,7 @@ import { nextRunNumber } from "@/lib/db";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
 import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
+import { sweepOrphanedRuns } from "./orphan-runs";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { recipientsForApp } from "@/lib/recipients";
@@ -79,6 +80,16 @@ export async function runDueWatches(
     await sweepExpiredEphemeral(env, now);
   } catch (err) {
     console.warn(`[janitor] ephemeral sweep failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // CHE-423: a run whose hand-off to the workflow threw is still `queued` with
+  // nothing behind it, and counts as in flight for its watch and its app until
+  // somebody ends it. Before the due watches are read, so a watch it was
+  // blocking is looked at in this same tick.
+  try {
+    await sweepOrphanedRuns(env, now);
+  } catch (err) {
+    console.warn(`[orphan-runs] sweep failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const due = await env.db.watch.findMany({
@@ -192,7 +203,7 @@ export async function runDueWatches(
       });
       const run = await createWatchRun(env, watch, baseline?.id ?? null);
 
-      await bindings.CHECK_RUN.create({ params: { runId: run.id } });
+      await bindings.CHECK_RUN.create({ id: run.id, params: { runId: run.id } });
       started.push(run.id);
       console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) → run ${run.id}`);
     } catch (err) {

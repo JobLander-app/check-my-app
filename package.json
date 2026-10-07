@@ -71,6 +71,7 @@
     "supply": "tsx --tsconfig tsconfig.json scripts/measure/gate-ready-supply.ts",
     "verify:homework-gate": "tsx --tsconfig tsconfig.json scripts/verify-homework-gate.ts",
     "verify:review": "tsx --tsconfig tsconfig.json scripts/verify-review.ts",
+    "verify:orphan-runs": "tsx --tsconfig tsconfig.json scripts/verify-orphan-runs.ts",
     "verify:ephemeral": "tsx --tsconfig tsconfig.json scripts/verify-ephemeral.ts",
     "verify:mcp": "tsx --tsconfig tsconfig.json scripts/verify-mcp.ts",
     "verify:mcp-remote": "tsx --tsconfig tsconfig.json scripts/verify-mcp-remote.ts",
