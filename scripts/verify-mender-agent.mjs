@@ -5,8 +5,11 @@
 //
 // Usage: node scripts/verify-mender-agent.mjs
 
-import { readFileSync } from "node:fs";
-import { CHECKS, agentEnv, chooseTicket, forbiddenPaths, pendingReview } from "./mender/agent.mjs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CHECKS, agentEnv, chooseTicket, forbiddenPaths, pendingReview, stagedPaths, stranded } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -42,6 +45,30 @@ check("a review round that changed nothing still answers what it read",
 
 check("a patch touching the workflows or Mender itself is refused",
   forbiddenPaths([".github/workflows/x.yml", "scripts/mender/agent.mjs", "opencode.json", ".mender/MENDER.md", "CLAUDE.md", "src/lib/a.ts"]).length === 5);
+// On a real repository: a workflow moved OUT of .github/ and one added under a
+// name git quotes must both be caught (git apply --numstat names only a
+// rename's destination, which is how the first version let a move through).
+{
+  const dir = mkdtempSync(join(tmpdir(), "mender-paths-"));
+  const git = (...a) => execFileSync("git", a, { cwd: dir, encoding: "utf8" });
+  mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+  writeFileSync(join(dir, ".github/workflows/ci.yml"), "a\n");
+  writeFileSync(join(dir, "a.ts"), "x\n");
+  git("init", "-q");
+  git("add", "-A");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i");
+  git("mv", ".github/workflows/ci.yml", "moved-ci.yml");
+  writeFileSync(join(dir, ".github/workflows/réview.yml"), "z\n");
+  writeFileSync(join(dir, "a.ts"), "y\n");
+  git("add", "-A");
+  const bad = forbiddenPaths(stagedPaths(dir)).sort().join(", ");
+  check("a workflow moved out and one with a quoted name are both refused",
+    bad === ".github/workflows/ci.yml, .github/workflows/réview.yml", bad);
+  rmSync(dir, { recursive: true, force: true });
+}
+const started = (identifier) => ({ ...issue(identifier, "2026-10-01"), state: { type: "started", name: "In Progress" } });
+check("a claimed ticket with no open PR is released; one with a PR is not",
+  stranded([started("CHE-1"), started("CHE-2"), issue("CHE-3", "2026-10-01")], new Set(["CHE-2"])).map((i) => i.identifier).join() === "CHE-1");
 check("…an ordinary change is not", forbiddenPaths(["src/lib/a.ts", "scripts/verify-x.ts", "prisma/schema.prisma"]).length === 0);
 check("the model's environment holds no GitHub token",
   Object.keys(agentEnv({ GH_TOKEN: "x", GITHUB_TOKEN: "y", MENDER_GH_TOKEN: "z", LINEAR_API_KEY: "k" })).join() === "LINEAR_API_KEY");

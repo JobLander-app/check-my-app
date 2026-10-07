@@ -270,9 +270,7 @@ Each PR gets `@codex review` once; P1 and P2 are fixed or declined with a
 written reason; three rounds at most, then the PR is split or rethought.
 **Why:** a fourth round means the change is too large to review.
 **Mechanism:** the comment thread on the PR.
-**Exception — Mender's PRs** (`mender/*` branches, CHE-445): the reviewer is
-CodeRabbit, asked with `@coderabbitai review`, not Codex — owner, 2026-10-07:
-«может запрашивать ревью у coderabbit (codex исключаем)». Same three rounds.
+**Except** Mender's PRs: CodeRabbit, not Codex (owner, 2026-10-07; CHE-445).
 
 ## F. Attitude
 

@@ -125,16 +125,39 @@ async function findWork() {
     const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, lastRoundAt: rounds.at(-1)?.createdAt ?? "", roundsUsed: rounds.length });
     if (pending.length) return { kind: "review", pr, pending, round: rounds.length + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() ?? null };
   }
-  const fields = "id identifier title url createdAt state{type} comments{nodes{body}}";
+  const fields = "id identifier title url createdAt state{type name} comments{nodes{body}}";
   const pinned = process.env.TICKET;
   if (pinned) {
     const d = await linear(`query($i:String!){issue(id:$i){${fields}}}`, { i: pinned });
     return d.issue ? { kind: "ticket", issue: d.issue } : null;
   }
-  const d = await linear(`query($f:IssueFilter){issues(filter:$f,first:50){nodes{${fields}}}}`,
-    { f: { team: { id: { eq: TEAM_ID } }, labels: { name: { eq: LABEL } } } });
-  const issue = chooseTicket(d.issues.nodes);
+  // Every page, not the first fifty (Codex, #298 round 2).
+  const all = [];
+  for (let after = null; ;) {
+    const d = await linear(`query($f:IssueFilter,$a:String){issues(filter:$f,first:100,after:$a){nodes{${fields}} pageInfo{hasNextPage endCursor}}}`,
+      { f: { team: { id: { eq: TEAM_ID } }, labels: { name: { eq: LABEL } } }, a: after });
+    all.push(...d.issues.nodes);
+    if (!d.issues.pageInfo.hasNextPage) break;
+    after = d.issues.pageInfo.endCursor;
+  }
+  // Ticks run one at a time, so a labelled ticket still In Progress with no
+  // open Mender PR was left by a tick that died (timeout, crash, a failed
+  // publish). It goes back to Todo and the failure counts as an attempt
+  // (Codex, #298 round 2).
+  const open = new Set(prs.map((p) => p.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase()).filter(Boolean));
+  for (const s of stranded(all, open)) {
+    await comment(s.id, `${ATTEMPT_MARK}\n**Mender's previous run ended without a result** (it stopped before reporting). Back to Todo.`);
+    await setState(s.id, "Todo");
+    s.state = { type: "unstarted" };
+    s.comments.nodes.push({ body: ATTEMPT_MARK });
+  }
+  const issue = chooseTicket(all);
   return issue ? { kind: "ticket", issue } : null;
+}
+
+/** Labelled tickets Mender claimed (In Progress) that have no open Mender PR. */
+export function stranded(issues, openTickets) {
+  return issues.filter((i) => i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
 }
 
 // ─── Running the agent ───────────────────────────────────────────────────────
@@ -224,13 +247,26 @@ async function work() {
 
 // ─── Publishing (a fresh machine; the model is not running) ──────────────────
 
-function patchPaths() {
-  return sh("git", ["apply", "--numstat", PATCH]).split("\n").filter(Boolean).map((l) => l.split("\t")[2]);
+/**
+ * Every path the staged change touches, read after the patch is applied:
+ * NUL-delimited, so a name git would quote (".github/workflows/réview.yml")
+ * comes as itself, and --no-renames, so a file moved out of a protected
+ * directory shows its old path too (Codex, #298 round 2). `git apply
+ * --numstat` was not enough: for a rename it names only the destination.
+ */
+export function stagedPaths(cwd = process.cwd()) {
+  return execFileSync("git", ["diff", "--cached", "--name-only", "-z", "--no-renames"], { cwd, encoding: "utf8" })
+    .split("\0").filter(Boolean);
 }
 
-function push(baseSha, branch, message) {
+/** Apply the patch to its base in the index; the refusal reads what is staged. */
+function stage(baseSha) {
   sh("git", ["checkout", "-q", "--detach", baseSha]);
   sh("git", ["apply", "--index", "--binary", PATCH]);
+  return forbiddenPaths(stagedPaths());
+}
+
+function push(branch, message) {
   sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
   sh("git", ["push", "-q", `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
@@ -240,9 +276,14 @@ async function publish() {
   const job = JSON.parse(readFileSync(OUT, "utf8"));
   if (job.kind === "none") return;
   const r = job.result;
+  if (job.kind === "review" && job.changed) {
+    const head = gh(["pr", "view", job.pr.url, "--json", "headRefOid", "--jq", ".headRefOid"]);
+    if (head !== job.baseSha) throw new Error(`#${job.pr.number} moved from ${job.baseSha} to ${head} during the round; nothing pushed`);
+  }
   if (job.changed) {
-    const bad = forbiddenPaths(patchPaths());
+    const bad = stage(job.baseSha);
     if (bad.length) {
+      sh("git", ["reset", "-q", "--hard"]);
       job.changed = false;
       r.status = "refused";
       r.text = `The patch touched paths Mender may never change: ${bad.join(", ")}. Nothing was pushed.\n\n${r.text}`;
@@ -250,11 +291,7 @@ async function publish() {
   }
   if (job.kind === "review") {
     const { pr, round, ticket } = job;
-    if (job.changed) {
-      const head = gh(["pr", "view", pr.url, "--json", "headRefOid", "--jq", ".headRefOid"]);
-      if (head !== job.baseSha) throw new Error(`#${pr.number} moved from ${job.baseSha} to ${head} during the round; nothing pushed`);
-      push(job.baseSha, pr.headRefName, `Review round ${round} (${ticket ?? `#${pr.number}`})`);
-    }
+    if (job.changed) push(pr.headRefName, `Review round ${round} (${ticket ?? `#${pr.number}`})`);
     gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${clean(r.text) || "(no report)"}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
     if (ticket) {
       const d = await linear(`query($i:String!){issue(id:$i){id}}`, { i: ticket });
@@ -269,7 +306,7 @@ async function publish() {
   }
   const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/-+$/, "");
   const branch = `mender/${issue.identifier.toLowerCase()}-${slug}`;
-  push(job.baseSha, branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`);
+  push(branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`);
   const url = gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
     "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerged by a person, never by Mender.`]);
   gh(["pr", "comment", url, "--body", "@coderabbitai review"]);
