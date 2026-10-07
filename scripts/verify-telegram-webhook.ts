@@ -325,7 +325,13 @@ async function main() {
     fixture.env = { ...saved, TELEGRAM_BOT_TOKEN: TOKEN, EVIDENCE: bucket };
     const logsBefore = logged.length;
 
-    const sizes = [{ file_id: "small", file_size: 100 }, { file_id: "large", file_size: 5000 }, { file_id: "mid", file_size: 900 }];
+    // Out of order, and the biggest file in bytes is not the biggest picture;
+    // file_size is optional and may be missing on the one that is (Codex on #295).
+    const sizes = [
+      { file_id: "small", width: 90, height: 90, file_size: 2_000_000 },
+      { file_id: "large", width: 1280, height: 1280 },
+      { file_id: "mid", width: 320, height: 320, file_size: 30_000 },
+    ];
     const photo = await post(message(50, OWNER_CHAT, { text: undefined, photo: sizes, caption: `see ${PRIVATE}` }));
     const p = rowFor(50);
     check("photo → 200, stored with the caption as before", photo.status === 200 && p.text === `<media> see ${PRIVATE}`, `${photo.status}`);
@@ -335,6 +341,9 @@ async function main() {
     check("photo → a copy is kept under private/ in R2, and the row says where",
       key === `private/telegram/${OWNER_CHAT}/50/photo-file_7.jpg` && puts.some((x) => x.key === key && x.bytes === 4096 && x.type === "image/jpeg"),
       `${key} ${JSON.stringify(puts)}`);
+
+    await post(message(55, OWNER_CHAT, { text: undefined, photo: [{ file_id: "first" }, { file_id: "last" }] }));
+    check("photo sizes without dimensions → Telegram's order, the last one", rowFor(55).fileId === "last", String(rowFor(55).fileId));
 
     await post(message(51, OWNER_CHAT, { text: undefined, document: { file_id: "doc1", file_name: "report.pdf" } }));
     check("document → kept as a document, as a PDF",

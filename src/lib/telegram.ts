@@ -106,8 +106,12 @@ export function attachmentOf(m: TgMessage): { fileId: string; fileKind: Telegram
     if (kind === "photo") {
       const sizes = (Array.isArray(m.photo) ? m.photo : []).filter((p) => typeof p?.file_id === "string" && p.file_id);
       if (!sizes.length) continue;
-      const area = (p: TgFile) => p.file_size ?? (p.width ?? 0) * (p.height ?? 0);
-      const largest = sizes.reduce((a, b) => (area(b) >= area(a) ? b : a));
+      // One unit for every size (Codex on #295): pixels, when every size
+      // has them; otherwise Telegram's own order, which is smallest first.
+      const sized = sizes.every((p) => typeof p.width === "number" && typeof p.height === "number");
+      const largest = sized
+        ? sizes.reduce((a, b) => (b.width! * b.height! >= a.width! * a.height! ? b : a))
+        : sizes[sizes.length - 1];
       return { fileId: largest.file_id!, fileKind: "photo" };
     }
     const file = m[kind];
