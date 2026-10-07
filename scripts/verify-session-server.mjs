@@ -394,7 +394,15 @@ await check("on the host, the browser has a user of its own and does not start w
   assert.match(chrome, /^After=.*\bsession-firewall\.service\b/m);
   assert.match(chrome, /--remote-debugging-address=127\.0\.0\.1/);
   const rules = await readFile(new URL("firewall.nft", dir), "utf8");
-  assert.match(rules, /meta skuid != "session-browser" accept/);
+  // CHE-426: the set of browser users is rendered by provision.sh — "main"'s
+  // session-browser and every slot's sb-<n> — and held to the same rules.
+  assert.match(rules, /meta skuid != \{ @BROWSER_USERS@ \} accept/);
+  assert.match(rules, /meta skuid \{ @BROWSER_USERS@ \} ip daddr 127\.0\.0\.1 tcp dport 3128 accept/);
+  // Each team slot's browser: its own user, the firewall required, DevTools on loopback.
+  for (const name of ["session-slot-xvfb@.service", "session-slot-chrome@.service"]) assert.equal(userOf(await unit(name)), "sb-%i", name);
+  const slotChrome = await unit("session-slot-chrome@.service");
+  assert.match(slotChrome, /^Requires=.*\bsession-firewall\.service\b/m);
+  assert.match(slotChrome, /--remote-debugging-address=127\.0\.0\.1/);
   // Without this line the browser's own listening ports answer nobody (seen on
   // the host, 2026-10-02): replies leave through the same hook.
   assert.match(rules, /ct state established,related accept/);
@@ -407,6 +415,14 @@ await check("on the host, the browser has a user of its own and does not start w
   // and ends the person's session. The rules are reloaded with nft itself.
   assert.doesNotMatch(provision, /systemctl (try-)?restart[^\n]*session-firewall/, "a provision would restart Chrome every time");
   assert.match(provision, /^nft -f \/etc\/session-host\/firewall\.nft$/m);
+  assert.match(provision, /@BROWSER_USERS@/, "the provision no longer renders the browser users into the rules");
+  // A fresh host has every team slot the database hands out (Codex on #292):
+  // a team given slot 3 by migration 0060 on a host with fewer gets 404s.
+  const migration = await readFile(new URL("../../prisma/migrations/0060_session_slot.sql", dir), "utf8");
+  const seeded = [...migration.matchAll(/VALUES \('(\d+)', NULL/g)].length;
+  const defaultSlots = Number(/^SEEDED_SLOTS=(\d+)$/m.exec(provision)?.[1]);
+  assert.ok(seeded > 0 && defaultSlots === seeded, `a fresh host gets ${defaultSlots} team slots, the database seeds ${seeded}`);
+  assert.match(provision, /\|\| echo "\$SEEDED_SLOTS"\)/, "a fresh host no longer defaults to the seeded slots");
   assert.match(rules, /fib daddr type local reject/);
 });
 
@@ -919,6 +935,56 @@ try {
     await personStillSignedIn();
     await personTab.goto(`${SITE}/admin`);
     assert.equal(await personTab.locator("#who").innerText(), "signed in");
+  });
+
+  // CHE-426: one browser per team. Two slots, two Chromes: each slot has its
+  // own lease, and a check holding one slot works only in that slot's browser.
+  await check("two slots: independent leases, and a check's tab opens only in its own slot's browser", async () => {
+    const profile2 = await mkdtemp(join(tmpdir(), "cma-session-slot-"));
+    const port2 = await freePort();
+    const team = await launchProfile(profile2, port2);
+    const multi = await startSessionServer({
+      token: TOKEN,
+      port: 0,
+      onGate: () => {},
+      slots: [
+        { name: "main", cdp: `http://127.0.0.1:${debugPort}`, probeLog: join(profile, "no-probe.jsonl") },
+        { name: "1", cdp: `http://127.0.0.1:${port2}`, probeLog: join(profile2, "no-probe.jsonl") },
+      ],
+    });
+    const base = `http://127.0.0.1:${multi.port}`;
+    const post = (body) => fetch(`${base}/lease`, { method: "POST", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const pages = async (port) => (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).filter((t) => t.type === "page").map((t) => t.url);
+    try {
+      const a = await post({ ownerRunId: RUN_A, slot: "main", maxDurationSeconds: 60 });
+      const b = await post({ ownerRunId: RUN_B, slot: "1", maxDurationSeconds: 60 });
+      assert.equal(a.status, 200, "main's lease");
+      assert.equal(b.status, 200, "slot 1's lease, while main's is held");
+      const lease1 = await b.json();
+      assert.equal(lease1.slot, "1");
+      assert.equal((await post({ ownerRunId: "run-cccccccc", slot: "1" })).status, 409, "a second check on slot 1");
+      assert.equal((await post({ ownerRunId: RUN_A, slot: "9" })).status, 404, "a slot that does not exist");
+      const state1 = await (await fetch(`${base}/state?slot=1`, { headers: AUTH })).json();
+      assert.equal(state1.lease.ownerRunId, RUN_B);
+
+      const before1 = await pages(port2);
+      const beforeMain = await pages(debugPort);
+      const dt = devtools(`ws://127.0.0.1:${multi.port}/v1/devtools/browser/${lease1.sessionId}`, { headers: AUTH });
+      await dt.opened;
+      const created = await dt.send("Target.createTarget", { url: `${SITE}/admin?slot=1` });
+      assert.ok(created.result?.targetId, JSON.stringify(created));
+      await until("the check's tab in slot 1's browser", async () => (await pages(port2)).length === before1.length + 1 || (await pages(port2)));
+      assert.deepEqual(await pages(debugPort), beforeMain, "slot 1's check opened a tab in main's browser");
+      dt.socket.close();
+      await until("slot 1's check tab closed with its connection", async () => (await pages(port2)).length === before1.length || (await pages(port2)));
+      const released = await fetch(`${base}/lease`, { method: "DELETE", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify({ ownerRunId: RUN_B, slot: "1" }) });
+      assert.equal(released.status, 200);
+      await fetch(`${base}/lease`, { method: "DELETE", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify({ ownerRunId: RUN_A }) });
+    } finally {
+      await multi.close();
+      await team.close();
+      await rm(profile2, { recursive: true, force: true });
+    }
   });
 
   await check("no browser, no lease: 503 and the session stays free", async () => {

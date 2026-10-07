@@ -54,7 +54,33 @@ id session-browser >/dev/null 2>&1 || useradd --system --home-dir /var/lib/sessi
 install -d -o session-browser -g session-browser -m 0700 /var/lib/session-browser
 install -d -o session-browser -g session-browser -m 0700 /var/lib/session-browser/profile
 install -d -m 0700 /etc/session-host
-install -m 0644 "$SRC/firewall.nft" /etc/session-host/firewall.nft
+
+# CHE-426: one browser per team. SLOTS=<n> (kept in /etc/session-host/slots
+# once given) adds team slots 1..n beside "main": user sb-<n>, display :1<n>,
+# profile /var/lib/sb-<n>/profile, DevTools 923<n>. A slot is never removed
+# here — it holds a team's sign-in; lowering SLOTS only stops adding.
+# A fresh host gets the slots migration 0060 seeds (1..3), so a team given
+# one is never refused by its own host (Codex on #292).
+SEEDED_SLOTS=3
+SLOTS="${SLOTS:-$(cat /etc/session-host/slots 2>/dev/null || echo "$SEEDED_SLOTS")}"
+case "$SLOTS" in [0-9]) ;; *) echo "provision: FAIL — SLOTS must be 0..9"; exit 1 ;; esac
+echo "$SLOTS" > /etc/session-host/slots
+browser_users='"session-browser"'
+slots_env="main=9222"
+for n in $(seq 1 "$SLOTS"); do
+  id "sb-$n" >/dev/null 2>&1 || useradd --system --home-dir "/var/lib/sb-$n" --shell /usr/sbin/nologin "sb-$n"
+  install -d -o "sb-$n" -g "sb-$n" -m 0700 "/var/lib/sb-$n" "/var/lib/sb-$n/profile"
+  browser_users="$browser_users, \"sb-$n\""
+  slots_env="$slots_env,$n=923$n"
+done
+printf 'SESSION_SLOTS=%s\n' "$slots_env" > /etc/session-host/slots.env.new
+slots_changed=0
+cmp -s /etc/session-host/slots.env.new /etc/session-host/slots.env || slots_changed=1
+mv /etc/session-host/slots.env.new /etc/session-host/slots.env
+chmod 0644 /etc/session-host/slots.env
+# The rules hold every browser user, rendered here (firewall.nft @BROWSER_USERS@).
+sed "s/@BROWSER_USERS@/$browser_users/g" "$SRC/firewall.nft" > /etc/session-host/firewall.nft
+chmod 0644 /etc/session-host/firewall.nft
 # Until 2026-10-02 Chrome ran as session-host with its profile here. Nobody had
 # signed in to it; a second profile lying around is one somebody opens by mistake.
 rm -rf /var/lib/session-host/profile
@@ -129,11 +155,14 @@ install -d -m 0700 /etc/cloudflared
 # cookies die with the process), and restarting the tunnel drops his noVNC view.
 # So only the units whose file actually changed are restarted.
 changed=()
+slot_units_changed=()
 for unit in "$SRC"/systemd/*.service "$SRC"/systemd/*.timer "$SRC"/systemd/*.path; do
   name="$(basename "$unit")"
   if ! cmp -s "$unit" "/etc/systemd/system/$name"; then
     install -m 0644 "$unit" "/etc/systemd/system/$name"
-    changed+=("$name")
+    # A template (session-slot-chrome@.service) has no unit to restart by that
+    # name; its instances are restarted below, one per slot.
+    case "$name" in *@.service) slot_units_changed+=("${name%@.service}") ;; *) changed+=("$name") ;; esac
   fi
 done
 # Drop-ins (session-chrome.service.d/proxy.conf): a changed one restarts its unit.
@@ -164,6 +193,15 @@ if [ "$proxy_changed" = 1 ] || ! systemctl is-active -q session-proxy; then
   systemctl restart session-proxy || { echo "provision: FAIL — proxy-render.sh (journalctl -u session-proxy)"; exit 1; }
 fi
 systemctl enable --now session-xvfb session-chrome session-x11vnc session-novnc session-probe.timer session-door.path
+# CHE-426: each team slot's display and browser. A changed slot template
+# restarts that slot's instances — which ends the teams' sign-ins, said aloud.
+for n in $(seq 1 "$SLOTS"); do
+  systemctl enable --now "session-slot-xvfb@$n" "session-slot-chrome@$n"
+  for base in "${slot_units_changed[@]}"; do
+    echo "provision: $base@$n changed — restarting it; slot $n's team will have to sign in again."
+    systemctl try-restart "$base@$n"
+  done
+done
 if [ ${#changed[@]} -gt 0 ]; then
   echo "provision: unit files changed: ${changed[*]}"
   case " ${changed[*]} " in *" session-chrome.service "*|*" session-chrome "*|*" session-xvfb.service "*|*" session-firewall.service "*|*" session-proxy.service "*)
@@ -182,7 +220,7 @@ fi
 if [ -s /etc/session-host/server.env ]; then
   systemctl enable --now session-server
   # try-restart above covered a changed unit file; this covers changed code.
-  if [ "$server_changed" = 1 ]; then
+  if [ "$server_changed" = 1 ] || [ "$slots_changed" = 1 ]; then
     systemctl restart session-server
   fi
 else
@@ -198,19 +236,35 @@ reach() { as "$1" curl -s -o /dev/null -m 5 "$2"; }
 for i in $(seq 1 30); do as session-host curl -s -o /dev/null -m 2 http://127.0.0.1:9222/json/version && break; sleep 1; done
 fail=0
 reach session-host http://127.0.0.1:9222/json/version || { echo "provision: FAIL — session-host cannot reach DevTools (the probe and the session server need it)"; fail=1; }
-for url in http://127.0.0.1:9222/json http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://127.0.0.1:9091/ http://169.254.169.254/computeMetadata/v1/ \
-  "http://$(hostname -I | awk '{print $1}'):22/" http://0.0.0.0:9222/json 'http://[::ffff:127.0.0.1]:9222/json' http://localhost:9222/json 'http://[::1]:5900/'; do
-  if reach session-browser "$url"; then echo "provision: FAIL — the browser's user can reach $url"; fail=1; fi
+# CHE-426: every browser user, "main"'s and each slot's, is held to the same
+# test — and none reaches any browser's DevTools, its own included (the gate is
+# the session server, never a page).
+users="session-browser"
+devtools="http://127.0.0.1:9222/json"
+for n in $(seq 1 "$SLOTS"); do
+  users="$users sb-$n"
+  devtools="$devtools http://127.0.0.1:923$n/json"
+  for i in $(seq 1 30); do as session-host curl -s -o /dev/null -m 2 "http://127.0.0.1:923$n/json/version" && break; sleep 1; done
+  reach session-host "http://127.0.0.1:923$n/json/version" || { echo "provision: FAIL — session-host cannot reach slot $n's DevTools"; fail=1; }
 done
-if as session-browser bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — the browser's user can reach VNC"; fail=1; fi
-reach session-browser https://admin.shopify.com/ || { echo "provision: FAIL — the browser's user cannot reach the public web (DNS or routing)"; fail=1; }
-# CHE-333: with a proxy configured, the browser's user goes out through it —
-# observed, by where the request comes out.
-if [ -s /etc/session-host/proxy.env ]; then
-  egress="$(as session-browser curl -s -m 20 --proxy http://127.0.0.1:3128 https://ipinfo.io/org || true)"
-  if [ -n "$egress" ]; then echo "provision: residential egress — $egress"; else echo "provision: FAIL — the browser's user cannot go out through 127.0.0.1:3128"; fail=1; fi
-fi
+for user in $users; do
+  for url in $devtools http://127.0.0.1:6080/ http://127.0.0.1:9090/state http://127.0.0.1:9091/ http://169.254.169.254/computeMetadata/v1/ \
+    "http://$(hostname -I | awk '{print $1}'):22/" http://0.0.0.0:9222/json 'http://[::ffff:127.0.0.1]:9222/json' http://localhost:9222/json 'http://[::1]:5900/'; do
+    if reach "$user" "$url"; then echo "provision: FAIL — browser user $user can reach $url"; fail=1; fi
+  done
+  if as "$user" bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900' 2>/dev/null; then echo "provision: FAIL — browser user $user can reach VNC"; fail=1; fi
+  reach "$user" https://admin.shopify.com/ || { echo "provision: FAIL — browser user $user cannot reach the public web (DNS or routing)"; fail=1; }
+  # CHE-333: with a proxy configured, the browser's user goes out through it —
+  # observed, by where the request comes out.
+  if [ -s /etc/session-host/proxy.env ]; then
+    egress="$(as "$user" curl -s -m 20 --proxy http://127.0.0.1:3128 https://ipinfo.io/org || true)"
+    if [ -n "$egress" ]; then echo "provision: $user residential egress — $egress"; else echo "provision: FAIL — browser user $user cannot go out through 127.0.0.1:3128"; fail=1; fi
+  fi
+done
+allowed_uids="$(for user in $users; do id -u "$user"; done | sort -u | tr '\n' ' ')"
 chrome_uids="$(ps -o uid= -C chrome | sort -u | tr -d ' ' | tr '\n' ' ')"
-[ "$chrome_uids" = "$(id -u session-browser) " ] || { echo "provision: FAIL — Chrome is not running as session-browser alone (uids: $chrome_uids)"; fail=1; }
-if [ "$fail" = 0 ]; then echo "provision: isolation holds — the browser's user reaches the public web and nothing on this host or its private network"; fi
+for uid in $chrome_uids; do
+  case " $allowed_uids " in *" $uid "*) ;; *) echo "provision: FAIL — Chrome runs as uid $uid, not a browser user ($allowed_uids)"; fail=1 ;; esac
+done
+if [ "$fail" = 0 ]; then echo "provision: isolation holds — every browser user ($users) reaches the public web and nothing on this host or its private network"; fi
 exit "$fail"

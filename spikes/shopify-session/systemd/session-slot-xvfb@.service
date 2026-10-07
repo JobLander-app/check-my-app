@@ -1,0 +1,16 @@
+[Unit]
+Description=Session host display for team slot %i (CHE-426)
+After=network.target
+
+[Service]
+# Slot %i's own user (sb-%i): its display, its Chrome — nothing of the other
+# slots' or of "main"'s (session-browser). firewall.nft keeps every slot user
+# off this host's own ports exactly as it keeps session-browser off them.
+User=sb-%i
+Group=sb-%i
+ExecStart=/usr/bin/Xvfb :1%i -screen 0 1366x900x24 -nolisten tcp
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

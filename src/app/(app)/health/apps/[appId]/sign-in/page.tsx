@@ -8,6 +8,7 @@ import { OtherTeamApp } from "@/components/other-team-app";
 import { LiveSignIn } from "@/components/live-sign-in";
 import { VIEW_HOST, appHandleOfAdminUrl, mintViewToken, shopifySlug, storeOfAdminUrl } from "@/lib/session-view";
 import { SIGN_IN_COPY } from "@/lib/sign-in-copy";
+import { claimSlot } from "@/lib/session-slots";
 
 // CHE-419: a person signs in to the Shopify store their app lives in, here,
 // on our page — a live view of the browser the checks of this app run in.
@@ -36,7 +37,11 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
 
   const { env } = getCloudflareContext();
   const secret = (env as unknown as { SESSION_VIEW_SECRET?: string }).SESSION_VIEW_SECRET;
-  const token = secret ? await mintViewToken(secret, { slot: "main", store }) : null;
+  // CHE-426: the team's own browser on the host — the token can open no other.
+  // Claimed here too, not only on connect: a team that connected before slots
+  // existed has its app but no slot yet.
+  const slot = await claimSlot(db, team.id);
+  const token = secret && slot ? await mintViewToken(secret, { slot, store }) : null;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">

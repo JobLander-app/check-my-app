@@ -22,15 +22,18 @@ import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { enableWatchForApp } from "@/lib/watch-enable";
 import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
+import { claimSlot, slotOfTeam } from "@/lib/session-slots";
 import { appHandleOfAdminUrl, isPendingShopifyApp, parseAppLink, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 
-// Which teams the session host serves today. One browser holds one Shopify
-// sign-in, so until each team has its own (CHE-333, "one browser per team")
-// a store is connected only for the teams named in SESSION_TEAMS.
+// Which teams may connect a Shopify app. Since CHE-426 each team signs in in a
+// browser of its own (a slot), so this is no longer what keeps teams apart —
+// it is the opening: SESSION_TEAMS names the teams it is open to, and unset it
+// is open to every team (as many as there are free slots).
 export function sessionTeamAllowed(env: { SESSION_TEAMS?: string }, teamId: string): boolean {
-  return (env.SESSION_TEAMS ?? "").split(",").map((t) => t.trim()).filter(Boolean).includes(teamId);
+  const teams = (env.SESSION_TEAMS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  return teams.length === 0 || teams.includes(teamId);
 }
 // The words are in the guarded copy module (src/lib/sign-in-copy.ts).
 export const NOT_OPEN_YET = CONNECT_ERRORS.notOpen;
@@ -46,6 +49,9 @@ export async function connectApp(
   const link = parseAppLink(rawLink);
   if (!link) return { error: BAD_LINK, code: "invalid_input" };
   const { store, handle } = link;
+  // CHE-426: the team's own browser on the host — given now, kept after.
+  const slot = await claimSlot(db, actor.teamId);
+  if (!slot) return { error: CONNECT_ERRORS.full, code: "invalid_input" };
   // This app already connected: its page, not a second row.
   const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true } });
   if (existing) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
@@ -80,6 +86,8 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
   if (!app || app.targetKind !== "session") return { error: CONNECT_ERRORS.notFound, code: "not_found" };
   const store = storeOfAdminUrl(app.targetUrl);
   if (!store || store !== pick.store) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
+  // CHE-426: what was read in another team's browser is not this team's app.
+  if (pick.slot !== (await slotOfTeam(db, actor.teamId))) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
   // Only a store still waiting for its app takes a choice: a connected app is
   // not repointed at another one by a stale page.
   if (!isPendingShopifyApp(app)) return { error: CONNECT_ERRORS.alreadyChosen, code: "invalid_input" };

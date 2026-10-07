@@ -1,0 +1,34 @@
+[Unit]
+Description=Session host Chrome for team slot %i — that team's sign-in lives here (CHE-426)
+After=session-slot-xvfb@%i.service session-firewall.service session-proxy.service
+Requires=session-slot-xvfb@%i.service session-firewall.service
+Wants=session-proxy.service
+
+[Service]
+# One team's browser: its own user, display, profile and DevTools port
+# (923%i, loopback). The session server reaches it as slot "%i"; a check or a
+# viewer holding another slot never does. The residential egress is the host's
+# one forwarder (proxy-render.sh), shared by every slot.
+User=sb-%i
+Group=sb-%i
+Environment=DISPLAY=:1%i
+Environment=HOME=/var/lib/sb-%i
+EnvironmentFile=-/etc/session-host/proxy.env
+ExecStart=/usr/bin/google-chrome-stable \
+  --user-data-dir=/var/lib/sb-%i/profile \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=923%i \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic \
+  --hide-crash-restore-bubble \
+  --window-position=0,0 \
+  --window-size=1366,900 \
+  --start-maximized \
+  $CHROME_PROXY_ARGS \
+  about:blank
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

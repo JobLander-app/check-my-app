@@ -563,6 +563,15 @@ model GeneratedTest {
   @@index([appSlug])
 }
 
+// ─── Session host slots (CHE-426) ────────────────────────────────────────────
+// One browser per team on the session host: a slot is one Chrome there, held
+// by at most one team. "main" is ours. Assigned by src/lib/session-slots.ts.
+model SessionSlot {
+  slot       String    @id
+  teamId     String?   @unique
+  assignedAt DateTime?
+}
+
 // ─── Daily Watch ─────────────────────────────────────────────────────────────
 // frequency: WatchFrequency — see src/lib/enums.ts
 
@@ -978,6 +987,12 @@ model App {
   // sign-in has ended, the person who signs in is told once per value of this
   // (src/agent/signed-out.ts). Null = no check has reached the app yet.
   sessionReachedAt DateTime?
+  // CHE-428: the ended sign-in (signedOutSendId) the app's verdict recipients
+  // were last mailed about, and which of them it reached — JSON {id, to[]}.
+  // Mail has no ledger like the owner's Telegram, and the provider forgets a
+  // repeat after a day; a daily check must not mail every day, nor everyone
+  // again because one address failed. Null = never mailed.
+  sessionEndedTold String?
   // CHE-399: how many problems are open in the app's latest check — the number
   // Health → Issues' first filter shows for it — stored where it changes (a
   // check finishing, a mark, a ticket's state; src/lib/open-issues.ts) so the

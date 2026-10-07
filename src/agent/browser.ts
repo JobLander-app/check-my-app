@@ -19,12 +19,15 @@ import { closedDoor, deepAddresses, opensBehindDoor, DOOR_DEEP_TRIES, DOOR_RETRY
 import { isSessionTarget, SessionBrowser, sessionBrowserFor, sessionHost, type SessionConnect } from "./session-browser";
 import { landedOutside, whereItSettled } from "./signed-out";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
+import { sessionSlotForRun } from "@/lib/session-slots";
 
 export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   // CHE-389: an app checked inside a signed-in session runs in the session
   // host's browser. One lease per run, renewed by every phase.
   if (target && isSessionTarget(target.run)) {
-    return (await SessionBrowser.open(sessionHost(env.bindings), target.run.id, connect as unknown as SessionConnect)).browser;
+    // CHE-426: the run's team's own browser on the host.
+    const slot = await sessionSlotForRun(env.db, target.run.id);
+    return (await SessionBrowser.open(sessionHost(env.bindings, slot), target.run.id, connect as unknown as SessionConnect)).browser;
   }
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
   if (input) {

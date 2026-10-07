@@ -55,11 +55,27 @@ export async function startSessionServer({
   // measurements must not share it (Codex on #287). The check is told 409 and
   // asks again later, as it does when another check holds the lease.
   personPresent = () => false,
+  // CHE-426: one browser per team. Each slot is a Chrome of its own (its own
+  // OS user, profile and DevTools port, provision.sh) with its own lease, its
+  // own connection and its own probe log; a request names its slot ("main"
+  // when it names none — the browser this host had before slots). A check
+  // holding one slot's lease never reaches another slot's browser: the
+  // DevTools route is resolved from the session id, which only one slot's
+  // book admits.
+  slots,
 } = {}) {
   if (typeof token !== "string" || token.length < 32) throw new Error("A bearer token of at least 32 characters is required");
-  const book = new LeaseBook(now);
+  const slotList = (slots ?? [{ name: "main", cdp, probeLog }]).map((s) => ({
+    name: String(s.name),
+    cdp: s.cdp,
+    probeLog: s.probeLog,
+    book: new LeaseBook(now),
+    connection: null, // at most one per slot: { sessionId, end() }
+  }));
+  const byName = new Map(slotList.map((s) => [s.name, s]));
+  if (byName.size !== slotList.length) throw new Error("Slot names must be unique");
+  const book = slotList[0].book;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE });
-  let connection = null; // at most one: { sessionId, end() }
 
   const expected = Buffer.from(`Bearer ${token}`);
   const authorized = (req) => {
@@ -68,18 +84,21 @@ export async function startSessionServer({
   };
 
   // Asked afresh every time: a restarted Chrome has a new DevTools address.
-  async function chrome() {
-    const response = await fetch(`${cdp}/json/version`, { signal: AbortSignal.timeout(5_000) });
+  async function chrome(slot) {
+    const response = await fetch(`${slot.cdp}/json/version`, { signal: AbortSignal.timeout(5_000) });
     if (!response.ok) throw new Error(`DevTools answered HTTP ${response.status}`);
     const version = await response.json();
     return { browser: version.Browser ?? null, ws: version.webSocketDebuggerUrl };
   }
 
-  async function lastProbe() {
-    const lines = parseLog(await readFile(probeLog, "utf8").catch(() => ""));
+  async function lastProbe(slot) {
+    const lines = parseLog(await readFile(slot.probeLog, "utf8").catch(() => ""));
     const last = lines[lines.length - 1];
     return last ? { at: last.at, state: last.state } : null;
   }
+
+  // The slot a request names; "main" when it names none.
+  const slotOf = (name) => byName.get(name === undefined || name === null || name === "" ? "main" : String(name)) ?? null;
 
   const view = (lease) => ({ sessionId: lease.sessionId, ownerRunId: lease.ownerRunId, expiresAt: new Date(lease.expiresAt).toISOString() });
 
@@ -101,43 +120,52 @@ export async function startSessionServer({
     }
     const send = (status, value) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     try {
-      const path = new URL(req.url, "http://session").pathname;
+      const url = new URL(req.url, "http://session");
+      const path = url.pathname;
       if (req.method === "GET" && path === "/state") {
-        const lease = book.current();
-        const browser = await chrome().then((c) => c.browser, () => null);
-        send(200, { lease: lease ? view(lease) : null, connected: Boolean(connection), browser, probe: await lastProbe() });
+        const slot = slotOf(url.searchParams.get("slot"));
+        if (!slot) return send(404, { error: "No such slot" });
+        const lease = slot.book.current();
+        const browser = await chrome(slot).then((c) => c.browser, () => null);
+        send(200, { slot: slot.name, lease: lease ? view(lease) : null, connected: Boolean(slot.connection), browser, probe: await lastProbe(slot) });
+      } else if (req.method === "GET" && path === "/slots") {
+        send(200, { slots: slotList.map((s) => ({ slot: s.name, leased: s.book.current() !== null })) });
       } else if (req.method === "POST" && path === "/lease") {
         const input = await body(req);
+        const slot = slotOf(input.slot);
+        if (!slot) return send(404, { error: "No such slot" });
         // Before the lease, not after: a lease on a browser that is not there
         // would hold every other check out for nothing.
         let browser;
         try {
-          browser = (await chrome()).browser;
+          browser = (await chrome(slot)).browser;
         } catch {
           send(503, { error: "The browser on the session host is not running" });
           return;
         }
         // A run renewing the lease it already holds keeps it: the person was
         // refused while it held it, so they cannot be here because of it.
-        if (personPresent() && book.current()?.ownerRunId !== input.ownerRunId) {
+        if (personPresent(slot.name) && slot.book.current()?.ownerRunId !== input.ownerRunId) {
           send(409, { error: "A person is signing in on this host" });
           return;
         }
-        const taken = book.take(input.ownerRunId, input.maxDurationSeconds);
+        const taken = slot.book.take(input.ownerRunId, input.maxDurationSeconds);
         if (!taken.ok) {
           send(taken.status, { error: taken.error, ...(taken.heldUntil ? { heldUntil: new Date(taken.heldUntil).toISOString() } : {}) });
           return;
         }
-        send(200, { ...view(taken.lease), browser });
+        send(200, { ...view(taken.lease), browser, slot: slot.name });
       } else if (req.method === "DELETE" && path === "/lease") {
         const input = await body(req);
-        const held = book.current();
-        const released = book.release(input.ownerRunId);
+        const slot = slotOf(input.slot);
+        if (!slot) return send(404, { error: "No such slot" });
+        const held = slot.book.current();
+        const released = slot.book.release(input.ownerRunId);
         if (!released.ok) {
           send(released.status, { error: released.error });
           return;
         }
-        if (released.released && connection?.sessionId === held.sessionId) await connection.end();
+        if (released.released && slot.connection?.sessionId === held.sessionId) await slot.connection.end();
         send(200, { released: released.released });
       } else {
         res.writeHead(404).end();
@@ -154,7 +182,10 @@ export async function startSessionServer({
   let upgrades = Promise.resolve();
   server.on("upgrade", (req, socket, head) => {
     const sessionId = sessionIdFromPath(new URL(req.url, "http://session").pathname);
-    if (!authorized(req) || !book.admits(sessionId)) {
+    // The slot is the one whose lease names this session id — never one the
+    // request could choose.
+    const slot = authorized(req) ? slotList.find((s) => s.book.admits(sessionId)) : null;
+    if (!slot) {
       socket.destroy();
       return;
     }
@@ -164,25 +195,25 @@ export async function startSessionServer({
         // The same run connecting again (its next phase, or a retry of a step
         // whose Worker died) takes over: the old connection's tabs are closed
         // first, so the new one starts in a profile with nothing of ours in it.
-        if (connection) await connection.end();
-        const upstream = new WebSocket((await chrome()).ws, { maxPayload: MAX_MESSAGE });
+        if (slot.connection) await slot.connection.end();
+        const upstream = new WebSocket((await chrome(slot)).ws, { maxPayload: MAX_MESSAGE });
         await new Promise((resolve, reject) => {
           upstream.once("open", resolve);
           upstream.once("error", reject);
         });
-        if (!book.admits(sessionId) || socket.destroyed) {
+        if (!slot.book.admits(sessionId) || socket.destroyed) {
           upstream.close();
           socket.destroy();
           return;
         }
-        wss.handleUpgrade(req, socket, head, (client) => attach(client, upstream, sessionId));
+        wss.handleUpgrade(req, socket, head, (client) => attach(client, upstream, sessionId, slot));
       } catch {
         socket.destroy();
       }
     });
   });
 
-  function attach(client, upstream, sessionId) {
+  function attach(client, upstream, sessionId, slot) {
     const gate = new Gate();
     let allGone = null; // set while the connection's tabs are being closed
     let ending = null;
@@ -195,7 +226,7 @@ export async function startSessionServer({
     // every way a connection can end.
     const end = () => {
       ending ??= (async () => {
-        if (connection === self) connection = null;
+        if (slot.connection === self) slot.connection = null;
         clearInterval(heartbeat);
         if (upstream.readyState === WebSocket.OPEN && (gate.targets.size > 0 || gate.contexts.size > 0)) {
           // "Closed" is the tab being gone, not Chrome agreeing to close it:
@@ -215,7 +246,7 @@ export async function startSessionServer({
       return ending;
     };
     const self = { sessionId, end };
-    connection = self;
+    slot.connection = self;
     // Before anything the check says: the server's own watch on tabs coming
     // and going, which the check cannot switch off (lease.mjs).
     ask(gate.discover());
@@ -286,7 +317,9 @@ export async function startSessionServer({
 
   // A lease that ran out takes its connection with it.
   const sweep = setInterval(() => {
-    if (connection && !book.admits(connection.sessionId)) void connection.end();
+    for (const slot of slotList) {
+      if (slot.connection && !slot.book.admits(slot.connection.sessionId)) void slot.connection.end();
+    }
   }, sweepMs);
   sweep.unref();
 
@@ -297,15 +330,34 @@ export async function startSessionServer({
 
   return {
     port: server.address().port,
+    // The first slot's book ("main" unless slots were named): what callers
+    // before CHE-426 read.
     book,
+    slots: byName,
     async close() {
       clearInterval(sweep);
-      if (connection) await connection.end();
+      for (const slot of slotList) if (slot.connection) await slot.connection.end();
       wss.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+// "main=9222,1=9231" → [{name, cdp, probeLog, doorLog}]. The main slot keeps
+// the logs it always had; slot n writes probe-<n>.jsonl and door-<n>.jsonl.
+export function parseSlots(spec, mainCdp = "http://127.0.0.1:9222", mainProbeLog = "/var/lib/session-host/probe.jsonl") {
+  const dir = mainProbeLog.replace(/\/[^/]*$/, "");
+  const entries = String(spec ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (entries.length === 0) return [{ name: "main", cdp: mainCdp, probeLog: mainProbeLog, doorLog: `${dir}/door.jsonl` }];
+  return entries.map((entry) => {
+    const match = /^([a-z0-9]{1,16})=(\d{2,5})$/.exec(entry);
+    if (!match) throw new Error(`SESSION_SLOTS: "${entry}" is not name=port`);
+    const [, name, port] = match;
+    return name === "main"
+      ? { name, cdp: `http://127.0.0.1:${port}`, probeLog: mainProbeLog, doorLog: `${dir}/door.jsonl` }
+      : { name, cdp: `http://127.0.0.1:${port}`, probeLog: `${dir}/probe-${name}.jsonl`, doorLog: `${dir}/door-${name}.jsonl` };
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -316,15 +368,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // Never the secrets themselves — only whether they arrived.
   console.log(`[session-server] boot node=${process.version} token=${typeof token === "string" ? token.length : 0}ch view=${typeof viewSecret === "string" ? viewSecret.length : 0}ch`);
   const cdp = process.env.SESSION_SERVER_CDP ?? "http://127.0.0.1:9222";
+  // CHE-426: SESSION_SLOTS="main=9222,1=9231,2=9232" — each slot's name and
+  // DevTools port (provision.sh writes it). Absent: the one browser, "main".
+  const slots = parseSlots(process.env.SESSION_SLOTS, cdp, process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl");
+  console.log(`[session-server] slots ${slots.map((s) => s.name).join(",")}`);
   // CHE-419: the live view a person signs in through, on its own port and
   // hostname (viewer.mjs). Off until the secret is set.
   let viewer = null;
   const started = await startSessionServer({
     token,
     port: Number(process.env.SESSION_SERVER_PORT ?? 9090),
-    cdp,
-    probeLog: process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl",
-    personPresent: () => viewer?.present() ?? false,
+    slots,
+    personPresent: (slot) => viewer?.present(slot) ?? false,
   });
   console.log(`[session-server] listening on 127.0.0.1:${started.port}`);
   if (viewSecret) {
@@ -332,10 +387,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     viewer = await startViewer({
       secret: viewSecret,
       origins: (process.env.VIEW_ORIGINS ?? "https://checkmyapp.dev").split(",").map((o) => o.trim()).filter(Boolean),
-      cdp,
       port: Number(process.env.SESSION_VIEW_PORT ?? 9091),
-      slot: process.env.SESSION_SLOT ?? "main",
-      leaseHeld: async () => started.book.current() !== null,
+      slots: slots.map((s) => ({
+        name: s.name,
+        cdp: s.cdp,
+        doorLog: s.doorLog,
+        leaseHeld: async () => started.slots.get(s.name).book.current() !== null,
+      })),
     });
     console.log(`[session-server] viewer on 127.0.0.1:${viewer.port}`);
   }

@@ -356,6 +356,72 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, rep
   await refuseUnlessRepeat(res, idempotencyKey);
 }
 
+interface SignInEndedArgs {
+  to: string;
+  appSlug: string;
+  // Where the address led instead of the app (signed-out.ts).
+  host: string;
+  // The app's sign-in page on checkmyapp.dev.
+  signInUrl: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  baseUrl?: string;
+  idempotencyKey?: string;
+}
+
+// Every sentence of the mail, built here and nowhere else, so the language
+// guards see all of it (docs/CODE_STANDARDS.md R18; Codex on #292).
+export function signInEndedMail(appSlug: string, host: string) {
+  return {
+    subject: `Sign in again so checks of ${appSlug} can continue`,
+    body:
+      `The sign-in that checks of ${appSlug} use has ended: the app's address now leads to ${host}. ` +
+      "Until someone signs in again, its checks come back Not verified, and they are not charged.",
+    action: "Sign in again",
+    after: "The next check runs as usual once the sign-in is back. This is the only message about this sign-in.",
+    sign: "— CheckMyApp",
+  };
+}
+
+// CHE-428: sent by the agent once per ended sign-in of a Shopify app checked in
+// a team's own session browser, to the people who hear the app's verdicts.
+// Signing in is access, the one thing we may ask for (rule 2); the page it
+// links to is where they do it, the way they always do.
+export async function sendSignInEnded({ to, appSlug, host, signInUrl, apiKey, from, replyTo, baseUrl, idempotencyKey }: SignInEndedArgs): Promise<void> {
+  const copy = signInEndedMail(appSlug, host);
+  const subject = copy.subject;
+  if (!apiKey || !from) {
+    console.log(`[email:dev] to=${to} subject="${subject}" url=${signInUrl}`);
+    return;
+  }
+  const base = baseUrl ?? "http://localhost:3000";
+  const why = whyThisMail({ appSlug, recurring: true, base });
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      ...replyToField(replyTo),
+      html: htmlDocument(
+        subject,
+        `<p>${escapeHtml(copy.body)}</p>` +
+          `<p><a href="${escapeHtml(signInUrl)}">${escapeHtml(copy.action)}</a></p>` +
+          `<p>${escapeHtml(copy.after)}</p><p>${escapeHtml(copy.sign)}</p>`,
+        why.html,
+      ),
+      text: `${copy.body}\n\n${copy.action}: ${signInUrl}\n\n${copy.after}\n\n${copy.sign}\n\n${why.text}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, idempotencyKey);
+}
+
 interface TeamInviteArgs {
   to: string;
   teamName: string;

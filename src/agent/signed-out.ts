@@ -24,6 +24,9 @@
 // scripts/verify-signed-out.ts drives these exact functions.
 
 import { AlreadySentError, NotSentError, sendRecorded, type SendDeps } from "@/lib/telegram-send";
+import { noticeIdempotencyKey, sendSignInEnded } from "@/lib/email";
+import { describeRecipients, recipientsForApp, type RecipientResolution } from "@/lib/recipients";
+import type { PrismaClient } from "@/generated/prisma/client";
 import type { AgentBindings, AgentEnv } from "./env";
 
 /** Where the app's address led when it did not lead to the app; null = it led to the app. */
@@ -276,5 +279,118 @@ export async function tellOwnerSignedOut(
     if (error instanceof AlreadySentError) return { told: "already", sendId };
     const detail = error instanceof Error ? error.message : String(error);
     return { told: error instanceof NotSentError ? "failed" : "unknown", sendId, detail };
+  }
+}
+
+// ─── Telling a team (CHE-428) ────────────────────────────────────────────────
+//
+// Since each team signs in in a browser of its own (CHE-426), the person who
+// signs in is not always our owner. Slot "main" is ours: its message stays the
+// Telegram one above. Any other slot is a team's, and it is told by mail — the
+// people who hear the app's verdicts (src/lib/recipients.ts), the same list and
+// not a new address — once per ended sign-in, with the app's sign-in page.
+//
+// Once: the provider's idempotency key forgets a repeat after a day, and a
+// daily check meets the same ended sign-in every day. So the app's row keeps
+// the ended sign-in its recipients were mailed about (App.sessionEndedTold),
+// written only when every mail went out; a failure is mailed again by the next
+// run, and the key keeps a same-day retry from reaching anyone twice.
+
+export const OUR_SLOT = "main";
+
+export type SignInMail = (to: string, mail: { appSlug: string; host: string; signInUrl: string }, idempotencyKey: string) => Promise<void>;
+
+type MailBindings = Pick<AgentBindings, "EMAIL_API_KEY" | "EMAIL_FROM" | "EMAIL_REPLY_TO" | "APP_URL" | "SESSION_SIGN_IN_URL">;
+
+export type TeamTold =
+  | { told: "sent"; sendId: string; recipients: string }
+  | { told: "already"; sendId: string }
+  | { told: "off"; detail: string }
+  // Some recipients were reached and some not; the rest are mailed next run.
+  | { told: "partial"; sendId: string; detail: string }
+  | { told: "failed"; sendId: string; detail: string };
+
+export async function tellTeamSignedOut(
+  env: { db: AgentEnv["db"]; bindings: MailBindings },
+  run: { appId: string | null; appSlug: string },
+  host: string,
+  deps?: { mail?: SignInMail; recipients?: (appId: string) => Promise<RecipientResolution> },
+): Promise<TeamTold> {
+  if (!run.appId) return { told: "off", detail: "no saved app, so no one to mail" };
+  const appId = run.appId;
+  const key = env.bindings.EMAIL_API_KEY;
+  const from = env.bindings.EMAIL_FROM;
+  const mail: SignInMail | null =
+    deps?.mail ??
+    (key && from
+      ? (to, m, idempotencyKey) =>
+          sendSignInEnded({ to, ...m, apiKey: key, from, replyTo: env.bindings.EMAIL_REPLY_TO, baseUrl: env.bindings.APP_URL, idempotencyKey })
+      : null);
+  if (!mail) return { told: "off", detail: "this worker has no EMAIL_API_KEY or EMAIL_FROM" };
+
+  let sendId: string;
+  let toldBefore: string[];
+  try {
+    const app = await env.db.app.findUnique({ where: { id: appId }, select: { sessionReachedAt: true, sessionEndedTold: true } });
+    sendId = signedOutSendId(appId, app?.sessionReachedAt ? new Date(app.sessionReachedAt) : null);
+    toldBefore = toldAbout(app?.sessionEndedTold ?? null, sendId);
+  } catch (error) {
+    return { told: "failed", sendId: "", detail: `could not tell which sign-in ended: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  const signInUrl = signInUrlFor(env.bindings, appId)!;
+  let resolution: RecipientResolution;
+  try {
+    // A saved app's runs are mailed by its team, never by an address on the
+    // run (CHE-413, scripts/verify-no-escalation-email.ts).
+    resolution = await (deps?.recipients ?? ((id) => recipientsForApp(env.db as unknown as PrismaClient, id)))(appId);
+  } catch (error) {
+    return { told: "failed", sendId, detail: `could not resolve recipients: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (resolution.to.length === 0) return { told: "failed", sendId, detail: describeRecipients(resolution) };
+  // Only the people this ended sign-in has not reached yet (Codex on #292):
+  // one bad address must not mail everyone else again every day.
+  const pending = resolution.to.filter((to) => !toldBefore.includes(to));
+  if (pending.length === 0) return { told: "already", sendId };
+
+  const reached = [...toldBefore];
+  const failed: string[] = [];
+  for (const to of pending) {
+    try {
+      await mail(to, { appSlug: run.appSlug, host, signInUrl }, noticeIdempotencyKey(sendId, to));
+      reached.push(to);
+    } catch (error) {
+      failed.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  let unrecorded = "";
+  if (reached.length > toldBefore.length) {
+    try {
+      await env.db.app.update({ where: { id: appId }, data: { sessionEndedTold: JSON.stringify({ id: sendId, to: reached }) } });
+    } catch (error) {
+      // Sent, but not recorded: the next run mails them again (within a day
+      // the provider's key still holds it). Said, so it is seen.
+      unrecorded = `; not recorded: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  if (failed.length) {
+    // Some were reached: they have their one message, and the ones missed are
+    // mailed by the next run — so nothing else is sent to anyone now (Codex on
+    // #292). Only "failed" — nobody reached — lets the verdict mail go instead.
+    const told = reached.length > 0 ? "partial" : "failed";
+    return { told, sendId, detail: `${failed.length} of ${pending.length} not sent: ${failed[0]}${unrecorded}` };
+  }
+  return { told: "sent", sendId, recipients: `${describeRecipients(resolution)}${unrecorded}` };
+}
+
+/** Who has been mailed about this ended sign-in (App.sessionEndedTold); empty for another one. */
+export function toldAbout(record: string | null, sendId: string): string[] {
+  if (!record) return [];
+  try {
+    const parsed = JSON.parse(record) as { id?: unknown; to?: unknown };
+    if (parsed.id !== sendId || !Array.isArray(parsed.to)) return [];
+    return parsed.to.filter((t): t is string => typeof t === "string");
+  } catch {
+    return [];
   }
 }

@@ -25,6 +25,8 @@ import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { enableWatchForApp } from "@/lib/watch-enable";
 import { PENDING_SHOPIFY_APP } from "@/lib/session-view";
+import { slotOfTeam } from "@/lib/session-slots";
+import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -48,7 +50,8 @@ async function main() {
     const ann = { userId: "ann", teamId: "team_a", plan: "business" as const };
     const zed = { userId: "zed", teamId: "team_z", plan: "business" as const };
     const env = { SESSION_TEAMS: "team_a" };
-    const pick = (over: Partial<Pick> = {}): Pick => ({ slot: "main", store: "prod-release-1", handle: "securify", name: "Securify", origin: "https://securify.example.app", ...over });
+    // CHE-426: team A's browser on the host is the first free slot, "1" ("main" is ours).
+    const pick = (over: Partial<Pick> = {}): Pick => ({ slot: "1", store: "prod-release-1", handle: "securify", name: "Securify", origin: "https://securify.example.app", ...over });
 
     const APP = (store: string, handle: string) => `https://admin.shopify.com/store/${store}/apps/${handle}`;
     const closed = await connectApp(db, zed, env, APP("zed-store", "zapp"));
@@ -64,6 +67,10 @@ async function main() {
     const pending = await db.app.findUnique({ where: { id: appId }, select: { targetKind: true, appSlug: true, targetUrl: true, allowedOrigins: true, watch: { select: { active: true } } } });
     check("the link becomes a pending app — store and app both read from it", "ok" in first && first.store === "prod-release-1" && first.handle === "securify" && pending?.targetKind === "session" && pending.appSlug === "shopify:prod-release-1" && pending.targetUrl === APP("prod-release-1", "securify"), JSON.stringify({ first, pending }));
     check("…with the admin allowed and no daily check until the app is chosen", pending?.allowedOrigins === JSON.stringify(["https://admin.shopify.com"]) && pending?.watch === null, JSON.stringify(pending));
+    // CHE-426: the team is given its own browser on the host, and keeps it.
+    check("the team is given its own browser on the host (the first free slot; \"main\" stays ours)", (await slotOfTeam(db, "team_a")) === "1" && (await slotOfTeam(db, "team_cmt63nqx60000xm1op5202kif")) === "main");
+    const fromOurs = await chooseApp(db, ann, appId, pick({ slot: "main" }));
+    check("an app read in another team's browser is not saved as this team's", "error" in fromOurs && fromOurs.code === "invalid_input", JSON.stringify(fromOurs));
     // Codex on #288: nothing may check a store whose app is not chosen.
     let triggered = 0;
     const startDeps = { trigger: async () => { triggered++; }, siteCap: () => 1000, source: "mcp" as const };
@@ -118,13 +125,25 @@ async function main() {
     const envF = { SESSION_TEAMS: "team_a,team_f" };
     const s1 = await connectApp(db, fay, envF, APP("store-one", "securify"));
     const s2 = await connectApp(db, fay, envF, APP("store-two", "securify"));
-    const c1 = "ok" in s1 ? await chooseApp(db, fay, s1.appId, pick({ store: "store-one" })) : s1;
-    const c2 = "ok" in s2 ? await chooseApp(db, fay, s2.appId, pick({ store: "store-two" })) : s2;
+    const c1 = "ok" in s1 ? await chooseApp(db, fay, s1.appId, pick({ store: "store-one", slot: "2" })) : s1;
+    const c2 = "ok" in s2 ? await chooseApp(db, fay, s2.appId, pick({ store: "store-two", slot: "2" })) : s2;
     const activeF = await db.watch.count({ where: { teamId: "team_f", active: true } });
     check("a Free team choosing two waiting stores gets one daily check, and is told why not the second",
       "ok" in c1 && !c1.watchRefused && "ok" in c2 && Boolean(c2.watchRefused) && activeF === 1, JSON.stringify({ c1, c2, activeF }));
     const trial = await db.watch.findFirst({ where: { teamId: "team_f", active: true }, select: { trialEndsAt: true } });
     check("…and the Free trial runs from the moment the app was chosen", Boolean(trial?.trialEndsAt) && new Date(trial!.trialEndsAt!).getTime() > Date.now() + 6 * 24 * 3600_000, JSON.stringify(trial));
+
+    // CHE-426: every slot taken → the next team is told, and no app is made.
+    // Open to every team when SESSION_TEAMS is unset.
+    check("team F (a second team) got a browser of its own, apart from team A's", (await slotOfTeam(db, "team_f")) === "2");
+    for (const id of ["team_x", "team_y"]) {
+      await db.team.create({ data: { id, name: id, plan: "business" } });
+      await db.user.create({ data: { id: `u_${id}`, clerkUserId: `ck_${id}`, email: `${id}@x.test` } });
+    }
+    const x = await connectApp(db, { userId: "u_team_x", teamId: "team_x", plan: "business" }, {}, APP("x-store", "xapp"));
+    const y = await connectApp(db, { userId: "u_team_y", teamId: "team_y", plan: "business" }, {}, APP("y-store", "yapp"));
+    check("with SESSION_TEAMS unset any team may connect, while a slot is free", "ok" in x && (await slotOfTeam(db, "team_x")) === "3", JSON.stringify(x));
+    check("…and with every slot taken the next team is told so, and nothing is made", "error" in y && y.error === CONNECT_ERRORS.full && (await db.app.count({ where: { teamId: "team_y" } })) === 0, JSON.stringify(y));
 
     const site = await createAppForTeam(db, ann, { targetUrl: "https://shop.example/path" });
     const siteRow = "ok" in site ? await db.app.findUnique({ where: { id: site.app.id }, select: { appSlug: true, targetKind: true } }) : null;
