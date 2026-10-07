@@ -129,8 +129,10 @@ export function synthesisSystem(knowledge?: AppKnowledge | null): string {
 // walker skipped "Apply visit filters" as our_capability, its observed text
 // described the filter chips as misbehaving, and the bottom line published that
 // as a fact about the merchant's app with no finding behind it. The model now
-// sees what was tried and that it went unconfirmed — enough for a coverage
-// clause, nothing to build a claim on.
+// sees the step's label and that it went unconfirmed — enough for a coverage
+// clause, nothing to build a claim on. `attempted` goes too: the walker writes
+// it, and "Clicked Save repeatedly, but it never submitted" is the claim again
+// (Codex on #294).
 export const UNCONFIRMED_STEP = "We could not confirm this step this run.";
 
 export function observedForVerdict(step: {
@@ -145,7 +147,7 @@ export function observedForVerdict(step: {
 }) {
   const { actions: _actions, unverifiedReason, ...rest } = step;
   if (unverifiedReason !== "our_capability") return rest;
-  return { label: rest.label, status: rest.status, attempted: rest.attempted, observed: UNCONFIRMED_STEP };
+  return { label: rest.label, status: rest.status, observed: UNCONFIRMED_STEP };
 }
 
 // The journey's summary is written from the same walk, so it can repeat what

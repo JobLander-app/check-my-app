@@ -24,8 +24,9 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 // The production step, verbatim.
-const ATTEMPTED =
-  'Clicked each filter chip: Blocked, Allowed, VPN Only, All visits, and the "Grouped"/"Group by IP" toggle.';
+// Model-written too, so it can carry the claim (Codex on #294).
+const ATTEMPTED = 'Clicked each filter chip, but "All visits" never cleared "VPN Only".';
+const LABEL = "Apply visit filters (All visits / Blocked / Allowed / VPN Only / Grouped)";
 const OBSERVED =
   'Blocked/Allowed fire /api/logs with status=… and return 200; VPN Only adds vpn=true; "Grouped" toggles to "Group by IP". ' +
   'But the chips behave as an additive set, not one choice: with "VPN Only" on, clicking "All visits" issues no request and ' +
@@ -41,7 +42,7 @@ const bindings = {
 
 function step(order: number, status: string, attempted: string, observed: string, unverifiedReason: string | null) {
   return {
-    label: `Step ${order}`,
+    label: unverifiedReason === "our_capability" ? LABEL : `Step ${order}`,
     status,
     attempted,
     observed,
@@ -126,7 +127,8 @@ async function main() {
     !observation.includes("additive set") && !observation.includes("No recent activity to display"),
   );
   check("our_capability: its console and network logs never reach the model", !observation.includes("chip handler") && !observation.includes("vpn=true"));
-  check("our_capability: what was tried still does (for a coverage clause)", observation.includes("Clicked each filter chip"));
+  check("our_capability: what the walker wrote it tried never reaches the model", !observation.includes("never cleared"));
+  check("our_capability: its label still does (for a coverage clause)", observation.includes("Apply visit filters"));
   check("our_capability: the model reads that it went unconfirmed", observation.includes(UNCONFIRMED_STEP));
   check("our_capability: the journey summary that repeats the claim never reaches the model", !observation.includes("additive toggles"));
   check("a journey without one keeps its summary", observation.includes("The Protection Dashboard loads with live data."));
