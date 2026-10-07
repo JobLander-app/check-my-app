@@ -4,34 +4,72 @@
 //
 // One unit of work per tick, in this order:
 //   1. a review round — an open `mender/*` PR with CodeRabbit comments newer
-//      than its last commit (at most MAX_ROUNDS per PR);
+//      than the last thing Mender did on it (at most MAX_ROUNDS per PR);
 //   2. a new ticket — the oldest CHE issue labelled `mender`, not started, not
 //      already given MAX_ATTEMPTS without a pull request.
-// The agent does the work (it reads Linear and Notion through MCP, see
-// opencode.json and .mender/MENDER.md); everything that must not depend on a
-// model's mood — the git, the checks, the PR, the review request, the ticket's
-// state — is done here. Nothing here merges: a person does.
 //
-// Usage: node scripts/mender/agent.mjs        (TICKET=CHE-123 to pick one)
+// Two jobs on two machines, because a ticket or a linked page can carry a
+// prompt injection (Codex, #298 round 1):
+//   node scripts/mender/agent.mjs work     — the model runs here, then the checks.
+//       No token that can write to GitHub exists on this machine; the checkout
+//       keeps no credential. Its only output is $MENDER_DIR/{out.json,patch.diff}.
+//   node scripts/mender/agent.mjs publish  — a fresh machine, this file as main
+//       has it (the model could have rewritten anything on the first one). The
+//       patch is refused if it touches the workflows, Mender itself or the
+//       rules (a PR's own workflow runs with the repository's secrets); else it
+//       is applied to the recorded base, pushed to `mender/*` with the personal
+//       token, the PR opened, CodeRabbit asked, the ticket told.
+// The Linear, Notion and OpenRouter keys are the agent's own tools and are
+// visible to it; that residual exposure is accepted and stated. Nothing here
+// merges: a person does. TICKET=CHE-123 picks a ticket.
 
 import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
 const LABEL = "mender";
 const MODEL = process.env.MENDER_MODEL ?? "anthropic/claude-sonnet-5.5";
 const BUDGET = Number(process.env.MENDER_BUDGET ?? 5);
 const MAX_TURNS = Number(process.env.MENDER_MAX_TURNS ?? 8);
+const DIR = process.env.MENDER_DIR ?? "/tmp/mender";
+const OUT = join(DIR, "out.json");
+const PATCH = join(DIR, "patch.diff");
+
+/** Paths a Mender patch may never touch: they run with secrets or judge Mender. */
+export const FORBIDDEN = [/^\.github\//, /^\.mender\//, /^opencode\.json$/, /^scripts\/mender\//, /^scripts\/verify-mender-agent\.mjs$/,
+  /^CLAUDE\.md$/, /^AGENTS\.md$/, /^mender\.yml$/, /^package-lock\.json$/, /^wrangler[^/]*\.jsonc$/];
+export const forbiddenPaths = (paths) => paths.filter((p) => FORBIDDEN.some((re) => re.test(p)));
 const MAX_ROUNDS = 3;
 const MAX_ATTEMPTS = 2;
 const ATTEMPT_MARK = "<!-- mender:attempt -->";
 const ROUND_MARK = "<!-- mender:round -->";
 const REVIEWER = "coderabbitai[bot]";
-export const CHECKS = [["npm", ["run", "typecheck"]], ["npm", ["run", "agent:typecheck"]], ["npm", ["run", "lint"]]];
+
+// AGENTS.md's sequence, after the model is done: the client is regenerated in
+// case the schema changed, then everything CI runs, the acceptance registry
+// included (Codex, #298 round 1).
+export const CHECKS = [
+  ["npx", ["prisma", "generate"]],
+  ["npm", ["run", "typecheck"]],
+  ["npm", ["run", "agent:typecheck"]],
+  ["npm", ["run", "lint"]],
+  ["npm", ["run", "verify:all"]],
+];
+
+/** The model's environment: no GitHub token of any kind, even the read-only one. */
+export function agentEnv(env) {
+  const out = { ...env };
+  for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "MENDER_GH_TOKEN"]) delete out[k];
+  return out;
+}
 
 const say = (...a) => console.log("[mender]", ...a);
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts }).trim();
 const gh = (args) => sh("gh", args);
 const ghJson = (args) => JSON.parse(gh(args) || "null");
+const clean = (text) => String(text ?? "").replace(/MENDER_DONE/g, "").trim();
+const footer = (r) => `\n\n— Mender · ${MODEL} · ${r.steps} steps · $${Number(r.cost).toFixed(2)}`;
 
 async function linear(query, variables = {}) {
   const r = await fetch("https://api.linear.app/graphql", {
@@ -63,32 +101,39 @@ export function chooseTicket(issues) {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
 }
 
-/** Review comments newer than the branch's last commit, if the PR still has rounds left. */
-export function pendingReview({ reviewComments, lastCommitAt, roundsUsed }) {
+/**
+ * Review comments newer than the last thing Mender did on the PR — its last
+ * commit or its last round report, whichever is later: a round that rightly
+ * changed nothing still answers the comments it read (Codex, #298 round 1).
+ */
+export function pendingReview({ reviewComments, lastCommitAt, lastRoundAt = "", roundsUsed }) {
   if (roundsUsed >= MAX_ROUNDS) return [];
-  return reviewComments.filter((c) => c.user === REVIEWER && c.createdAt > lastCommitAt && c.body.trim());
+  const handled = lastRoundAt > lastCommitAt ? lastRoundAt : lastCommitAt;
+  return reviewComments.filter((c) => c.user === REVIEWER && c.createdAt > handled && c.body.trim());
 }
 
 async function findWork() {
-  const prs = ghJson(["pr", "list", "--state", "open", "--json", "number,headRefName,url,body", "--limit", "50"])
+  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  const prs = ghJson(["pr", "list", "--state", "open", "--json", "number,headRefName,url", "--limit", "50"])
     .filter((p) => p.headRefName.startsWith("mender/"));
   for (const pr of prs) {
-    const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const lastCommitAt = gh(["api", `repos/${repo}/pulls/${pr.number}/commits`, "--jq", ".[-1].commit.committer.date"]);
     const inline = ghJson(["api", `repos/${repo}/pulls/${pr.number}/comments`, "--jq", "[.[] | {user: .user.login, createdAt: .created_at, body: (.path + \":\" + ((.line // 0)|tostring) + \" \" + .body)}]"]);
     const reviews = ghJson(["api", `repos/${repo}/pulls/${pr.number}/reviews`, "--jq", "[.[] | {user: .user.login, createdAt: .submitted_at, body: .body}]"]);
     const issueComments = ghJson(["api", `repos/${repo}/issues/${pr.number}/comments`, "--jq", "[.[] | {user: .user.login, createdAt: .created_at, body: .body}]"]);
-    const roundsUsed = issueComments.filter((c) => c.body.includes(ROUND_MARK)).length;
-    const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, roundsUsed });
-    if (pending.length) return { kind: "review", pr, pending, round: roundsUsed + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() };
+    const rounds = issueComments.filter((c) => c.body.includes(ROUND_MARK));
+    const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, lastRoundAt: rounds.at(-1)?.createdAt ?? "", roundsUsed: rounds.length });
+    if (pending.length) return { kind: "review", pr, pending, round: rounds.length + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() ?? null };
   }
-  const d = await linear(
-    `query($f:IssueFilter){issues(filter:$f,first:50){nodes{id identifier title url createdAt state{type} comments{nodes{body}}}}}`,
-    { f: { team: { id: { eq: TEAM_ID } }, labels: { name: { eq: LABEL } } } },
-  );
+  const fields = "id identifier title url createdAt state{type} comments{nodes{body}}";
   const pinned = process.env.TICKET;
-  const issue = pinned ? d.issues.nodes.find((i) => i.identifier === pinned) ?? (await linear(`{issue(id:"${pinned}"){id identifier title url createdAt state{type} comments{nodes{body}}}}`)).issue
-    : chooseTicket(d.issues.nodes);
+  if (pinned) {
+    const d = await linear(`query($i:String!){issue(id:$i){${fields}}}`, { i: pinned });
+    return d.issue ? { kind: "ticket", issue: d.issue } : null;
+  }
+  const d = await linear(`query($f:IssueFilter){issues(filter:$f,first:50){nodes{${fields}}}}`,
+    { f: { team: { id: { eq: TEAM_ID } }, labels: { name: { eq: LABEL } } } });
+  const issue = chooseTicket(d.issues.nodes);
   return issue ? { kind: "ticket", issue } : null;
 }
 
@@ -97,7 +142,7 @@ async function findWork() {
 function opencode(message, session) {
   const args = ["run", "-m", `openrouter/${MODEL}`, "--format", "json", ...(session ? ["--session", session] : []), message];
   return new Promise((resolve) => {
-    const p = spawn("opencode", args, { stdio: ["ignore", "pipe", "inherit"] });
+    const p = spawn("opencode", args, { stdio: ["ignore", "pipe", "inherit"], env: agentEnv(process.env) });
     let buf = "";
     const out = { session, cost: 0, steps: 0, text: "" };
     p.stdout.on("data", (d) => {
@@ -119,7 +164,7 @@ function opencode(message, session) {
 
 function failingChecks() {
   for (const [cmd, args] of CHECKS) {
-    try { sh(cmd, args, { maxBuffer: 64 << 20 }); } catch (e) {
+    try { sh(cmd, args, { maxBuffer: 64 << 20, env: agentEnv(process.env) }); } catch (e) {
       return `\`${cmd} ${args.join(" ")}\` failed:\n${String(e.stdout ?? "").slice(-3000)}${String(e.stderr ?? "").slice(-1000)}`;
     }
   }
@@ -127,7 +172,7 @@ function failingChecks() {
 }
 
 /** Turns until the agent says it is done or blocked and the checks pass, within budget. */
-async function work(prompt) {
+async function runAgent(prompt) {
   let session = null, cost = 0, steps = 0, text = "", message = prompt;
   for (let turn = 0; turn < MAX_TURNS && cost < BUDGET; turn++) {
     const r = await opencode(message, session);
@@ -143,60 +188,98 @@ async function work(prompt) {
   return { status: cost >= BUDGET ? "budget" : "unfinished", text, cost, steps };
 }
 
-const changed = () => sh("git", ["status", "--porcelain"]).length > 0;
-const footer = (r) => `\n\n— Mender · ${MODEL} · ${r.steps} steps · $${r.cost.toFixed(2)}`;
-
-function commitAndPush(branch, message) {
+/** The whole change against the base, committed by the model or not, as a patch. */
+function patchFrom(baseSha) {
   sh("git", ["add", "-A"]);
-  sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
-  sh("git", ["push", "-q", "-u", "origin", branch]);
+  return execFileSync("git", ["diff", "--cached", "--binary", baseSha], { encoding: "utf8", maxBuffer: 64 << 20 });
 }
 
-async function doTicket(issue) {
+async function work() {
+  mkdirSync(DIR, { recursive: true });
+  writeFileSync(PATCH, "");
+  const job = await findWork();
+  if (!job) {
+    say("nothing to do: no open review and no CHE ticket labelled `mender`");
+    return writeFileSync(OUT, JSON.stringify({ kind: "none" }));
+  }
+  if (job.kind === "review") {
+    say(`review round ${job.round} on #${job.pr.number}`);
+    sh("git", ["checkout", "-q", "-B", job.pr.headRefName, `origin/${job.pr.headRefName}`]);
+    const baseSha = sh("git", ["rev-parse", "HEAD"]);
+    const findings = job.pending.map((c) => `- ${c.body.slice(0, 2000)}`).join("\n");
+    const r = await runAgent(`This branch is the pull request ${job.pr.url} for ${job.ticket ?? "its ticket"}. Review round ${job.round}: CodeRabbit left these comments. Follow .mender/MENDER.md "Review rounds".\n\n${findings}`);
+    const patch = r.status === "done" ? patchFrom(baseSha) : "";
+    writeFileSync(PATCH, patch);
+    return writeFileSync(OUT, JSON.stringify({ ...job, pending: undefined, baseSha, result: r, changed: patch.length > 0 }));
+  }
+  const { issue } = job;
   say(`ticket ${issue.identifier}: ${issue.title}`);
   await setState(issue.id, "In Progress");
-  const r = await work(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.`);
-  if (r.status !== "done" || !changed()) {
-    sh("git", ["checkout", "-q", "--", "."]);
-    sh("git", ["clean", "-fdq"]);
-    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${r.text || "(no report)"}${footer(r)}`);
-    await setState(issue.id, "Todo");
+  const baseSha = sh("git", ["rev-parse", "HEAD"]);
+  const r = await runAgent(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.`);
+  const patch = r.status === "done" ? patchFrom(baseSha) : "";
+  writeFileSync(PATCH, patch);
+  writeFileSync(OUT, JSON.stringify({ kind: "ticket", issue, baseSha, result: r, changed: patch.length > 0 }));
+}
+
+// ─── Publishing (a fresh machine; the model is not running) ──────────────────
+
+function patchPaths() {
+  return sh("git", ["apply", "--numstat", PATCH]).split("\n").filter(Boolean).map((l) => l.split("\t")[2]);
+}
+
+function push(baseSha, branch, message) {
+  sh("git", ["checkout", "-q", "--detach", baseSha]);
+  sh("git", ["apply", "--index", "--binary", PATCH]);
+  sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
+  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  sh("git", ["push", "-q", `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
+}
+
+async function publish() {
+  const job = JSON.parse(readFileSync(OUT, "utf8"));
+  if (job.kind === "none") return;
+  const r = job.result;
+  if (job.changed) {
+    const bad = forbiddenPaths(patchPaths());
+    if (bad.length) {
+      job.changed = false;
+      r.status = "refused";
+      r.text = `The patch touched paths Mender may never change: ${bad.join(", ")}. Nothing was pushed.\n\n${r.text}`;
+    }
+  }
+  if (job.kind === "review") {
+    const { pr, round, ticket } = job;
+    if (job.changed) {
+      const head = gh(["pr", "view", pr.url, "--json", "headRefOid", "--jq", ".headRefOid"]);
+      if (head !== job.baseSha) throw new Error(`#${pr.number} moved from ${job.baseSha} to ${head} during the round; nothing pushed`);
+      push(job.baseSha, pr.headRefName, `Review round ${round} (${ticket ?? `#${pr.number}`})`);
+    }
+    gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${clean(r.text) || "(no report)"}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
+    if (ticket) {
+      const d = await linear(`query($i:String!){issue(id:$i){id}}`, { i: ticket });
+      await comment(d.issue.id, `**Review round ${round} on ${pr.url}: ${job.changed ? "fixes pushed" : "nothing pushed"}.**${footer(r)}`);
+    }
     return;
+  }
+  const { issue } = job;
+  if (!job.changed) {
+    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${clean(r.text) || "(no report)"}${footer(r)}`);
+    return setState(issue.id, "Todo");
   }
   const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/-+$/, "");
   const branch = `mender/${issue.identifier.toLowerCase()}-${slug}`;
-  sh("git", ["checkout", "-q", "-b", branch]);
-  commitAndPush(branch, `${issue.identifier}: ${issue.title}\n\n${r.text.replace("MENDER_DONE", "").trim()}`);
+  push(job.baseSha, branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`);
   const url = gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
-    "--body", `${issue.url}\n\n${r.text.replace("MENDER_DONE", "").trim()}${footer(r)}\n\nMerged by a person, never by Mender.`]);
+    "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerged by a person, never by Mender.`]);
   gh(["pr", "comment", url, "--body", "@coderabbitai review"]);
-  await comment(issue.id, `${ATTEMPT_MARK}\n**Pull request opened:** ${url}\nCodeRabbit asked to review.\n\n${r.text.replace("MENDER_DONE", "").trim()}${footer(r)}`);
+  await comment(issue.id, `${ATTEMPT_MARK}\n**Pull request opened:** ${url}\nCodeRabbit asked to review.\n\n${clean(r.text)}${footer(r)}`);
   await setState(issue.id, "In Review");
   say(`opened ${url}`);
 }
 
-async function doReview({ pr, pending, round, ticket }) {
-  say(`review round ${round} on #${pr.number}`);
-  sh("git", ["fetch", "-q", "origin", pr.headRefName]);
-  sh("git", ["checkout", "-q", "-B", pr.headRefName, `origin/${pr.headRefName}`]);
-  const findings = pending.map((c) => `- ${c.body.slice(0, 2000)}`).join("\n");
-  const r = await work(`This branch is the pull request ${pr.url} for ${ticket ?? "its ticket"}. Review round ${round}: CodeRabbit left these comments. Follow .mender/MENDER.md "Review rounds".\n\n${findings}`);
-  const pushed = r.status === "done" && changed();
-  if (pushed) commitAndPush(pr.headRefName, `Review round ${round} (${ticket ?? `#${pr.number}`})`);
-  gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${pushed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${r.text.replace("MENDER_DONE", "").trim() || "(no report)"}${footer(r)}${pushed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
-  if (ticket) {
-    const d = await linear(`{issue(id:"${ticket}"){id}}`);
-    await comment(d.issue.id, `**Review round ${round} on ${pr.url}: ${pushed ? "fixes pushed" : "nothing pushed"}.**${footer(r)}`);
-  }
-}
-
-async function main() {
-  const job = await findWork();
-  if (!job) return say("nothing to do: no open review and no CHE ticket labelled `mender`");
-  if (job.kind === "review") return doReview(job);
-  return doTicket(job.issue);
-}
-
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((e) => { console.error(e); process.exit(1); });
+  const step = process.argv[2];
+  (step === "publish" ? publish() : step === "work" ? work() : Promise.reject(new Error("usage: agent.mjs work|publish")))
+    .catch((e) => { console.error(e); process.exit(1); });
 }

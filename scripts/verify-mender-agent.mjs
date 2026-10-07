@@ -6,7 +6,7 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { readFileSync } from "node:fs";
-import { CHECKS, chooseTicket, pendingReview } from "./mender/agent.mjs";
+import { CHECKS, agentEnv, chooseTicket, forbiddenPaths, pendingReview } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -37,11 +37,21 @@ check("…nor anyone else's (Codex is out of this loop)",
 check("three rounds and the PR waits for a person",
   pendingReview({ reviewComments: [c("coderabbitai[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 3 }).length === 0);
 
+check("a review round that changed nothing still answers what it read",
+  pendingReview({ reviewComments: [c("coderabbitai[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", lastRoundAt: "2026-10-07T12:30Z", roundsUsed: 1 }).length === 0);
+
+check("a patch touching the workflows or Mender itself is refused",
+  forbiddenPaths([".github/workflows/x.yml", "scripts/mender/agent.mjs", "opencode.json", ".mender/MENDER.md", "CLAUDE.md", "src/lib/a.ts"]).length === 5);
+check("…an ordinary change is not", forbiddenPaths(["src/lib/a.ts", "scripts/verify-x.ts", "prisma/schema.prisma"]).length === 0);
+check("the model's environment holds no GitHub token",
+  Object.keys(agentEnv({ GH_TOKEN: "x", GITHUB_TOKEN: "y", MENDER_GH_TOKEN: "z", LINEAR_API_KEY: "k" })).join() === "LINEAR_API_KEY");
+
 const agent = read("scripts/mender/agent.mjs");
 check("Mender never merges", !/pr["',\s]+merge|merge_pull|gh pr merge/i.test(agent));
-check("typecheck (both) and lint run before a push",
-  ["typecheck", "agent:typecheck", "lint"].every((s) => CHECKS.some(([, a]) => a.includes(s))) &&
-    agent.indexOf("failingChecks()") < agent.indexOf("commitAndPush(branch"));
+check("AGENTS.md's sequence runs before the patch is taken: prisma generate, both typechecks, lint, verify:all",
+  ["generate", "typecheck", "agent:typecheck", "lint", "verify:all"].every((s) => CHECKS.some(([, a]) => a.includes(s))) &&
+    /const failing = failingChecks\(\);\s*\n\s*if \(!failing\) return \{ status: "done"/.test(agent) &&
+    /r\.status === "done" \? patchFrom\(baseSha\)/.test(agent));
 check("review is asked of CodeRabbit, never Codex", /@coderabbitai review/.test(agent) && !/@codex/.test(agent));
 
 const cfg = JSON.parse(read("opencode.json"));
@@ -50,6 +60,11 @@ check("its rules are loaded", (cfg.instructions ?? []).includes(".mender/MENDER.
 
 const wf = read(".github/workflows/mender-agent.yml");
 check("one tick at a time", /concurrency:\s*\n\s*group: mender-agent/.test(wf));
+const [workJob, publishJob] = wf.split(/\n  publish:\n/);
+check("the model's job keeps no credential in the checkout and holds no writing token",
+  /persist-credentials: false/.test(workJob) && !/MENDER_GH_TOKEN/.test(workJob) && /node scripts\/mender\/agent\.mjs work/.test(workJob));
+check("publishing runs on a fresh machine from main, after the model's job",
+  /needs: work/.test(publishJob ?? "") && /ref: main/.test(publishJob ?? "") && /MENDER_GH_TOKEN/.test(publishJob ?? "") && !/opencode/.test(publishJob ?? ""));
 check("the model is paid on OpenRouter, not the Claude subscription",
   /OPENROUTER_API_KEY/.test(wf) && !/CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/.test(wf));
 

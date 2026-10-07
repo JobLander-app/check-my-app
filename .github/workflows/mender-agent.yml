@@ -5,8 +5,13 @@
 # A person merges. scripts/mender/agent.mjs is the whole procedure.
 #
 # The model is OpenRouter's, paid in dollars (OPENROUTER_API_KEY), never the
-# owner's Claude subscription. The PR is opened with a personal token because a
-# pull request opened with GITHUB_TOKEN does not start CI on itself.
+# owner's Claude subscription.
+#
+# Two jobs, two machines (Codex, #298): the model runs in `work`, where no token
+# can write to GitHub and the checkout keeps no credential; its only output is a
+# patch and a report. `publish` runs on a fresh machine from a fresh checkout of
+# main — nothing the model touched — refuses a patch that changes the workflows
+# or Mender itself, and only then uses the personal token (so the PR starts CI).
 
 name: Mender
 
@@ -25,16 +30,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  tick:
+  work:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.MENDER_GH_TOKEN }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -42,13 +48,45 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm install -g opencode-ai@1.18.35
-      - name: Mender
+      # GH_TOKEN here is the job's read-only token (listing PRs and review
+      # comments); the script removes it from the model's environment too.
+      - name: Work
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           NOTION_TOKEN: ${{ secrets.MENDER_NOTION_TOKEN }}
-          GH_TOKEN: ${{ secrets.MENDER_GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TICKET: ${{ inputs.ticket }}
+          MENDER_DIR: ${{ runner.temp }}/mender
           MENDER_MODEL: anthropic/claude-sonnet-5.5
           MENDER_BUDGET: "5"
-        run: node scripts/mender/agent.mjs
+        run: node scripts/mender/agent.mjs work
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mender
+          path: ${{ runner.temp }}/mender
+          if-no-files-found: error
+
+  publish:
+    needs: work
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mender
+          path: ${{ runner.temp }}/mender
+      - name: Publish
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GH_TOKEN: ${{ secrets.MENDER_GH_TOKEN }}
+          MENDER_DIR: ${{ runner.temp }}/mender
+          MENDER_MODEL: anthropic/claude-sonnet-5.5
+        run: node scripts/mender/agent.mjs publish
