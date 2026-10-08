@@ -1,7 +1,7 @@
 // CHE-333: a Shopify app is connected by its store, then chosen after the
 // person signs in (src/lib/shopify-connect.ts). On a real D1:
 //
-//   - a team the session host does not serve yet is refused, by name;
+//   - a team not given the "shopify" feature (CHE-433) is refused, by name;
 //   - a store becomes ONE pending app (kind session, slug shopify:<store>, the
 //     admin allowed, its daily check off) — asked twice, still one;
 //   - the picked app is saved from what the host signed: its address in the
@@ -40,26 +40,26 @@ async function main() {
       { id: "ann", clerkUserId: "ck_ann", email: "ann@team-a.test" },
       { id: "zed", clerkUserId: "ck_zed", email: "zed@team-z.test" },
     ] });
-    await db.team.createMany({ data: [{ id: "team_a", name: "A", plan: "business" }, { id: "team_z", name: "Z", plan: "business" }] });
+    // CHE-433: team A has been given the "shopify" feature; team Z has not.
+    await db.team.createMany({ data: [{ id: "team_a", name: "A", plan: "business", features: '["shopify"]' }, { id: "team_z", name: "Z", plan: "business" }] });
     await db.membership.createMany({ data: [
       { teamId: "team_a", userId: "ann", scope: "admin" },
       { teamId: "team_z", userId: "zed", scope: "admin" },
     ] as never });
     const ann = { userId: "ann", teamId: "team_a", plan: "business" as const };
     const zed = { userId: "zed", teamId: "team_z", plan: "business" as const };
-    const env = { SESSION_TEAMS: "team_a" };
     const pick = (over: Partial<Pick> = {}): Pick => ({ slot: "main", store: "prod-release-1", handle: "securify", name: "Securify", origin: "https://securify.example.app", ...over });
 
     const APP = (store: string, handle: string) => `https://admin.shopify.com/store/${store}/apps/${handle}`;
-    const closed = await connectApp(db, zed, env, APP("zed-store", "zapp"));
-    check("a team the session host does not serve is told so", "error" in closed && closed.error === NOT_OPEN_YET, JSON.stringify(closed));
-    const bad = await connectApp(db, ann, env, "joblander.app");
+    const closed = await connectApp(db, zed,APP("zed-store", "zapp"));
+    check("a team not given the shopify feature is told so", "error" in closed && closed.error === NOT_OPEN_YET, JSON.stringify(closed));
+    const bad = await connectApp(db, ann,"joblander.app");
     check("an address that is not a link to an app in a store's admin is refused", "error" in bad && bad.error === BAD_LINK, JSON.stringify(bad));
-    const storeOnly = await connectApp(db, ann, env, "https://admin.shopify.com/store/prod-release-1");
+    const storeOnly = await connectApp(db, ann,"https://admin.shopify.com/store/prod-release-1");
     check("a store's admin with no app in the link is refused, naming the link it wants", "error" in storeOnly && storeOnly.error === BAD_LINK, JSON.stringify(storeOnly));
 
     // As copied from the address bar: deeper in the app, with a query.
-    const first = await connectApp(db, ann, env, `${APP("Prod-Release-1", "securify")}/settings?embedded=1`);
+    const first = await connectApp(db, ann,`${APP("Prod-Release-1", "securify")}/settings?embedded=1`);
     const appId = "ok" in first ? first.appId : "";
     const pending = await db.app.findUnique({ where: { id: appId }, select: { targetKind: true, appSlug: true, targetUrl: true, allowedOrigins: true, watch: { select: { active: true } } } });
     check("the link becomes a pending app — store and app both read from it", "ok" in first && first.store === "prod-release-1" && first.handle === "securify" && pending?.targetKind === "session" && pending.appSlug === "shopify:prod-release-1" && pending.targetUrl === APP("prod-release-1", "securify"), JSON.stringify({ first, pending }));
@@ -73,7 +73,7 @@ async function main() {
     const earlyWatch = await enableWatchForApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, { frequency: "daily" });
     const watches = await db.watch.count({ where: { appId } });
     check("a daily check for a store whose app is not chosen is refused, and no watch appears", earlyWatch.kind === "gated" && earlyWatch.reason === PENDING_SHOPIFY_APP && watches === 0, JSON.stringify({ earlyWatch, watches }));
-    const again = await connectApp(db, ann, env, "prod-release-1.myshopify.com/admin/apps/securify");
+    const again = await connectApp(db, ann,"prod-release-1.myshopify.com/admin/apps/securify");
     check("the same app by the older link form is the same pending app", "ok" in again && again.appId === appId && again.reused && !again.connected, JSON.stringify(again));
 
     const notLinked = await chooseApp(db, ann, appId, pick({ handle: "flow", name: "Flow", origin: "https://flow.example.app" }));
@@ -95,9 +95,9 @@ async function main() {
     const started = await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, appId, startDeps);
     check("once chosen, the app's check starts", "publicId" in started && triggered === 1, JSON.stringify(started));
 
-    const dupe = await connectApp(db, ann, env, APP("prod-release-1", "securify"));
+    const dupe = await connectApp(db, ann,APP("prod-release-1", "securify"));
     check("linking an app already connected leads to it, and makes no second row", "ok" in dupe && dupe.connected && dupe.appId === appId && (await db.app.count({ where: { teamId: "team_a", appSlug: { startsWith: "shopify:" } } })) === 1, JSON.stringify(dupe));
-    const second = await connectApp(db, ann, env, APP("prod-release-1", "flow"));
+    const second = await connectApp(db, ann,APP("prod-release-1", "flow"));
     const secondId = "ok" in second ? second.appId : "";
     check("another app of the same store is a second app", "ok" in second && secondId !== appId && !second.reused, JSON.stringify(second));
     const flow = await chooseApp(db, ann, secondId, pick({ handle: "flow", name: "Flow", origin: "https://flow.example.app" }));
@@ -111,13 +111,12 @@ async function main() {
 
     // Codex on #288: a Free team with two stores waiting gets one daily check,
     // not two — the watch cap is asked when the app is chosen.
-    await db.team.create({ data: { id: "team_f", name: "F", plan: "free" } });
+    await db.team.create({ data: { id: "team_f", name: "F", plan: "free", features: '["shopify"]' } });
     await db.user.create({ data: { id: "fay", clerkUserId: "ck_fay", email: "fay@team-f.test" } });
     await db.membership.create({ data: { teamId: "team_f", userId: "fay", scope: "admin" } as never });
     const fay = { userId: "fay", teamId: "team_f", plan: "free" as const };
-    const envF = { SESSION_TEAMS: "team_a,team_f" };
-    const s1 = await connectApp(db, fay, envF, APP("store-one", "securify"));
-    const s2 = await connectApp(db, fay, envF, APP("store-two", "securify"));
+    const s1 = await connectApp(db, fay,APP("store-one", "securify"));
+    const s2 = await connectApp(db, fay,APP("store-two", "securify"));
     const c1 = "ok" in s1 ? await chooseApp(db, fay, s1.appId, pick({ store: "store-one" })) : s1;
     const c2 = "ok" in s2 ? await chooseApp(db, fay, s2.appId, pick({ store: "store-two" })) : s2;
     const activeF = await db.watch.count({ where: { teamId: "team_f", active: true } });

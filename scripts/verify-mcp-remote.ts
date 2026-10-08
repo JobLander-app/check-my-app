@@ -90,8 +90,9 @@ async function seed() {
       { id: "u_g", email: "g@free-two.test", name: "Gus" },
     ],
     team: [
-      { id: "team_a", name: "Team A", plan: "business", isPersonal: false },
-      { id: "team_b", name: "Team B", plan: "business", isPersonal: false },
+      // CHE-433: Team A has been given "shopify"; Team B has not.
+      { id: "team_a", name: "Team A", plan: "business", isPersonal: false, features: '["shopify"]' },
+      { id: "team_b", name: "Team B", plan: "business", isPersonal: false, features: null },
       { id: "team_f", name: "Free team", plan: "free", isPersonal: true },
       // CHE-325: a Free team with one check left and a watch past its trial.
       { id: "team_g", name: "Last-check team", plan: "free", isPersonal: true },
@@ -255,6 +256,10 @@ async function main() {
     const expected = ["connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
       "latest_results", "list_apps", "start_check", "update_app", "wait_for_review", "wait_for_run"];
     check("tools: exactly the thirteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    // CHE-433: a team without the "shopify" feature is not offered the Shopify tool.
+    const namesB = (await b.listTools()).tools.map((t) => t.name).sort();
+    check("tools: a team without the shopify feature has the twelve, without connect_shopify_app",
+      JSON.stringify(namesB) === JSON.stringify(expected.filter((n) => n !== "connect_shopify_app")), namesB.join(", "));
   }
 
   // 3 — instructions, computed from the key's team.

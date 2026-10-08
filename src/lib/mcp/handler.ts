@@ -28,6 +28,7 @@ import { teamRunsTheAction } from "@/lib/release-action";
 import { can, type TeamScope } from "@/lib/scopes";
 import { mcpDoor } from "@/lib/started-via";
 import { activeTeamContext } from "@/lib/teams";
+import { teamFeatures } from "@/lib/team-features";
 import { buildInstructions } from "./instructions";
 import { createRemoteTools, registerRemoteTools, type McpCaller, type McpDeps } from "./tools";
 
@@ -67,7 +68,7 @@ async function callerFor(deps: McpDeps, req: Request): Promise<McpCaller | null>
   if (grant.team) {
     return {
       user: { id: grant.user.id, email: grant.user.email, name: grant.user.name },
-      team: { id: grant.team.id, name: grant.team.name, plan: grant.team.plan },
+      team: { id: grant.team.id, name: grant.team.name, plan: grant.team.plan, features: await teamFeatures(deps.db, grant.team.id) },
       scope: grant.scope as TeamScope,
       door,
     };
@@ -75,7 +76,7 @@ async function callerFor(deps: McpDeps, req: Request): Promise<McpCaller | null>
   const { team, scope } = await activeTeamContext(deps.db, grant.user, null);
   return {
     user: { id: grant.user.id, email: grant.user.email, name: grant.user.name },
-    team: { id: team.id, name: team.name, plan: team.plan },
+    team: { id: team.id, name: team.name, plan: team.plan, features: await teamFeatures(deps.db, team.id) },
     scope,
     door,
   };
@@ -118,7 +119,7 @@ export async function handleMcpRequest(req: Request, deps: McpDeps): Promise<Res
     { name: "checkmyapp", version: MCP_SERVER_VERSION },
     { instructions, jsonSchemaValidator: noElicitation },
   );
-  registerRemoteTools(server, createRemoteTools(caller, deps));
+  registerRemoteTools(server, createRemoteTools(caller, deps), caller.team.features);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

@@ -1,6 +1,5 @@
 "use server";
 
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { requireActionScope } from "@/lib/team-auth";
@@ -17,13 +16,7 @@ import type { UserPlan } from "@/lib/enums";
 export async function connectShopifyApp(_previous: { error: string } | null, formData: FormData): Promise<{ error: string } | null> {
   await refuseSelfCheck("/connect/shopify");
   const { user, db, team } = await requireActionScope("app.credentials.write");
-  const { env } = getCloudflareContext();
-  const result = await connectApp(
-    db,
-    { userId: user.id, teamId: team.id, plan: team.plan as UserPlan },
-    env as unknown as { SESSION_TEAMS?: string },
-    String(formData.get("link") ?? ""),
-  );
+  const result = await connectApp(db, { userId: user.id, teamId: team.id, plan: team.plan as UserPlan }, String(formData.get("link") ?? ""));
   if (!("ok" in result)) {
     // A refusal is the person's to read, and ours to see: the owner's first
     // try (2026-10-06 15:59 UTC) was refused and nothing in the logs said so.
