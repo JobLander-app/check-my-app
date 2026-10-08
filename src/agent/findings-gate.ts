@@ -549,9 +549,17 @@ export function gateFindings(
   // published finding name a step whose recorded observation supports it;
   // until here that held only for the claims the anchor could read. A finding
   // that points at no step must at least be about one this run walked.
+  //
+  // A finding with an errorSignature is exempt: only our own code sets one (the
+  // extension publication, from what the product's pages said or the balance
+  // did), never the synthesis model, and its evidence is a measurement taken
+  // outside the steps — `extension-charge-not-final` names no step and its
+  // words need not overlap any walked one. Dropping it as unsupported would
+  // lose a finding that rests on a recorded fact.
   const rootless = (f: SynthesizedFinding): boolean => {
     const ref = f.stepRef ? journeys[f.stepRef.journeyIndex]?.steps[f.stepRef.stepIndex] : undefined;
     if (ref) return false;
+    if (f.errorSignature) return false;
     const tokens = distinctiveTokens(findingText(f));
     return !walkedTokens.some((t) => sharedCount(tokens, t) >= SHARED_TOKENS_MIN);
   };
@@ -639,7 +647,7 @@ export function gateFindings(
       continue;
     }
     // CHE-420: no step named, and no walked step it is about either.
-    if (!alsoWalked) {
+    if (!alsoWalked && rootless(f)) {
       dropped.push({ finding: f, reason: NO_STEP_SUPPORTS });
       continue;
     }

@@ -761,6 +761,44 @@ function main() {
       "…also when it names that step",
       gateFindings([{ ...SEARCH_CLAIM, stepRef: { journeyIndex: 1, stepIndex: 0 } }], walked).kept.length === 1,
     );
+    // `attempted` is part of what a walked step can vouch for: here the label
+    // and the observation share too little with the finding, and only what was
+    // attempted ties them. Without `attempted` in the match this is dropped.
+    const viaAttempted: GateJourney[] = [
+      {
+        status: "ok",
+        steps: [
+          {
+            label: "Open the page",
+            status: "ok",
+            unverifiedReason: null,
+            observed: "It loaded.",
+            attempted: "Typed part of an address and read the matching visitor result",
+          },
+        ],
+      },
+    ];
+    check(
+      "CHE-420: tokens from `attempted` let a finding with no stepRef stand",
+      gateFindings([SEARCH_CLAIM], viaAttempted).kept.length === 1,
+    );
+    check(
+      "…in the run that skipped something too",
+      gateFindings([SEARCH_CLAIM], [...viaAttempted, unrecorded[1]]).kept.length === 1,
+    );
+
+    // A finding our own code wrote from a recorded measurement names no step
+    // and need not share words with any (extension-charge-not-final).
+    const MEASURED: SynthesizedFinding = {
+      ...SEARCH_CLAIM,
+      errorSignature: "extension-charge-not-final:signed-in",
+    };
+    check(
+      "CHE-420: an errorSignature finding with no stepRef is not dropped for want of a step",
+      gateFindings([MEASURED], [unrecorded[0]]).kept.length === 1 &&
+        gateFindings([MEASURED], unrecorded).kept.length === 1,
+    );
+
     // Naming a step is a reference; the gate does not second-guess a stepRef
     // that points at a walked step (CHE-215's anchor still reads its claim).
     check(
