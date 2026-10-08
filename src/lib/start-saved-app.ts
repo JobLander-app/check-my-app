@@ -12,6 +12,7 @@ import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 import { isPendingShopifyApp, PENDING_SHOPIFY_APP } from "@/lib/session-view";
+import { teamByokKeyEnc } from "@/lib/byok";
 
 // What one run of a saved app may add on top of the app's own settings. The
 // dashboard's button sends none of it; an agent starting the run after a deploy
@@ -91,6 +92,9 @@ export async function startSavedApp(
       testAccounts: await snapshotAppAccounts(db, app),
       // CHE-372: and the store password, for a password-protected store.
       storePasswordEnc: app.storePasswordEnc,
+      // CHE-436: if the team has a BYOK key, copy it — the agent decrypts and
+      // uses it; the run is free on our balance.
+      byokKeyEnc: await teamByokKeyEnc(db, owner.teamId),
       scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
       // CHE-373: the origins the owner allowed besides the app's own.
       allowedOrigins: app.allowedOrigins,

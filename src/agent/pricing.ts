@@ -18,11 +18,13 @@ import { priceForCost, splitPrice, teamBalance } from "@/lib/plans";
 export async function priceRun(db: PrismaClient, runId: string, now: Date = new Date()): Promise<number | null> {
   const run = await db.run.findUnique({
     where: { id: runId },
-    select: { teamId: true, costUsd: true, status: true, priceUsd: true, team: { select: { plan: true } } },
+    select: { teamId: true, costUsd: true, status: true, priceUsd: true, byokKeyEnc: true, team: { select: { plan: true } } },
   });
   if (!run?.teamId || run.priceUsd !== null) return run?.priceUsd ?? null;
   const plan = (run.team?.plan ?? "free") as UserPlan;
-  const price = run.status === "failed" || run.status === "canceled" ? 0 : priceForCost(plan, run.costUsd ?? 0);
+  // CHE-436: BYOK runs use the team's own OpenRouter account; they cost us
+  // nothing and are therefore free on our balance.
+  const price = run.status === "failed" || run.status === "canceled" || run.byokKeyEnc ? 0 : priceForCost(plan, run.costUsd ?? 0);
   const balance = await teamBalance(db, { id: run.teamId, plan }, now);
   const creditLeft = balance.creditUsd === null ? null : balance.creditUsd - balance.planSpentUsd;
   const { fromTopupUsd } = splitPrice(price, creditLeft);

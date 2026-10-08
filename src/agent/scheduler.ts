@@ -19,6 +19,7 @@ import { captureServer } from "@/lib/analytics-server";
 import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
 import { isPendingShopifyApp } from "@/lib/session-view";
+import { teamByokKeyEnc } from "@/lib/byok";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -265,6 +266,9 @@ export async function createWatchRun(
         teamId: watch.teamId,
         targetKind: watch.app?.targetKind,
       }),
+      // CHE-436: if the team has a BYOK key, copy it — the agent decrypts and
+      // uses it; the run is free on our balance.
+      byokKeyEnc: await teamByokKeyEnc(env.db, watch.teamId),
       // No address on a scheduled run: who hears about it is the app's list
       // of team members (src/lib/recipients.ts), read when the verdict is out.
       scopeHints: watch.app?.scopeHints ?? null,

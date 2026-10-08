@@ -63,6 +63,11 @@ model Run {
   // input like the test login: encrypted the same way, cleared with it after
   // a one-off run (clearedCredentials), and entered by code, never the model.
   storePasswordEnc     String?
+  // CHE-436: the team's own OpenRouter key, copied from Team.openrouterKeyEnc
+  // when the run is created. The agent decrypts it and uses it instead of the
+  // worker binding — the team pays their own OpenRouter bill; the run is free
+  // on our balance (priceUsd = 0). Encrypted at rest like the test login.
+  byokKeyEnc           String?
   scopeHints           String? // "don't touch /admin"
   userNotes            String? // "don't delete the test account"
   focusAreas           String? // CHE-81: owner's priority concerns
@@ -735,6 +740,11 @@ model Team {
   // names from the closed list in src/lib/team-features.ts (today: "shopify").
   // Set by us, never by the customer. Null = nothing.
   features String?
+  // CHE-436: the team's own OpenRouter API key, encrypted at rest like test
+  // credentials (AES-256-GCM, src/lib/crypto.ts). Set by us on request; null
+  // for every team whose checks run on our key and our bill. When set, the
+  // team's checks are free on our balance — their OpenRouter account pays.
+  openrouterKeyEnc String?
 
   topUps BalanceTopUp[]
   memberships Membership[]
