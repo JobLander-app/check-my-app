@@ -10,7 +10,11 @@ export async function triggerRun(runId: string): Promise<void> {
 
   // Production / cf:dev: the cross-worker Workflow binding is present.
   if (e.CHECK_RUN) {
-    await e.CHECK_RUN.create({ params: { runId } });
+    // The instance carries the run's id (CHE-423): a second create for the same
+    // run — the sweep in src/agent/orphan-runs.ts re-handing off a run whose
+    // first hand-off looked failed — is refused by the platform, so two
+    // instances can never run one run.
+    await e.CHECK_RUN.create({ id: runId, params: { runId } });
     return;
   }
 

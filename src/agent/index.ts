@@ -29,8 +29,14 @@ export default {
       if (!body.runId) {
         return Response.json({ error: "runId required" }, { status: 400 });
       }
-      const instance = await env.CHECK_RUN.create({ params: { runId: body.runId } });
-      return Response.json({ id: instance.id, runId: body.runId }, { status: 201 });
+      // Under the run's own id, like every other hand-off (CHE-423): a run that
+      // already has an instance is refused, not started a second time.
+      try {
+        const instance = await env.CHECK_RUN.create({ id: body.runId, params: { runId: body.runId } });
+        return Response.json({ id: instance.id, runId: body.runId }, { status: 201 });
+      } catch (err) {
+        return Response.json({ error: `not started: ${err instanceof Error ? err.message : String(err)}` }, { status: 409 });
+      }
     }
 
     return new Response("agent worker", { status: 200 });
