@@ -17,6 +17,7 @@ import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
 import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
+import { teamByokKeyEnc } from "@/lib/byok";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -222,6 +223,9 @@ export async function createRecheckRun(
         testAccounts: appLogin ? await snapshotAppAccounts(prisma, appLogin) : saved ? null : prev.testAccounts,
         // CHE-372: the store password comes from where the login does.
         storePasswordEnc: owedRetry && opts.storePassword ? encryptSecret(opts.storePassword) : login.storePasswordEnc,
+        // CHE-436: if the team has a BYOK key, copy it — the agent decrypts and
+        // uses it; the run is free on our balance.
+        byokKeyEnc: await teamByokKeyEnc(prisma, prev.teamId),
         scopeHints: prev.scopeHints,
         userNotes: saved ? saved.userNotes : prev.userNotes,
         focusAreas: prev.focusAreas,

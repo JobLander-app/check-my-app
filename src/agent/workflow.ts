@@ -196,7 +196,6 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
   async run(event: WorkflowEvent<CheckRunParams>, step: WorkflowStep): Promise<void> {
     const { runId } = event.payload;
     const env = makeAgentEnv(this.env);
-    const llm = makeLlm(this.env);
 
     const run = await step.do("load-run", async () => {
       const r = await env.db.run.findUnique({
@@ -215,6 +214,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           testAccounts: true,
           // CHE-372: the store password, for every phase that opens the store.
           storePasswordEnc: true,
+          // CHE-436: BYOK — if the team has their own OpenRouter key, it was
+          // copied here at run creation; makeLlm decrypts and routes through it.
+          byokKeyEnc: true,
           scopeHints: true,
           userNotes: true,
           focusAreas: true,
@@ -237,6 +239,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // treat one of our hosts as the customer's product.
       return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
     });
+    // CHE-436: BYOK — decrypt the team's OpenRouter key here, once, and pass it
+    // to makeLlm as an override. decryptSecret is synchronous; no step needed.
+    const byokKey = run.byokKeyEnc ? decryptSecret(run.byokKeyEnc) : undefined;
+    const llm = makeLlm(this.env, byokKey);
     const isExtension = isExtensionTarget(run);
     // CHE-389: an app checked inside a signed-in session (session-browser.ts).
     // Everything that looks at the app from outside that session — the page

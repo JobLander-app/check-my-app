@@ -251,26 +251,31 @@ export async function createOnRoutes(
   throw new Error("createOnRoutes: no routes");
 }
 
-export function makeLlm(env: AgentBindings): LlmConfig {
-  const navModel = env.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel);
+export function makeLlm(env: AgentBindings, byokOpenRouterKey?: string): LlmConfig {
+  // CHE-436: BYOK — a team's own OpenRouter key overrides the worker binding.
+  // The key is already decrypted by the caller; this function only routes to it.
+  const effectiveEnv: AgentBindings = byokOpenRouterKey
+    ? { ...env, OPENROUTER_API_KEY: byokOpenRouterKey }
+    : env;
+  const navModel = effectiveEnv.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel);
   const synthModel =
-    env.ANTHROPIC_SYNTH_MODEL ?? warnFallback("ANTHROPIC_SYNTH_MODEL", RECOMMENDED_TIER.synthModel);
-  const structModel = structModelFor(navModel, env.ANTHROPIC_STRUCT_MODEL);
-  const navClient = clientFor(navModel, env);
+    effectiveEnv.ANTHROPIC_SYNTH_MODEL ?? warnFallback("ANTHROPIC_SYNTH_MODEL", RECOMMENDED_TIER.synthModel);
+  const structModel = structModelFor(navModel, effectiveEnv.ANTHROPIC_STRUCT_MODEL);
+  const navClient = clientFor(navModel, effectiveEnv);
   // CHE-169: the judge defaults to the nav model on the nav client, so with
   // ANTHROPIC_JUDGE_MODEL unset no second provider or key is involved.
-  const judgeModel = env.ANTHROPIC_JUDGE_MODEL?.trim() || navModel;
-  const synthClient = clientFor(synthModel, env);
+  const judgeModel = effectiveEnv.ANTHROPIC_JUDGE_MODEL?.trim() || navModel;
+  const synthClient = clientFor(synthModel, effectiveEnv);
   return {
     navClient,
     synthClient,
-    synthRoutes: synthRoutesFor(synthModel, env, synthClient),
+    synthRoutes: synthRoutesFor(synthModel, effectiveEnv, synthClient),
     navModel,
     synthModel,
-    structClient: clientFor(structModel, env),
+    structClient: clientFor(structModel, effectiveEnv),
     structModel,
-    navVision: navVisionFor(navModel, env.ANTHROPIC_NAV_VISION),
-    judgeClient: judgeModel === navModel ? navClient : clientFor(judgeModel, env),
+    navVision: navVisionFor(navModel, effectiveEnv.ANTHROPIC_NAV_VISION),
+    judgeClient: judgeModel === navModel ? navClient : clientFor(judgeModel, effectiveEnv),
     judgeModel,
   };
 }

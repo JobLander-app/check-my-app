@@ -13,6 +13,7 @@ import { captureServer, serverDistinctId } from "@/lib/analytics-server";
 import type { CreateCheckInput } from "@/lib/validation";
 import { extensionColumns } from "@/lib/extension-target";
 import { alreadyScoped } from "@/lib/tenant-db";
+import { teamByokKeyEnc } from "@/lib/byok";
 export interface StartCheckOptions {
   // The validated submission (createCheckSchema output).
   input: CreateCheckInput;
@@ -87,6 +88,9 @@ export async function startCheck(
       testEmail: input.testEmail || null,
       testPasswordEnc: input.testPassword ? encryptSecret(input.testPassword) : null,
       storePasswordEnc: input.storePassword ? encryptSecret(input.storePassword) : null,
+      // CHE-436: if the team has a BYOK key, copy it — the agent decrypts and
+      // uses it; the run is free on our balance.
+      byokKeyEnc: await teamByokKeyEnc(db, opts.teamId),
       scopeHints: input.scopeHints || null,
       userNotes: input.userNotes || null,
       notifyEmail: input.notifyEmail || null,
