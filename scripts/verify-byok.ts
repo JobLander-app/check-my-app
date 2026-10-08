@@ -9,6 +9,8 @@
 // Make the guard fail first: run against the ORIGINAL code and confirm it fails,
 // then run against the new code and confirm it passes.
 
+process.env.CREDENTIALS_SECRET ??= "verify-byok-secret";
+
 import assert from "node:assert/strict";
 import { encryptSecret, decryptSecret } from "../src/lib/crypto";
 import { priceRun } from "../src/agent/pricing";
