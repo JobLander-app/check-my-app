@@ -302,6 +302,12 @@ model AppJourney {
   lastWalkedAt    DateTime?
   lastWalkedRunId String?
   walkCount       Int @default(0)
+  // CHE-420: the last walk left a step of OURS unverified (unverifiedReason
+  // our_capability). Such a journey is a record of our gap, not coverage of the
+  // product: it is never green, never carried, never listed, and is due for a
+  // re-walk. Set by every walk that happened; cleared by the next one that
+  // leaves none.
+  lastWalkGap     Boolean @default(false)
   // How many consecutive walks ended worse than ok/partial, and since when.
   // Cleared the moment a walk comes back healthy.
   consecutiveBad  Int       @default(0)

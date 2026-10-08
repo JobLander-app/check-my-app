@@ -289,6 +289,16 @@ function funnelUpdate(
 }
 
 /**
+ * CHE-420: did this walk leave a step of OURS unverified? A journey that did is
+ * a record of our gap (rule 2), and the catalog must not read it as coverage of
+ * the product. Any step counts, whatever its status: `partial` is how such a
+ * walk rolls up, and it is the status that used to read as green.
+ */
+export function leftOurGap(steps: ReadonlyArray<{ unverifiedReason?: string | null }>): boolean {
+  return steps.some((s) => s.unverifiedReason === "our_capability");
+}
+
+/**
  * What the walk learned about this journey. Called after the per-run Journey row
  * is finished, with the status that landed on it.
  *
@@ -315,6 +325,8 @@ export async function recordWalk(
     metric?: JourneyMetric | null;
     /** CHE-238: the funnel this walk implies, or why there is none. */
     funnel?: DerivedFunnel | null;
+    /** CHE-420: this walk left a step of ours unverified (our_capability). */
+    gap?: boolean;
     at?: Date;
   },
 ): Promise<void> {
@@ -353,7 +365,14 @@ export async function recordWalk(
       lastRunId: args.runId,
       lastRunNumber: args.runNumber,
       ...(walked
-        ? { lastWalkedAt: at, lastWalkedRunId: args.runId, walkCount: { increment: 1 } }
+        ? {
+            lastWalkedAt: at,
+            lastWalkedRunId: args.runId,
+            walkCount: { increment: 1 },
+            // Describes the walk lastWalkedAt dates, so it moves with it: a
+            // walk that did not happen says nothing either way.
+            lastWalkGap: args.gap === true,
+          }
         : {}),
       ...(args.plan.length ? { plan: JSON.stringify(args.plan) } : {}),
       // A surface we have been told sticks; one we have not been told never
@@ -586,6 +605,11 @@ export interface CatalogJourneyState {
   /** The run that actually walked it — where a carried copy's evidence comes from. */
   lastWalkedRunId: string | null;
   consecutiveBad: number;
+  /**
+   * CHE-420: the last walk left a step of ours unverified. Absent means no —
+   * hand-built states in the verify scripts predate the field.
+   */
+  gap?: boolean;
 }
 
 /**
@@ -631,6 +655,7 @@ export async function journeysForPlanning(env: AgentEnv, appId: string): Promise
       lastWalkedAt: true,
       lastWalkedRunId: true,
       consecutiveBad: true,
+      lastWalkGap: true,
     },
   });
   return rows.map((r) => ({
@@ -644,6 +669,7 @@ export async function journeysForPlanning(env: AgentEnv, appId: string): Promise
     lastWalkedAt: r.lastWalkedAt ? new Date(r.lastWalkedAt) : null,
     lastWalkedRunId: r.lastWalkedRunId,
     consecutiveBad: r.consecutiveBad,
+    gap: r.lastWalkGap,
   }));
 }
 

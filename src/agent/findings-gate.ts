@@ -82,6 +82,10 @@ export const EXPOSED_NO_EVIDENCE = "exposed dropped — no step evidence";
 // drove that control.
 export const NO_INTERACTION_RECORDED = "no interaction recorded";
 
+// CHE-420: the reason string for a finding that names no step and whose words
+// match no step this run walked.
+export const NO_STEP_SUPPORTS = "no step in this run supports it";
+
 // Two shared distinctive tokens is the threshold: one is a coincidence ("page"
 // is on every step), two names a control ("insight" + "preferences").
 const SHARED_TOKENS_MIN = 2;
@@ -533,6 +537,25 @@ export function gateFindings(
   const skipped = steps.filter((s) => s.status === "skipped");
   const walked = steps.filter((s) => s.status !== "skipped");
 
+  // CHE-420: what a walked step can vouch for. `attempted` counts alongside the
+  // label and the observation — a finding that restates what was tried is
+  // still resting on that step, and the wider the net the fewer true findings
+  // this rule can cost.
+  const walkedTokens = walked.map((s) => distinctiveTokens(`${stepText(s)} ${s.attempted ?? ""}`));
+  // Run cmuvu9xhl published "Visitor Logs search count never reflects a
+  // matching result" off the summary of a journey that recorded no step: no
+  // stepRef, nothing walked behind it, and — because it claimed no null-effect
+  // hand — nothing for the CHE-215 anchor to test. CHE-215 asks that every
+  // published finding name a step whose recorded observation supports it;
+  // until here that held only for the claims the anchor could read. A finding
+  // that points at no step must at least be about one this run walked.
+  const rootless = (f: SynthesizedFinding): boolean => {
+    const ref = f.stepRef ? journeys[f.stepRef.journeyIndex]?.steps[f.stepRef.stepIndex] : undefined;
+    if (ref) return false;
+    const tokens = distinctiveTokens(findingText(f));
+    return !walkedTokens.some((t) => sharedCount(tokens, t) >= SHARED_TOKENS_MIN);
+  };
+
   // CHE-215's anchor runs whether or not anything was skipped: run #159 had
   // skipped steps, but a run with none can publish the same unsupported claim.
   const trail = drivenControls(walked);
@@ -563,6 +586,10 @@ export function gateFindings(
   // does.
   if (skipped.length === 0) {
     for (const f of findings) {
+      if (rootless(f)) {
+        dropped.push({ finding: f, reason: NO_STEP_SUPPORTS });
+        continue;
+      }
       const a = anchored(f);
       if (a.ok) kept.push(f);
       else dropped.push({ finding: f, reason: a.reason });
@@ -571,7 +598,6 @@ export function gateFindings(
   }
 
   const skippedTokens = skipped.map((s) => ({ step: s, tokens: distinctiveTokens(stepText(s)) }));
-  const walkedTokens = walked.map((s) => distinctiveTokens(stepText(s)));
 
   for (const f of findings) {
     // Rule (a): the finding names its step, and that step was skipped. Any
@@ -610,6 +636,11 @@ export function gateFindings(
             ? `${EXPOSED_NO_EVIDENCE} — matches only skipped step "${match.step.label}"`
             : `no stepRef; matches only skipped step "${match.step.label}" (${match.step.unverifiedReason ?? "no reason recorded"})`,
       });
+      continue;
+    }
+    // CHE-420: no step named, and no walked step it is about either.
+    if (!alsoWalked) {
+      dropped.push({ finding: f, reason: NO_STEP_SUPPORTS });
       continue;
     }
     const a = anchored(f);
