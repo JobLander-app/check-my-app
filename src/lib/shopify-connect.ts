@@ -22,16 +22,13 @@ import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { enableWatchForApp } from "@/lib/watch-enable";
 import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
+import { teamHasFeature } from "@/lib/team-features";
 import { appHandleOfAdminUrl, isPendingShopifyApp, parseAppLink, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 
-// Which teams the session host serves today. One browser holds one Shopify
-// sign-in, so until each team has its own (CHE-333, "one browser per team")
-// a store is connected only for the teams named in SESSION_TEAMS.
-export function sessionTeamAllowed(env: { SESSION_TEAMS?: string }, teamId: string): boolean {
-  return (env.SESSION_TEAMS ?? "").split(",").map((t) => t.trim()).filter(Boolean).includes(teamId);
-}
+// Which teams may connect a Shopify app: those given the "shopify" feature
+// (CHE-433, src/lib/team-features.ts) — the Securify pilot, CHE-432.
 // The words are in the guarded copy module (src/lib/sign-in-copy.ts).
 export const NOT_OPEN_YET = CONNECT_ERRORS.notOpen;
 export const BAD_LINK = CONNECT_ERRORS.badLink;
@@ -39,10 +36,9 @@ export const BAD_LINK = CONNECT_ERRORS.badLink;
 export async function connectApp(
   db: PrismaClient,
   actor: AppActor,
-  env: { SESSION_TEAMS?: string },
   rawLink: string,
 ): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal> {
-  if (!sessionTeamAllowed(env, actor.teamId)) return { error: NOT_OPEN_YET, code: "invalid_input" };
+  if (!(await teamHasFeature(db, actor.teamId, "shopify"))) return { error: NOT_OPEN_YET, code: "invalid_input" };
   const link = parseAppLink(rawLink);
   if (!link) return { error: BAD_LINK, code: "invalid_input" };
   const { store, handle } = link;

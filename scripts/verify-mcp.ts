@@ -55,7 +55,7 @@ async function main() {
 
   const stub = createStubDb({
     user: [{ id: "u", email: "o@example.test", name: "O" }],
-    team: [{ id: "team_o", name: "Owner team", plan: "business", isPersonal: true }],
+    team: [{ id: "team_o", name: "Owner team", plan: "business", isPersonal: true, features: '["shopify"]' }],
     apiKey: [{ id: "k", ownerId: "u", teamId: "team_o", scope: "member", keyHash: await hashApiKey(KEY), lastUsedAt: null }],
     app: [{ id: "app_o", ownerId: "u", teamId: "team_o", appSlug: "own.test", targetUrl: "https://own.test", createdAt: new Date(t0) }],
     run: [

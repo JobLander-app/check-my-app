@@ -731,6 +731,11 @@ model Team {
   // rather than once per tick.
   balanceNoticeSentAt DateTime?
 
+  // CHE-433: what the team has been given beyond its plan — a JSON array of
+  // names from the closed list in src/lib/team-features.ts (today: "shopify").
+  // Set by us, never by the customer. Null = nothing.
+  features String?
+
   topUps BalanceTopUp[]
   memberships Membership[]
   invites     TeamInvite[]

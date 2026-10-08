@@ -43,6 +43,7 @@ import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-event
 import { teamOwned } from "@/lib/tenant-db";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
+import { hasFeature, type TeamFeature } from "@/lib/team-features";
 import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
@@ -71,7 +72,8 @@ function splitDefault<T extends { label: string; email?: string; password?: stri
 // the door, which a run it starts records as Run.startedVia (CHE-383).
 export interface McpCaller {
   user: { id: string; email: string; name: string | null };
-  team: { id: string; name: string; plan: string };
+  // CHE-433: `features` decides which tools the team is shown at all.
+  team: { id: string; name: string; plan: string; features: readonly TeamFeature[] };
   scope: TeamScope;
   door: McpDoor;
 }
@@ -88,8 +90,6 @@ export interface McpDeps {
   capture?: typeof captureServer;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
-  // CHE-333: the teams the Shopify session host serves (SESSION_TEAMS).
-  sessionTeams?: () => string | undefined;
 }
 
 export interface ToolResult {
@@ -467,7 +467,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     async connect_shopify_app(args: { app_url: string }): Promise<ToolResult> {
       const denied = deny("app.credentials.write");
       if (denied) return denied;
-      const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, { SESSION_TEAMS: deps.sessionTeams?.() }, args.app_url);
+      const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_url);
       if ("error" in result) {
         const code = result.code === "duplicate" ? "invalid_input" : result.code;
         return fail(code, result.error, HINTS[code]);
@@ -958,18 +958,23 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "Pause an app's recurring check. Its history and settings stay; enable_watch resumes it.",
 };
 
-export function registerRemoteTools(server: McpServer, tools: RemoteTools): void {
+// CHE-433: the tools a team is shown follow what it has been given — a team
+// without the "shopify" feature is not offered a Shopify tool it would only be
+// refused by.
+export function registerRemoteTools(server: McpServer, tools: RemoteTools, features: readonly TeamFeature[] = []): void {
   server.registerTool("list_apps", { description: DESCRIPTIONS.list_apps, inputSchema: toolSchemas.list_apps }, () =>
     tools.list_apps(),
   );
   server.registerTool("create_app", { description: DESCRIPTIONS.create_app, inputSchema: toolSchemas.create_app }, (a) =>
     tools.create_app(a),
   );
-  server.registerTool(
-    "connect_shopify_app",
-    { description: DESCRIPTIONS.connect_shopify_app, inputSchema: toolSchemas.connect_shopify_app },
-    (a) => tools.connect_shopify_app(a),
-  );
+  if (hasFeature(features, "shopify")) {
+    server.registerTool(
+      "connect_shopify_app",
+      { description: DESCRIPTIONS.connect_shopify_app, inputSchema: toolSchemas.connect_shopify_app },
+      (a) => tools.connect_shopify_app(a),
+    );
+  }
   server.registerTool("update_app", { description: DESCRIPTIONS.update_app, inputSchema: toolSchemas.update_app }, (a) =>
     tools.update_app(a),
   );
