@@ -131,6 +131,7 @@
     "verify:live-view": "tsx --tsconfig tsconfig.json scripts/verify-live-view.ts",
     "verify:shopify-connect": "tsx --tsconfig tsconfig.json scripts/verify-shopify-connect.ts",
     "verify:unrecorded-walk": "tsx --tsconfig tsconfig.json scripts/verify-unrecorded-walk.ts",
+    "verify:gap-journey-not-coverage": "tsx --tsconfig tsconfig.json scripts/verify-gap-journey-not-coverage.ts",
     "verify:unconfirmed-step": "tsx --tsconfig tsconfig.json scripts/verify-unconfirmed-step.ts",
     "verify:session-browser": "tsx --tsconfig tsconfig.json scripts/verify-session-browser.ts",
     "verify:signed-out": "tsx --tsconfig tsconfig.json scripts/verify-signed-out.ts",

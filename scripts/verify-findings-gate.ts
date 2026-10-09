@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import {
   EXPOSED_NO_EVIDENCE,
   NO_INTERACTION_RECORDED,
+  NO_STEP_SUPPORTS,
   claimedHands,
   cutNullEffectClauses,
   cutUndrivenClaims,
@@ -220,11 +221,13 @@ function main() {
       detail: { where: "/settings", whatHappened: "The toggle reads 'Notifications' with no hint of what it sends." },
       stepRef: { journeyIndex: 1, stepIndex: 1 },
     };
+    // No stepRef, but its words are about a step this run walked ("landing",
+    // "rendered"), so it has something to stand on (CHE-420).
     const unrelated: SynthesizedFinding = {
       title: "Landing hero image is 4 MB",
       category: "polish",
       severity: "low",
-      detail: { where: "/", whatHappened: "The hero loads a 4 MB PNG." },
+      detail: { where: "/", whatHappened: "The landing page rendered, but its hero loads a 4 MB PNG." },
     };
     const r = gateFindings([onOk, SLIDER_FINDING, unrelated], RUN_153);
     check(
@@ -252,15 +255,25 @@ function main() {
   // 10 — no skipped step in the run ⇒ nothing is dropped, whatever the text.
   {
     const journeys: GateJourney[] = [RUN_153[0], { steps: RUN_153[1].steps.slice(0, 2) }];
-    const { stepRef: _ref, ...noRef } = SLIDER_FINDING;
-    const r = gateFindings([noRef, SLIDER_FINDING], journeys);
+    const toggle: SynthesizedFinding = {
+      title: "Email notifications toggle gives no confirmation",
+      category: "polish",
+      severity: "low",
+      detail: { where: "/settings", whatHappened: "The toggle flipped and Save Changes enabled, with no message." },
+    };
+    const { stepRef: _ref, ...noRef } = toggle;
+    const r = gateFindings([noRef, { ...toggle, stepRef: { journeyIndex: 1, stepIndex: 1 } }], journeys);
     check("no skipped step in the run → every finding kept", r.kept.length === 2 && r.dropped.length === 0);
   }
 
   // 11 — empty inputs.
   {
     check("no findings → empty", gateFindings([], RUN_153).kept.length === 0);
-    check("no journeys → findings pass through", gateFindings([SLIDER_FINDING], []).kept.length === 1);
+    // CHE-420: with no walked step in the run, a finding has nothing to stand on.
+    check(
+      "no journeys → a finding with no stepRef is dropped",
+      gateFindings([{ ...SLIDER_FINDING, stepRef: undefined }], []).dropped.some((d) => d.reason === NO_STEP_SUPPORTS),
+    );
     const r = gateFindings([], []);
     check("nothing in → nothing out", r.kept.length === 0 && r.dropped.length === 0);
   }
@@ -371,7 +384,7 @@ function main() {
             label: "Type into the notes box",
             status: "ok",
             unverifiedReason: null,
-            observed: "Typed into it.",
+            observed: "Typed into the notes box. The password input was visible.",
             actions: JSON.stringify([{ kind: "fill", label: "Notes", value: "x", outcome: {} }]),
           },
         ],
@@ -384,10 +397,14 @@ function main() {
       detail: { where: "/check — notes", whatHappened: "It would not accept input." },
     };
     check("a one-token control name still anchors its own claim", gateFindings([aboutNotes], oneToken).kept.length === 1);
+    const aboutPassword = gateFindings(
+      [{ ...aboutNotes, title: "Password box does not accept input", detail: { where: "/sign-in — password" } }],
+      oneToken,
+    );
     check(
       "…and does not anchor a claim about something else",
-      gateFindings([{ ...aboutNotes, title: "Password box does not accept input", detail: { where: "/sign-in — password" } }], oneToken)
-        .kept.length === 0,
+      aboutPassword.kept.length === 0 && aboutPassword.dropped[0]?.reason.startsWith(NO_INTERACTION_RECORDED) === true,
+      aboutPassword.dropped[0]?.reason,
     );
   }
 
@@ -460,7 +477,7 @@ function main() {
   // hand whose recorded controls have no nameable token.
   {
     const noTrail: GateJourney[] = [
-      { steps: [{ label: "Open the settings page", status: "ok", unverifiedReason: null, observed: "Settings rendered." }] },
+      { steps: [{ label: "Open the settings page", status: "ok", unverifiedReason: null, observed: "Settings rendered with Insight Preferences." }] },
     ];
     check(
       "a run with no machine trail keeps the finding (the rule cannot speak)",
@@ -473,7 +490,7 @@ function main() {
             label: "Press Save",
             status: "ok",
             unverifiedReason: null,
-            observed: "The Save button was pressed.",
+            observed: "The Save button was pressed on the pricing page.",
             actions: JSON.stringify([{ kind: "click", role: "button", name: "Save", outcome: {} }]),
           },
         ],
@@ -675,6 +692,143 @@ function main() {
     check(
       "the opening clause still survives",
       cutNullEffectClauses("The field is present but the input attempt did not take.").text === "The field is present.",
+    );
+  }
+
+  // 26 — CHE-420, run cmuvu9xhl: a journey that walked and never recorded a
+  // step, a summary that names a defect, and a finding grown from it. No
+  // stepRef, and it claims no null-effect hand, so neither the CHE-215 anchor
+  // nor rule (b) had anything to test.
+  {
+    const SEARCH_CLAIM: SynthesizedFinding = {
+      title: "Visitor Logs search count never reflects a matching result",
+      category: "confusing",
+      severity: "medium",
+      detail: {
+        where: "Visitor Logs",
+        whatWeTried: ["Searched the Visitor Logs for part of an address"],
+        whatHappened: "The count under the Visitor Logs search reads 0 entries matching your search while matching rows render.",
+        whyItMatters: "An admin reviewing blocked visitors cannot trust the count.",
+      },
+      stepRef: undefined,
+    };
+    const unrecorded: GateJourney[] = [
+      {
+        status: "ok",
+        steps: [
+          { label: "Open the Block Log overview", status: "ok", unverifiedReason: null, observed: "The overview lists protection totals." },
+        ],
+      },
+      {
+        status: "skipped",
+        // What a zero-step walk leaves behind today: the one skipped step of
+        // ours that says nothing about the product.
+        steps: [
+          {
+            label: "Review the Block Log (blocked visitors)",
+            status: "skipped",
+            unverifiedReason: "our_capability",
+            observed: "This journey could not be confirmed this time.",
+          },
+        ],
+      },
+    ];
+    const r = gateFindings([SEARCH_CLAIM], unrecorded);
+    check("CHE-420: a finding with no stepRef and no walked step behind it is dropped", r.kept.length === 0, titles(r.kept));
+    check("…and the reason says so", r.dropped.length === 1 && r.dropped[0].reason === NO_STEP_SUPPORTS, r.dropped[0]?.reason);
+
+    // A run with nothing skipped at all takes the other branch of the gate.
+    const noSkip = gateFindings([SEARCH_CLAIM], [unrecorded[0]]);
+    check("…also when nothing in the run was skipped", noSkip.dropped.length === 1 && noSkip.dropped[0].reason === NO_STEP_SUPPORTS, noSkip.dropped[0]?.reason);
+
+    // The same finding with a walked step that supports it stays.
+    const walked: GateJourney[] = [
+      unrecorded[0],
+      {
+        status: "ok",
+        steps: [
+          {
+            label: "Search the Visitor Logs for an address",
+            status: "confusing",
+            unverifiedReason: null,
+            observed: "The Visitor Logs count reads 0 entries matching your search while three rows render.",
+          },
+        ],
+      },
+    ];
+    check("CHE-420: the same finding with a walked step that supports it is kept", gateFindings([SEARCH_CLAIM], walked).kept.length === 1);
+    check(
+      "…also when it names that step",
+      gateFindings([{ ...SEARCH_CLAIM, stepRef: { journeyIndex: 1, stepIndex: 0 } }], walked).kept.length === 1,
+    );
+    // `attempted` is part of what a walked step can vouch for: here the label
+    // and the observation share too little with the finding, and only what was
+    // attempted ties them. Without `attempted` in the match this is dropped.
+    const viaAttempted: GateJourney[] = [
+      {
+        status: "ok",
+        steps: [
+          {
+            label: "Open the page",
+            status: "ok",
+            unverifiedReason: null,
+            observed: "It loaded.",
+            attempted: "Typed part of an address and read the matching visitor result",
+          },
+        ],
+      },
+    ];
+    check(
+      "CHE-420: tokens from `attempted` let a finding with no stepRef stand",
+      gateFindings([SEARCH_CLAIM], viaAttempted).kept.length === 1,
+    );
+    check(
+      "…in the run that skipped something too",
+      gateFindings([SEARCH_CLAIM], [...viaAttempted, unrecorded[1]]).kept.length === 1,
+    );
+
+    // A finding our own code wrote from a recorded measurement names no step
+    // and need not share words with any (extension-charge-not-final).
+    const MEASURED: SynthesizedFinding = {
+      ...SEARCH_CLAIM,
+      errorSignature: "extension-charge-not-final:signed-in",
+    };
+    check(
+      "CHE-420: an errorSignature finding with no stepRef is not dropped for want of a step",
+      gateFindings([MEASURED], [unrecorded[0]]).kept.length === 1 &&
+        gateFindings([MEASURED], unrecorded).kept.length === 1,
+    );
+    // …and a skipped step that shares its words is no reason to drop it: rule
+    // (b) reads a finding as being about a skipped step, and a measurement is
+    // about no step.
+    const sharesSkipped: GateJourney[] = [
+      unrecorded[0],
+      {
+        status: "skipped",
+        steps: [
+          {
+            label: "Search the Visitor Logs for an address",
+            status: "skipped",
+            unverifiedReason: "our_capability",
+            observed: "This journey could not be confirmed this time.",
+          },
+        ],
+      },
+    ];
+    check(
+      "CHE-420: the same finding without an errorSignature does match that skipped step",
+      gateFindings([SEARCH_CLAIM], sharesSkipped).kept.length === 0,
+    );
+    check(
+      "CHE-420: an errorSignature finding that matches only a skipped step is kept",
+      gateFindings([MEASURED], sharesSkipped).kept.length === 1,
+    );
+
+    // Naming a step is a reference; the gate does not second-guess a stepRef
+    // that points at a walked step (CHE-215's anchor still reads its claim).
+    check(
+      "a stepRef to a walked step is not re-judged by wording",
+      gateFindings([{ ...SEARCH_CLAIM, stepRef: { journeyIndex: 0, stepIndex: 0 } }], unrecorded).kept.length === 1,
     );
   }
 

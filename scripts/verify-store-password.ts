@@ -593,6 +593,9 @@ async function main() {
     reached[0].steps[0].actions = JSON.stringify([
       { kind: "navigate", url: `${STORE}/cart`, outcome: { urlAfter: `${STORE}/cart`, status: 200 } },
     ]);
+    // CHE-420: a finding with no stepRef stands only on a walked step it is
+    // about, so the step that reached the cart says what it saw.
+    Object.assign(reached[0].steps[0], { label: "Open the storefront", observed: "The storefront shows a password form." });
     check("findings: one page of the store reached and findings stand", gateFindings([finding], reached, { targetUrl: STORE }).kept.length === 1);
 
     const synth = { verdict: "all_good" as const, bottomLine: null };
