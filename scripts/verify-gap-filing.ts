@@ -593,6 +593,9 @@ async function main() {
       ["the app's slug is not an OTP step (otp-plus-sso)", { text: "shopify:8mrftg-tk/otp-plus-sso: Post-sign-in destination options could not be confirmed.", targetOrigin: A }, "unclassified"],
       ["an OTP the walk had to enter still is", { text: "The storefront asked to enter the OTP sent by SMS.", targetOrigin: A }, "verification_code"],
       ["an OTP code prompt still is", { text: "An OTP code prompt blocked the sign-in.", targetOrigin: A }, "verification_code"],
+      ["a passive 'OTP sent by SMS' is an OTP step", { text: "The page said the OTP sent by SMS was required to continue.", targetOrigin: A }, "verification_code"],
+      ["a passive 'OTP was entered' is an OTP step", { text: "The sign-in stopped after the OTP was entered.", targetOrigin: A }, "verification_code"],
+      ["the product's name followed by a verb is not an OTP step (OTP+ sent)", { text: "OTP+ sent the customer to the wrong page.", targetOrigin: A }, "unclassified"],
       ["the file-transfer words are back to what they were", { text: "Uploading the products CSV: Import did nothing.", targetOrigin: J }, "unclassified"],
 
       // Trail URLs that only look like the admin.

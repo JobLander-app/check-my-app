@@ -158,7 +158,11 @@ const OTP_NAME_TAIL = String.raw`(?![+-])(?!\s+(?:log-?in|sign-?in|methods?|gate
 const OTP_CODE = new RegExp(
   String.raw`\b(?:enter|type|submit|input|receive|send|sent|asks? for|prompts? for|prompted for|waiting for)\s+(?:\S+\s+){0,2}?otp\b${OTP_NAME_TAIL}` +
     "|" +
-    String.raw`\botp\s+(?:code|prompt|challenge|input|field|entry|screen|step|was sent|is sent|is required|required)\b`,
+    // A step is often written in the passive ("OTP sent by SMS", "OTP was
+    // entered"); the verb must follow the OTP so a product name never matches.
+    String.raw`\botp\s+(?:code|prompt|challenge|input|field|entry|screen|step|is required|required)\b` +
+    "|" +
+    String.raw`\botp\s+(?:(?:was|is|were|got|gets|has been|had been)\s+)?(?:sent|entered|typed|submitted|received|requested)\b`,
   "i",
 );
 
