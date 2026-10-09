@@ -154,7 +154,15 @@ export function isGapClass(value: string | null | undefined): value is GapClass 
 // match wins, so reordering would move a step that matches two). The three new
 // classes come after them, and the machine-trail rules after the text.
 
-const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
+const OTP_NAME_TAIL = String.raw`(?![+-])(?!\s+(?:log-?in|sign-?in|methods?|gates?|toggles?|settings?|options?|providers?|auth\w*|app|activity|logs?)\b)`;
+const OTP_CODE = new RegExp(
+  String.raw`\b(?:enter|type|submit|input|receive|send|sent|asks? for|prompts? for|prompted for|waiting for)\s+(?:\S+\s+){0,2}?otp\b${OTP_NAME_TAIL}` +
+    "|" +
+    String.raw`\botp\s+(?:code|prompt|challenge|input|field|entry|screen|step|was sent|is sent|is required|required)\b`,
+  "i",
+);
+
+const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = [
   { match: /new tab|target=_?"?_blank|could not follow|cannot follow|opens? in a new/i, cls: "new_tab" },
   { match: /oauth|continue with google|social login|sign in with (google|github|apple)/i, cls: "oauth" },
   // CHE-104: "email link" alone used to land here, so an ordinary mailto:
@@ -165,8 +173,18 @@ const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
     match: /magic link|passwordless|(email|sign-?in|login)[ -]link (sign|log)[ -]?in|sign-?in (by|via) email/i,
     cls: "passwordless",
   },
-  // CHE-374: bounded, because "otp" is inside "footprint".
-  { match: /verification code|\b2fa\b|\bmfa\b|one-?time (code|password)|\botp\b/i, cls: "verification_code" },
+  // CHE-374: bounded, because "otp" is inside "footprint". CHE-430: and "OTP"
+  // alone is not a code the walk was stopped at — it is also the name of a
+  // product (OTP+, a Shopify app) and of a login method it offers ("SMS/OTP
+  // login"). Run #336 checked OTP+ and every step that so much as named the
+  // app landed here, on a ticket about codes nobody asked us to enter. OTP
+  // counts only as a code being asked for, entered or sent (OTP_CODE).
+  {
+    match: {
+      test: (text: string) => /verification code|\b2fa\b|\bmfa\b|one-?time (code|password)/i.test(text) || OTP_CODE.test(text),
+    },
+    cls: "verification_code",
+  },
   { match: /camera|microphone|media device|getusermedia|webrtc/i, cls: "media_devices" },
   { match: /captcha|turnstile|recaptcha|bot (check|protection)/i, cls: "captcha" },
   { match: /leaves its test records|records still present|cleanup audit/i, cls: "test_records" },

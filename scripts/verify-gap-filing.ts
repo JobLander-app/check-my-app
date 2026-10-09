@@ -585,6 +585,14 @@ async function main() {
       ["'embedded Shopify app', on a store", { text: "The embedded Shopify app could not be opened from here.", targetOrigin: S }, "unclassified"],
       ["Google sign-in words on a store, no trail", { text: "The store owner login on accounts.shopify.com offers Continue with Google.", targetOrigin: S }, "oauth"],
       ["'footprint' is not an OTP", { text: "The footprint chart did not load.", targetOrigin: A }, "unclassified"],
+      // CHE-430: run #336 checked OTP+, a Shopify app that is itself an OTP
+      // login product. Its name and its login method are not a code we were
+      // stopped at; an OTP asked for, entered or sent still is.
+      ["the product's name is not an OTP step (OTP+)", { text: 'OTP+ settings: the "Send customers to" dropdown could not be read.', targetOrigin: A }, "unclassified"],
+      ["a login method named SMS/OTP is not an OTP step", { text: "Toggle on the SMS/OTP login method in Settings.", targetOrigin: A }, "unclassified"],
+      ["the app's slug is not an OTP step (otp-plus-sso)", { text: "shopify:8mrftg-tk/otp-plus-sso: Post-sign-in destination options could not be confirmed.", targetOrigin: A }, "unclassified"],
+      ["an OTP the walk had to enter still is", { text: "The storefront asked to enter the OTP sent by SMS.", targetOrigin: A }, "verification_code"],
+      ["an OTP code prompt still is", { text: "An OTP code prompt blocked the sign-in.", targetOrigin: A }, "verification_code"],
       ["the file-transfer words are back to what they were", { text: "Uploading the products CSV: Import did nothing.", targetOrigin: J }, "unclassified"],
 
       // Trail URLs that only look like the admin.
