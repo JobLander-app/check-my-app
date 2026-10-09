@@ -162,7 +162,7 @@ const OTP_CODE = new RegExp(
     // entered"); the verb must follow the OTP so a product name never matches.
     String.raw`\botp\s+(?:code|prompt|challenge|input|field|entry|screen|step|is required|required)\b` +
     "|" +
-    String.raw`\botp\s+(?:(?:was|is|were|got|gets|has been|had been)\s+)?(?:sent|entered|typed|submitted|received|requested)\b`,
+    String.raw`\botp\s+(?:(?:was|is|were|got|gets|has been|had been)\s+)?(?:being\s+)?(?:sent|entered|typed|submitted|received|requested)\b`,
   "i",
 );
 
