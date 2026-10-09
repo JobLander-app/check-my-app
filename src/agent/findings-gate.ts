@@ -632,11 +632,14 @@ export function gateFindings(
 
     // Rule (b): no step named. The finding is about a skipped step when its
     // words tie it to one and to no step we actually walked — i.e. the only
-    // step it can be about is one where nothing was observed.
+    // step it can be about is one where nothing was observed. A finding with
+    // an errorSignature is a measurement of ours, not a reading of a step, so
+    // a skipped step that shares its words does not make it a claim about
+    // that step (see `rootless`).
     const tokens = distinctiveTokens(findingText(f));
     const match = skippedTokens.find((s) => sharedCount(tokens, s.tokens) >= SHARED_TOKENS_MIN);
     const alsoWalked = walkedTokens.some((t) => sharedCount(tokens, t) >= SHARED_TOKENS_MIN);
-    if (match && !alsoWalked) {
+    if (match && !alsoWalked && !f.errorSignature) {
       dropped.push({
         finding: f,
         reason:

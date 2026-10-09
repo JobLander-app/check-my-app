@@ -798,6 +798,31 @@ function main() {
       gateFindings([MEASURED], [unrecorded[0]]).kept.length === 1 &&
         gateFindings([MEASURED], unrecorded).kept.length === 1,
     );
+    // …and a skipped step that shares its words is no reason to drop it: rule
+    // (b) reads a finding as being about a skipped step, and a measurement is
+    // about no step.
+    const sharesSkipped: GateJourney[] = [
+      unrecorded[0],
+      {
+        status: "skipped",
+        steps: [
+          {
+            label: "Search the Visitor Logs for an address",
+            status: "skipped",
+            unverifiedReason: "our_capability",
+            observed: "This journey could not be confirmed this time.",
+          },
+        ],
+      },
+    ];
+    check(
+      "CHE-420: the same finding without an errorSignature does match that skipped step",
+      gateFindings([SEARCH_CLAIM], sharesSkipped).kept.length === 0,
+    );
+    check(
+      "CHE-420: an errorSignature finding that matches only a skipped step is kept",
+      gateFindings([MEASURED], sharesSkipped).kept.length === 1,
+    );
 
     // Naming a step is a reference; the gate does not second-guess a stepRef
     // that points at a walked step (CHE-215's anchor still reads its claim).
