@@ -84,6 +84,7 @@
     "verify:paid-retry": "tsx --tsconfig tsconfig.json scripts/verify-paid-retry.ts",
     "verify:class-names": "tsx --tsconfig tsconfig.json scripts/verify-class-names.ts",
     "verify:frame-tools": "tsx --tsconfig tsconfig.json scripts/verify-frame-tools.ts",
+    "verify:shadow-fill": "tsx --tsconfig tsconfig.json scripts/verify-shadow-fill.ts",
     "verify:app-health": "tsx --tsconfig tsconfig.json scripts/verify-app-health.ts",
     "verify:billing-page": "tsx --tsconfig tsconfig.json scripts/verify-billing-page.ts",
     "verify:app-shell": "tsx --tsconfig tsconfig.json scripts/verify-app-shell.ts",
