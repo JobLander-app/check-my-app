@@ -2064,7 +2064,12 @@ async function typeIntoComponent(env: ToolEnv, host: Locator, value: string): Pr
   // check. When it does not, a text control having reacted to the keys is the
   // evidence — and with neither, a "Filled" would be a guess.
   const held = await host.evaluate((el) => (typeof (el as { value?: unknown }).value === "string" ? (el as unknown as { value: string }).value : null), undefined, { timeout: 2_000 }).catch(() => null);
-  if (held !== null) return held.includes(value) ? null : "the typed value did not stick";
+  if (held !== null) {
+    // Every string includes "", so for a clear the check is equality: otherwise
+    // a field whose old text survived the clear keys would be reported Filled.
+    const stuck = value === "" ? held === "" : held.includes(value);
+    return stuck ? null : "the typed value did not stick";
+  }
   if (!seen) return "the component exposes no value to confirm that typing landed";
   return null;
 }

@@ -53,6 +53,8 @@ const COMPONENT = `
       button.addEventListener("click", () => { document.body.dataset.rootbutton = "yes"; document.body.dataset.rootpresses = String(Number(document.body.dataset.rootpresses || 0) + 1); });
       root.append(...(this.hasAttribute("buttononly") ? [button] : this.hasAttribute("withbutton") ? [input, button] : [input]));
       input.addEventListener("input", () => { document.getElementById("echo-" + this.id).textContent = input.value; });
+      // A component whose field ignores the clear keys: what it held stays.
+      if (this.hasAttribute("stubborn")) input.addEventListener("keydown", (e) => { if (e.key === "Backspace") e.preventDefault(); });
       // A component usually exposes what it holds. Some do not.
       if (this.hasAttribute("readable")) Object.defineProperty(this, "value", { get: () => input.value });
     }
@@ -72,6 +74,8 @@ const PAGES: Record<string, string> = {
     ${field("open", 'mode="open" label="Approved customers" readable initial="old"')}
     ${field("openblind", 'mode="open" placeholder="Customer tags"')}
     ${field("closed", 'mode="closed" label="Customer email" readable initial="old"')}
+    ${field("closedclear", 'mode="closed" label="Promo code" readable initial="old"')}
+    ${field("closedstubborn", 'mode="closed" label="Referral code" readable stubborn initial="old"')}
     ${field("closedblind", 'mode="closed" label="Internal note"')}
     ${field("closeddead", 'mode="closed" label="Locked field" dead')}
     ${field("closedbutton", 'mode="closed" label="Coupon code" withbutton')}
@@ -168,6 +172,11 @@ async function main() {
     const byHostSelector = await executeTool(env, "fill", { selector: "x-field#closed", value: "ken@example.test" });
     check("closed root: a selector naming the element is typed into too", byHostSelector === `Filled ${into}.` && (await echo(page, "closed")) === "ken@example.test", byHostSelector);
 
+    // Clearing: every string "includes" an empty one, so only equality says the
+    // field was emptied.
+    const cleared = await executeTool(env, "fill", { label: "Promo code", value: "" });
+    check("closed root: an empty value clears the field and is filled", cleared === `Filled ${into}.` && (await appFrame(page).evaluate(() => (document.getElementById("closedclear") as unknown as { value: string }).value)) === "", cleared);
+
     // The exact name wins over an earlier element whose name merely contains it.
     const exact = await executeTool(env, "fill", { label: "email", value: "exact@example.test" });
     check("exact name first: not the earlier 'Billing email'", exact === `Filled ${into}.` && (await echo(page, "exact")) === "exact@example.test" && (await echo(page, "billing")) === "", exact);
@@ -197,6 +206,11 @@ async function main() {
     // The press that gives focus lands on the button — once; a space typed
     // into it would be a second.
     check("…and the typing did not press the button again", (await appFrame(page).evaluate(() => document.body.dataset.rootpresses ?? "0")) === "1");
+
+    // The clear keys did not reach the input: its old text is still there, and
+    // an empty value must not be matched by "includes".
+    const kept = await executeTool(env, "fill", { label: "Referral code", value: "" });
+    check("closed root: a field that kept its old value is not claimed as cleared", !kept.startsWith("Filled"), kept);
 
     // The host page is not where the keys go when the field is in the frame.
     check("the host page's own field was not touched", (await page.inputValue("#admin-search")) === "");
