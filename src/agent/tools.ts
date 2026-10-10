@@ -1804,7 +1804,7 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
 
   const label = input.label ? String(input.label) : undefined;
   // CHE-373: the page first, then each embedded frame.
-  const located = await locateAcrossFrames(env, "fill", input, async (scope) =>
+  const first = await locateAcrossFrames(env, "fill", input, async (scope) =>
     input.selector
       ? scope.locator(String(input.selector))
       : label
@@ -1814,7 +1814,17 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
             .or(scope.getByRole("textbox", { name: label }))
         : scope.locator("input:visible"),
   );
-  if (typeof located === "string") return located;
+  if (typeof first === "string") return first;
+  // CHE-439: a field whose name is an attribute of a custom element (a Polaris
+  // web component's `label`) has no label the page-level lookups above can
+  // see: the real input is inside the element's shadow root. Only when those
+  // found nothing, so a page that resolved before resolves exactly as before.
+  let located: Located = first;
+  if (label && !input.selector && !(await hasMatch(first.locator))) {
+    const viaHost = await locateAcrossFrames(env, "fill", input, async (scope) => componentNamed(scope, label));
+    if (typeof viaHost === "string") return viaHost;
+    if (await hasMatch(viaHost.locator)) located = viaHost;
+  }
   if (usedSecret) env.activeAccount = accounts[accounts.length - 1];
   // Fingerprint only (sha256 prefix + length), never the value: lets a cred
   // mismatch be localized to save vs store vs fill without exposing anything.
@@ -1823,13 +1833,17 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     if (password) console.log(`[fill] substituting test password for "${account}": ${credentialFingerprint(password)}`);
   }
 
-  const field = located.locator.first();
+  // CHE-439: what the model named may be a custom element and the input a
+  // shadow root inside it. The guards below look at both.
+  const asNamed = located.locator.first();
+  const field = await realFieldIn(asNamed);
   const fixtureRefusal = await env.extension?.guardFixtureControl(field);
   if (fixtureRefusal) return fixtureRefusal;
   // CHE-401: the field itself — how it and the widget it sits in are marked up
   // ("g-recaptcha-response", a .h-captcha container) — whatever it was called.
   const fieldSeen = await controlSeen(field);
-  const answerTo = fieldSeen ? challengeAnswerIn(fieldSeen) : null;
+  const hostSeen = field === asNamed ? null : await controlSeen(asNamed);
+  const answerTo = (fieldSeen ? challengeAnswerIn(fieldSeen) : null) ?? (hostSeen ? challengeAnswerIn(hostSeen) : null);
   if (answerTo) {
     console.warn(`[fill] refused a human-verification field: ${fieldCalled} (${answerTo})`);
     noteHumanCheck(env, answerTo);
@@ -1852,7 +1866,20 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     return usedSecret ? `Filled${where} (credential substituted server-side).` : `Filled${where}.`;
   };
 
+  // CHE-439: no input to be reached — a custom element whose input is in a
+  // closed shadow root. Typing is what a person does there.
+  const component = (await isTextControl(field)) === false;
+  if (component && usedSecret) {
+    // The credential write checks, inside the document and in the same task,
+    // that it is on an origin the run may act on (WRITE_SECRET). Keys sent
+    // from here cannot be held to that, so a secret is never typed this way.
+    return recordUndriven(env, "fill", named, new Error(`the input of ${named} is not reachable, and a credential is not typed by keys`));
+  }
   if (usedSecret) return fillSecret(env, field, value, named, landed);
+  if (component) {
+    const failed = await typeIntoComponent(env, field, value);
+    return failed ? recordUndriven(env, "fill", named, new Error(failed)) : landed();
+  }
 
   try {
     await field.fill(value, { timeout: 8_000 });
@@ -1897,6 +1924,84 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     }
   }
   return landed();
+}
+
+// ─── CHE-439: a field whose input is inside a custom element ─────────────────
+//
+// An embedded app built from web components (Shopify's Polaris: <s-text-field
+// label="Email">) keeps its real <input> in the element's shadow root, and the
+// name the person reads is an attribute of the element. Playwright looks
+// through an OPEN shadow root with a CSS selector but not with a label, and
+// not at all through a CLOSED one: four steps of run cmuy23f79000btg1r7x3x0j6g
+// ended "we could not drive the text field". The text a person types here is
+// harmless, so the answer is to type: find the element by its name, the real
+// input inside it when the root is open, and the keys a person would press
+// when it is closed.
+
+const NAME_ATTRIBUTES = ["label", "aria-label", "placeholder", "title", "name"];
+
+// CSS string literal: the label comes from the model.
+const cssString = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, " ")}"`;
+
+function componentNamed(scope: LocatorScope, label: string): Locator {
+  return scope.locator(`:is(${NAME_ATTRIBUTES.map((a) => `[${a}*=${cssString(label)} i]`).join(",")})`);
+}
+
+const TEXT_INSIDE =
+  "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):not([type=file]):not([type=image]), textarea, [contenteditable=''], [contenteditable=true]";
+
+// true: something Playwright's fill() takes; false: something it does not;
+// null: could not be asked (a stub in a script).
+async function isTextControl(field: Locator): Promise<boolean | null> {
+  if (typeof field?.evaluate !== "function") return null;
+  return field
+    .evaluate(
+      (el) =>
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement ||
+        (el as HTMLElement).isContentEditable,
+      undefined,
+      { timeout: 3_000 },
+    )
+    .catch(() => null);
+}
+
+// The input inside, when what was named is a component whose shadow root is open.
+async function realFieldIn(named: Locator): Promise<Locator> {
+  if ((await isTextControl(named)) !== false) return named;
+  const inside = named.locator(TEXT_INSIDE);
+  return (await hasMatch(inside)) ? inside.first() : named;
+}
+
+// Press and type into a component whose input cannot be reached. Null when the
+// keys landed; otherwise the reason, in Playwright's vocabulary (machinery —
+// recordUndriven keeps it off the customer's page).
+async function typeIntoComponent(env: ToolEnv, host: Locator, value: string): Promise<string | null> {
+  const focused = () => host.evaluate((el) => el.matches(":focus-within"), undefined, { timeout: 2_000 }).catch(() => false);
+  try {
+    // The press lands on whatever the element shows at its middle — its input.
+    await host.click({ timeout: 3_000 });
+  } catch (err) {
+    return (err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 200);
+  }
+  // Keys go to whatever holds focus. Typed with nothing focused here they would
+  // land somewhere else on the page, and the answer would be a lie.
+  if (!(await focused())) return "the element took no focus when pressed, so there was nowhere to type";
+  try {
+    await env.page.keyboard.press("ControlOrMeta+a");
+    if (value === "") await env.page.keyboard.press("Backspace");
+    // insertText does not press Enter for a line break, which would submit.
+    else if (/[\r\n]/.test(value)) await env.page.keyboard.insertText(value);
+    else await env.page.keyboard.type(value, { delay: 15 });
+  } catch (err) {
+    return (err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 200);
+  }
+  // A component usually exposes what it holds as `value`. When it does not, the
+  // keys landing in a focused element is all there is to see.
+  const held = await host.evaluate((el) => (typeof (el as { value?: unknown }).value === "string" ? (el as unknown as { value: string }).value : null), undefined, { timeout: 2_000 }).catch(() => null);
+  if (held !== null && !held.includes(value)) return "the typed value did not stick";
+  return null;
 }
 
 // CHE-373: a substituted credential is written by one function running inside
