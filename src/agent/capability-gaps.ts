@@ -18,7 +18,7 @@ import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
 import type { RouteRefusal } from "./llm";
-import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, type GapClass } from "./gap-classes";
+import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, MACHINE_DECIDED_CLASSES, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
 
 export interface CapabilityNote {
@@ -251,8 +251,14 @@ export async function fileCapabilityGaps(
 
   // CHE-440: rows written before settleStepGap refused a judgement, or by a
   // walker whose words only the stored copy keeps. The stored class is not
-  // consulted: the Custlo step carried verification_code and was still not one.
-  const actionGaps = gaps.filter((g) => !isJudgementNotAction(gapEvidenceText(g.label, g.attempted, g.observed)));
+  // consulted when it came from the text rules: the Custlo step carried
+  // verification_code and was still not one. A class the tools decided from a
+  // machine failure stands whatever the wording says.
+  const actionGaps = gaps.filter(
+    (g) =>
+      (isGapClass(g.gapClass) && MACHINE_DECIDED_CLASSES.includes(g.gapClass)) ||
+      !isJudgementNotAction(gapEvidenceText(g.label, g.attempted, g.observed)),
+  );
 
   const allGaps = [...actionGaps, ...orphanGaps, ...unpricedGaps, ...unfunnelledGaps, ...(opts.extraGaps ?? []).map(gap => ({ ...gap, actions: null, journey: { title: "Extension verification" } }))];
   if (allGaps.length === 0) return [];

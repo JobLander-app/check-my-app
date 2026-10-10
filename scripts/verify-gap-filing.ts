@@ -857,6 +857,20 @@ async function main() {
       created.map((f) => `${f.title} ${f.dedupKey}`).join(" | "),
     );
     check("the label step's words never reach the ticket", !JSON.stringify(second.filed).includes("Custlo"));
+
+    // A class the tools decided from a machine failure is evidence, whatever
+    // the stored words say: the filer keeps it. Only a text-derived class is
+    // dropped for judgement wording.
+    for (const cls of ["undriven_control", "captcha"] as const) {
+      const w = stubWorld([{ ...CUSTLO, gapClass: cls }], { targetUrl: "https://custlo.example" });
+      await fileCapabilityGaps(w.env, "run-1", { board: w.board });
+      const filed = w.filed.filter((f) => f.kind === "created");
+      check(
+        `a stored ${cls} row with judgement wording still files ${cls}`,
+        filed.length === 1 && filed[0].dedupKey === keyFor(cls),
+        filed.map((f) => `${f.title} ${f.dedupKey}`).join(" | "),
+      );
+    }
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");

@@ -187,6 +187,13 @@ export function isJudgementNotAction(text: string): boolean {
   return NO_EVIDENCE.test(text) && BOTH_WAYS.test(text);
 }
 
+// The classes the tools decide from a machine failure at report time
+// (coerceUndrivenControl, coerceStoreLocked, human-check.ts), never from the
+// walker's words. A stored row carrying one of these is evidence of what the
+// hands could not do, so its wording cannot make it a judgement; any other
+// stored class came from the text rules and says nothing the text does not.
+export const MACHINE_DECIDED_CLASSES: readonly GapClass[] = ["undriven_control", "captcha"];
+
 const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
   { match: /new tab|target=_?"?_blank|could not follow|cannot follow|opens? in a new/i, cls: "new_tab" },
   { match: /oauth|continue with google|social login|sign in with (google|github|apple)/i, cls: "oauth" },
