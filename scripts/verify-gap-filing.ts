@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { AgentEnv } from "@/agent/env";
 import { fileCapabilityGaps, type GapBoard } from "@/agent/capability-gaps";
-import { GAP_CLASSES, classifyGap, gapEvidenceText, settleStepGap, type GapClass, type GapEvidence } from "@/agent/gap-classes";
+import { GAP_CLASSES, classifyGap, gapEvidenceText, isJudgementNotAction, settleStepGap, type GapClass, type GapEvidence } from "@/agent/gap-classes";
 import type { RecordedAction, ReportedStep } from "@/agent/tools";
 import { productizeStep } from "@/agent/tools";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
@@ -778,6 +778,85 @@ async function main() {
     check("seed: …and the script reports it instead of claiming success", seedProblem(takenRow) !== null);
     check("seed: a link that is not open is reported", seedProblem({ ...afterFirst[0], status: "suppressed" }) !== null);
     db.close();
+  }
+
+  // 9 — CHE-440: run cmuy23f79000btg1r7x3x0j6g on an OTP/SMS login app. The
+  // step is a judgement about a brand label, written skipped / our_capability
+  // with gapClass verification_code, and opened CHE-430 "cannot complete an
+  // emailed/SMS verification code step". It must file nothing, while a step
+  // that really could not receive the SMS code still files verification_code.
+  {
+    const CUSTLO: StoredStep = {
+      label: "Post-sign-in destination options – stray brand name 'Custlo'",
+      attempted:
+        "After the OTP sign-in, looked at the destination options for the stray brand name 'Custlo' and checked whether it is a defect.",
+      observed:
+        "There is no visual or network evidence in the provided material confirming or denying that label exists in the product.",
+      gapClass: "verification_code",
+      actions: null,
+      journey: { title: "Sign in with a phone number" },
+    };
+    const NO_SMS: StoredStep = {
+      label: "Enter the SMS code to finish signing in",
+      attempted: "Requested a sign-in code by SMS and tried to enter it.",
+      observed: "The checker could not receive the SMS code, so the sign-in could not be completed.",
+      gapClass: null,
+      actions: null,
+      journey: { title: "Sign in with a phone number" },
+    };
+
+    // Words: the product's nouns alone are not the class; the walker's failure words are.
+    check("words: a label step on an OTP app is not verification_code", classifyGap({ text: gapEvidenceText(CUSTLO.label, CUSTLO.attempted, CUSTLO.observed) }) !== "verification_code");
+    check("words: 'OTP' as a product noun alone is not the class", classifyGap({ text: "The OTP login page shows a different brand name." }) !== "verification_code");
+    check("words: 'verification code' as a product noun alone is not the class", classifyGap({ text: "The verification code field is labelled in lower case." }) !== "verification_code");
+    for (const text of [
+      "The checker could not receive the SMS code.",
+      "Could not enter the code: no way to read the one it sent.",
+      "A code was sent to the phone number; the step could not go on.",
+      "A verification code was emailed; MFA required",
+      "The sign-in asks for a one-time password and the code was texted to the phone.",
+      "Two-factor challenge stopped the sign-in.",
+    ]) {
+      check(`words: the walker's failure phrase still is verification_code — ${text}`, classifyGap({ text }) === "verification_code", classifyGap({ text }));
+    }
+    check("words: 'footprint' is still not an OTP", classifyGap({ text: "The footprint chart did not load." }) === "unclassified");
+
+    // The judgement predicate: both-ways phrasing only.
+    check("a judgement with no evidence either way is recognised", isJudgementNotAction(gapEvidenceText(CUSTLO.observed)));
+    check("a step that could not receive a code is not a judgement", !isJudgementNotAction(gapEvidenceText(NO_SMS.label, NO_SMS.attempted, NO_SMS.observed)));
+    check("'no evidence' alone is not a judgement", !isJudgementNotAction("There is no evidence the slider moved."));
+    check("'confirming or denying' with evidence in hand is not a judgement", !isJudgementNotAction("Evidence was found confirming or denying the claim."));
+
+    // Report time: the walker's judgement is not our_capability, and carries no class.
+    const judged: { unverifiedReason?: string | null; observed: string; gapClass?: GapClass } = { unverifiedReason: "our_capability", observed: CUSTLO.observed ?? "" };
+    settleStepGap({ reported: { label: CUSTLO.label, attempted: CUSTLO.attempted ?? "", observed: CUSTLO.observed ?? "" }, step: judged, machineClass: undefined, actionTrail: [], env: { targetOrigin: "https://custlo.example" } });
+    check("report time: a judgement is no longer our_capability", judged.unverifiedReason === "not_applicable", String(judged.unverifiedReason));
+    check("report time: …and files under no class", judged.gapClass === undefined, String(judged.gapClass));
+
+    const real: typeof judged = { unverifiedReason: "our_capability", observed: NO_SMS.observed ?? "" };
+    settleStepGap({ reported: { label: NO_SMS.label, attempted: NO_SMS.attempted ?? "", observed: NO_SMS.observed ?? "" }, step: real, machineClass: undefined, actionTrail: [], env: { targetOrigin: "https://custlo.example" } });
+    check("report time: the real code step stays our_capability / verification_code", real.unverifiedReason === "our_capability" && real.gapClass === "verification_code", `${real.unverifiedReason}/${real.gapClass}`);
+
+    const machine: typeof judged = { unverifiedReason: "our_capability", observed: CUSTLO.observed ?? "" };
+    settleStepGap({ reported: { observed: CUSTLO.observed ?? "" }, step: machine, machineClass: "undriven_control", actionTrail: [], env: { targetOrigin: "https://custlo.example" } });
+    check("report time: a class decided from a machine failure stands", machine.unverifiedReason === "our_capability" && machine.gapClass === "undriven_control");
+
+    // The real filer, the step exactly as stored (class included) — files nothing.
+    const first = stubWorld([CUSTLO], { targetUrl: "https://custlo.example" });
+    const firstNotes = await fileCapabilityGaps(first.env, "run-1", { board: first.board });
+    check("the Custlo step files nothing", first.filed.length === 0 && first.comments.length === 0 && firstNotes.length === 0, first.filed.map((f) => f.title).join(" | "));
+
+    // …and the real "could not receive the SMS code" step files verification_code,
+    // alone, even beside the label step.
+    const second = stubWorld([CUSTLO, NO_SMS], { targetUrl: "https://custlo.example" });
+    await fileCapabilityGaps(second.env, "run-1", { board: second.board });
+    const created = second.filed.filter((f) => f.kind === "created");
+    check(
+      "the SMS-code step files verification_code, and only it",
+      created.length === 1 && created[0].dedupKey === PROD_KEYS.verification_code.key && created[0].title?.endsWith(GAP_CLASSES.verification_code.label) === true,
+      created.map((f) => `${f.title} ${f.dedupKey}`).join(" | "),
+    );
+    check("the label step's words never reach the ticket", !JSON.stringify(second.filed).includes("Custlo"));
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
