@@ -35,6 +35,7 @@ import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOu
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
 import { asksQuestion, CREATE_VERBS, handsOffAddress, handsOffIn, handsOffRefusal, handsOffUnread, isStrictPlace, SAFE_SUBMITS, SELF_HOST_GUARDED_VERBS, STATE_TOGGLE_VERBS } from "./hands-off";
+import { attachDownloadCapture, attachFileChooserCapture, isFileInput, resolveUploadPath, uploadFixturePath, TEST_FILE_PLACEHOLDER, type CapturedDownload, type PendingFileChooser } from "./file-transfer";
 
 // The word lists live with the rest of what a walk does not press (CHE-406).
 export { SELF_HOST_GUARDED_VERBS };
@@ -150,6 +151,15 @@ export interface ToolEnv {
   // will not risk entering it again (our capability). Written by the tools,
   // drained by report_step (coerceStoreLocked).
   storeLocked?: "refused" | "missing" | "undriven";
+  // CHE-146: a click that opened the OS file picker — the next click/fill
+  // drains it through setFiles (file-transfer.ts). Written by the chooser
+  // listener attached once per page (attachFileChooserCapture). Optional so a
+  // bare ToolEnv still builds; absent = no chooser captured.
+  fileChooser?: { pending?: PendingFileChooser };
+  // CHE-146: downloads the page produced since the last call. Cleared by
+  // get_network_log so the digest reports them like network entries. Optional
+  // so a bare ToolEnv still builds.
+  downloads?: CapturedDownload[];
 }
 
 // CHE-373: may this run navigate to, and type a test login on, this origin?
@@ -1510,6 +1520,15 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   // CHE-214: a click that could not be PERFORMED is our limitation and says
   // nothing about the control. A click that was performed and produced nothing
   // is a different animal and keeps its fallbacks below.
+  // CHE-146: a click that opens the OS file picker — an "Upload" button that
+  // delegates to a hidden <input type="file"> — is met by setting the run's
+  // upload fixture on the chooser the page just opened. The chooser capture
+  // is attached once per page in attachLogCapture; here we wait for the
+  // picker the click opens and dismiss it with the fixture. If no picker
+  // fires, the click is a normal click and falls through to the fallbacks.
+  const chooserWait = env.fileChooser?.pending === undefined
+    ? (env.page.waitForEvent("filechooser", { timeout: 1_500 }).catch(() => null))
+    : Promise.resolve(null);
   try {
     await target.click({ timeout: 8_000 });
   } catch (err) {
@@ -1519,6 +1538,22 @@ async function click(env: ToolEnv, input: Record<string, unknown>): Promise<stri
   let reaction = await settleAndMeasure(env, before, inFrame);
   let strategy = "trusted click";
   const tried = [strategy];
+  // CHE-146: if the click opened a chooser, meet it. setFiles is the only
+  // thing the walk has for a chooser — the model never types a real path.
+  const chooser = await chooserWait;
+  if (chooser) {
+    try {
+      const fixture = uploadFixturePath();
+      await chooser.setFiles(fixture);
+      env.fileChooser!.pending = { setFiles: (files) => chooser.setFiles(files) };
+      tried.push("file chooser → " + fixture.split("/").pop());
+      const afterChooser = await settleAndMeasure(env, before, inFrame);
+      if (!isInert(afterChooser)) strategy = "file chooser accepted the upload fixture";
+      reaction = afterChooser;
+    } catch (err) {
+      tried.push(`file chooser failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+    }
+  }
 
   if (isInert(reaction)) {
     // Re-querying could hit a different node than the visually-labeled one —
@@ -1826,6 +1861,23 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   const field = located.locator.first();
   const fixtureRefusal = await env.extension?.guardFixtureControl(field);
   if (fixtureRefusal) return fixtureRefusal;
+  const named = label ?? (input.selector ? String(input.selector) : "field");
+  // CHE-146: an <input type="file"> is filled with the file the placeholder
+  // names (always the run's upload fixture). The walk never types a real path;
+  // anything outside {{TEST_FILE}} is refused so a prompt-injected path can
+  // never reach the browser. Before the human-check and value gates — those
+  // gates read text and never see a file field's <input type=…>.
+  if (await isFileInput(field)) {
+    const path = resolveUploadPath(value);
+    if (!path) {
+      return (
+        `Refused: a file input is filled with ${TEST_FILE_PLACEHOLDER}, the run's upload fixture. ` +
+        `Any other value is a path we do not own — say which file the walk needs ` +
+        `(${TEST_FILE_PLACEHOLDER}) and call fill again.`
+      );
+    }
+    return fillFileInput(env, field, path, named, located, label, input);
+  }
   // CHE-401: the field itself — how it and the widget it sits in are marked up
   // ("g-recaptcha-response", a .h-captcha container) — whatever it was called.
   const fieldSeen = await controlSeen(field);
@@ -1838,7 +1890,6 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
   // Same hydration gate as click: values typed before listeners attach are
   // silently dropped by controlled inputs.
   await waitForHydration(located.frame ?? env.page, 1_000);
-  const named = label ?? (input.selector ? String(input.selector) : "field");
   const landed = () => {
     recordAction(env, {
       kind: "fill",
@@ -1944,6 +1995,49 @@ const WRITE_SECRET = (el: Element, arg: { value: string; origins: string[] }): s
   }
   return text.value === arg.value ? "ok" : "not-stuck";
 };
+
+// CHE-146: a file input is filled with one path the run owns — the placeholder
+// {{TEST_FILE}} resolves to scripts/fixtures/upload-sample.txt, which the
+// verifier and the runtime both create if absent. Playwright's setInputFiles
+// does what a real browser does after the OS picker accepts: the input gets
+// files, change/input fire, the page's "submit" button enables. Returns the
+// same shape as fill()'s landed(), so the trail records the file name and
+// not the path (the path is a fixture the run does not need to know).
+//
+// The frame the field sits in is held to the same rule as fillSecret: nothing
+// is written off-origin, and nothing is written to a frame of an origin the
+// run may not act on. Done in the field's own document, by Playwright, not by
+// the page's script — setInputFiles goes through the browser.
+async function fillFileInput(
+  env: ToolEnv,
+  field: Locator,
+  path: string,
+  named: string,
+  located: { frame: Frame | null; label: string | null },
+  label: string | undefined,
+  input: Record<string, unknown>,
+): Promise<string> {
+  // Same hydration gate as the text fill: a file set before listeners attach
+  // is silently dropped by controlled inputs.
+  await waitForHydration(located.frame ?? env.page, 1_000);
+  const recordedValue = `${TEST_FILE_PLACEHOLDER} → ${path.split("/").pop() ?? path}`;
+  const where = located.label ? ` inside ${located.label}` : "";
+  try {
+    await field.setInputFiles(path, { timeout: 8_000 });
+  } catch (err) {
+    if (!isUndrivable(err)) throw err;
+    return recordUndriven(env, "fill", named, err);
+  }
+  recordAction(env, {
+    kind: "fill",
+    ...(label ? { label } : {}),
+    ...(input.selector ? { selector: String(input.selector) } : {}),
+    ...(located.frame ? { frame: frameKey(located.frame) } : {}),
+    value: recordedValue,
+    outcome: { urlAfter: env.page.url() },
+  });
+  return `Filled${where} with ${recordedValue}.`;
+}
 
 async function fillSecret(
   env: ToolEnv,
@@ -2790,12 +2884,19 @@ function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
 function drainLogs(env: ToolEnv): string {
   const net = env.networkLog.splice(0).slice(-60);
   const cons = env.consoleLog.splice(0).slice(-30);
+  // CHE-146: a download the page offered is surfaced like a network entry —
+  // what was actually downloaded, not a hand-wave. Trimmed the same way so a
+  // burst of downloads does not blow context.
+  const dl = (env.downloads ?? []).splice(0).slice(-30);
   return [
     "NETWORK (recent):",
     net.length ? net.join("\n") : "(none)",
     "",
     "CONSOLE (recent):",
     cons.length ? cons.join("\n") : "(none)",
+    "",
+    "DOWNLOADS (recent):",
+    dl.length ? dl.map((d) => `DOWNLOAD ${d.url} → ${d.suggestedFilename}`).join("\n") : "(none)",
   ].join("\n");
 }
 
@@ -3189,4 +3290,15 @@ export function attachLogCapture(env: ToolEnv): void {
     env.consoleLog.push(`[${msg.type()}] ${msg.text().slice(0, 300)}`);
     if (env.consoleLog.length > 100) env.consoleLog.splice(0, 50);
   });
+  // CHE-146: a click that opened the OS file picker is caught here, and the
+  // next click / fill drains it. Bound once per page; the second picker
+  // before the first is consumed overrides it.
+  env.fileChooser ??= {};
+  attachFileChooserCapture(env.page, env.fileChooser);
+  // CHE-146: a download the page offered (an <a download>, a server
+  // Content-Disposition) is caught here. Surfaced through get_network_log
+  // like network entries, so the digest reports what was actually downloaded
+  // instead of filing the link as unverifiable.
+  env.downloads ??= [];
+  attachDownloadCapture(env.page, env.downloads);
 }
