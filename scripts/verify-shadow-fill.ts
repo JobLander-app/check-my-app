@@ -45,7 +45,13 @@ const COMPONENT = `
       input.type = this.getAttribute("type") || "text";
       input.value = this.getAttribute("initial") || "";
       if (this.hasAttribute("dead")) input.disabled = true;
-      root.append(input);
+      // A component with a control beside its input (a clear / reveal button),
+      // in the same root: it takes the focus as readily as the input does.
+      // "buttononly" is the same component with nothing to type into.
+      const button = document.createElement("button");
+      button.textContent = "x";
+      button.addEventListener("click", () => { document.body.dataset.rootbutton = "yes"; document.body.dataset.rootpresses = String(Number(document.body.dataset.rootpresses || 0) + 1); });
+      root.append(...(this.hasAttribute("buttononly") ? [button] : this.hasAttribute("withbutton") ? [input, button] : [input]));
       input.addEventListener("input", () => { document.getElementById("echo-" + this.id).textContent = input.value; });
       // A component usually exposes what it holds. Some do not.
       if (this.hasAttribute("readable")) Object.defineProperty(this, "value", { get: () => input.value });
@@ -61,11 +67,15 @@ const PAGES: Record<string, string> = {
     <input aria-label="Admin search" id="admin-search">
     <iframe name="app-iframe" src="${APP}/" width="800" height="500"></iframe>`,
   [`${APP}/`]: `<!doctype html><title>Approved customers</title><h2>Approved customers</h2>
+    ${field("billing", 'mode="closed" label="Billing email" readable')}
+    ${field("exact", 'mode="closed" label="Email" readable')}
     ${field("open", 'mode="open" label="Approved customers" readable initial="old"')}
     ${field("openblind", 'mode="open" placeholder="Customer tags"')}
     ${field("closed", 'mode="closed" label="Customer email" readable initial="old"')}
     ${field("closedblind", 'mode="closed" label="Internal note"')}
     ${field("closeddead", 'mode="closed" label="Locked field" dead')}
+    ${field("closedbutton", 'mode="closed" label="Coupon code" withbutton')}
+    ${field("closedbuttonly", 'mode="closed" label="Gift note" buttononly')}
     ${field("openkey", 'mode="open" label="Open key" type="password"')}
     ${field("closedkey", 'mode="closed" label="Closed key" type="password"')}
     <button onclick="document.body.dataset.pressed='yes'">Save</button>
@@ -158,6 +168,19 @@ async function main() {
     const byHostSelector = await executeTool(env, "fill", { selector: "x-field#closed", value: "ken@example.test" });
     check("closed root: a selector naming the element is typed into too", byHostSelector === `Filled ${into}.` && (await echo(page, "closed")) === "ken@example.test", byHostSelector);
 
+    // The exact name wins over an earlier element whose name merely contains it.
+    const exact = await executeTool(env, "fill", { label: "email", value: "exact@example.test" });
+    check("exact name first: not the earlier 'Billing email'", exact === `Filled ${into}.` && (await echo(page, "exact")) === "exact@example.test" && (await echo(page, "billing")) === "", exact);
+
+    // One closed root, an input and a button: the keys must reach the input.
+    const withButton = await executeTool(env, "fill", { label: "Coupon code", value: "SAVE 10" });
+    check(
+      "closed root holding an input and a button: the input got the value",
+      withButton === `Filled ${into}.` && (await echo(page, "closedbutton")) === "SAVE 10",
+      withButton,
+    );
+    check("…and the button in that root was not pressed", (await appFrame(page).evaluate(() => document.body.dataset.rootpresses ?? "0")) === "0");
+
     check("nothing so far was recorded as a control we could not drive", undriven() === 0, JSON.stringify(env.undrivenControls));
 
     // A field that takes nothing must not be reported as filled: a "Filled"
@@ -166,6 +189,14 @@ async function main() {
     check("closed root that takes no focus: not claimed as filled", !dead.startsWith("Filled"), dead);
     check("…and said to be our limit, never the product's", /our_capability/.test(dead) && undriven() === 1, dead);
     check("…and nothing was typed anywhere", (await echo(page, "closeddead")) === "" && (await echo(page, "closed")) === "ken@example.test");
+
+    // A root whose only focusable part is a button: focus is there, typing is
+    // not possible, and a space typed would press it. Not "Filled".
+    const buttonOnly = await executeTool(env, "fill", { label: "Gift note", value: "a b c" });
+    check("closed root with only a button: not claimed as filled", !buttonOnly.startsWith("Filled") && /our_capability/.test(buttonOnly), buttonOnly);
+    // The press that gives focus lands on the button — once; a space typed
+    // into it would be a second.
+    check("…and the typing did not press the button again", (await appFrame(page).evaluate(() => document.body.dataset.rootpresses ?? "0")) === "1");
 
     // The host page is not where the keys go when the field is in the frame.
     check("the host page's own field was not touched", (await page.inputValue("#admin-search")) === "");
