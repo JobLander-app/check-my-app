@@ -161,18 +161,39 @@ async function main() {
     // The ticket exists but recording it fails: the row must never go back to open.
     const late = await say(member, { run_id: "pubA" }, "other", "Ticket made, row not updated");
     const lateId = (late as { id: string }).id;
-    const realUpdate = db.feedback.update.bind(db.feedback);
+    const realUpdateMany = db.feedback.updateMany.bind(db.feedback);
     let blocked = 0;
-    (db.feedback as unknown as { update: unknown }).update = (args: { data: { status?: string } }) => {
+    (db.feedback as unknown as { updateMany: unknown }).updateMany = (args: { data: { status?: string } }) => {
       if (args.data.status === "filed") { blocked++; return Promise.reject(new Error("D1 hiccup")); }
-      return realUpdate(args as never);
+      return realUpdateMany(args as never);
     };
     console.warn = () => {};
     await fileOpenFeedback(env, { board: board(), now: new Date(t0.getTime() + 2 * CLAIM_LEASE_MS) });
     console.warn = warn;
-    (db.feedback as unknown as { update: unknown }).update = realUpdate;
+    (db.feedback as unknown as { updateMany: unknown }).updateMany = realUpdateMany;
     const lateRow = await db.feedback.findUnique({ where: { id: lateId } });
     eq("a ticket that exists never sends its report back to open", [lateRow?.status, blocked, drafts.length], ["filing", 2, 8]);
+
+    // A tick slower than its lease: while its tracker call hangs, another tick
+    // takes the row over. The slow one failing must not undo that claim.
+    const slow = await say(member, { run_id: "pubA" }, "other", "Slow tick");
+    const slowId = (slow as { id: string }).id;
+    const takeover = new Date(t0.getTime() + 10 * CLAIM_LEASE_MS);
+    const slowBoard = {
+      self: {}, baseUrl: "https://checkmyapp.dev",
+      tracker: {
+        createIssue: async () => {
+          await db.feedback.update({ where: { id: slowId }, data: { claimedAt: takeover } });
+          throw new Error("Linear timed out");
+        },
+        addComment: async () => {}, getIssueOutcome: async () => "open" as const,
+      },
+    } as unknown as GapBoard;
+    console.warn = () => {};
+    await fileOpenFeedback(env, { board: slowBoard, now: new Date(t0.getTime() + 3 * CLAIM_LEASE_MS) });
+    console.warn = warn;
+    const slowRow = await db.feedback.findUnique({ where: { id: slowId } });
+    eq("a slow tick's failure leaves the claim of the tick that took over", [slowRow?.status, slowRow?.claimedAt?.toISOString()], ["filing", takeover.toISOString()]);
     const stepDraft = drafts.find((d) => d.description.includes("Germany can be added fine"))!;
     check("a ticket carries the words verbatim, the author and the verdict", Boolean(stepDraft) &&
       stepDraft.description.includes("> Germany can be added fine") &&
@@ -196,10 +217,11 @@ async function main() {
     eq("…an app is not a place to report on", parse(await as("member").report_check_mistake({ app_id: "a1", reason: "other", text: "x" } as never)).code, "invalid_input");
     const listed = parse(await as("reader").list_check_mistakes({ app_id: "a1" }));
     check("list_check_mistakes: a reader reads them, each with its run_id or scenario_id",
-      listed.ok && listed.reports.length === 9 && listed.reports.every((r: { run_id: string | null; scenario_id: string | null }) => r.run_id || r.scenario_id),
+      listed.ok && listed.reports.length === 10 && listed.reports.every((r: { run_id: string | null; scenario_id: string | null }) => r.run_id || r.scenario_id),
       `${listed.reports?.length} reports`);
-    const review = readFileSync("src/lib/review.ts", "utf8");
-    check("get_review gives every journey its scenario_id", review.includes("scenario_id: j.appJourneyId ?? null"));
+    const review = parse(await as("reader").get_review({ run_id: "pubA" }));
+    eq("get_review: each journey carries its scenario_id, null without one",
+      (review.journeys ?? []).map((j: { scenario_id: string | null }) => j.scenario_id), ["s1", null]);
   } finally {
     await real.dispose();
   }

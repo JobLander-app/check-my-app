@@ -47,26 +47,30 @@ export async function fileOpenFeedback(
       data: { status: "filing", claimedAt: now },
     });
     if (claimed.count !== 1) continue;
+    // Every write below is fenced on this tick's own claim: a tick slower than
+    // the lease must not undo the claim of the tick that took the row over.
+    const mine = { id: row.id, status: "filing", claimedAt: now };
     let identifier: string | null = null;
     try {
       const issue = await board.tracker.createIssue(await draftFor(env, board, row));
       identifier = issue.identifier;
     } catch (err) {
       failed++;
-      await env.db.feedback.update({ where: { id: row.id }, data: { status: "open", claimedAt: null } }).catch(() => {});
+      await env.db.feedback.updateMany({ where: mine, data: { status: "open", claimedAt: null } }).catch(() => {});
       console.warn(`[feedback] could not file ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
     // The ticket exists. Record it. If even that fails twice, the row stays
     // claimed, never open; after the lease it is filed again, and this log
     // line names the first ticket so triage can fold the two together.
-    let recorded = false;
-    for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+    let recorded: "yes" | "lost" | "failed" = "failed";
+    for (let attempt = 0; attempt < 2 && recorded === "failed"; attempt++) {
       recorded = await env.db.feedback
-        .update({ where: { id: row.id }, data: { status: "filed", issueIdentifier: identifier } })
-        .then(() => true, () => false);
+        .updateMany({ where: mine, data: { status: "filed", issueIdentifier: identifier } })
+        .then((r) => (r.count === 1 ? "yes" : "lost"), () => "failed" as const);
     }
-    if (recorded) filed.push(identifier);
+    if (recorded === "yes") filed.push(identifier);
+    else if (recorded === "lost") console.warn(`[feedback] ${row.id} was taken over by another tick after ${identifier} was made — a duplicate for triage`);
     else console.warn(`[feedback] filed ${row.id} as ${identifier} but could not record it; the row stays claimed`);
   }
   return { filed, failed };
