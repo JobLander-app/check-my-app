@@ -24,6 +24,7 @@ async function main() {
   check("…of mender-agent.yml in this repository, on main",
     calls[0]?.url === `https://api.github.com/repos/${MENDER_REPO}/actions/workflows/${MENDER_WORKFLOW}/dispatches` &&
       JSON.parse(String(calls[0]?.init.body)).ref === "main" && calls[0]?.init.method === "POST");
+  check("…bounded in time, so a stalled GitHub cannot hold the scheduler's tick", calls[0]?.init.signal instanceof AbortSignal);
 
   let threw = false;
   try {

@@ -27,6 +27,8 @@ export async function dispatchMender(
       "User-Agent": "checkmyapp-scheduler",
     },
     body: JSON.stringify({ ref: "main" }),
+    // A stalled GitHub must not hold the scheduler's tick (CodeRabbit, #307).
+    signal: AbortSignal.timeout(5_000),
   });
   if (res.status !== 204) throw new Error(`GitHub answered ${res.status} to the Mender dispatch`);
   return "dispatched";
