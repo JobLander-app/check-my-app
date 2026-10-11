@@ -11,6 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { teamBalance, usd } from "@/lib/plans";
 import { balanceLine } from "@/lib/billing-page";
+import { maskKey } from "@/lib/byok";
+import { decryptSecret } from "@/lib/crypto";
+import { teamHasFeature } from "@/lib/team-features";
+import { TeamModelKey } from "@/components/team-model-key";
 import {
   changeScopeAction,
   inviteMemberAction,
@@ -61,6 +65,12 @@ export default async function TeamPage() {
   const balance = await teamBalance(db, { id: team.id, plan: team.plan as UserPlan });
   const mayManage = can(scope, "member.scope.change");
   const mayInvite = can(scope, "member.invite");
+  // CHE-448: behind `shopify` like the rest of the Securify pilot (CHE-432).
+  const showModelKey = await teamHasFeature(db, team.id, "shopify");
+  const keyRow = showModelKey
+    ? await db.team.findUnique({ where: { id: team.id }, select: { openrouterKeyEnc: true } })
+    : null;
+  const maskedKey = keyRow?.openrouterKeyEnc ? maskOrSet(keyRow.openrouterKeyEnc) : null;
   const canLeave = decideLeave(
     memberships.map((m) => ({ userId: m.userId, scope: m.scope as "admin" | "member" | "reader" })),
     user.id,
@@ -146,6 +156,8 @@ export default async function TeamPage() {
         {mayManage && <p className="mt-4 text-xs text-fg-muted">{REMOVAL_KEEPS_EVERYTHING}</p>}
       </section>
 
+      {showModelKey && <TeamModelKey masked={maskedKey} mayManage={can(scope, "billing.manage")} />}
+
       {mayInvite && (
         <section className="card mt-6 p-6">
           <h2 className="text-lg font-medium">Invite someone</h2>
@@ -218,4 +230,14 @@ export default async function TeamPage() {
       </section>
     </main>
   );
+}
+
+// A key stored under a since-rotated secret still exists; the page says so
+// rather than failing to render for everyone on the team.
+function maskOrSet(enc: string): string {
+  try {
+    return maskKey(decryptSecret(enc));
+  } catch {
+    return "a key is set";
+  }
 }

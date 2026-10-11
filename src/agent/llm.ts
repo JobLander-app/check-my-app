@@ -70,7 +70,7 @@ function clientFor(model: string, env: AgentBindings): Anthropic {
 // DeepSeek V4 Flash vision variant (deepseek-v4-flash-vision*, CHE-168) do —
 // sending an image to a text-only model errors the request.
 export function isVisionModel(model: string): boolean {
-  return model.startsWith("claude") || /glm-5v|glm-4\.[56]v|deepseek-v4-flash-vision/.test(model);
+  return /^(anthropic\/)?claude/.test(model) || /glm-5v|glm-4\.[56]v|deepseek-v4-flash-vision/.test(model);
 }
 
 // CHE-168: the nav vision decision. "on"/"off" override the heuristic in either
@@ -252,19 +252,24 @@ export async function createOnRoutes(
 }
 
 export function makeLlm(env: AgentBindings, byokOpenRouterKey?: string): LlmConfig {
-  // CHE-436: BYOK — a team's own OpenRouter key overrides the worker binding.
-  // The key is already decrypted by the caller; this function only routes to it.
-  const effectiveEnv: AgentBindings = byokOpenRouterKey
-    ? { ...env, OPENROUTER_API_KEY: byokOpenRouterKey }
+  // CHE-436 / CHE-448: BYOK — the run is priced $0, so every call must go
+  // through the team's own OpenRouter key. A direct Claude id would reach
+  // Anthropic on OUR key (synthesis is claude-opus-4-8 in prod), so in a BYOK
+  // run it takes its OpenRouter twin, and our Anthropic key is not in reach.
+  const byok = Boolean(byokOpenRouterKey);
+  const effectiveEnv: AgentBindings = byok
+    ? { ...env, OPENROUTER_API_KEY: byokOpenRouterKey, ANTHROPIC_API_KEY: "" }
     : env;
-  const navModel = effectiveEnv.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel);
-  const synthModel =
-    effectiveEnv.ANTHROPIC_SYNTH_MODEL ?? warnFallback("ANTHROPIC_SYNTH_MODEL", RECOMMENDED_TIER.synthModel);
-  const structModel = structModelFor(navModel, effectiveEnv.ANTHROPIC_STRUCT_MODEL);
+  const viaKey = (model: string) => (byok && !model.includes("/") ? (openRouterTwin(model) ?? model) : model);
+  const navModel = viaKey(effectiveEnv.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel));
+  const synthModel = viaKey(
+    effectiveEnv.ANTHROPIC_SYNTH_MODEL ?? warnFallback("ANTHROPIC_SYNTH_MODEL", RECOMMENDED_TIER.synthModel),
+  );
+  const structModel = viaKey(structModelFor(navModel, effectiveEnv.ANTHROPIC_STRUCT_MODEL));
   const navClient = clientFor(navModel, effectiveEnv);
   // CHE-169: the judge defaults to the nav model on the nav client, so with
   // ANTHROPIC_JUDGE_MODEL unset no second provider or key is involved.
-  const judgeModel = effectiveEnv.ANTHROPIC_JUDGE_MODEL?.trim() || navModel;
+  const judgeModel = viaKey(effectiveEnv.ANTHROPIC_JUDGE_MODEL?.trim() || navModel);
   const synthClient = clientFor(synthModel, effectiveEnv);
   return {
     navClient,

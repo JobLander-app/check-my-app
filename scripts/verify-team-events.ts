@@ -39,6 +39,9 @@ const MUST_LOG: [string, string][] = [
   ["src/app/team/actions.ts", "changeScopeAction"],
   ["src/app/team/actions.ts", "removeMemberAction"],
   ["src/app/team/actions.ts", "leaveTeamAction"],
+  // CHE-448: who changed the key that pays for the model, and when.
+  ["src/app/team/actions.ts", "setTeamByokAction"],
+  ["src/app/team/actions.ts", "removeTeamByokAction"],
   ["src/app/invite/[token]/actions.ts", "acceptInviteAction"],
   ["src/app/dashboard/actions.ts", "createApiKey"],
   ["src/app/dashboard/actions.ts", "revokeApiKey"],

@@ -16,6 +16,11 @@ import { encryptSecret, decryptSecret } from "../src/lib/crypto";
 import { priceRun } from "../src/agent/pricing";
 import { makeLlm } from "../src/agent/llm";
 import type { AgentBindings } from "../src/agent/env";
+import { checkOpenRouterKey, maskKey } from "../src/lib/byok";
+import { can } from "../src/lib/scopes";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 function makeDb(run: Record<string, unknown>) {
   return {
@@ -77,9 +82,86 @@ async function main() {
   const llmByok = makeLlm(fakeEnv, byokKey);
   assert.ok(llmByok.navClient !== llmNormal.navClient, "BYOK creates a different client instance");
 
-  console.log("✓ makeLlm: BYOK key produces a different client from the env key");
+  // CHE-448: a BYOK run is priced $0, so not one call may reach a key of ours.
+  // Synthesis is a direct Claude id in prod (claude-opus-4-8, LlmUsage since
+  // 2026-10-08) — without its OpenRouter twin it would go to Anthropic on ours.
+  const keyOf = (c: unknown) => (c as { apiKey: string }).apiKey;
+  const urlOf = (c: unknown) => String((c as { baseURL: string }).baseURL);
+  const byokClients = [
+    llmByok.navClient,
+    llmByok.synthClient,
+    llmByok.structClient,
+    llmByok.judgeClient,
+    ...(llmByok.synthRoutes ?? []).map((r) => r.client),
+  ];
+  for (const c of byokClients) {
+    assert.equal(keyOf(c), byokKey, "every BYOK client carries the team's key");
+    assert.ok(urlOf(c).includes("openrouter.ai"), "every BYOK client talks to OpenRouter");
+  }
+  assert.ok(llmByok.synthModel.startsWith("anthropic/claude-"), `synthesis takes its OpenRouter twin (${llmByok.synthModel})`);
+  assert.ok((llmByok.synthRoutes ?? []).every((r) => r.model.includes("/")), "no synthesis fallback goes to Anthropic directly");
+  assert.equal(llmNormal.synthModel, "claude-sonnet-4-6", "a normal run keeps its model as configured");
+  assert.equal(keyOf(llmNormal.synthClient), "sk-ant-fake", "…on our Anthropic key");
+  const claudeNav = makeLlm({ ...fakeEnv, ANTHROPIC_NAV_MODEL: "claude-sonnet-4-6" } as AgentBindings, byokKey);
+  assert.equal(claudeNav.navModel, "anthropic/claude-sonnet-4.6", "a Claude nav model is routed through OpenRouter too");
+  assert.equal(claudeNav.navVision, true, "…and keeps seeing screenshots");
+
+  console.log("✓ makeLlm: in a BYOK run every model goes through OpenRouter on the team's key; a normal run is unchanged");
+
+  // ─── 3. CHE-448: the key is set on the Team page ─────────────────────────
+
+  const full = "sk-or-v1-abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567";
+  const masked = maskKey(full);
+  assert.equal(masked, "sk-or-…4567", "masked = 6-char prefix + last 4");
+  assert.ok(!masked.includes(full.slice(6, -4)), "the middle of the key is never shown");
+  assert.equal(maskKey("sk-or-short"), "…", "a short value shows nothing of itself");
+  console.log("✓ maskKey: prefix and last four only");
+
+  const answer = (status: number, data: Record<string, unknown> = {}) =>
+    (async () => new Response(JSON.stringify({ data }), { status })) as unknown as typeof fetch;
+  let called = false;
+  const spy = (async () => { called = true; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+  assert.deepEqual(await checkOpenRouterKey(full, answer(200, { is_provisioning_key: false })), { ok: true });
+  assert.equal((await checkOpenRouterKey(full, answer(401))).ok, false, "401 → refused");
+  assert.equal((await checkOpenRouterKey(full, answer(200, { is_provisioning_key: true }))).ok, false, "provisioning key → refused");
+  assert.equal((await checkOpenRouterKey(full, answer(200, { is_management_key: true }))).ok, false, "management key → refused");
+  assert.equal((await checkOpenRouterKey(full, answer(500))).ok, false, "OpenRouter error → nothing saved");
+  const down = (async () => { throw new Error("network"); }) as unknown as typeof fetch;
+  assert.equal((await checkOpenRouterKey(full, down)).ok, false, "OpenRouter unreachable → nothing saved");
+  assert.equal((await checkOpenRouterKey("sk-ant-xyz0123456789", spy)).ok, false, "not an OpenRouter key → refused");
+  assert.equal(called, false, "…without sending a foreign key to OpenRouter");
+  console.log("✓ checkOpenRouterKey: only a key OpenRouter accepts, and that can run models, is saved");
+
+  const actions = read("src/app/team/actions.ts");
+  const setBody = bodyOf(actions, "setTeamByokAction");
+  const removeBody = bodyOf(actions, "removeTeamByokAction");
+  assert.ok(/requireActionScope\("billing\.manage"\)/.test(setBody) && /requireActionScope\("billing\.manage"\)/.test(removeBody), "both actions are billing.manage");
+  assert.ok(can("admin", "billing.manage") && !can("member", "billing.manage") && !can("reader", "billing.manage"), "billing.manage is admin only");
+  assert.ok(setBody.indexOf("checkOpenRouterKey(") > 0 && setBody.indexOf("checkOpenRouterKey(") < setBody.indexOf("db.team.update("), "the key is checked before it is stored");
+  assert.ok(/encryptSecret\(key\)/.test(setBody), "the key is stored encrypted");
+  assert.ok(/teamHasFeature\(db, team\.id, "shopify"\)/.test(setBody), "setting a key is behind the shopify feature");
+  console.log("✓ actions: admin only, checked before stored, encrypted, behind shopify");
+
+  const page = read("src/app/(app)/settings/team/page.tsx");
+  assert.ok(/teamHasFeature\(db, team\.id, "shopify"\)/.test(page) && /\{showModelKey && <TeamModelKey/.test(page), "the section shows only on shopify teams");
+  assert.ok(/<TeamModelKey masked=\{maskedKey\} mayManage=\{can\(scope, "billing\.manage"\)\} \/>/.test(page), "the browser gets the masked key and the server's own answer to who may change it");
+  const component = read("src/components/team-model-key.tsx");
+  assert.ok(!/openrouterKeyEnc|decryptSecret|@\/lib\/crypto/.test(component), "the client component never touches the stored key");
+  assert.ok(/mayManage \?/.test(component) && /Only an admin of this team/.test(component), "members read, admins write");
+  console.log("✓ page: shopify teams only; members see the status, admins the form; only the masked key reaches the browser");
 
   console.log("\nAll BYOK invariants hold.");
+}
+
+function read(rel: string): string {
+  return readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
+}
+
+function bodyOf(text: string, fn: string): string {
+  const at = text.indexOf(`export async function ${fn}`);
+  if (at < 0) return "";
+  const next = text.indexOf("\nexport ", at + 1);
+  return text.slice(at, next < 0 ? text.length : next);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

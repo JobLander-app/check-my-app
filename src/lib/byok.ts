@@ -25,3 +25,33 @@ export async function teamByokKeyEnc(
   });
   return team?.openrouterKeyEnc ?? null;
 }
+
+// CHE-448: what anyone on the team is shown of the key. Enough to tell two keys
+// apart, never enough to use one; the full key never leaves the server.
+export function maskKey(key: string): string {
+  const k = key.trim();
+  return k.length < 12 ? "…" : `${k.slice(0, 6)}…${k.slice(-4)}`;
+}
+
+export type KeyCheck = { ok: true } | { ok: false; reason: string };
+
+// OpenRouter answers GET /api/v1/key with 200 for a key it accepts and 401 for
+// one it does not (checked 2026-10-11). A provisioning or management key is
+// accepted there but cannot call a model, so every check would fail later.
+export async function checkOpenRouterKey(key: string, fetchImpl: typeof fetch = fetch): Promise<KeyCheck> {
+  const k = key.trim();
+  if (!k.startsWith("sk-or-")) return { ok: false, reason: "That is not an OpenRouter key — they start with sk-or-." };
+  let res: Response;
+  try {
+    res = await fetchImpl("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${k}` } });
+  } catch {
+    return { ok: false, reason: "OpenRouter did not answer. Nothing was saved — try again in a minute." };
+  }
+  if (res.status === 401 || res.status === 403) return { ok: false, reason: "OpenRouter did not accept this key. Nothing was saved." };
+  if (!res.ok) return { ok: false, reason: `OpenRouter answered ${res.status}. Nothing was saved — try again in a minute.` };
+  const body = (await res.json().catch(() => null)) as { data?: { is_provisioning_key?: boolean; is_management_key?: boolean } } | null;
+  if (body?.data?.is_provisioning_key || body?.data?.is_management_key) {
+    return { ok: false, reason: "This is an OpenRouter management key; it cannot run models. Create an ordinary API key and paste that one." };
+  }
+  return { ok: true };
+}
