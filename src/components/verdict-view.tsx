@@ -23,6 +23,8 @@ import { extensionDisplayName, extensionReportPublished } from "@/lib/extension-
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 import { FeedbackThread } from "@/components/feedback-thread";
 import { REASONS_FOR, feedbackForRun, mayComment } from "@/lib/feedback";
+import { MissingScenario } from "@/components/missing-scenario";
+import { mayEditScenarios } from "@/lib/scenarios";
 import { hasFeature, teamFeatures } from "@/lib/team-features";
 
 // CHE-334: the journey statuses that put a problem on the page — what the
@@ -411,6 +413,10 @@ export async function VerdictView({
           }
           feedback={comments && feedbackBase ? { ...feedbackBase, byJourney: comments.byJourney } : undefined}
         />
+        {/* CHE-435: a scenario this check did not pick up goes into the app's list. */}
+        {comments && viewerTeam && run.appId && mayEditScenarios({ scope: viewerTeam.scope, features: viewerFeatures }) && (
+          <MissingScenario appId={run.appId} />
+        )}
         <AppAnatomySection anatomy={normalizeAnatomy(parseJson<unknown>(run.anatomy))} />
 
         {(caps.enableWatch || caps.watchSettings) && (
