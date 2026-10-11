@@ -45,6 +45,20 @@ import { cutSelfCheckRefusalClaims, isSelfCheckRefusalStep, summaryFallback, wal
 // owner is waiting on or a journey that verified nothing, and both get re-walked.
 const CARRIABLE_STATUSES = new Set(["ok", "partial"]);
 
+/**
+ * Does this journey's last walk stand as coverage of the product?
+ *
+ * CHE-420: not when it left a step of ours unverified. "Log in to the Shopify
+ * Admin (blocked by bot challenge)" was walked on a browser that could not pass
+ * the challenge, rolled up `partial` — which counts as green — and was carried
+ * onto later verdicts as "carried forward from 2 earlier runs", summary and
+ * all: our incapacity, worded as a fact about the customer's product. A gap of
+ * ours is a reason to walk again, never a thing to stand on.
+ */
+function isCoverage(j: CatalogJourneyState): boolean {
+  return j.status !== null && CARRIABLE_STATUSES.has(j.status) && !j.gap;
+}
+
 // The re-walk proposal reuses the baseline's own step labels. Long journeys get
 // clipped so the walking prompt stays a plan, not a transcript.
 const MAX_PROPOSED_STEPS = 12;
@@ -168,13 +182,17 @@ export function planRotation(args: {
   const maxAgeDays = args.maxAgeDays ?? FULL_RUN_MAX_AGE_DAYS;
   const ageCounts = args.ageCounts ?? true;
 
-  const isGreen = (j: CatalogJourneyState) => j.status !== null && CARRIABLE_STATUSES.has(j.status);
+  const isGreen = (j: CatalogJourneyState) => isCoverage(j);
   const ageOf = (j: CatalogJourneyState) =>
     j.lastWalkedAt ? ageInDays(j.lastWalkedAt, args.now) : Number.POSITIVE_INFINITY;
   // Evidence we could not date, or that predates the window, cannot be carried.
   const carriable = (j: CatalogJourneyState) =>
     isGreen(j) && Boolean(j.lastWalkedRunId) && j.lastWalkedAt !== null && ageOf(j) <= maxAgeDays;
 
+  // CHE-420: a journey whose last walk left a gap of ours is not green, so it
+  // lands here — walked again ahead of the rotation, because the capability
+  // that was missing may exist now. It sorts behind journeys that are failing
+  // (consecutiveBad) and, among its own, oldest first.
   const bad = args.journeys.filter((j) => j.status !== null && !isGreen(j));
   const unwalked = args.journeys.filter((j) => j.status === null || j.lastWalkedAt === null);
   const rest = args.journeys.filter((j) => !bad.includes(j) && !unwalked.includes(j));
@@ -603,7 +621,15 @@ export function knownJourneysToList(args: {
   const present = new Set(args.present);
   const bad = (j: CatalogJourneyState) => (j.status !== null && !CARRIABLE_STATUSES.has(j.status) ? 0 : 1);
   return args.catalog
-    .filter((j) => !present.has(j.appJourneyId) && Boolean(j.lastWalkedRunId) && j.lastWalkedAt !== null)
+    .filter(
+      (j) =>
+        !present.has(j.appJourneyId) &&
+        Boolean(j.lastWalkedRunId) &&
+        j.lastWalkedAt !== null &&
+        // CHE-420: a record of our gap is no coverage and its summary is our
+        // incapacity (rule 1) — left off like a journey nothing has walked.
+        !j.gap,
+    )
     .sort(
       (a, b) =>
         bad(a) - bad(b) || (b.lastWalkedAt as Date).getTime() - (a.lastWalkedAt as Date).getTime(),

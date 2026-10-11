@@ -34,7 +34,7 @@ import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "./summary";
-import { journeyMetric, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
+import { journeyMetric, leftOurGap, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
 import { ExtensionRuntimeError } from "./extension-error";
@@ -511,6 +511,7 @@ export async function walkOneJourney(args: {
         // CHE-238: the funnel is the pages this walk actually moved through.
         // The customer is never asked to define one.
         funnel: funnelFromWalk(walkedSteps),
+        gap: leftOurGap(walkedSteps),
       }).catch((err) => console.warn(`[journey] catalog not updated: ${errText(err)}`));
     } catch (err) {
       // Per-journey isolation: one failure must not abort the rest of the run.
@@ -540,6 +541,7 @@ export async function walkOneJourney(args: {
         scenario: proposed.extensionScenario,
         metric,
         funnel: funnelFromWalk(walkedSteps),
+        gap: leftOurGap(walkedSteps),
       }).catch((e) => console.warn(`[journey] catalog not updated: ${errText(e)}`));
     } finally {
       await closeAgentContext(browser, context);
