@@ -21,6 +21,8 @@ import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
 import { extensionDisplayName, extensionReportPublished } from "@/lib/extension-target";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { teamHasFeature } from "@/lib/team-features";
+import { causeLine } from "@/lib/step-cause";
 
 // CHE-334: the journey statuses that put a problem on the page — what the
 // empty findings section must not contradict.
@@ -181,6 +183,20 @@ export async function VerdictView({
     prisma,
     run.journeys.map((j) => ({ id: j.id, appJourneyId: j.appJourneyId, status: j.status })),
   );
+  // CHE-443: on a team given `shopify`, every unchecked step says why in text.
+  // Decided by the run's team, not the reader: the page is the same for
+  // whoever opens the link, and a step's cause is a fact about the run.
+  const causeTexts =
+    run.teamId && (await teamHasFeature(prisma, run.teamId, "shopify"))
+      ? Object.fromEntries(
+          run.journeys.flatMap((j) =>
+            j.steps.flatMap((s) => {
+              const line = causeLine(s);
+              return line ? [[s.id, line] as const] : [];
+            }),
+          ),
+        )
+      : undefined;
   const carriedRuns = carriedRunIds.length
     ? await prisma.run.findMany({ ...publicRow(),
         where: { id: { in: carriedRunIds } },
@@ -378,6 +394,7 @@ export async function VerdictView({
           numbers={journeyNumbers}
           carriedRunNumbers={carriedRunNumbers}
           carriedRunDays={carriedRunDays}
+          causeTexts={causeTexts}
           emptyNote={
             smokePass
               ? // The price explanation's own words for this kind of check

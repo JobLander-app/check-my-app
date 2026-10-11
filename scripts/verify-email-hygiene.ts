@@ -4,7 +4,7 @@
 //
 // Authentication was never the problem: SPF, DKIM (resend._domainkey) and DMARC
 // all align on checkmyapp.dev. What this holds is the rest of what the message
-// carries, for all four senders in src/lib/email.ts, by driving the REAL send
+// carries, for every sender in src/lib/email.ts, by driving the REAL send
 // functions against a stub provider and reading the body they POST:
 //
 //   - a complete HTML document, not a fragment;
@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   sendBalanceUsedUp,
+  sendCauseNotice,
   sendTeamInvite,
   sendVerdictReady,
   sendWatchTrialPaused,
@@ -100,6 +101,20 @@ async function main(): Promise<void> {
         sendBalanceUsedUp({ ...common, to: "a@example.org", appSlug: "app.example.org", reason: "The balance is used." }),
       ),
       { recurring: true },
+    ],
+    [
+      "a cause that keeps part of an app unchecked (CHE-443)",
+      await capture(() =>
+        sendCauseNotice({
+          ...common,
+          to: "a@example.org",
+          appSlug: "app.example.org",
+          causeSentence: "Not checked: the store's password is missing or was not accepted.",
+          stepLabels: ["Open products"],
+          appUrl: "https://checkmyapp.dev/health/apps/app-1",
+        }),
+      ),
+      { recurring: false },
     ],
     [
       "team invite",

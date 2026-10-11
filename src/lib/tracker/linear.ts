@@ -115,6 +115,15 @@ export class LinearTracker implements Tracker {
     return data.issue.id;
   }
 
+  async addLabel(issueId: string, labelName: string): Promise<void> {
+    const [labelId] = await this.resolveLabelIds([labelName]);
+    const data = await this.gql<{ issueAddLabel: { success: boolean } }>(
+      `mutation($id:String!,$labelId:String!){ issueAddLabel(id:$id, labelId:$labelId){ success } }`,
+      { id: await this.issueUuid(issueId), labelId },
+    );
+    if (!data.issueAddLabel.success) throw new Error("Linear issueAddLabel returned success=false");
+  }
+
   // Reverse sync (CHE-61): the ticket's workflow state carries the fixer's
   // verdict. Keyed on state TYPE, which Linear keeps canonical across custom
   // workflows (verified against the live workspace 2026-08-23: JOB-902 Done →

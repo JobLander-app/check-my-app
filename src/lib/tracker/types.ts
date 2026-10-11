@@ -30,5 +30,8 @@ export type IssueOutcome = "open" | "done" | "canceled" | "missing";
 export interface Tracker {
   createIssue(draft: TicketDraft): Promise<CreatedIssue>;
   addComment(issueId: string, body: string): Promise<void>;
+  // CHE-443: put a label on an issue that already exists (creating it on the
+  // team when it does not). Adding one the issue has is not an error.
+  addLabel(issueId: string, labelName: string): Promise<void>;
   getIssueOutcome(issueId: string): Promise<IssueOutcome>;
 }

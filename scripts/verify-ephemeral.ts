@@ -625,6 +625,10 @@ async function main() {
       // the same rule for a reader: a run it cannot find means "we do not know
       // when this number was set", never "it was set today".
       "AppJourney.metricRunId",
+      // CHE-443: the run that first met a cause on an app. Written only for a
+      // run of a saved app (noticeNewCauses skips an ephemeral one) and never
+      // read back: nothing looks the run up.
+      "CauseNotice.firstRunId",
     ];
     const handled = new Set([...DELETED, ...DETACHED]);
     const expected = owned;

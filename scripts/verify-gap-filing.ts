@@ -121,6 +121,7 @@ interface Filed {
   kind: "created" | "commented";
   identifier: string;
   title?: string;
+  labels?: string[];
   dedupKey?: string;
   body?: string;
 }
@@ -137,6 +138,7 @@ function stubWorld(
 ) {
   const filed: Filed[] = [];
   const comments: { issueId: string; body: string }[] = [];
+  const labelled: { issueId: string; name: string }[] = [];
   const links = new Map<string, { id: string; externalIssueId: string; status: string; occurrences: number; escalatedAt: null; defectClass: null }>();
   for (const [key, identifier] of Object.entries(opts.existing ?? {})) {
     links.set(key, { id: `link-${identifier}`, externalIssueId: identifier, status: "open", occurrences: 1, escalatedAt: null, defectClass: null });
@@ -146,11 +148,14 @@ function stubWorld(
   const tracker: Tracker = {
     async createIssue(draft: TicketDraft): Promise<CreatedIssue> {
       const identifier = `CHE-${++counter}`;
-      filed.push({ kind: "created", identifier, title: draft.title, body: draft.description });
+      filed.push({ kind: "created", identifier, title: draft.title, labels: draft.labelNames, body: draft.description });
       return { id: identifier, identifier, url: `https://linear.app/x/${identifier}` };
     },
     async addComment(issueId: string, body: string) {
       comments.push({ issueId, body });
+    },
+    async addLabel(issueId: string, name: string) {
+      labelled.push({ issueId, name });
     },
     async getIssueOutcome(): Promise<IssueOutcome> {
       return "open";
@@ -232,7 +237,7 @@ function stubWorld(
   };
   const board = { self, tracker, baseUrl: "https://checkmyapp.dev" } as unknown as GapBoard;
   const env = { db: db as unknown as PrismaClient, bindings: { EVIDENCE: { head: async () => opts.extensionAudit ? { key: "private/runs/run-1/checker-gaps.json" } : null } } } as unknown as AgentEnv;
-  return { env, board, filed, comments };
+  return { env, board, filed, comments, labelled };
 }
 
 async function main() {
@@ -308,6 +313,44 @@ async function main() {
     check("unclassified recurrence comments on CHE-86", again.filed[0]?.kind === "commented" && again.filed[0].identifier === "CHE-86");
     const withStep = again.comments.find((c) => c.issueId === "CHE-86" && c.body.includes(UNCLASSIFIED.label));
     check("…and the comment carries the step text", Boolean(withStep), again.comments.map((c) => c.body).join(" || "));
+  }
+
+  // 3b — CHE-443: a gap on a step is our incapacity, and our incapacity goes
+  // to Mender. The label is on the ticket the day it opens, and on an older
+  // ticket the day a new occurrence lands on it. A step's gap ticket with no
+  // `mender` fails here first.
+  {
+    const w = stubWorld([SLIDER_153, NEW_TAB_154, UNCLASSIFIED]);
+    await fileCapabilityGaps(w.env, "run-1", { board: w.board });
+    const created = w.filed.filter((f) => f.kind === "created");
+    check("CHE-443: three gap tickets opened", created.length === 3, String(created.length));
+    check(
+      "CHE-443: every gap ticket is opened with the `mender` label",
+      created.length > 0 && created.every((f) => f.labels?.includes("mender")),
+      created.map((f) => `${f.identifier}:${(f.labels ?? []).join("/")}`).join(" | "),
+    );
+    check("CHE-443: …beside the provenance label, which stays", created.every((f) => f.labels?.includes("checkmyapp")));
+    check("CHE-443: a new ticket is not labelled a second time", w.labelled.length === 0);
+
+    const older = stubWorld([SLIDER_153], { existing: { [keyFor("range_input")]: "CHE-150" } });
+    await fileCapabilityGaps(older.env, "run-1", { board: older.board });
+    check(
+      "CHE-443: a new occurrence on an older ticket puts `mender` on it",
+      older.filed[0]?.kind === "commented" && older.labelled.some((l) => l.issueId === "CHE-150" && l.name === "mender"),
+      JSON.stringify(older.labelled),
+    );
+
+    // A tracker that refuses the label must not cost the run its other notes.
+    const refusing = stubWorld([SLIDER_153], { existing: { [keyFor("range_input")]: "CHE-150" } });
+    refusing.board.tracker.addLabel = async () => {
+      throw new Error("Linear API: rate limited");
+    };
+    const notes = await fileCapabilityGaps(refusing.env, "run-1", { board: refusing.board });
+    check(
+      "CHE-443: a refused label is said in the notes and does not stop the filing",
+      notes.some((n) => n.icon === "warn" && /label/i.test(n.text)) && notes.some((n) => n.icon === "ok"),
+      notes.map((n) => n.text).join(" | "),
+    );
   }
 
   {

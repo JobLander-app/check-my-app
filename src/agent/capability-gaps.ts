@@ -150,11 +150,18 @@ async function unpricedJourneys(env: AgentEnv, runId: string): Promise<string[]>
   return rows.map((r) => r.title);
 }
 
+// The label Mender picks its tickets up by (scripts/mender/agent.mjs, CHE-445).
+// A gap on a step is our incapacity, and our incapacity is what Mender takes to
+// a reviewed pull request (CHE-443): every "[Checker gap]" ticket for a step
+// carries it, on the day it is opened and on every day a new occurrence lands.
+export const MENDER_LABEL = "mender";
+
 // The ticket policy for anything we file against ourselves — the owner's own
 // policy when the CheckMyApp app has one, otherwise the same defaults autofile
-// falls back to, with the title prefix swapped.
-export function selfPolicy(self: OurApp, titleFormat: string) {
-  return self.policy
+// falls back to, with the title prefix swapped. `extraLabels` are added to
+// whatever pickup labels the policy has.
+export function selfPolicy(self: OurApp, titleFormat: string, extraLabels: readonly string[] = []) {
+  const base = self.policy
     ? { ...self.policy, titleFormat }
     : {
         priorityRule: "{}",
@@ -165,6 +172,9 @@ export function selfPolicy(self: OurApp, titleFormat: string) {
         titleFormat,
         escalateAfterRuns: 3,
       };
+  if (extraLabels.length === 0) return base;
+  const have = parseJson<string[]>(base.pickupLabels) ?? [];
+  return { ...base, pickupLabels: JSON.stringify([...new Set([...have, ...extraLabels])]) };
 }
 
 // `opts.board` is for the acceptance script only: the real board is looked
@@ -317,10 +327,22 @@ export async function fileCapabilityGaps(
         appId: self.id,
         finding,
         run: ticketRun,
-        policy: selfPolicy(self, "[Checker gap] {verdict}"),
+        policy: selfPolicy(self, "[Checker gap] {verdict}", [MENDER_LABEL]),
         ownerId: self.ownerId,
         verdictUrl: `${baseUrl}/verdict/${run.publicId}`,
       });
+      // A ticket opened before this rule, or one somebody took the label off,
+      // gets it back when a new occurrence lands. A suppressed one (the owner
+      // ruled it not-a-bug) is left alone.
+      if (outcome.kind === "commented") {
+        try {
+          await tracker.addLabel(outcome.identifier, MENDER_LABEL);
+        } catch (err) {
+          const text = err instanceof Error ? err.message : String(err);
+          console.warn(`[capability] labelling ${outcome.identifier} for Mender failed: ${text}`);
+          notes.push({ icon: "warn", text: `Couldn't label ${outcome.identifier} for Mender: ${text}` });
+        }
+      }
       // The unclassified bucket is the exception that gets investigated, not
       // the rule that absorbs everything: the recurrence comment alone said
       // "still present in run #N" and CHE-86's body still lists only run
