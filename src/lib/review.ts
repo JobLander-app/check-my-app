@@ -45,6 +45,9 @@ export interface ReviewStep {
 }
 
 export interface ReviewJourney {
+  // CHE-434: the app's scenario this journey is a check of — what `comment`
+  // takes as scenario_id. Null for a one-off check of a URL.
+  scenario_id: string | null;
   title: string;
   status: string;
   summary: string | null;
@@ -139,6 +142,7 @@ export interface ReviewSourceJourney {
   status: string;
   summary: string | null;
   carriedFromRunId?: string | null;
+  appJourneyId?: string | null;
   steps: ReviewSourceStep[];
 }
 
@@ -204,6 +208,7 @@ export const REVIEW_SELECT = {
       status: true,
       summary: true,
       carriedFromRunId: true,
+      appJourneyId: true,
       steps: {
         orderBy: { order: "asc" as const },
         select: {
@@ -345,6 +350,7 @@ export function buildReview(run: ReviewSource, origin: string, priorities: Map<n
   const base = origin.replace(/\/+$/, "");
 
   const journeys: ReviewJourney[] = run.journeys.map((j) => ({
+    scenario_id: j.appJourneyId ?? null,
     title: j.title,
     status: j.status,
     summary: j.summary,

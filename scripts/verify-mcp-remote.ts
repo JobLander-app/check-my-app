@@ -9,7 +9,7 @@
 //
 //   1. no key, a malformed key or an unknown key gets a 401 JSON-RPC error and
 //      nothing else; GET and DELETE get 405 (stateless);
-//   2. the tool list is exactly the thirteen tools;
+//   2. the tool list is exactly the fifteen tools (twelve without `shopify`);
 //   3. `instructions` name the team's apps with their latest verdict and the
 //      count of new findings, say what to do about them, and stay under 1500
 //      characters;
@@ -253,13 +253,15 @@ async function main() {
   // 2 — the tool list.
   {
     const names = (await a.listTools()).tools.map((t) => t.name).sort();
-    const expected = ["connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
-      "latest_results", "list_apps", "start_check", "update_app", "wait_for_review", "wait_for_run"];
-    check("tools: exactly the thirteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
-    // CHE-433: a team without the "shopify" feature is not offered the Shopify tool.
+    const expected = ["comment", "connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
+      "latest_results", "list_apps", "list_comments", "start_check", "update_app", "wait_for_review", "wait_for_run"];
+    check("tools: exactly the fifteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    // CHE-433 / CHE-434: a team without the "shopify" feature is offered neither
+    // the Shopify tool nor comments.
+    const pilotOnly = new Set(["connect_shopify_app", "comment", "list_comments"]);
     const namesB = (await b.listTools()).tools.map((t) => t.name).sort();
-    check("tools: a team without the shopify feature has the twelve, without connect_shopify_app",
-      JSON.stringify(namesB) === JSON.stringify(expected.filter((n) => n !== "connect_shopify_app")), namesB.join(", "));
+    check("tools: a team without the shopify feature has the twelve, without the pilot's three",
+      JSON.stringify(namesB) === JSON.stringify(expected.filter((n) => !pilotOnly.has(n))), namesB.join(", "));
   }
 
   // 3 — instructions, computed from the key's team.

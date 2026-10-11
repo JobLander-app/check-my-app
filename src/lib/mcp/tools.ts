@@ -48,6 +48,7 @@ import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
+import { FEEDBACK_REASONS, FEEDBACK_TEXT_MAX, STATUS_LABEL, giveFeedback, listFeedback, type FeedbackTarget } from "@/lib/feedback";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
 // (as before) or as the entry labelled "default" in `test_accounts` — the same
@@ -229,6 +230,25 @@ export const toolSchemas = {
     frequency: frequency.default("daily").describe("daily, every_6h or manual"),
   },
   disable_watch: { app_id: appId },
+  // CHE-434: one of app_id / scenario_id / run_id names what the comment is about.
+  comment: {
+    app_id: z.string().min(1).optional().describe("Comment on this app (from list_apps)"),
+    scenario_id: z.string().min(1).optional().describe("Or on this scenario (scenario_id from get_review)"),
+    run_id: z.string().min(1).optional().describe("Or on this check (run id)"),
+    finding: z.number().int().positive().optional().describe("With run_id: the finding's number, e.g. 3 for #003"),
+    journey: z.number().int().positive().optional().describe("With run_id: the journey's position in get_review, 1-based"),
+    step: z.number().int().positive().optional().describe("With run_id and journey: the step's position, 1-based"),
+    reason: z
+      .enum(FEEDBACK_REASONS)
+      .optional()
+      .describe("comment (default) · wrong: the check got it wrong · not_checked · scenario_wrong: it is really another scenario · other"),
+    text: z.string().min(1).max(FEEDBACK_TEXT_MAX).describe("What you want to say, in your own words"),
+  },
+  list_comments: {
+    app_id: z.string().min(1).optional().describe("Everything said about this app and anything in it"),
+    scenario_id: z.string().min(1).optional().describe("Or about this scenario"),
+    run_id: z.string().min(1).optional().describe("Or about this check, its findings and its steps"),
+  },
 };
 
 export type ToolName = keyof typeof toolSchemas;
@@ -887,7 +907,67 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       }
       return text({ ok: true, app_id: app.id, app: app.appSlug, watch: { state: app.watch ? "paused" : "off" } });
     },
+
+    async comment(args: CommentArgs): Promise<ToolResult> {
+      const target = commentTarget(args);
+      if ("error" in target) return fail("invalid_input", target.error);
+      const result = await giveFeedback(
+        db,
+        { userId: caller.user.id, teamId: team.id, scope: caller.scope, features: team.features },
+        { target, reason: args.reason, text: args.text },
+      );
+      if (!result.ok) return fail(result.code, result.error, result.code === "not_found" ? HINTS.not_found : undefined);
+      return text({ ok: true, comment_id: result.id, about: result.kind, status: STATUS_LABEL.open });
+    },
+
+    async list_comments(args: { app_id?: string; scenario_id?: string; run_id?: string }): Promise<ToolResult> {
+      const denied = deny("read");
+      if (denied) return denied;
+      const target = commentTarget(args);
+      if ("error" in target) return fail("invalid_input", target.error);
+      const items = await listFeedback(db, team.id, target);
+      if (!items) return fail("not_found", "Not found in this team.", HINTS.not_found);
+      return text({
+        ok: true,
+        comments: items.map((c) => ({
+          comment_id: c.id,
+          about: c.kind,
+          ...(c.findingNumber !== null ? { finding: c.findingNumber } : {}),
+          ...(c.stepLabel ? { step: c.stepLabel } : {}),
+          reason: c.reason,
+          text: c.text,
+          author: c.author,
+          at: c.at,
+          status: STATUS_LABEL[c.status] ?? c.status,
+        })),
+      });
+    },
   };
+}
+
+type CommentArgs = {
+  app_id?: string;
+  scenario_id?: string;
+  run_id?: string;
+  finding?: number;
+  journey?: number;
+  step?: number;
+  reason?: (typeof FEEDBACK_REASONS)[number];
+  text: string;
+};
+
+// Exactly one of app_id / scenario_id / run_id; the positions only with a run.
+function commentTarget(a: Omit<CommentArgs, "text" | "reason">): FeedbackTarget | { error: string } {
+  const named = [a.app_id, a.scenario_id, a.run_id].filter(Boolean).length;
+  if (named !== 1) return { error: "Name exactly one of app_id, scenario_id or run_id." };
+  if (!a.run_id && (a.finding !== undefined || a.journey !== undefined || a.step !== undefined)) {
+    return { error: "finding, journey and step go with run_id." };
+  }
+  if (a.app_id) return { app_id: a.app_id };
+  if (a.scenario_id) return { scenario_id: a.scenario_id };
+  if (a.finding !== undefined && (a.journey !== undefined || a.step !== undefined)) return { error: "Give a finding or a journey, not both." };
+  if (a.step !== undefined && a.journey === undefined) return { error: "A step is named with its journey." };
+  return { run_id: a.run_id!, finding: a.finding, journey: a.journey, step: a.step };
 }
 
 export type RemoteTools = ReturnType<typeof createRemoteTools>;
@@ -956,6 +1036,14 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "code plan_limit when the plan does not allow it.",
   disable_watch:
     "Pause an app's recurring check. Its history and settings stay; enable_watch resumes it.",
+  comment:
+    "Comment on an app, a scenario or a check, by id: say what is off, what the check got wrong, what was not really " +
+    "checked, or that a scenario is really a different one. app_id (from list_apps), scenario_id (from get_review) or " +
+    "run_id; with run_id, optionally a finding number, or a journey position and step position as get_review lists " +
+    "them. The words go to the CheckMyApp team as they are; list_comments shows what happened to each.",
+  list_comments:
+    "Every comment on an app (and anything in it), a scenario, or a check — who said it, what, and its status " +
+    "(received, with the CheckMyApp team, being fixed, fixed, not a mistake of the check).",
 };
 
 // CHE-433: the tools a team is shown follow what it has been given — a team
@@ -1013,4 +1101,12 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
     { description: DESCRIPTIONS.disable_watch, inputSchema: toolSchemas.disable_watch },
     (a) => tools.disable_watch(a),
   );
+  if (hasFeature(features, "shopify")) {
+    server.registerTool("comment", { description: DESCRIPTIONS.comment, inputSchema: toolSchemas.comment }, (a) => tools.comment(a));
+    server.registerTool(
+      "list_comments",
+      { description: DESCRIPTIONS.list_comments, inputSchema: toolSchemas.list_comments },
+      (a) => tools.list_comments(a),
+    );
+  }
 }

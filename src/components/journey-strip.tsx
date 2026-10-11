@@ -5,8 +5,12 @@ import type { Journey, Step } from "@/generated/prisma/client";
 import { STEP_STATUS_META } from "@/lib/status";
 import { JourneyNumbersBlock, type JourneyNumbersProps } from "@/components/journey-numbers-block";
 import { disclosureWord, stepCardLabel, stepsRegionLabel } from "@/lib/journey-copy";
+import { REASONS_FOR, type FeedbackItem } from "@/lib/feedback";
+import { FeedbackThread } from "@/components/feedback-thread";
 
 type JourneyWithSteps = Journey & { steps: Step[] };
+
+export type JourneysFeedback = { runId: string; back: string; mayWrite: boolean; byScenario: Record<string, FeedbackItem[]> };
 
 // Verdict §3.2 — "WHAT YOUR USERS DO". The centerpiece: one horizontal strip per
 // journey, each step a card with screenshot + label + status. Click a step to
@@ -18,8 +22,12 @@ export function JourneyStrips({
   emptyNote,
   carriedRunNumbers,
   carriedRunDays,
+  feedback,
 }: {
   journeys: JourneyWithSteps[];
+  // CHE-434: the team's comments per scenario (AppJourney id), on its own team's
+  // verdict only.
+  feedback?: JourneysFeedback;
   // CHE-240: our estimate and their measurement, keyed by journey id.
   numbers?: Record<string, JourneyNumbersProps>;
   // Why there are no strips, when the run knows. A green verdict next to a bare
@@ -71,6 +79,8 @@ export function JourneyStrips({
             journey.carriedFromRunId ? carriedRunNumbers?.[journey.carriedFromRunId] : undefined
           }
           carriedDay={journey.carriedFromRunId ? carriedRunDays?.[journey.carriedFromRunId] : undefined}
+          feedback={feedback}
+          position={i + 1}
         />
       ))}
     </section>
@@ -87,12 +97,17 @@ function JourneyCard({
   carriedRunNumber,
   carriedDay,
   numbers,
+  feedback,
+  position,
 }: {
   journey: JourneyWithSteps;
   collapsedByDefault: boolean;
   carriedRunNumber?: number;
   carriedDay?: string;
   numbers?: JourneyNumbersProps;
+  feedback?: JourneysFeedback;
+  // 1-based, as the review lists journeys — what a comment's target names.
+  position: number;
 }) {
   const [open, setOpen] = useState(!collapsedByDefault);
   const [selected, setSelected] = useState<Step | null>(null);
@@ -306,6 +321,30 @@ function JourneyCard({
               ▶ Watch the agent go through this journey
             </a>
           )}
+        </div>
+      )}
+      {feedback && (
+        <div className="space-y-2 border-t border-ink-700 px-5 py-3">
+          {selected && (
+            <FeedbackThread
+              key={selected.id}
+              target={{ run_id: feedback.runId, journey: position, step: journey.steps.indexOf(selected) + 1 }}
+              back={feedback.back}
+              items={(feedback.byScenario[journey.appJourneyId ?? ""] ?? []).filter((c) => c.stepId === selected.id)}
+              mayWrite={feedback.mayWrite}
+              reasons={REASONS_FOR.step}
+              label={`Comment on step “${selected.label}”`}
+              open
+            />
+          )}
+          <FeedbackThread
+            target={{ run_id: feedback.runId, journey: position }}
+            back={feedback.back}
+            items={feedback.byScenario[journey.appJourneyId ?? ""] ?? []}
+            mayWrite={feedback.mayWrite}
+            reasons={REASONS_FOR.scenario}
+            label="Comment on this scenario"
+          />
         </div>
       )}
     </div>

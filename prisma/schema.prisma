@@ -1432,3 +1432,32 @@ model TelegramMessage {
 
   @@index([chatId, createdAt])
 }
+
+// ─── Feedback (CHE-434) ──────────────────────────────────────────────────────
+// What someone on a team says about an app, a scenario (AppJourney) or a run —
+// a comment or a correction. Never rewrites what the run said; it sits beside
+// it. A row is filed onto our own board by the scheduler tick
+// (src/agent/feedback-filing.ts): status open → filed with issueIdentifier.
+// kind: app | run | finding | step | scenario · reason: FEEDBACK_REASONS.
+
+model Feedback {
+  id              String   @id @default(cuid())
+  teamId          String
+  appId           String
+  runId           String?
+  findingId       String?
+  stepId          String?
+  appJourneyId    String?
+  kind            String
+  reason          String   @default("comment")
+  text            String
+  authorId        String
+  status          String   @default("open")
+  issueIdentifier String?
+  createdAt       DateTime @default(now())
+
+  @@index([teamId, appId])
+  @@index([runId])
+  @@index([appJourneyId])
+  @@index([status])
+}

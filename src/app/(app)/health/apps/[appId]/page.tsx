@@ -20,6 +20,9 @@ import { appRunsTheAction } from "@/lib/release-action";
 import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { OtherTeamApp } from "@/components/other-team-app";
+import { FeedbackThread } from "@/components/feedback-thread";
+import { REASONS_FOR, listFeedback, mayComment } from "@/lib/feedback";
+import { hasFeature, teamFeatures } from "@/lib/team-features";
 
 const TIMELINE = 12;
 const FINISHED = ["completed", "partial"];
@@ -120,6 +123,9 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // asks for — the scope and a plan that carries tracker integrations. Anyone
   // else would follow it into a refusal.
   const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
+  // CHE-434: comments on the app, behind `shopify` like the rest of the pilot.
+  const features = await teamFeatures(db, team.id);
+  const comments = hasFeature(features, "shopify") ? await listFeedback(db, team.id, { app_id: app.id }) : null;
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -210,6 +216,31 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             </div>
           )}
         </section>
+
+        {comments && (
+          <section className="card flex flex-col gap-2 p-[18px]">
+            <div className="flex items-baseline justify-between gap-3">
+              <div className="text-[15px] font-semibold">Comments</div>
+              {can(scope, "app.settings.write") && (
+                <Link href={settings} className="text-[13px] text-accent hover:underline">
+                  Edit this app
+                </Link>
+              )}
+            </div>
+            <p className="text-[13px] text-fg-muted">
+              On this app and everything in it — its scenarios and its checks. The CheckMyApp team reads every one.
+            </p>
+            <FeedbackThread
+              target={{ app_id: app.id }}
+              back={appPath.page(app.id)}
+              items={comments}
+              mayWrite={mayComment({ scope, features })}
+              reasons={REASONS_FOR.app}
+              label="Comment on this app"
+              open
+            />
+          </section>
+        )}
 
         {again.length > 0 && (
           <section className="card flex flex-col gap-2 p-[18px]">

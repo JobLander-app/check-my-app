@@ -7,6 +7,12 @@ import type { FindingMark } from "@/lib/enums";
 import type { FindingDetail } from "@/lib/types";
 import { parseJson } from "@/lib/json";
 import { CATEGORY_META, CATEGORY_ORDER, SEVERITY_META } from "@/lib/status";
+import { REASONS_FOR, type FeedbackItem } from "@/lib/feedback";
+import { FeedbackThread } from "@/components/feedback-thread";
+
+// CHE-434: the team's comments, per finding number. Absent for anyone who is
+// not on the run's team, or whose team does not have comments yet.
+export type FindingsFeedback = { runId: string; back: string; mayWrite: boolean; byFinding: Record<number, FeedbackItem[]> };
 
 // CHE-215: the public projection, not the whole row. Every prop of a client
 // component is serialized into the RSC payload whether or not it is rendered,
@@ -54,10 +60,12 @@ export function FindingsList({
   canCreateTicket,
   finished,
   journeysFlagged,
+  feedback,
 }: {
   findings: FindingWithEvidence[];
   canMark: boolean;
   canCreateTicket: boolean;
+  feedback?: FindingsFeedback;
   // The run is over (completed or partial); otherwise findings may still come.
   finished: boolean;
   // A journey of this run landed on a problem status.
@@ -103,6 +111,7 @@ export function FindingsList({
                     finding={f}
                     canMark={canMark}
                     canCreateTicket={canCreateTicket}
+                    feedback={feedback}
                   />
                 ))}
               </ul>
@@ -118,10 +127,12 @@ function FindingRow({
   finding,
   canMark,
   canCreateTicket,
+  feedback,
 }: {
   finding: FindingWithEvidence;
   canMark: boolean;
   canCreateTicket: boolean;
+  feedback?: FindingsFeedback;
 }) {
   const [mark, setMark] = useState<FindingMark>(finding.mark as FindingMark);
   const [busy, setBusy] = useState(false);
@@ -308,6 +319,18 @@ function FindingRow({
               </TriageButton>
             ))}
           {ticketErr && <span className="text-xs text-status-broken">{ticketErr}</span>}
+        </div>
+      )}
+      {feedback && (
+        <div className="border-t border-ink-700 px-4 py-3">
+          <FeedbackThread
+            target={{ run_id: feedback.runId, finding: finding.number }}
+            back={feedback.back}
+            items={feedback.byFinding[finding.number] ?? []}
+            mayWrite={feedback.mayWrite}
+            reasons={REASONS_FOR.finding}
+            label="Comment on this finding"
+          />
         </div>
       )}
     </li>
