@@ -833,6 +833,10 @@ async function main() {
     check("a step that could not receive a code is not a judgement", !isJudgementNotAction(gapEvidenceText(NO_SMS.label, NO_SMS.attempted, NO_SMS.observed)));
     check("'no evidence' alone is not a judgement", !isJudgementNotAction("There is no evidence the slider moved."));
     check("'confirming or denying' with evidence in hand is not a judgement", !isJudgementNotAction("Evidence was found confirming or denying the claim."));
+    check(
+      "an explicit code failure beside judgement wording is not a judgement",
+      !isJudgementNotAction("The checker could not receive the SMS code. There is no evidence confirming or denying that the account was created."),
+    );
 
     // Report time: the walker's judgement is not our_capability, and carries no class.
     const judged: { unverifiedReason?: string | null; observed: string; gapClass?: GapClass } = { unverifiedReason: "our_capability", observed: CUSTLO.observed ?? "" };

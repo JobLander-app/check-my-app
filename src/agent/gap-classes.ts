@@ -187,7 +187,9 @@ const NO_EVIDENCE = /\b(?:no|not any|without any)\b[^.]{0,40}\bevidence\b/i;
 const BOTH_WAYS = /\b(?:confirm(?:ing|s)?\b[^.]{0,20}\bor\b[^.]{0,20}\bden(?:y|ying|ies)|den(?:y|ying|ies)\b[^.]{0,20}\bor\b[^.]{0,20}\bconfirm(?:ing|s)?)\b/i;
 
 export function isJudgementNotAction(text: string): boolean {
-  return NO_EVIDENCE.test(text) && BOTH_WAYS.test(text);
+  // An explicit code-gate failure in the same text is a real incapacity and
+  // must keep its verification_code class even if judgement wording is present.
+  return !VERIFICATION_CODE_FAILURE.test(text) && NO_EVIDENCE.test(text) && BOTH_WAYS.test(text);
 }
 
 // The classes the tools decide from a machine failure at report time
