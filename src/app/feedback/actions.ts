@@ -21,8 +21,8 @@ export async function giveFeedbackAction(
   _prev: FeedbackFormState,
   formData: FormData,
 ): Promise<FeedbackFormState> {
+  await refuseSelfCheck(VERDICT_PAGE.test(back) ? back : "/");
   if (!VERDICT_PAGE.test(back)) return { error: "This page cannot take a report." };
-  await refuseSelfCheck(back);
   const { user, db, team, scope } = await requireActionScope("feedback.write");
   const result = await giveFeedback(
     db,
