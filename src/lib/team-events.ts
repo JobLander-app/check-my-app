@@ -30,6 +30,8 @@ export type TeamEventAction =
   | "billing.plan_changed"
   | "billing.seats_changed"
   | "billing.checkout_started"
+  | "billing.byok_set"
+  | "billing.byok_removed"
   // the app and what we may do to it
   | "app.created"
   | "app.settings_changed"

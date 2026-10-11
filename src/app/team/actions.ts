@@ -29,6 +29,9 @@ import { memberEmailForLog, recordTeamEvent } from "@/lib/team-events";
 import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
+import { checkOpenRouterKey, maskKey } from "@/lib/byok";
+import { encryptSecret } from "@/lib/crypto";
+import { teamHasFeature } from "@/lib/team-features";
 import type { UserPlan } from "@/lib/enums";
 import type { TeamScope } from "@/lib/scopes";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -162,6 +165,46 @@ export async function removeMemberAction(userId: string): Promise<void> {
     action: "member.removed",
     subject: email,
     summary: `removed ${email} from the team — their apps, checks and tickets stayed`,
+  });
+  revalidatePath("/settings/team");
+}
+
+// CHE-448: the team's own OpenRouter key (BYOK, CHE-436). Admin only — the key
+// decides who pays for the model, the same decision as billing. Checked with
+// OpenRouter before it is stored, so a typo never becomes a week of failed runs.
+export type ByokFormState = { error?: string; saved?: string } | null;
+
+export async function setTeamByokAction(_prev: ByokFormState, formData: FormData): Promise<ByokFormState> {
+  await refuseSelfCheck("/settings/team");
+  const { user, db, team } = await requireActionScope("billing.manage");
+  if (!(await teamHasFeature(db, team.id, "shopify"))) return { error: "This team cannot use its own key yet." };
+  const key = String(formData.get("key") ?? "").trim();
+  if (!key) return { error: "Paste the key first." };
+  const verdict = await checkOpenRouterKey(key);
+  if (!verdict.ok) return { error: verdict.reason };
+  await db.team.update({ where: { id: team.id }, data: { openrouterKeyEnc: encryptSecret(key) } });
+  const masked = maskKey(key);
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "billing.byok_set",
+    subject: masked,
+    summary: `set the team's OpenRouter key (${masked}); new checks run on it`,
+  });
+  revalidatePath("/settings/team");
+  return { saved: masked };
+}
+
+export async function removeTeamByokAction(): Promise<void> {
+  await refuseSelfCheck("/settings/team");
+  const { user, db, team } = await requireActionScope("billing.manage");
+  await db.team.update({ where: { id: team.id }, data: { openrouterKeyEnc: null } });
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "billing.byok_removed",
+    subject: null,
+    summary: "removed the team's OpenRouter key; new checks are paid from the team's balance",
   });
   revalidatePath("/settings/team");
 }
