@@ -33,6 +33,7 @@
     "verify:doer": "node scripts/verify-doer.mjs",
     "verify:doer-ladder": "node scripts/verify-doer-ladder.mjs",
     "verify:mender-agent": "node scripts/verify-mender-agent.mjs",
+    "verify:mender-dispatch": "tsx --tsconfig tsconfig.json scripts/verify-mender-dispatch.ts",
     "verify:machine": "node scripts/verify-machine.mjs",
     "verify:images": "tsx --tsconfig tsconfig.json scripts/verify-image-window.ts",
     "verify:replay": "tsx --tsconfig tsconfig.json scripts/verify-replay-actions.ts",

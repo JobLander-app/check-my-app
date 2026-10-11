@@ -99,6 +99,17 @@ check("its rules are loaded", (cfg.instructions ?? []).includes(".mender/MENDER.
 
 const wf = read(".github/workflows/mender-agent.yml");
 check("one tick at a time", /concurrency:\s*\n\s*group: mender-agent/.test(wf));
+// Tempo (CHE-445): GitHub fired the schedule every 4–7 h.
+check("a CodeRabbit review on a mender/ PR starts its round at once",
+  /pull_request_review:\s*\n\s*types: \[submitted\]/.test(wf) &&
+    /startsWith\(github\.event\.pull_request\.head\.ref, 'mender\/'\) && github\.event\.review\.user\.login == 'coderabbitai\[bot\]'/.test(wf));
+check("…and runs main's files, never the PR's",
+  /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/.test(wf));
+check("an idle tick stops at peek, before npm ci",
+  wf.indexOf("agent.mjs peek") > 0 && wf.indexOf("agent.mjs peek") < wf.indexOf("run: npm ci") &&
+    /if: steps\.peek\.outputs\.work == 'yes'\s*\n\s*run: npm ci/.test(wf) && /if: needs\.work\.outputs\.work == 'yes'/.test(wf));
+check("a publish with more work queued starts the next tick", /publish: \(\) => publish\(\)\.then\(chainNext\)/.test(agent) &&
+  /"workflow", "run", "mender-agent\.yml"/.test(agent));
 const [workJob, publishJob] = wf.split(/\n  publish:\n/);
 check("the model's job keeps no credential in the checkout and holds no writing token",
   /persist-credentials: false/.test(workJob) && !/MENDER_GH_TOKEN/.test(workJob) && /node scripts\/mender\/agent\.mjs work/.test(workJob));
