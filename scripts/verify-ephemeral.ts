@@ -151,6 +151,7 @@ interface World {
   llmUsage: Row[];
   createdResource: Row[];
   appSnapshot: Row[];
+  feedback: Row[];
   generatedTest: Row[];
   pendingCheck: Row[];
   journeyMetricPoint: Row[];
@@ -170,6 +171,7 @@ function world(): World {
     llmUsage: [],
     createdResource: [],
     appSnapshot: [],
+    feedback: [],
     generatedTest: [],
     pendingCheck: [],
     journeyMetricPoint: [],
@@ -192,6 +194,7 @@ function stubDb(w: World) {
     llmUsage: table(w.llmUsage, "llmUsage", log),
     createdResource: table(w.createdResource, "createdResource", log),
     appSnapshot: table(w.appSnapshot, "appSnapshot", log),
+    feedback: table(w.feedback, "feedback", log),
     generatedTest: table(w.generatedTest, "generatedTest", log),
     pendingCheck: table(w.pendingCheck, "pendingCheck", log),
     journeyMetricPoint: table(w.journeyMetricPoint, "journeyMetricPoint", log),
@@ -474,7 +477,7 @@ async function main() {
     const runTable = base.run as Record<string, unknown>;
     const janitorDb = {
       journey: base.journey, step: base.step, finding: base.finding, evidence: base.evidence,
-      llmUsage: base.llmUsage, createdResource: base.createdResource, appSnapshot: base.appSnapshot,
+      llmUsage: base.llmUsage, createdResource: base.createdResource, appSnapshot: base.appSnapshot, feedback: base.feedback,
       generatedTest: base.generatedTest, pendingCheck: base.pendingCheck, watch: base.watch, user: base.user, counter: base.counter,
       journeyMetricPoint: base.journeyMetricPoint,
       gitHubDeploymentCheck: base.gitHubDeploymentCheck,
@@ -599,7 +602,7 @@ async function main() {
     }
 
     // What src/lib/ephemeral.ts does, table by table.
-    const DELETED = ["Journey", "Step", "Finding", "Evidence", "GeneratedTest", "LlmUsage", "CreatedResource", "AppSnapshot"];
+    const DELETED = ["Journey", "Step", "Finding", "Evidence", "GeneratedTest", "LlmUsage", "CreatedResource", "AppSnapshot", "Feedback"];
     // CHE-239: a measurement point is detached rather than deleted. It belongs
     // to the journey, not the run — a record of what the customer's own traffic
     // did that day, obtained at the cost of a query against their analytics.
@@ -625,6 +628,10 @@ async function main() {
       // the same rule for a reader: a run it cannot find means "we do not know
       // when this number was set", never "it was set today".
       "AppJourney.metricRunId",
+      // CHE-434: a report names the finding or step it is about. It is deleted
+      // with its run (above), so these never outlive what they name.
+      "Feedback.findingId",
+      "Feedback.stepId",
     ];
     const handled = new Set([...DELETED, ...DETACHED]);
     const expected = owned;
@@ -650,6 +657,7 @@ async function main() {
     w.llmUsage.push({ id: "u1", runId: "run_x" });
     w.createdResource.push({ id: "c1", runId: "run_x" });
     w.appSnapshot.push({ id: "snap", runId: "run_x", appId: null });
+    w.feedback.push({ id: "fb1", runId: "run_x", findingId: "f1", stepId: null });
     w.generatedTest.push({ id: "gt1", journeyId: "j1", appSlug: "pr.preview.test" });
     w.pendingCheck.push({ id: "pc1", runId: "run_x", checkoutSessionId: "cs_1" });
     w.gitHubDeploymentCheck.push({ id: "gd1", runId: "run_x", repoId: "r", deploymentId: 1 });
