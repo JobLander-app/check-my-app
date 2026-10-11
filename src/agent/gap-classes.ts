@@ -154,6 +154,9 @@ export function isGapClass(value: string | null | undefined): value is GapClass 
 // match wins, so reordering would move a step that matches two). The three new
 // classes come after them, and the machine-trail rules after the text.
 
+// CHE-430: "OTP" is also the name of a product (OTP+, a Shopify app) and of a
+// login method ("SMS/OTP login"); it counts only as a code being asked for,
+// entered or sent — never as a name followed by a verb.
 const OTP_NAME_TAIL = String.raw`(?![+-])(?!\s+(?:log-?in|sign-?in|methods?|gates?|toggles?|settings?|options?|providers?|auth\w*|app|activity|logs?)\b)`;
 const OTP_CODE = new RegExp(
   String.raw`\b(?:enter|type|submit|input|receive|send|sent|asks? for|prompts? for|prompted for|waiting for)\s+(?:\S+\s+){0,2}?otp\b${OTP_NAME_TAIL}` +
@@ -166,6 +169,51 @@ const OTP_CODE = new RegExp(
   "i",
 );
 
+// What the walker says when it is stopped at a code gate: it was asked to
+// enter a code, a code was sent to a mailbox/phone it cannot read, or it could
+// not receive one. Bounded word runs (no ".") keep each phrase inside one
+// sentence, and \b keeps "otp" out of "footprint" (CHE-374).
+const CODE = String.raw`(?:codes?|passcodes?|otps?|one-?time (?:codes?|passwords?))`;
+const MODS = String.raw`(?:[a-z-]+\s+){0,3}?`;
+const VERIFICATION_CODE_FAILURE = new RegExp(
+  [
+    // "could not enter the code", "unable to type the SMS code". Only the
+    // failed entry: the bare "Enter the SMS code" is a step's label, the
+    // intended action, and a step that failed on some other control still
+    // carries that label in its text.
+    String.raw`\b(?:could ?n[o']t|cannot|can't|unable to|not able to|failed to|no way to)\s+(?:\w+\s+){0,2}?(?:enter|type|input|submit|supply|provide|relay)\s+(?:in\s+)?(?:the|a|an|that|this|your)?\s*${MODS}${CODE}\b`,
+    // "code sent", "the OTP was texted"
+    String.raw`\b${CODE}\s+(?:was |were |is |had been |has been )?(?:sent|emailed|texted|delivered)\b`,
+    // "could not receive the SMS code", "unable to read the emailed code"
+    String.raw`\b(?:could ?n[o']t|cannot|can't|unable to|not able to)\s+(?:\w+\s+){0,2}?(?:receive|retrieve|read|obtain|get|fetch|access)\s+(?:the |a |an |that |this )?${MODS}(?:${CODE}|sms|text message|verification (?:email|message))\b`,
+    // "MFA required", "two-factor prompt"
+    String.raw`\b(?:2fa|mfa|two-?factor|multi-?factor)\b[^.]{0,40}\b(?:required|challenge|prompt(?:ed)?|gate|wall|blocked|stopp?ed)\b`,
+  ].join("|"),
+  "i",
+);
+
+// CHE-440: a step is something done in the product. "Is this label a defect?"
+// is a judgement, and a judgement the walker could not reach a verdict on is
+// not an action our checker was unable to perform — filing it as a capability
+// gap opens a ticket for a capability nobody lacks. It needs the walker's own
+// both-ways phrasing ("no evidence … confirming or denying"), so a real
+// incapacity that happens to say "no evidence" is not swept up with it.
+const NO_EVIDENCE = /\b(?:no|not any|without any)\b[^.]{0,40}\bevidence\b/i;
+const BOTH_WAYS = /\b(?:confirm(?:ing|s)?\b[^.]{0,20}\bor\b[^.]{0,20}\bden(?:y|ying|ies)|den(?:y|ying|ies)\b[^.]{0,20}\bor\b[^.]{0,20}\bconfirm(?:ing|s)?)\b/i;
+
+export function isJudgementNotAction(text: string): boolean {
+  // An explicit code-gate failure in the same text is a real incapacity and
+  // must keep its verification_code class even if judgement wording is present.
+  return !VERIFICATION_CODE_FAILURE.test(text) && NO_EVIDENCE.test(text) && BOTH_WAYS.test(text);
+}
+
+// The classes the tools decide from a machine failure at report time
+// (coerceUndrivenControl, coerceStoreLocked, human-check.ts), never from the
+// walker's words. A stored row carrying one of these is evidence of what the
+// hands could not do, so its wording cannot make it a judgement; any other
+// stored class came from the text rules and says nothing the text does not.
+export const MACHINE_DECIDED_CLASSES: readonly GapClass[] = ["undriven_control", "captcha"];
+
 const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = [
   { match: /new tab|target=_?"?_blank|could not follow|cannot follow|opens? in a new/i, cls: "new_tab" },
   { match: /oauth|continue with google|social login|sign in with (google|github|apple)/i, cls: "oauth" },
@@ -177,18 +225,13 @@ const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = 
     match: /magic link|passwordless|(email|sign-?in|login)[ -]link (sign|log)[ -]?in|sign-?in (by|via) email/i,
     cls: "passwordless",
   },
-  // CHE-374: bounded, because "otp" is inside "footprint". CHE-430: and "OTP"
-  // alone is not a code the walk was stopped at — it is also the name of a
-  // product (OTP+, a Shopify app) and of a login method it offers ("SMS/OTP
-  // login"). Run #336 checked OTP+ and every step that so much as named the
-  // app landed here, on a ticket about codes nobody asked us to enter. OTP
-  // counts only as a code being asked for, entered or sent (OTP_CODE).
-  {
-    match: {
-      test: (text: string) => /verification code|\b2fa\b|\bmfa\b|one-?time (code|password)/i.test(text) || OTP_CODE.test(text),
-    },
-    cls: "verification_code",
-  },
+  // CHE-440: the walker's own failure words, never the product's nouns. The
+  // bare nouns ("verification code", "otp", "mfa") filed a step about a brand
+  // label on an OTP/SMS login app as "cannot complete a verification code
+  // step": the page's words matched, the step was nothing of the kind.
+  // CHE-430: plus an OTP asked for, entered or sent (OTP_CODE) — "an OTP code
+  // prompt blocked the sign-in" is a gate; "OTP+ settings" is a product name.
+  { match: { test: (text: string) => VERIFICATION_CODE_FAILURE.test(text) || OTP_CODE.test(text) }, cls: "verification_code" },
   { match: /camera|microphone|media device|getusermedia|webrtc/i, cls: "media_devices" },
   { match: /captcha|turnstile|recaptcha|bot (check|protection)/i, cls: "captcha" },
   { match: /leaves its test records|records still present|cleanup audit/i, cls: "test_records" },
@@ -431,6 +474,17 @@ export function settleStepGap(input: {
   targetUrl?: string | null;
 }): RecordedAction[] {
   const { reported, step, actionTrail } = input;
+  // CHE-440: a judgement is not a step we could not perform. Unless the tools
+  // decided a class from a machine failure (a control that really did not
+  // respond), it is neither our capability nor the product's defect — the same
+  // reading coerceUnpublished404 gives a path nobody takes.
+  if (
+    step.unverifiedReason === "our_capability" &&
+    !input.machineClass &&
+    isJudgementNotAction(gapEvidenceText(reported.label, reported.attempted, reported.observed, step.observed))
+  ) {
+    step.unverifiedReason = "not_applicable";
+  }
   if (step.unverifiedReason === "our_capability") {
     step.gapClass =
       input.machineClass ??

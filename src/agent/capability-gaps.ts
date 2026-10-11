@@ -18,7 +18,7 @@ import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
 import type { RouteRefusal } from "./llm";
-import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, type GapClass } from "./gap-classes";
+import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, MACHINE_DECIDED_CLASSES, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
 
 export interface CapabilityNote {
@@ -249,7 +249,18 @@ export async function fileCapabilityGaps(
         ]
       : [];
 
-  const allGaps = [...gaps, ...orphanGaps, ...unpricedGaps, ...unfunnelledGaps, ...(opts.extraGaps ?? []).map(gap => ({ ...gap, actions: null, journey: { title: "Extension verification" } }))];
+  // CHE-440: rows written before settleStepGap refused a judgement, or by a
+  // walker whose words only the stored copy keeps. The stored class is not
+  // consulted when it came from the text rules: the Custlo step carried
+  // verification_code and was still not one. A class the tools decided from a
+  // machine failure stands whatever the wording says.
+  const actionGaps = gaps.filter(
+    (g) =>
+      (isGapClass(g.gapClass) && MACHINE_DECIDED_CLASSES.includes(g.gapClass)) ||
+      !isJudgementNotAction(gapEvidenceText(g.label, g.attempted, g.observed)),
+  );
+
+  const allGaps = [...actionGaps, ...orphanGaps, ...unpricedGaps, ...unfunnelledGaps, ...(opts.extraGaps ?? []).map(gap => ({ ...gap, actions: null, journey: { title: "Extension verification" } }))];
   if (allGaps.length === 0) return [];
 
   const board = opts.board ?? (await ourBoard(env));
@@ -259,7 +270,7 @@ export async function fileCapabilityGaps(
     return [
       {
         icon: "warn",
-        text: `${gaps.length} step(s) went unverified because of our checker — connect the CheckMyApp app's own tracker to auto-file these.`,
+        text: `${actionGaps.length} step(s) went unverified because of our checker — connect the CheckMyApp app's own tracker to auto-file these.`,
       },
     ];
   }
