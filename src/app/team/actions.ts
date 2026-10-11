@@ -29,7 +29,7 @@ import { memberEmailForLog, recordTeamEvent } from "@/lib/team-events";
 import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
-import { checkOpenRouterKey, maskKey } from "@/lib/byok";
+import { saveTeamKey } from "@/lib/byok";
 import { encryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
 import type { UserPlan } from "@/lib/enums";
@@ -178,12 +178,9 @@ export async function setTeamByokAction(_prev: ByokFormState, formData: FormData
   await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("billing.manage");
   if (!(await teamHasFeature(db, team.id, "shopify"))) return { error: "This team cannot use its own key yet." };
-  const key = String(formData.get("key") ?? "").trim();
-  if (!key) return { error: "Paste the key first." };
-  const verdict = await checkOpenRouterKey(key);
-  if (!verdict.ok) return { error: verdict.reason };
-  await db.team.update({ where: { id: team.id }, data: { openrouterKeyEnc: encryptSecret(key) } });
-  const masked = maskKey(key);
+  const saved = await saveTeamKey(db, team.id, String(formData.get("key") ?? ""), { encrypt: encryptSecret });
+  if (!saved.ok) return { error: saved.reason };
+  const masked = saved.masked;
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,

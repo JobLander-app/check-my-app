@@ -35,23 +35,59 @@ export function maskKey(key: string): string {
 
 export type KeyCheck = { ok: true } | { ok: false; reason: string };
 
-// OpenRouter answers GET /api/v1/key with 200 for a key it accepts and 401 for
-// one it does not (checked 2026-10-11). A provisioning or management key is
-// accepted there but cannot call a model, so every check would fail later.
+const CHECK_TIMEOUT_MS = 10_000;
+const NO_ANSWER = "OpenRouter did not answer. Nothing was saved — try again in a minute.";
+
+// OpenRouter answers GET /api/v1/key with 200 and the key's details for a key it
+// accepts, and 401 for one it does not (checked 2026-10-11). Only a 200 that
+// carries those details counts: anything else proves nothing about the key. A
+// provisioning or management key is accepted there but cannot call a model.
 export async function checkOpenRouterKey(key: string, fetchImpl: typeof fetch = fetch): Promise<KeyCheck> {
   const k = key.trim();
   if (!k.startsWith("sk-or-")) return { ok: false, reason: "That is not an OpenRouter key — they start with sk-or-." };
   let res: Response;
   try {
-    res = await fetchImpl("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${k}` } });
+    res = await fetchImpl("https://openrouter.ai/api/v1/key", {
+      headers: { Authorization: `Bearer ${k}` },
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+    });
   } catch {
-    return { ok: false, reason: "OpenRouter did not answer. Nothing was saved — try again in a minute." };
+    return { ok: false, reason: NO_ANSWER };
   }
   if (res.status === 401 || res.status === 403) return { ok: false, reason: "OpenRouter did not accept this key. Nothing was saved." };
   if (!res.ok) return { ok: false, reason: `OpenRouter answered ${res.status}. Nothing was saved — try again in a minute.` };
-  const body = (await res.json().catch(() => null)) as { data?: { is_provisioning_key?: boolean; is_management_key?: boolean } } | null;
-  if (body?.data?.is_provisioning_key || body?.data?.is_management_key) {
+  const body = (await res.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+  const data = body?.data;
+  if (!data || typeof data !== "object" || typeof data.usage !== "number") return { ok: false, reason: NO_ANSWER };
+  if (data.is_provisioning_key || data.is_management_key) {
     return { ok: false, reason: "This is an OpenRouter management key; it cannot run models. Create an ordinary API key and paste that one." };
   }
   return { ok: true };
+}
+
+// Store a team's key only after OpenRouter has accepted it. The one place the
+// "checked, then stored" order lives, so it is tested by calling it.
+export async function saveTeamKey(
+  db: PrismaClient,
+  teamId: string,
+  key: string,
+  deps: { check?: (key: string) => Promise<KeyCheck>; encrypt: (plain: string) => string },
+): Promise<{ ok: true; masked: string } | { ok: false; reason: string }> {
+  const k = key.trim();
+  if (!k) return { ok: false, reason: "Paste the key first." };
+  const verdict = await (deps.check ?? checkOpenRouterKey)(k);
+  if (!verdict.ok) return verdict;
+  await db.team.update({ where: { id: teamId }, data: { openrouterKeyEnc: deps.encrypt(k) } });
+  return { ok: true, masked: maskKey(k) };
+}
+
+// What the Team page says about a stored key: its masked form, or that it can
+// no longer be read (the encryption secret changed) and must be replaced.
+export function storedKeyView(enc: string | null | undefined, decrypt: (blob: string) => string): { masked: string } | { unreadable: true } | null {
+  if (!enc) return null;
+  try {
+    return { masked: maskKey(decrypt(enc)) };
+  } catch {
+    return { unreadable: true };
+  }
 }
