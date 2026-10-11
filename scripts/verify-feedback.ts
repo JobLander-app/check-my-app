@@ -19,7 +19,8 @@ import "./fixtures/wasm-module-loader.mjs";
 import { readFileSync } from "node:fs";
 import { realD1 } from "./fixtures/real-d1";
 import { FEEDBACK_REASONS, feedbackForRun, giveFeedback, listFeedback, type FeedbackActor } from "../src/lib/feedback";
-import { fileOpenFeedback } from "../src/agent/feedback-filing";
+import { CLAIM_LEASE_MS, fileOpenFeedback } from "../src/agent/feedback-filing";
+import { createRemoteTools } from "../src/lib/mcp/tools";
 import type { GapBoard } from "../src/agent/capability-gaps";
 import type { AgentEnv } from "../src/agent/env";
 import type { TicketDraft } from "../src/lib/tracker/types";
@@ -104,9 +105,16 @@ async function main() {
     eq("another team cannot read them", await listFeedback(db, "tb", { app_id: "a1" }), null);
     const page = await feedbackForRun(db, "ta", "r1");
     eq("the page: finding #1 has its report", page.byFinding[1]?.map((c) => c.text), ["The list is empty only for us"]);
-    eq("the page: the scenario card has the journey and the step reports", page.byScenario.s1?.map((c) => c.kind), ["scenario", "step"]);
-    eq("the page: the run's own", page.run.map((c) => c.text), ["The bottom line says checkout works; it was never opened", "No scenario behind this one"]);
+    eq("the page: the first journey's card has its journey and step reports", page.byJourney.j1?.map((c) => c.kind), ["scenario", "step"]);
+    eq("the page: a journey with no scenario keeps its report on its own card", page.byJourney.j2?.map((c) => c.text), ["No scenario behind this one"]);
+    eq("the page: the run's own", page.run.map((c) => c.text), ["The bottom line says checkout works; it was never opened"]);
     eq("an item names its author and finding", [page.byFinding[1]?.[0]?.author, page.byFinding[1]?.[0]?.findingNumber], ["member@securify.test", 1]);
+    const appList = (await listFeedback(db, "ta", { app_id: "a1" })) ?? [];
+    check("an app's list says where each report was made, by the outside's ids",
+      appList.every((c) => c.runPublicId === "pubA" || c.scenarioId === "s1") &&
+        appList.find((c) => c.kind === "finding")?.runPublicId === "pubA" &&
+        appList.find((c) => c.kind === "scenario" && c.runPublicId === null)?.scenarioId === "s1",
+      JSON.stringify(appList.map((c) => [c.kind, c.runPublicId, c.scenarioId])));
 
     // 4. Filing.
     const drafts: TicketDraft[] = [];
@@ -139,6 +147,32 @@ async function main() {
     eq("every row is filed with its ticket", await db.feedback.count({ where: { status: "filed", issueIdentifier: { not: null } } }), 6);
     const again = await fileOpenFeedback(env, { board: board() });
     eq("the next tick files nothing twice", [again.filed.length, drafts.length], [0, 6]);
+
+    // A tick that died: a claim inside the lease is left alone, an expired one is filed.
+    const fresh = await say(member, { run_id: "pubA" }, "other", "Claimed by a tick that died");
+    const freshId = (fresh as { id: string }).id;
+    const t0 = new Date("2026-10-11T12:00:00.000Z");
+    await db.feedback.update({ where: { id: freshId }, data: { status: "filing", claimedAt: t0 } });
+    const inLease = await fileOpenFeedback(env, { board: board(), now: new Date(t0.getTime() + CLAIM_LEASE_MS - 60_000) });
+    eq("a claim inside its lease is not filed again", [inLease.filed.length, drafts.length], [0, 6]);
+    const pastLease = await fileOpenFeedback(env, { board: board(), now: new Date(t0.getTime() + CLAIM_LEASE_MS + 60_000) });
+    eq("an expired claim is filed once", [pastLease.filed.length, drafts.length], [1, 7]);
+
+    // The ticket exists but recording it fails: the row must never go back to open.
+    const late = await say(member, { run_id: "pubA" }, "other", "Ticket made, row not updated");
+    const lateId = (late as { id: string }).id;
+    const realUpdate = db.feedback.update.bind(db.feedback);
+    let blocked = 0;
+    (db.feedback as unknown as { update: unknown }).update = (args: { data: { status?: string } }) => {
+      if (args.data.status === "filed") { blocked++; return Promise.reject(new Error("D1 hiccup")); }
+      return realUpdate(args as never);
+    };
+    console.warn = () => {};
+    await fileOpenFeedback(env, { board: board(), now: new Date(t0.getTime() + 2 * CLAIM_LEASE_MS) });
+    console.warn = warn;
+    (db.feedback as unknown as { update: unknown }).update = realUpdate;
+    const lateRow = await db.feedback.findUnique({ where: { id: lateId } });
+    eq("a ticket that exists never sends its report back to open", [lateRow?.status, blocked, drafts.length], ["filing", 2, 8]);
     const stepDraft = drafts.find((d) => d.description.includes("Germany can be added fine"))!;
     check("a ticket carries the words verbatim, the author and the verdict", Boolean(stepDraft) &&
       stepDraft.description.includes("> Germany can be added fine") &&
@@ -149,15 +183,23 @@ async function main() {
       stepDraft.description.includes("unverified: our_capability"), stepDraft.title);
     check("…and a 'got it wrong' comes in at High", drafts.find((d) => d.description.includes("empty only for us"))?.priority === 2);
 
-    // 5. MCP: the two tools are the pilot's.
-    const tools = readFileSync("src/lib/mcp/tools.ts", "utf8");
-    const reg = tools.slice(tools.indexOf("export function registerRemoteTools"));
-    const gate = reg.lastIndexOf('if (hasFeature(features, "shopify"))');
-    check("report_check_mistake and list_check_mistakes are registered only for a shopify team",
-      gate > 0 && reg.indexOf('"report_check_mistake"') > gate && reg.indexOf('"list_check_mistakes"') > gate);
-    check("the report tool goes through giveFeedback with the key's own scope and team",
-      /giveFeedback\(\s*db,\s*\{ userId: caller\.user\.id, teamId: team\.id, scope: caller\.scope, features: team\.features \}/.test(tools));
-    check("get_review gives every journey its scenario_id", /scenario_id: j\.appJourneyId \?\? null/.test(readFileSync("src/lib/review.ts", "utf8")));
+    // 5. MCP, called for real: the key's own team and scope decide.
+    // (Which teams are shown the tools is verify-mcp-remote's: twelve without `shopify`.)
+    const deps = { db, origin: "https://checkmyapp.dev", trigger: async () => {}, siteCap: () => 1000, ephemeralTtlDays: () => 7, sleep: async () => {}, now: () => Date.now() };
+    const as = (scope: "member" | "reader", teamId = "ta") =>
+      createRemoteTools({ user: { id: scope === "member" ? "ua" : "ur", email: "x@x.test", name: null }, team: { id: teamId, name: "T", plan: "business", features: ["shopify"] }, scope, door: "mcp" } as never, deps as never);
+    const parse = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
+    const made = parse(await as("member").report_check_mistake({ run_id: "pubA", finding: 1, reason: "wrong", text: "Through MCP" }));
+    eq("report_check_mistake: a member's key reports on its own run", [made.ok, made.about], [true, "finding"]);
+    eq("…a reader's key is refused", parse(await as("reader").report_check_mistake({ run_id: "pubA", reason: "wrong", text: "x" })).code, "forbidden");
+    eq("…another team's key does not find the run", parse(await as("member", "tb").report_check_mistake({ run_id: "pubA", reason: "wrong", text: "x" })).code, "not_found");
+    eq("…an app is not a place to report on", parse(await as("member").report_check_mistake({ app_id: "a1", reason: "other", text: "x" } as never)).code, "invalid_input");
+    const listed = parse(await as("reader").list_check_mistakes({ app_id: "a1" }));
+    check("list_check_mistakes: a reader reads them, each with its run_id or scenario_id",
+      listed.ok && listed.reports.length === 9 && listed.reports.every((r: { run_id: string | null; scenario_id: string | null }) => r.run_id || r.scenario_id),
+      `${listed.reports?.length} reports`);
+    const review = readFileSync("src/lib/review.ts", "utf8");
+    check("get_review gives every journey its scenario_id", review.includes("scenario_id: j.appJourneyId ?? null"));
   } finally {
     await real.dispose();
   }

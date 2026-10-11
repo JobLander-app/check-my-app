@@ -409,7 +409,7 @@ export async function VerdictView({
                 "again and the previous verdict stands. The next full check walks them."
               : undefined
           }
-          feedback={comments && feedbackBase ? { ...feedbackBase, byScenario: comments.byScenario } : undefined}
+          feedback={comments && feedbackBase ? { ...feedbackBase, byJourney: comments.byJourney } : undefined}
         />
         <AppAnatomySection anatomy={normalizeAnatomy(parseJson<unknown>(run.anatomy))} />
 

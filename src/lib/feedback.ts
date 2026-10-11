@@ -54,6 +54,7 @@ export type ResolvedTarget = {
   appId: string;
   runId: string | null;
   findingId: string | null;
+  journeyId: string | null;
   stepId: string | null;
   appJourneyId: string | null;
 };
@@ -69,7 +70,7 @@ export function mayComment(actor: Pick<FeedbackActor, "scope" | "features">): bo
 }
 
 export async function resolveTarget(db: PrismaClient, teamId: string, t: FeedbackTarget): Promise<ResolvedTarget | null> {
-  const none = { runId: null, findingId: null, stepId: null, appJourneyId: null };
+  const none = { runId: null, findingId: null, journeyId: null, stepId: null, appJourneyId: null };
   if ("app_id" in t) {
     const app = await db.app.findFirst({ where: { ...teamOwned(teamId), id: t.app_id }, select: { id: true } });
     return app ? { kind: "app", appId: app.id, ...none } : null;
@@ -82,7 +83,7 @@ export async function resolveTarget(db: PrismaClient, teamId: string, t: Feedbac
   // A run that belongs to no saved app (a one-off check of a URL) has nowhere
   // for a comment to live; the team saves the app first.
   if (!run?.appId) return null;
-  const base = { appId: run.appId, runId: run.id, findingId: null, stepId: null, appJourneyId: null };
+  const base = { appId: run.appId, runId: run.id, findingId: null, journeyId: null, stepId: null, appJourneyId: null };
   if (t.finding !== undefined) {
     const f = await db.finding.findFirst({ where: { runId: run.id, number: t.finding }, select: { id: true } });
     return f ? { ...base, kind: "finding", findingId: f.id } : null;
@@ -91,12 +92,13 @@ export async function resolveTarget(db: PrismaClient, teamId: string, t: Feedbac
     const journeys = await db.journey.findMany({ where: { runId: run.id }, orderBy: { order: "asc" }, select: { id: true, appJourneyId: true } });
     const j = journeys[t.journey - 1];
     if (!j) return null;
-    if (t.step === undefined) {
-      return j.appJourneyId ? { ...base, kind: "scenario", appJourneyId: j.appJourneyId } : { ...base, kind: "run" };
-    }
+    const onJourney = { ...base, journeyId: j.id, appJourneyId: j.appJourneyId };
+    // A journey that belongs to no scenario is still the run's: its report is
+    // about this check, and it stays on this journey's card (journeyId).
+    if (t.step === undefined) return { ...onJourney, kind: j.appJourneyId ? "scenario" : "run" };
     const steps = await db.step.findMany({ where: { journeyId: j.id }, orderBy: { order: "asc" }, select: { id: true } });
     const s = steps[t.step - 1];
-    return s ? { ...base, kind: "step", stepId: s.id, appJourneyId: j.appJourneyId } : null;
+    return s ? { ...onJourney, kind: "step", stepId: s.id } : null;
   }
   if (t.step !== undefined) return null;
   return { ...base, kind: "run" };
@@ -142,13 +144,23 @@ export type FeedbackItem = {
   at: string;
   status: string;
   findingNumber: number | null;
+  journeyId: string | null;
   stepId: string | null;
   stepLabel: string | null;
+  // Where it was said, by the ids the outside uses: the run's public id and
+  // the scenario's id. An app's list mixes many runs and scenarios.
+  runPublicId: string | null;
+  scenarioId: string | null;
 };
 
-// Everything said about a target. For an app: every comment on the app and on
-// anything in it. For a scenario: on the scenario and its steps in any run. For
-// a run: on the run, its findings and its steps.
+const ROW = {
+  id: true, kind: true, reason: true, text: true, authorId: true, status: true, createdAt: true,
+  runId: true, findingId: true, journeyId: true, stepId: true, appJourneyId: true,
+} as const;
+
+// Every report about a target. For an app: on any of its checks or scenarios.
+// For a scenario: on the scenario and its steps in any run. For a run: on the
+// run, its findings, its journeys and its steps.
 export async function listFeedback(db: PrismaClient, teamId: string, t: FeedbackTarget): Promise<FeedbackItem[] | null> {
   const target = await resolveTarget(db, teamId, "run_id" in t ? { run_id: t.run_id } : t);
   if (!target) return null;
@@ -162,37 +174,38 @@ export async function listFeedback(db: PrismaClient, teamId: string, t: Feedback
     where: { ...teamOwned(teamId), ...where },
     orderBy: { createdAt: "asc" },
     take: 200,
-    select: { id: true, kind: true, reason: true, text: true, authorId: true, status: true, createdAt: true, findingId: true, stepId: true },
+    select: ROW,
   });
-  return describe(db, rows);
+  return describe(db, teamId, rows);
 }
 
-// The items of one run, grouped where the verdict page shows them.
+// The reports of one run, grouped where the verdict page shows them: the run
+// itself, each finding by number, each journey card by the journey's id.
 export async function feedbackForRun(db: PrismaClient, teamId: string, runId: string) {
   const rows = await db.feedback.findMany({
     where: { ...teamOwned(teamId), runId },
     orderBy: { createdAt: "asc" },
     take: 500,
-    select: { id: true, kind: true, reason: true, text: true, authorId: true, status: true, createdAt: true, findingId: true, stepId: true, appJourneyId: true },
+    select: ROW,
   });
-  const items = await describe(db, rows);
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  const items = await describe(db, teamId, rows);
   const run: FeedbackItem[] = [];
   const byFinding: Record<number, FeedbackItem[]> = {};
-  const byScenario: Record<string, FeedbackItem[]> = {};
+  const byJourney: Record<string, FeedbackItem[]> = {};
   for (const item of items) {
-    const row = byId.get(item.id)!;
     if (item.kind === "finding" && item.findingNumber !== null) (byFinding[item.findingNumber] ??= []).push(item);
-    else if ((item.kind === "scenario" || item.kind === "step") && row.appJourneyId) (byScenario[row.appJourneyId] ??= []).push(item);
+    else if (item.journeyId) (byJourney[item.journeyId] ??= []).push(item);
     else run.push(item);
   }
-  return { run, byFinding, byScenario };
+  return { run, byFinding, byJourney };
 }
 
-async function describe(
-  db: PrismaClient,
-  rows: { id: string; kind: string; reason: string; text: string; authorId: string; status: string; createdAt: Date; findingId: string | null; stepId: string | null }[],
-): Promise<FeedbackItem[]> {
+type Row = {
+  id: string; kind: string; reason: string; text: string; authorId: string; status: string; createdAt: Date;
+  runId: string | null; findingId: string | null; journeyId: string | null; stepId: string | null; appJourneyId: string | null;
+};
+
+async function describe(db: PrismaClient, teamId: string, rows: Row[]): Promise<FeedbackItem[]> {
   const ids = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string => Boolean(x)))];
   // D1 caps the parameters one statement may bind; a long thread must not be
   // the thing that finds out how many.
@@ -201,14 +214,16 @@ async function describe(
     for (let i = 0; i < list.length; i += 50) out.push(...(await q(list.slice(i, i + 50))));
     return out;
   };
-  const [users, findings, steps] = await Promise.all([
+  const [users, findings, steps, runs] = await Promise.all([
     chunked(ids(rows.map((r) => r.authorId)), (part) => db.user.findMany({ where: { id: { in: part } }, select: { id: true, email: true, name: true } })),
     chunked(ids(rows.map((r) => r.findingId)), (part) => db.finding.findMany({ where: { id: { in: part } }, select: { id: true, number: true } })),
     chunked(ids(rows.map((r) => r.stepId)), (part) => db.step.findMany({ where: { id: { in: part } }, select: { id: true, label: true } })),
+    chunked(ids(rows.map((r) => r.runId)), (part) => db.run.findMany({ where: { ...teamOwned(teamId), id: { in: part } }, select: { id: true, publicId: true } })),
   ]);
   const who = new Map(users.map((u) => [u.id, u.name?.trim() || u.email]));
   const num = new Map(findings.map((f) => [f.id, f.number]));
   const label = new Map(steps.map((s) => [s.id, s.label]));
+  const publicId = new Map(runs.map((r) => [r.id, r.publicId]));
   return rows.map((r) => ({
     id: r.id,
     kind: r.kind as FeedbackKind,
@@ -218,8 +233,11 @@ async function describe(
     at: r.createdAt.toISOString(),
     status: r.status,
     findingNumber: r.findingId ? (num.get(r.findingId) ?? null) : null,
+    journeyId: r.journeyId,
     stepId: r.stepId,
     stepLabel: r.stepId ? (label.get(r.stepId) ?? null) : null,
+    runPublicId: r.runId ? (publicId.get(r.runId) ?? null) : null,
+    scenarioId: r.appJourneyId,
   }));
 }
 
@@ -227,6 +245,7 @@ async function describe(
 // who build the checker, not that anything is fixed yet.
 export const STATUS_LABEL: Record<string, string> = {
   open: "received",
+  filing: "received",
   filed: "with the CheckMyApp team",
   linked: "being fixed",
   fixed: "fixed",

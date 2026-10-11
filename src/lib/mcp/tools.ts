@@ -934,6 +934,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         reports: items.map((c) => ({
           report_id: c.id,
           about: c.kind,
+          run_id: c.runPublicId,
+          scenario_id: c.scenarioId,
           ...(c.findingNumber !== null ? { finding: c.findingNumber } : {}),
           ...(c.stepLabel ? { step: c.stepLabel } : {}),
           reason: c.reason,

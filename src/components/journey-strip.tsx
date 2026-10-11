@@ -10,7 +10,7 @@ import { FeedbackThread } from "@/components/feedback-thread";
 
 type JourneyWithSteps = Journey & { steps: Step[] };
 
-export type JourneysFeedback = { runId: string; back: string; mayWrite: boolean; byScenario: Record<string, FeedbackItem[]> };
+export type JourneysFeedback = { runId: string; back: string; mayWrite: boolean; byJourney: Record<string, FeedbackItem[]> };
 
 // Verdict §3.2 — "WHAT YOUR USERS DO". The centerpiece: one horizontal strip per
 // journey, each step a card with screenshot + label + status. Click a step to
@@ -25,8 +25,8 @@ export function JourneyStrips({
   feedback,
 }: {
   journeys: JourneyWithSteps[];
-  // CHE-434: what the team reported the check got wrong, per scenario
-  // (AppJourney id), on its own team's verdict only.
+  // CHE-434: what the team reported the check got wrong, per journey of this
+  // run (a journey need not belong to a scenario), on its own team's verdict only.
   feedback?: JourneysFeedback;
   // CHE-240: our estimate and their measurement, keyed by journey id.
   numbers?: Record<string, JourneyNumbersProps>;
@@ -330,7 +330,7 @@ function JourneyCard({
               key={selected.id}
               target={{ run_id: feedback.runId, journey: position, step: journey.steps.indexOf(selected) + 1 }}
               back={feedback.back}
-              items={(feedback.byScenario[journey.appJourneyId ?? ""] ?? []).filter((c) => c.stepId === selected.id)}
+              items={(feedback.byJourney[journey.id] ?? []).filter((c) => c.stepId === selected.id)}
               mayWrite={feedback.mayWrite}
               reasons={REASONS_FOR.step}
               label={`Was step “${selected.label}” checked wrong?`}
@@ -340,10 +340,10 @@ function JourneyCard({
           <FeedbackThread
             target={{ run_id: feedback.runId, journey: position }}
             back={feedback.back}
-            items={feedback.byScenario[journey.appJourneyId ?? ""] ?? []}
+            items={feedback.byJourney[journey.id] ?? []}
             mayWrite={feedback.mayWrite}
-            reasons={REASONS_FOR.scenario}
-            label="Did the check get this scenario wrong?"
+            reasons={journey.appJourneyId ? REASONS_FOR.scenario : REASONS_FOR.run}
+            label={journey.appJourneyId ? "Did the check get this scenario wrong?" : "Did the check get this journey wrong?"}
           />
         </div>
       )}

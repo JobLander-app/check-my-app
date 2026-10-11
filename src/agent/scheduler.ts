@@ -20,7 +20,6 @@ import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
 import { isPendingShopifyApp } from "@/lib/session-view";
 import { teamByokKeyEnc } from "@/lib/byok";
-import { fileOpenFeedback } from "./feedback-filing";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -92,13 +91,6 @@ export async function runDueWatches(
     await sweepOrphanedRuns(env, now);
   } catch (err) {
     console.warn(`[orphan-runs] sweep failed: ${err instanceof Error ? err.message : err}`);
-  }
-  // CHE-434: what teams said about their apps, scenarios and checks, to our board.
-  try {
-    const { filed, failed } = await fileOpenFeedback(env);
-    if (filed.length || failed) console.log(`[feedback] filed ${filed.join(", ") || "none"}, ${failed} waiting`);
-  } catch (err) {
-    console.warn(`[feedback] filing failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const due = await env.db.watch.findMany({

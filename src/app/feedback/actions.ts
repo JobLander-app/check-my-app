@@ -11,12 +11,17 @@ import { teamFeatures } from "@/lib/team-features";
 
 export type FeedbackFormState = { error?: string; sent?: boolean } | null;
 
+// `back` is bound on the page but arrives from the browser like any argument,
+// so only a verdict's own address is ever revalidated.
+const VERDICT_PAGE = /^\/(verdict\/[A-Za-z0-9_-]+|health\/apps\/[A-Za-z0-9_-]+\/checks\/\d+)$/;
+
 export async function giveFeedbackAction(
   target: FeedbackTarget,
   back: string,
   _prev: FeedbackFormState,
   formData: FormData,
 ): Promise<FeedbackFormState> {
+  if (!VERDICT_PAGE.test(back)) return { error: "This page cannot take a report." };
   await refuseSelfCheck(back);
   const { user, db, team, scope } = await requireActionScope("feedback.write");
   const result = await giveFeedback(

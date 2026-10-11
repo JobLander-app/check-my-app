@@ -5,6 +5,7 @@ CREATE TABLE "Feedback" (
     "appId" TEXT NOT NULL,
     "runId" TEXT,
     "findingId" TEXT,
+    "journeyId" TEXT,
     "stepId" TEXT,
     "appJourneyId" TEXT,
     "kind" TEXT NOT NULL,
@@ -12,6 +13,7 @@ CREATE TABLE "Feedback" (
     "text" TEXT NOT NULL,
     "authorId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'open',
+    "claimedAt" DATETIME,
     "issueIdentifier" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

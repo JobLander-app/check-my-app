@@ -3,8 +3,12 @@
 // only writes the row; this files it, so a page never waits on Linear and a
 // filing that fails is simply tried again next tick.
 //
-// The row is claimed (open → filing) before the ticket is made, so two ticks
-// cannot file it twice; a failure puts it back to open.
+// The row is claimed (open → filing, with claimedAt) before the ticket is made,
+// so two ticks cannot file it twice. If making the ticket fails, the row goes
+// back to open. Once the ticket exists the row never goes back to open: a
+// second ticket for the same report is the one outcome worse than a late one.
+// A claim older than CLAIM_LEASE_MS belongs to a tick that died before it
+// could say either way, and is filed again.
 
 import { ourBoard, type GapBoard } from "./capability-gaps";
 import { REASON_LABEL, type FeedbackReason } from "@/lib/feedback";
@@ -12,34 +16,58 @@ import { systemWide } from "@/lib/tenant-db";
 import type { AgentEnv } from "./env";
 
 const PER_TICK = 10;
+export const CLAIM_LEASE_MS = 30 * 60 * 1000;
 
-export async function fileOpenFeedback(env: AgentEnv, opts: { board?: GapBoard | null } = {}): Promise<{ filed: string[]; failed: number }> {
-  const open = await env.db.feedback.findMany({
-    where: { ...systemWide("scheduler"), status: "open" },
+export async function fileOpenFeedback(
+  env: AgentEnv,
+  opts: { board?: GapBoard | null; now?: Date } = {},
+): Promise<{ filed: string[]; failed: number }> {
+  const now = opts.now ?? new Date();
+  const staleBefore = new Date(now.getTime() - CLAIM_LEASE_MS);
+  const due = await env.db.feedback.findMany({
+    where: {
+      ...systemWide("scheduler"),
+      issueIdentifier: null,
+      OR: [{ status: "open" }, { status: "filing", claimedAt: { lt: staleBefore } }],
+    },
     orderBy: { createdAt: "asc" },
     take: PER_TICK,
   });
-  if (open.length === 0) return { filed: [], failed: 0 };
+  if (due.length === 0) return { filed: [], failed: 0 };
   const board = opts.board !== undefined ? opts.board : await ourBoard(env);
   if (!board) {
-    console.warn(`[feedback] ${open.length} comment(s) wait: our board has no tracker connected`);
-    return { filed: [], failed: open.length };
+    console.warn(`[feedback] ${due.length} report(s) wait: our board has no tracker connected`);
+    return { filed: [], failed: due.length };
   }
   const filed: string[] = [];
   let failed = 0;
-  for (const row of open) {
-    const claimed = await env.db.feedback.updateMany({ where: { id: row.id, status: "open" }, data: { status: "filing" } });
+  for (const row of due) {
+    const claimed = await env.db.feedback.updateMany({
+      where: { id: row.id, status: row.status, claimedAt: row.claimedAt },
+      data: { status: "filing", claimedAt: now },
+    });
     if (claimed.count !== 1) continue;
+    let identifier: string | null = null;
     try {
-      const draft = await draftFor(env, board, row);
-      const issue = await board.tracker.createIssue(draft);
-      await env.db.feedback.update({ where: { id: row.id }, data: { status: "filed", issueIdentifier: issue.identifier } });
-      filed.push(issue.identifier);
+      const issue = await board.tracker.createIssue(await draftFor(env, board, row));
+      identifier = issue.identifier;
     } catch (err) {
       failed++;
-      await env.db.feedback.update({ where: { id: row.id }, data: { status: "open" } }).catch(() => {});
+      await env.db.feedback.update({ where: { id: row.id }, data: { status: "open", claimedAt: null } }).catch(() => {});
       console.warn(`[feedback] could not file ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
     }
+    // The ticket exists. Record it. If even that fails twice, the row stays
+    // claimed, never open; after the lease it is filed again, and this log
+    // line names the first ticket so triage can fold the two together.
+    let recorded = false;
+    for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+      recorded = await env.db.feedback
+        .update({ where: { id: row.id }, data: { status: "filed", issueIdentifier: identifier } })
+        .then(() => true, () => false);
+    }
+    if (recorded) filed.push(identifier);
+    else console.warn(`[feedback] filed ${row.id} as ${identifier} but could not record it; the row stays claimed`);
   }
   return { filed, failed };
 }
@@ -50,6 +78,7 @@ type Row = {
   appId: string;
   runId: string | null;
   findingId: string | null;
+  journeyId: string | null;
   stepId: string | null;
   appJourneyId: string | null;
   kind: string;
@@ -59,7 +88,7 @@ type Row = {
 };
 
 async function draftFor(env: AgentEnv, board: GapBoard, row: Row) {
-  const [author, team, app, run, finding, step, scenario] = await Promise.all([
+  const [author, team, app, run, finding, step, scenario, journey] = await Promise.all([
     env.db.user.findUnique({ where: { id: row.authorId }, select: { email: true } }),
     env.db.team.findUnique({ where: { id: row.teamId }, select: { name: true } }),
     env.db.app.findUnique({ where: { id: row.appId, ...systemWide("scheduler") }, select: { appSlug: true } }),
@@ -67,11 +96,14 @@ async function draftFor(env: AgentEnv, board: GapBoard, row: Row) {
     row.findingId ? env.db.finding.findUnique({ where: { id: row.findingId }, select: { number: true, title: true } }) : null,
     row.stepId ? env.db.step.findUnique({ where: { id: row.stepId }, select: { label: true, unverifiedReason: true } }) : null,
     row.appJourneyId ? env.db.appJourney.findUnique({ where: { id: row.appJourneyId }, select: { title: true } }) : null,
+    row.journeyId ? env.db.journey.findUnique({ where: { id: row.journeyId }, select: { title: true } }) : null,
   ]);
+  const of = scenario?.title ?? journey?.title;
   const what =
     finding ? `finding #${String(finding.number).padStart(3, "0")} “${finding.title}”`
-    : step ? `step “${step.label}”${scenario ? ` of “${scenario.title}”` : ""}`
+    : step ? `step “${step.label}”${of ? ` of “${of}”` : ""}`
     : scenario ? `scenario “${scenario.title}”`
+    : journey ? `journey “${journey.title}”`
     : run ? `check #${run.runNumber}`
     : "the app";
   const reason = REASON_LABEL[row.reason as FeedbackReason] ?? row.reason;

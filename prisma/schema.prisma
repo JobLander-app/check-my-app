@@ -1447,6 +1447,9 @@ model Feedback {
   appId           String
   runId           String?
   findingId       String?
+  // The run's journey a journey or step report is about — what the verdict
+  // card groups by, since a journey need not belong to a scenario.
+  journeyId       String?
   stepId          String?
   appJourneyId    String?
   kind            String
@@ -1454,6 +1457,9 @@ model Feedback {
   text            String
   authorId        String
   status          String   @default("open")
+  // When a tick took the row to file it; a claim older than the lease is a
+  // tick that died, and the row is filed again.
+  claimedAt       DateTime?
   issueIdentifier String?
   createdAt       DateTime @default(now())
 
