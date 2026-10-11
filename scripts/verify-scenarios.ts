@@ -73,6 +73,8 @@ async function main() {
     check("'it is really a different scenario' adds the team's and retires the found one, naming it",
       replaced.ok && found?.retiredAt !== null && /Sign in with Shopify/.test(found?.retiredReason ?? ""), found?.retiredReason ?? "");
 
+    eq("the team's own scenario is edited, not replaced", code(await replaceScenario(db, member, onceId, { title: "Something else entirely" })), "invalid_input");
+
     const listed = (await listScenarios(db, "ta", "a1")) ?? [];
     eq("the list: live scenarios, team first, the replaced one gone", listed.map((s) => s.title), ["Block Germany", "Refund a blocked order", "Sign in with Shopify"]);
     eq("another team cannot list them", await listScenarios(db, "tb", "a1"), null);
@@ -112,6 +114,8 @@ async function main() {
     check("a re-check carries the app's focus as it is now, a scenario added since included",
       Boolean(recheckRun?.focusAreas?.includes("Added after the check") && recheckRun.focusAreas.includes("Checkout must never break.")),
       `${again.kind} ${recheckRun?.focusAreas ?? ""}`);
+    check("…and the once-scenario the original check was asked to cover",
+      Boolean(recheckRun?.focusAreas?.includes("Refund a blocked order") && recheckRun.scenarioIds?.includes(onceId)), recheckRun?.scenarioIds ?? "");
     if (recheckRun) await db.run.update({ where: { id: recheckRun.id }, data: { status: "completed" } });
 
     await removeScenario(db, member, dailyId);

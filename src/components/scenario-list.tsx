@@ -10,6 +10,7 @@ import {
   type ScenarioFormState,
 } from "@/app/scenarios/actions";
 import type { ScenarioView } from "@/lib/scenarios";
+import { STEP_STATUS_META } from "@/lib/status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,7 +37,7 @@ export function ScenarioList({ appId, scenarios, mayEdit }: { appId: string; sce
                 <span className="text-sm text-fg">{s.title}</span>
                 <span className="text-xs text-fg-faint">
                   {s.source === "team" ? "written by your team" : "found by the check"} · {s.daily ? "every check" : "only when asked"}
-                  {s.status ? ` · last: ${s.status}` : ""}
+                  {s.status && STEP_STATUS_META[s.status] ? ` · last: ${STEP_STATUS_META[s.status].label.toLowerCase()}` : ""}
                 </span>
               </div>
               {s.description && <p className="text-xs text-fg-muted">{s.description}</p>}
@@ -86,6 +87,7 @@ function Add({ appId }: { appId: string }) {
 function Edit({ appId, scenario: s }: { appId: string; scenario: ScenarioView }) {
   const [state, update] = useActionState(updateScenarioAction.bind(null, appId, s.id), null);
   const [replaced, replace] = useActionState(replaceScenarioAction.bind(null, appId, s.id), null);
+  const [removed, remove] = useActionState(removeScenarioAction.bind(null, appId, s.id), null);
   return (
     <div className="flex flex-wrap gap-2">
       <details className="min-w-0 flex-1 basis-64 rounded-lg border border-ink-700 px-3 py-1.5">
@@ -96,8 +98,9 @@ function Edit({ appId, scenario: s }: { appId: string; scenario: ScenarioView })
         </form>
       </details>
       {s.source === "team" ? (
-        <form action={removeScenarioAction.bind(null, appId, s.id)}>
+        <form action={remove} className="flex items-center gap-2">
           <Button type="submit" variant="outline" className="py-1 text-xs">Remove</Button>
+          {removed?.error && <span className="text-xs text-status-broken">{removed.error}</span>}
         </form>
       ) : (
         <details className="min-w-0 flex-1 basis-64 rounded-lg border border-ink-700 px-3 py-1.5">

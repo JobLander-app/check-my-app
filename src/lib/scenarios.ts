@@ -169,10 +169,30 @@ export async function replaceScenario(
   if (refused) return refused;
   const row = await ownScenario(db, actor.teamId, id);
   if (!row) return { ok: false, code: "not_found", error: "Scenario not found in this team." };
+  // The team's own scenario is edited, not replaced.
+  if (row.source === "team") return { ok: false, code: "invalid_input", error: "This scenario is your team's own: edit it instead." };
   const added = await addScenario(db, actor, { appId: row.appId, ...input });
   if (!added.ok) return added;
-  await db.appJourney.update({ where: { id: row.id }, data: { retiredAt: new Date(), retiredReason: `replaced by the team's "${input.title.trim()}"` } });
+  // D1 has no transactions: if the found one cannot be retired, the new one is
+  // retired again, so the app never ends up with both live.
+  try {
+    await db.appJourney.update({ where: { id: row.id }, data: { retiredAt: new Date(), retiredReason: `replaced by the team's "${input.title.trim()}"` } });
+  } catch (err) {
+    await db.appJourney.update({ where: { id: added.id }, data: { retiredAt: new Date(), retiredReason: "replacement not completed" } }).catch(() => {});
+    throw err;
+  }
   return added;
+}
+
+// A run's once-scenarios (Run.scenarioIds), never trusted beyond a string list.
+export function namedScenarios(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 // What a check of this app is asked to cover, in the team's words: every daily

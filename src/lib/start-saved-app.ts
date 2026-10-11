@@ -101,6 +101,7 @@ export async function startSavedApp(
       // CHE-435: the app's own words, then the team's daily scenarios and the
       // ones this check was asked to cover.
       scopeHints: app.scopeHints, userNotes, focusAreas: mergeFocus(app.focusAreas, await focusForRun(db, app.id, extras.scenarios ?? [])),
+      scenarioIds: extras.scenarios?.length ? JSON.stringify(extras.scenarios) : null,
       // CHE-373: the origins the owner allowed besides the app's own.
       allowedOrigins: app.allowedOrigins,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,

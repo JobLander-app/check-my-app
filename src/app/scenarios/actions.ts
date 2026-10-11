@@ -48,10 +48,11 @@ export async function replaceScenarioAction(appId: string, id: string, _prev: Sc
   return { saved: true };
 }
 
-export async function removeScenarioAction(appId: string, id: string): Promise<void> {
+export async function removeScenarioAction(appId: string, id: string, _prev: ScenarioFormState, _fd: FormData): Promise<ScenarioFormState> {
   await refuseSelfCheck(appPath.section(appId, "scope"));
   const { db, actor: a } = await actor();
   const r = await removeScenario(db, a, id);
-  if (!r.ok) throw new Error(r.error);
+  if (!r.ok) return { error: r.error };
   revalidatePath(appPath.section(appId, "scope"));
+  return { saved: true };
 }

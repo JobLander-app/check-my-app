@@ -18,7 +18,7 @@ import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
 import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 import { teamByokKeyEnc } from "@/lib/byok";
-import { focusForRun, mergeFocus } from "@/lib/scenarios";
+import { focusForRun, mergeFocus, namedScenarios } from "@/lib/scenarios";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -91,6 +91,7 @@ export async function createRecheckRun(
       scopeHints: true,
       userNotes: true,
       focusAreas: true,
+      scenarioIds: true,
       allowedOrigins: true,
       notifyEmail: true,
       watchId: true,
@@ -230,10 +231,11 @@ export async function createRecheckRun(
         byokKeyEnc: await teamByokKeyEnc(prisma, prev.teamId),
         scopeHints: prev.scopeHints,
         userNotes: saved ? saved.userNotes : prev.userNotes,
-        // CHE-435: a saved website's focus as it is now — its own words and the
-        // team's daily scenarios, so one added since is checked too. The old
-        // run's focus already holds the scenarios it had, so it is not merged.
-        focusAreas: appLogin ? mergeFocus(appLogin.focusAreas, await focusForRun(prisma, appLogin.id)) : prev.focusAreas,
+        // CHE-435: a saved website's focus as it is now — its own words, the
+        // team's daily scenarios (one added since is checked too) and the
+        // once-scenarios the original check was asked to cover.
+        focusAreas: appLogin ? mergeFocus(appLogin.focusAreas, await focusForRun(prisma, appLogin.id, namedScenarios(prev.scenarioIds))) : prev.focusAreas,
+        scenarioIds: prev.scenarioIds,
         // CHE-373: scope, and so the origins it may act on, stay the run's own.
         allowedOrigins: prev.allowedOrigins,
         // A check of a saved app is heard about by the app's team members

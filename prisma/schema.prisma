@@ -68,6 +68,9 @@ model Run {
   // worker binding — the team pays their own OpenRouter bill; the run is free
   // on our balance (priceUsd = 0). Encrypted at rest like the test login.
   byokKeyEnc           String?
+  // CHE-435: the once-scenarios (AppJourney ids, JSON string[]) this check was
+  // asked to cover, so a re-check of it covers them too.
+  scenarioIds          String?
   scopeHints           String? // "don't touch /admin"
   userNotes            String? // "don't delete the test account"
   focusAreas           String? // CHE-81: owner's priority concerns
