@@ -154,6 +154,21 @@ export function isGapClass(value: string | null | undefined): value is GapClass 
 // match wins, so reordering would move a step that matches two). The three new
 // classes come after them, and the machine-trail rules after the text.
 
+// CHE-430: "OTP" is also the name of a product (OTP+, a Shopify app) and of a
+// login method ("SMS/OTP login"); it counts only as a code being asked for,
+// entered or sent — never as a name followed by a verb.
+const OTP_NAME_TAIL = String.raw`(?![+-])(?!\s+(?:log-?in|sign-?in|methods?|gates?|toggles?|settings?|options?|providers?|auth\w*|app|activity|logs?)\b)`;
+const OTP_CODE = new RegExp(
+  String.raw`\b(?:enter|type|submit|input|receive|send|sent|asks? for|prompts? for|prompted for|waiting for)\s+(?:\S+\s+){0,2}?otp\b${OTP_NAME_TAIL}` +
+    "|" +
+    // A step is often written in the passive ("OTP sent by SMS", "OTP was
+    // entered"); the verb must follow the OTP so a product name never matches.
+    String.raw`\botp\s+(?:code|prompt|challenge|input|field|entry|screen|step|is required|required)\b` +
+    "|" +
+    String.raw`\botp\s+(?:(?:was|is|were|got|gets|has been|had been)\s+)?(?:being\s+)?(?:sent|entered|typed|submitted|received|requested)\b`,
+  "i",
+);
+
 // What the walker says when it is stopped at a code gate: it was asked to
 // enter a code, a code was sent to a mailbox/phone it cannot read, or it could
 // not receive one. Bounded word runs (no ".") keep each phrase inside one
@@ -199,7 +214,7 @@ export function isJudgementNotAction(text: string): boolean {
 // stored class came from the text rules and says nothing the text does not.
 export const MACHINE_DECIDED_CLASSES: readonly GapClass[] = ["undriven_control", "captcha"];
 
-const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
+const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = [
   { match: /new tab|target=_?"?_blank|could not follow|cannot follow|opens? in a new/i, cls: "new_tab" },
   { match: /oauth|continue with google|social login|sign in with (google|github|apple)/i, cls: "oauth" },
   // CHE-104: "email link" alone used to land here, so an ordinary mailto:
@@ -214,7 +229,9 @@ const TEXT_RULES: { match: RegExp; cls: GapClass }[] = [
   // bare nouns ("verification code", "otp", "mfa") filed a step about a brand
   // label on an OTP/SMS login app as "cannot complete a verification code
   // step": the page's words matched, the step was nothing of the kind.
-  { match: VERIFICATION_CODE_FAILURE, cls: "verification_code" },
+  // CHE-430: plus an OTP asked for, entered or sent (OTP_CODE) — "an OTP code
+  // prompt blocked the sign-in" is a gate; "OTP+ settings" is a product name.
+  { match: { test: (text: string) => VERIFICATION_CODE_FAILURE.test(text) || OTP_CODE.test(text) }, cls: "verification_code" },
   { match: /camera|microphone|media device|getusermedia|webrtc/i, cls: "media_devices" },
   { match: /captcha|turnstile|recaptcha|bot (check|protection)/i, cls: "captcha" },
   { match: /leaves its test records|records still present|cleanup audit/i, cls: "test_records" },
