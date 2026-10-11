@@ -82,7 +82,31 @@ async function main() {
   const llmByok = makeLlm(fakeEnv, byokKey);
   assert.ok(llmByok.navClient !== llmNormal.navClient, "BYOK creates a different client instance");
 
-  console.log("✓ makeLlm: BYOK key produces a different client from the env key");
+  // CHE-448: a BYOK run is priced $0, so not one call may reach a key of ours.
+  // Synthesis is a direct Claude id in prod (claude-opus-4-8, LlmUsage since
+  // 2026-10-08) — without its OpenRouter twin it would go to Anthropic on ours.
+  const keyOf = (c: unknown) => (c as { apiKey: string }).apiKey;
+  const urlOf = (c: unknown) => String((c as { baseURL: string }).baseURL);
+  const byokClients = [
+    llmByok.navClient,
+    llmByok.synthClient,
+    llmByok.structClient,
+    llmByok.judgeClient,
+    ...(llmByok.synthRoutes ?? []).map((r) => r.client),
+  ];
+  for (const c of byokClients) {
+    assert.equal(keyOf(c), byokKey, "every BYOK client carries the team's key");
+    assert.ok(urlOf(c).includes("openrouter.ai"), "every BYOK client talks to OpenRouter");
+  }
+  assert.ok(llmByok.synthModel.startsWith("anthropic/claude-"), `synthesis takes its OpenRouter twin (${llmByok.synthModel})`);
+  assert.ok((llmByok.synthRoutes ?? []).every((r) => r.model.includes("/")), "no synthesis fallback goes to Anthropic directly");
+  assert.equal(llmNormal.synthModel, "claude-sonnet-4-6", "a normal run keeps its model as configured");
+  assert.equal(keyOf(llmNormal.synthClient), "sk-ant-fake", "…on our Anthropic key");
+  const claudeNav = makeLlm({ ...fakeEnv, ANTHROPIC_NAV_MODEL: "claude-sonnet-4-6" } as AgentBindings, byokKey);
+  assert.equal(claudeNav.navModel, "anthropic/claude-sonnet-4.6", "a Claude nav model is routed through OpenRouter too");
+  assert.equal(claudeNav.navVision, true, "…and keeps seeing screenshots");
+
+  console.log("✓ makeLlm: in a BYOK run every model goes through OpenRouter on the team's key; a normal run is unchanged");
 
   // ─── 3. CHE-448: the key is set on the Team page ─────────────────────────
 
