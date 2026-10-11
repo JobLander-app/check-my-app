@@ -69,7 +69,10 @@ const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8",
 const gh = (args) => sh("gh", args);
 const ghJson = (args) => JSON.parse(gh(args) || "null");
 const clean = (text) => String(text ?? "").replace(/MENDER_DONE/g, "").trim();
-const footer = (r) => `\n\n— Mender · ${MODEL} · ${r.steps} steps · $${Number(r.cost).toFixed(2)}`;
+// A run that reached the cap says so: the ticket is too big for one unit and
+// should be split (#306 spent $5.03 over 80 steps; CHE-445).
+const footer = (r) => `\n\n— Mender · ${MODEL} · ${r.steps} steps · $${Number(r.cost).toFixed(2)}` +
+  (Number(r.cost) >= BUDGET ? ` · **reached the $${BUDGET} cap — consider splitting this ticket**` : "");
 
 async function linear(query, variables = {}) {
   const r = await fetch("https://api.linear.app/graphql", {
@@ -112,7 +115,9 @@ export function pendingReview({ reviewComments, lastCommitAt, lastRoundAt = "", 
   return reviewComments.filter((c) => c.user === REVIEWER && c.createdAt > handled && c.body.trim());
 }
 
-async function findWork() {
+// `release: false` is the read-only look `peek` takes: it changes nothing on the
+// board and only says whether a tick would find work.
+async function findWork({ release = true } = {}) {
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
   const prs = ghJson(["pr", "list", "--state", "open", "--json", "number,headRefName,url", "--limit", "50"])
     .filter((p) => p.headRefName.startsWith("mender/"));
@@ -149,6 +154,7 @@ async function findWork() {
   // (Codex, #298 round 2).
   const open = new Set(prs.map((p) => p.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase()).filter(Boolean));
   for (const s of stranded(all, open)) {
+    if (!release) return { kind: "stranded", issue: s };
     await comment(s.id, `${ATTEMPT_MARK}\n**Mender's previous run ended without a result** (it stopped before reporting). Back to Todo.`);
     await setState(s.id, "Todo");
     s.state = { type: "unstarted" };
@@ -353,8 +359,34 @@ async function publish() {
   say(`opened ${url}`);
 }
 
+// ─── Tempo (CHE-445): GitHub's schedule fired every 4–7 h, not every 30 min ──
+
+/**
+ * Is there anything for a tick to do? Read-only, and needs no `npm ci`, so an
+ * idle tick ends in seconds. Writes `work=yes|no` for the workflow's later steps.
+ */
+async function peek() {
+  const yes = Boolean(process.env.TICKET) || Boolean(await findWork({ release: false }));
+  say(`peek: ${yes ? "work to do" : "nothing to do"}`);
+  if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, `work=${yes ? "yes" : "no"}\n`, { flag: "a" });
+  return yes;
+}
+
+/**
+ * After a publish, if more work is queued, start the next tick now instead of
+ * waiting for the schedule — a batch of labelled tickets goes back to back.
+ * The personal token starts it (an event from GITHUB_TOKEN would not); the
+ * workflow's concurrency group keeps ticks serial.
+ */
+async function chainNext() {
+  if (!(await findWork({ release: false }))) return say("queue empty — no next tick");
+  gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+  say("more work queued — next tick started");
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const step = process.argv[2];
-  (step === "publish" ? publish() : step === "work" ? work() : Promise.reject(new Error("usage: agent.mjs work|publish")))
+  const run = { peek, work, publish: () => publish().then(chainNext) }[step];
+  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish")))
     .catch((e) => { console.error(e); process.exit(1); });
 }

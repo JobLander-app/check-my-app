@@ -23,6 +23,11 @@ on:
       ticket:
         description: "A CHE identifier to take now (e.g. CHE-123); empty = the queue"
         required: false
+  # A CodeRabbit review on a Mender PR starts its round now, not at the next
+  # schedule (which GitHub fired every 4–7 h; CHE-445). The job below runs only
+  # for CodeRabbit on mender/ branches, and always from main's files.
+  pull_request_review:
+    types: [submitted]
 
 # One unit of work at a time: two ticks would take the same ticket.
 concurrency:
@@ -31,26 +36,42 @@ concurrency:
 
 jobs:
   work:
+    if: >-
+      github.event_name != 'pull_request_review' ||
+      (startsWith(github.event.pull_request.head.ref, 'mender/') && github.event.review.user.login == 'coderabbitai[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: read
+    outputs:
+      work: ${{ steps.peek.outputs.work }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npx prisma generate
-      - run: npm install -g opencode-ai@1.18.35
+      # Read-only and before npm ci: an idle tick ends here in seconds.
+      - id: peek
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          TICKET: ${{ inputs.ticket }}
+        run: node scripts/mender/agent.mjs peek
+      - if: steps.peek.outputs.work == 'yes'
+        run: npm ci
+      - if: steps.peek.outputs.work == 'yes'
+        run: npx prisma generate
+      - if: steps.peek.outputs.work == 'yes'
+        run: npm install -g opencode-ai@1.18.35
       # GH_TOKEN here is the job's read-only token (listing PRs and review
       # comments); the script removes it from the model's environment too.
       - name: Work
+        if: steps.peek.outputs.work == 'yes'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
@@ -62,6 +83,7 @@ jobs:
           MENDER_BUDGET: "5"
         run: node scripts/mender/agent.mjs work
       - uses: actions/upload-artifact@v4
+        if: steps.peek.outputs.work == 'yes'
         with:
           name: mender
           path: ${{ runner.temp }}/mender
@@ -69,6 +91,7 @@ jobs:
 
   publish:
     needs: work
+    if: needs.work.outputs.work == 'yes'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

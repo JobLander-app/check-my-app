@@ -16,6 +16,8 @@ export interface AgentBindings {
   MYBROWSER: Fetcher;
   EXTENSION_RUNNER?: DurableObjectNamespace<ExtensionRunner>;
   CHECK_RUN: Workflow;
+  // CHE-445: starts one Mender tick per scheduler tick (src/agent/mender-dispatch.ts).
+  MENDER_DISPATCH_TOKEN?: string;
   ANTHROPIC_API_KEY: string;
   ANTHROPIC_NAV_MODEL?: string;
   ANTHROPIC_SYNTH_MODEL?: string;
