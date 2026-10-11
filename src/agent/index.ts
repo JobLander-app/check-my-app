@@ -3,7 +3,8 @@
 // via the CHECK_RUN binding (see src/lib/trigger.ts), and a manual POST /trigger
 // is kept for ops/testing — and the cron handler that fires due Watches (CHE-41).
 
-import type { AgentBindings } from "./env";
+import { makeAgentEnv, type AgentBindings } from "./env";
+import { fileOpenFeedback } from "./feedback-filing";
 import { runDueWatches } from "./scheduler";
 import type { CheckRunParams } from "./workflow";
 import { CheckRunWorkflow } from "./workflow";
@@ -47,5 +48,13 @@ export default {
   async scheduled(_controller: ScheduledController, env: AgentBindings): Promise<void> {
     const { started, skipped } = await runDueWatches(env);
     console.log(`[scheduler] tick: started ${started.length}, skipped ${skipped}`);
+    // CHE-434: reports of the check's mistakes, to our board — after the due
+    // checks have started, so a slow tracker never delays one.
+    try {
+      const { filed, failed } = await fileOpenFeedback(makeAgentEnv(env));
+      if (filed.length || failed) console.log(`[feedback] filed ${filed.join(", ") || "none"}, ${failed} waiting`);
+    } catch (err) {
+      console.warn(`[feedback] filing failed: ${err instanceof Error ? err.message : err}`);
+    }
   },
 };

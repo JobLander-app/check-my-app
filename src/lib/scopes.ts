@@ -35,6 +35,8 @@ export type TeamAction =
   | "watch.configure"
   // Operational writes that cost nothing but change what the team sees.
   | "finding.mark"
+  // CHE-434: commenting on / correcting an app, a scenario or a run.
+  | "feedback.write"
   | "ticket.create"
   | "specs.export"
   | "app.settings.write"
@@ -57,6 +59,7 @@ export const TEAM_ACTIONS: TeamAction[] = [
   "run.full_recheck",
   "watch.configure",
   "finding.mark",
+  "feedback.write",
   "ticket.create",
   "specs.export",
   "app.settings.write",
@@ -107,6 +110,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "run.full_recheck": true,
     "watch.configure": true,
     "finding.mark": true,
+    "feedback.write": true,
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
@@ -127,6 +131,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "run.full_recheck": true,
     "watch.configure": true,
     "finding.mark": true,
+    "feedback.write": true,
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
@@ -147,6 +152,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "run.full_recheck": false,
     "watch.configure": false,
     "finding.mark": false,
+    "feedback.write": false,
     "ticket.create": false,
     "specs.export": false,
     "app.settings.write": false,

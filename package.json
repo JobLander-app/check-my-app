@@ -154,6 +154,7 @@
     "tg:send": "tsx --tsconfig tsconfig.json scripts/tg-send.ts",
     "team:feature": "node --env-file=.env --import tsx scripts/team-feature.ts",
     "verify:team-features": "tsx --tsconfig tsconfig.json scripts/verify-team-features.ts",
+    "verify:feedback": "tsx --tsconfig tsconfig.json scripts/verify-feedback.ts",
     "team:byok": "node --env-file=.env --import tsx scripts/team-byok.ts",
     "verify:byok": "tsx --tsconfig tsconfig.json scripts/verify-byok.ts"
   },

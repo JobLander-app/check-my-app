@@ -21,6 +21,9 @@ import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
 import { extensionDisplayName, extensionReportPublished } from "@/lib/extension-target";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
+import { FeedbackThread } from "@/components/feedback-thread";
+import { REASONS_FOR, feedbackForRun, mayComment } from "@/lib/feedback";
+import { hasFeature, teamFeatures } from "@/lib/team-features";
 
 // CHE-334: the journey statuses that put a problem on the page — what the
 // empty findings section must not contradict.
@@ -199,6 +202,14 @@ export async function VerdictView({
         (r.completedAt as Date).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
       ]),
   );
+  // CHE-434: where the team says this check got it wrong — on its own team's
+  // saved app only, behind `shopify`. A shared link shows none of it.
+  const viewerFeatures = viewerTeam && run.teamId === viewerTeam.team.id && run.appId ? await teamFeatures(prisma, run.teamId) : [];
+  const comments =
+    viewerTeam && run.teamId && hasFeature(viewerFeatures, "shopify") ? await feedbackForRun(prisma, run.teamId, run.id) : null;
+  const feedbackBase = comments && viewerTeam
+    ? { runId: run.publicId, back: inApp?.back ?? `/verdict/${run.publicId}`, mayWrite: mayComment({ scope: viewerTeam.scope, features: viewerFeatures }) }
+    : null;
   const newerRun = await prisma.run.findFirst({ ...publicRow(),
     where: { baselineRunId: run.id, status: { in: ["completed", "partial"] } },
     orderBy: { createdAt: "desc" },
@@ -358,6 +369,16 @@ export async function VerdictView({
               )}
             </div>
           )}
+          {comments && feedbackBase && (
+            <FeedbackThread
+              target={{ run_id: run.publicId }}
+              back={feedbackBase.back}
+              items={comments.run}
+              mayWrite={feedbackBase.mayWrite}
+              reasons={REASONS_FOR.run}
+              label="Did this check get something wrong?"
+            />
+          )}
         </header>
 
         <FindingsList
@@ -366,6 +387,7 @@ export async function VerdictView({
           canCreateTicket={caps.createTicket}
           finished={run.status === "completed" || run.status === "partial"}
           journeysFlagged={run.journeys.some((j) => FLAGGED_JOURNEY.has(j.status))}
+          feedback={comments && feedbackBase ? { ...feedbackBase, byFinding: comments.byFinding } : undefined}
         />
         <AppLensSection
           runId={run.publicId}
@@ -387,6 +409,7 @@ export async function VerdictView({
                 "again and the previous verdict stands. The next full check walks them."
               : undefined
           }
+          feedback={comments && feedbackBase ? { ...feedbackBase, byJourney: comments.byJourney } : undefined}
         />
         <AppAnatomySection anatomy={normalizeAnatomy(parseJson<unknown>(run.anatomy))} />
 

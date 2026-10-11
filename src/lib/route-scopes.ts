@@ -159,6 +159,8 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // CHE-360: the four marks on the Issues pages, the same decision as PATCH
   // /api/findings/[id] for the team the run belongs to.
   "src/app/(app)/health/issues/actions.ts#markFinding": { kind: "team", action: "finding.mark" },
+  // CHE-434: a comment on an app, a scenario or a run, resolved inside the team.
+  "src/app/feedback/actions.ts#giveFeedbackAction": { kind: "team", action: "feedback.write" },
   "src/app/verdict/actions.ts#recheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "src/app/verdict/actions.ts#fullRecheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   // CHE-329: "Run it again" on a failed run — the same re-check, same gates.

@@ -213,6 +213,10 @@ export async function sweepExpiredEphemeralRuns(
   await eachChunk(runIds, (ids) => db.createdResource.deleteMany({ where: { runId: { in: ids } } }));
   // The page snapshot the run took (CHE-132): a plain runId, no cascade.
   await eachChunk(runIds, (ids) => db.appSnapshot.deleteMany({ where: { runId: { in: ids } } }));
+  // CHE-434: a report of the check's mistake on one of these runs. None can
+  // exist (a report needs the run's App, and an ephemeral run has none); here
+  // so the runId column is accounted for by mechanism, like PendingCheck below.
+  await eachChunk(runIds, (ids) => db.feedback.deleteMany({ where: { runId: { in: ids } } }));
   // A paid check's parked row (src/lib/one-check.ts) points at its run by a
   // plain unique id. An ephemeral run is owned and never paid for, so this
   // finds nothing today; it is here so every `runId` column in the schema is

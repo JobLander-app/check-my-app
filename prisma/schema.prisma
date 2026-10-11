@@ -1432,3 +1432,39 @@ model TelegramMessage {
 
   @@index([chatId, createdAt])
 }
+
+// ─── Feedback (CHE-434) ──────────────────────────────────────────────────────
+// Where CheckMyApp got a check wrong, reported by the team it checked: on a
+// run, a finding, a step or a scenario (AppJourney). A signal about OUR
+// mistake, never a chat about the team's app. Never rewrites what the run
+// said; it sits beside it. The scheduler tick files it onto our own board
+// (src/agent/feedback-filing.ts): status open → filed with issueIdentifier.
+// kind: run | finding | step | scenario · reason: FEEDBACK_REASONS.
+
+model Feedback {
+  id              String   @id @default(cuid())
+  teamId          String
+  appId           String
+  runId           String?
+  findingId       String?
+  // The run's journey a journey or step report is about — what the verdict
+  // card groups by, since a journey need not belong to a scenario.
+  journeyId       String?
+  stepId          String?
+  appJourneyId    String?
+  kind            String
+  reason          String
+  text            String
+  authorId        String
+  status          String   @default("open")
+  // When a tick took the row to file it; a claim older than the lease is a
+  // tick that died, and the row is filed again.
+  claimedAt       DateTime?
+  issueIdentifier String?
+  createdAt       DateTime @default(now())
+
+  @@index([teamId, appId])
+  @@index([runId])
+  @@index([appJourneyId])
+  @@index([status])
+}
