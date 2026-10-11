@@ -133,8 +133,12 @@ async function noticeNewCausesOrThrow(
         console.warn(`[cause-notice] ${cause} for ${run.appSlug} not sent to one admin: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (told > 0) await env.db.causeNotice.update({ where: { appId_cause: { appId: run.appId, cause } }, data: { sentAt: new Date() } });
-    out.push({ cause, result: told > 0 ? "told" : "failed", admins: told });
+    // Sent means every admin was reached: stamping it after one success would
+    // stop the next run retrying the admin whose send failed. The retry cannot
+    // double-mail the others — each recipient has its own idempotency key.
+    const everyone = told === admins.length;
+    if (everyone) await env.db.causeNotice.update({ where: { appId_cause: { appId: run.appId, cause } }, data: { sentAt: new Date() } });
+    out.push({ cause, result: everyone ? "told" : "failed", admins: told });
   }
   return out;
 }

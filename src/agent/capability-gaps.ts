@@ -340,7 +340,6 @@ export async function fileCapabilityGaps(
         } catch (err) {
           const text = err instanceof Error ? err.message : String(err);
           console.warn(`[capability] labelling ${outcome.identifier} for Mender failed: ${text}`);
-          notes.push({ icon: "warn", text: `Couldn't label ${outcome.identifier} for Mender: ${text}` });
         }
       }
       // The unclassified bucket is the exception that gets investigated, not

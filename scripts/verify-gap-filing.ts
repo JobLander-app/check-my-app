@@ -340,15 +340,15 @@ async function main() {
       JSON.stringify(older.labelled),
     );
 
-    // A tracker that refuses the label must not cost the run its other notes.
+    // A tracker that refuses the label must not cost the run its other notes, and is not the customer's news.
     const refusing = stubWorld([SLIDER_153], { existing: { [keyFor("range_input")]: "CHE-150" } });
     refusing.board.tracker.addLabel = async () => {
       throw new Error("Linear API: rate limited");
     };
     const notes = await fileCapabilityGaps(refusing.env, "run-1", { board: refusing.board });
     check(
-      "CHE-443: a refused label is said in the notes and does not stop the filing",
-      notes.some((n) => n.icon === "warn" && /label/i.test(n.text)) && notes.some((n) => n.icon === "ok"),
+      "CHE-443: a refused label stays in the server log, not the run's notes, and does not stop the filing",
+      !notes.some((n) => /label/i.test(n.text)) && notes.some((n) => n.icon === "ok"),
       notes.map((n) => n.text).join(" | "),
     );
   }

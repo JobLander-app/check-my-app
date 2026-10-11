@@ -174,6 +174,7 @@ async function main() {
   // The unique index the migration creates, proven on a real SQLite.
   {
     const db = new DatabaseSync(":memory:");
+    db.exec(`PRAGMA foreign_keys = ON;`);
     db.exec(`CREATE TABLE "App" ("id" TEXT NOT NULL PRIMARY KEY);`);
     const dir = path.join(root, "prisma/migrations");
     const file = readdirSync(dir).find((f) => /^\d+_cause_notice\.sql$/.test(f));
@@ -192,8 +193,8 @@ async function main() {
     db.exec(`INSERT INTO "CauseNotice" ("id","appId","cause","firstRunId") VALUES ('x','a1','missing_access:store_password','r1')`);
     check("another cause on the same app is fine", true);
     db.exec(`DELETE FROM "App" WHERE id='a1'`);
-    // foreign keys are off by default in node:sqlite until enabled; the declared cascade is what prod has.
-    check("the table cascades with its app", /ON DELETE CASCADE/.test(readFileSync(path.join(dir, file as string), "utf8")));
+    const remaining = db.prepare(`SELECT * FROM "CauseNotice"`).all();
+    check("deleting its app deletes its CauseNotice rows", remaining.length === 0, `${remaining.length} rows remain`);
   }
 
   type Row = { appId: string; cause: string; firstRunId: string; sentAt: Date | null };
@@ -314,6 +315,18 @@ async function main() {
     await noticeNewCauses(w.env, "r3", w.send);
     check("…and then never again", w.mails.length === 1);
     check("the provider's idempotency key is the app and the cause, so a repeat of the same send is not a second mail", Boolean(w.mails[0].key) && /^[\w/.-]+\/[0-9a-f]{16}$/.test(w.mails[0].key as string), w.mails[0].key);
+  }
+
+  {
+    // One admin reached, one not: the cause stays unsent so the next run retries.
+    const w = world({ admins: ["a@otp.plus", "b@otp.plus"] });
+    w.addRun("r1", stopped(1));
+    w.failNext(1);
+    const first = await noticeNewCauses(w.env, "r1", w.send);
+    check("one admin of two unreached leaves the cause unsent", first[0]?.result === "failed" && first[0]?.admins === 1 && w.notices[0]?.sentAt === null && w.mails.length === 1);
+    w.addRun("r2", stopped(1));
+    await noticeNewCauses(w.env, "r2", w.send);
+    check("the next run reaches the admin it missed and stamps the cause", w.notices[0].sentAt !== null && w.mails.some((m) => m.to === "b@otp.plus"));
   }
 
   {
