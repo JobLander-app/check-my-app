@@ -202,8 +202,8 @@ export async function VerdictView({
         (r.completedAt as Date).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
       ]),
   );
-  // CHE-434: the team's comments, on its own team's saved app only, behind
-  // `shopify`. A shared link opened by anyone else shows none of it.
+  // CHE-434: where the team says this check got it wrong — on its own team's
+  // saved app only, behind `shopify`. A shared link shows none of it.
   const viewerFeatures = viewerTeam && run.teamId === viewerTeam.team.id && run.appId ? await teamFeatures(prisma, run.teamId) : [];
   const comments =
     viewerTeam && run.teamId && hasFeature(viewerFeatures, "shopify") ? await feedbackForRun(prisma, run.teamId, run.id) : null;
@@ -376,7 +376,7 @@ export async function VerdictView({
               items={comments.run}
               mayWrite={feedbackBase.mayWrite}
               reasons={REASONS_FOR.run}
-              label="Something off with this check? Comment on it"
+              label="Did this check get something wrong?"
             />
           )}
         </header>

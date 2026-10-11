@@ -18,7 +18,7 @@ process.env.CREDENTIALS_SECRET ??= "verify-feedback-secret";
 import "./fixtures/wasm-module-loader.mjs";
 import { readFileSync } from "node:fs";
 import { realD1 } from "./fixtures/real-d1";
-import { feedbackForRun, giveFeedback, listFeedback, type FeedbackActor } from "../src/lib/feedback";
+import { FEEDBACK_REASONS, feedbackForRun, giveFeedback, listFeedback, type FeedbackActor } from "../src/lib/feedback";
 import { fileOpenFeedback } from "../src/agent/feedback-filing";
 import type { GapBoard } from "../src/agent/capability-gaps";
 import type { AgentEnv } from "../src/agent/env";
@@ -60,48 +60,52 @@ async function main() {
     const stranger: FeedbackActor = { userId: "ub", teamId: "tb", scope: "admin", features: ["shopify"] };
     const unflagged: FeedbackActor = { ...member, features: [] };
 
+    // 0. The point (owner, 2026-10-11): a report is the CHECK's mistake, never a chat.
+    eq("there is no free 'comment' — every reason names a mistake of the check", [...FEEDBACK_REASONS], ["not_checked", "wrong", "scenario_wrong", "other"]);
+
     // 1–2. Targets.
-    const say = (actor: FeedbackActor, target: Parameters<typeof giveFeedback>[2]["target"], text = "x", reason?: string) =>
+    const say = (actor: FeedbackActor, target: Parameters<typeof giveFeedback>[2]["target"], reason: string, text = "x") =>
       giveFeedback(db, actor, { target, text, reason });
+    const code = async (p: ReturnType<typeof say>) => ((await p) as { code?: string }).code;
     const kinds = [
-      await say(member, { app_id: "a1" }, "The app list misses our staging store"),
-      await say(member, { scenario_id: "s1" }, "This is really 'block an IP'", "scenario_wrong"),
-      await say(member, { run_id: "pubA", finding: 1 }, "The list is empty only for us", "wrong"),
-      await say(member, { run_id: "pubA", journey: 1 }, "Walked the wrong page"),
-      await say(member, { run_id: "pubA", journey: 1, step: 2 }, "Germany can be added fine", "not_checked"),
-      await say(member, { run_id: "pubA" }, "Overall fine"),
-      await say(member, { run_id: "pubA", journey: 2 }, "No scenario behind this one"),
+      await say(member, { scenario_id: "s1" }, "scenario_wrong", "This is really 'block an IP'"),
+      await say(member, { run_id: "pubA", finding: 1 }, "wrong", "The list is empty only for us"),
+      await say(member, { run_id: "pubA", journey: 1 }, "not_checked", "Walked the wrong page"),
+      await say(member, { run_id: "pubA", journey: 1, step: 2 }, "not_checked", "Germany can be added fine"),
+      await say(member, { run_id: "pubA" }, "wrong", "The bottom line says checkout works; it was never opened"),
+      await say(member, { run_id: "pubA", journey: 2 }, "other", "No scenario behind this one"),
     ].map((r) => (r.ok ? r.kind : r.code));
-    eq("app, scenario, finding, journey, step, run, journey without a scenario", kinds, ["app", "scenario", "finding", "scenario", "step", "run", "run"]);
+    eq("scenario, finding, journey, step, run, journey without a scenario", kinds, ["scenario", "finding", "scenario", "step", "run", "run"]);
 
     const step = await db.feedback.findFirst({ where: { kind: "step" } });
-    eq("a step comment names its step, its scenario and its run", [step?.stepId, step?.appJourneyId, step?.runId], ["st2", "s1", "r1"]);
+    eq("a step report names its step, its scenario and its run", [step?.stepId, step?.appJourneyId, step?.runId], ["st2", "s1", "r1"]);
     const viaRun = await db.feedback.findFirst({ where: { kind: "scenario", runId: "r1" } });
-    eq("a journey of a run comments on the scenario, from that run", viaRun?.appJourneyId, "s1");
+    eq("a journey of a run reports on the scenario, from that run", viaRun?.appJourneyId, "s1");
 
-    eq("another team's app is not found", (await say(stranger, { app_id: "a1" })).ok ? "ok" : (await say(stranger, { app_id: "a1" }) as { code: string }).code, "not_found");
-    eq("another team's scenario is not found", ((await say(stranger, { scenario_id: "s1" })) as { code?: string }).code, "not_found");
-    eq("another team's run is not found", ((await say(stranger, { run_id: "pubA" })) as { code?: string }).code, "not_found");
-    eq("a finding that is not in the run is not found", ((await say(member, { run_id: "pubA", finding: 9 })) as { code?: string }).code, "not_found");
-    eq("a step past the journey's end is not found", ((await say(member, { run_id: "pubA", journey: 1, step: 5 })) as { code?: string }).code, "not_found");
-    eq("a reader is refused", ((await say(reader, { app_id: "a1" })) as { code?: string }).code, "forbidden");
-    eq("a team without the shopify feature is refused", ((await say(unflagged, { app_id: "a1" })) as { code?: string }).code, "forbidden");
-    eq("an empty comment is refused", ((await say(member, { app_id: "a1" }, "   ")) as { code?: string }).code, "invalid_input");
-    eq("a reason that does not fit the target is refused", ((await say(member, { app_id: "a1" }, "x", "wrong")) as { code?: string }).code, "invalid_input");
-    eq("nothing refused was written", await db.feedback.count(), 7);
+    eq("nothing is reported on an app as a whole", await code(say(member, { app_id: "a1" }, "other")), "invalid_input");
+    eq("another team's scenario is not found", await code(say(stranger, { scenario_id: "s1" }, "wrong")), "not_found");
+    eq("another team's run is not found", await code(say(stranger, { run_id: "pubA" }, "wrong")), "not_found");
+    eq("a finding that is not in the run is not found", await code(say(member, { run_id: "pubA", finding: 9 }, "wrong")), "not_found");
+    eq("a step past the journey's end is not found", await code(say(member, { run_id: "pubA", journey: 1, step: 5 }, "wrong")), "not_found");
+    eq("a reader is refused", await code(say(reader, { run_id: "pubA" }, "wrong")), "forbidden");
+    eq("a team without the shopify feature is refused", await code(say(unflagged, { run_id: "pubA" }, "wrong")), "forbidden");
+    eq("an empty report is refused", await code(say(member, { run_id: "pubA" }, "wrong", "   ")), "invalid_input");
+    eq("a report with no reason is refused", await code(say(member, { run_id: "pubA" }, "")), "invalid_input");
+    eq("the old free 'comment' is refused", await code(say(member, { run_id: "pubA" }, "comment")), "invalid_input");
+    eq("only a scenario can be the wrong scenario", await code(say(member, { run_id: "pubA", finding: 1 }, "scenario_wrong")), "invalid_input");
+    eq("nothing refused was written", await db.feedback.count(), 6);
     eq("another team wrote nothing anywhere", await db.feedback.count({ where: { teamId: "tb" } }), 0);
 
     // 3. Reads.
-    eq("the app's thread holds everything said about it", (await listFeedback(db, "ta", { app_id: "a1" }))?.length, 7);
-    eq("the scenario's thread: the scenario and its step", (await listFeedback(db, "ta", { scenario_id: "s1" }))?.map((c) => c.kind), ["scenario", "scenario", "step"]);
-    // Five of the seven name the run; the app's and the scenario's own (by
-    // scenario_id) belong to no run.
-    eq("the run's thread: everything said about this run", (await listFeedback(db, "ta", { run_id: "pubA" }))?.length, 5);
-    eq("another team cannot read the thread", await listFeedback(db, "tb", { app_id: "a1" }), null);
+    eq("the app's reports: everything on its checks and scenarios", (await listFeedback(db, "ta", { app_id: "a1" }))?.length, 6);
+    eq("the scenario's reports: the scenario and its step", (await listFeedback(db, "ta", { scenario_id: "s1" }))?.map((c) => c.kind), ["scenario", "scenario", "step"]);
+    // Five of the six name the run; the one by scenario_id belongs to no run.
+    eq("the run's reports: everything on this run", (await listFeedback(db, "ta", { run_id: "pubA" }))?.length, 5);
+    eq("another team cannot read them", await listFeedback(db, "tb", { app_id: "a1" }), null);
     const page = await feedbackForRun(db, "ta", "r1");
-    eq("the page: finding #1 has its comment", page.byFinding[1]?.map((c) => c.text), ["The list is empty only for us"]);
-    eq("the page: the scenario card has the journey and the step comments", page.byScenario.s1?.map((c) => c.kind), ["scenario", "step"]);
-    eq("the page: the run's own thread", page.run.map((c) => c.text), ["Overall fine", "No scenario behind this one"]);
+    eq("the page: finding #1 has its report", page.byFinding[1]?.map((c) => c.text), ["The list is empty only for us"]);
+    eq("the page: the scenario card has the journey and the step reports", page.byScenario.s1?.map((c) => c.kind), ["scenario", "step"]);
+    eq("the page: the run's own", page.run.map((c) => c.text), ["The bottom line says checkout works; it was never opened", "No scenario behind this one"]);
     eq("an item names its author and finding", [page.byFinding[1]?.[0]?.author, page.byFinding[1]?.[0]?.findingNumber], ["member@securify.test", 1]);
 
     // 4. Filing.
@@ -126,15 +130,15 @@ async function main() {
     const warn = console.warn;
     console.warn = () => {};
     const none = await fileOpenFeedback(env, { board: null });
-    eq("no board: nothing filed, every row still open", [none.filed.length, await db.feedback.count({ where: { status: "open" } })], [0, 7]);
+    eq("no board: nothing filed, every row still open", [none.filed.length, await db.feedback.count({ where: { status: "open" } })], [0, 6]);
     const broken = await fileOpenFeedback(env, { board: board(true) });
-    eq("a tracker that fails leaves every row open for the next tick", [broken.failed, await db.feedback.count({ where: { status: "open" } })], [7, 7]);
+    eq("a tracker that fails leaves every row open for the next tick", [broken.failed, await db.feedback.count({ where: { status: "open" } })], [6, 6]);
     console.warn = warn;
     const first = await fileOpenFeedback(env, { board: board() });
-    eq("one ticket per comment", [first.filed.length, drafts.length], [7, 7]);
-    eq("every row is filed with its ticket", await db.feedback.count({ where: { status: "filed", issueIdentifier: { not: null } } }), 7);
+    eq("one ticket per report", [first.filed.length, drafts.length], [6, 6]);
+    eq("every row is filed with its ticket", await db.feedback.count({ where: { status: "filed", issueIdentifier: { not: null } } }), 6);
     const again = await fileOpenFeedback(env, { board: board() });
-    eq("the next tick files nothing twice", [again.filed.length, drafts.length], [0, 7]);
+    eq("the next tick files nothing twice", [again.filed.length, drafts.length], [0, 6]);
     const stepDraft = drafts.find((d) => d.description.includes("Germany can be added fine"))!;
     check("a ticket carries the words verbatim, the author and the verdict", Boolean(stepDraft) &&
       stepDraft.description.includes("> Germany can be added fine") &&
@@ -149,9 +153,9 @@ async function main() {
     const tools = readFileSync("src/lib/mcp/tools.ts", "utf8");
     const reg = tools.slice(tools.indexOf("export function registerRemoteTools"));
     const gate = reg.lastIndexOf('if (hasFeature(features, "shopify"))');
-    check("comment and list_comments are registered only for a shopify team",
-      gate > 0 && reg.indexOf('"comment"') > gate && reg.indexOf('"list_comments"') > gate);
-    check("the comment tool goes through giveFeedback with the key's own scope and team",
+    check("report_check_mistake and list_check_mistakes are registered only for a shopify team",
+      gate > 0 && reg.indexOf('"report_check_mistake"') > gate && reg.indexOf('"list_check_mistakes"') > gate);
+    check("the report tool goes through giveFeedback with the key's own scope and team",
       /giveFeedback\(\s*db,\s*\{ userId: caller\.user\.id, teamId: team\.id, scope: caller\.scope, features: team\.features \}/.test(tools));
     check("get_review gives every journey its scenario_id", /scenario_id: j\.appJourneyId \?\? null/.test(readFileSync("src/lib/review.ts", "utf8")));
   } finally {

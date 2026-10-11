@@ -10,8 +10,8 @@ import { CATEGORY_META, CATEGORY_ORDER, SEVERITY_META } from "@/lib/status";
 import { REASONS_FOR, type FeedbackItem } from "@/lib/feedback";
 import { FeedbackThread } from "@/components/feedback-thread";
 
-// CHE-434: the team's comments, per finding number. Absent for anyone who is
-// not on the run's team, or whose team does not have comments yet.
+// CHE-434: what the team reported the check got wrong, per finding number.
+// Absent for anyone who is not on the run's team, or whose team cannot report.
 export type FindingsFeedback = { runId: string; back: string; mayWrite: boolean; byFinding: Record<number, FeedbackItem[]> };
 
 // CHE-215: the public projection, not the whole row. Every prop of a client
@@ -329,7 +329,7 @@ function FindingRow({
             items={feedback.byFinding[finding.number] ?? []}
             mayWrite={feedback.mayWrite}
             reasons={REASONS_FOR.finding}
-            label="Comment on this finding"
+            label="Is this finding wrong?"
           />
         </div>
       )}

@@ -1,38 +1,42 @@
-// CHE-434: what someone on a team says about an app, a scenario or a run — a
-// comment, or a correction of what the check said. One module for the page and
-// for MCP, so neither door can do what the other refuses.
+// CHE-434: where CheckMyApp got it wrong, said by the team whose app it checked.
+// The pilot (CHE-432) exists to make the checker right on Shopify apps with the
+// Securify team's eyes, so every report is a signal about OUR mistake — not
+// checked, wrong, the wrong scenario — and becomes a ticket on our board. It is
+// not a chat about the team's app: there is no free "comment", and nothing is
+// said about an app as a whole (the check makes no claim about it to be wrong
+// about; a part it does not see is a missing scenario).
 //
-// Every target is looked up inside the caller's team: an id from another team
-// is "not found", never "forbidden" (the same rule as every MCP tool). The
-// run's own words are never rewritten — a correction is a row beside them.
-// Filing onto our board is the scheduler tick's job (src/agent/feedback-filing.ts),
-// so a request never waits on Linear and a failed filing is retried for free.
+// One module for the page and for MCP, so neither door can do what the other
+// refuses. Every target is looked up inside the caller's team: an id from
+// another team is "not found", never "forbidden". The run's own words are
+// never rewritten — a report sits beside them. Filing onto our board is the
+// scheduler tick's job (src/agent/feedback-filing.ts).
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { can, type TeamScope } from "@/lib/scopes";
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
 import { teamOwned } from "@/lib/tenant-db";
 
-export const FEEDBACK_REASONS = ["comment", "wrong", "not_checked", "scenario_wrong", "other"] as const;
+export const FEEDBACK_REASONS = ["not_checked", "wrong", "scenario_wrong", "other"] as const;
 export type FeedbackReason = (typeof FEEDBACK_REASONS)[number];
+// "app" is a place to READ every report about an app; nothing is reported on it.
 export type FeedbackKind = "app" | "run" | "finding" | "step" | "scenario";
+export type ReportKind = Exclude<FeedbackKind, "app">;
 
 export const REASON_LABEL: Record<FeedbackReason, string> = {
-  comment: "Comment",
-  wrong: "The check got this wrong",
-  not_checked: "This was not really checked",
+  not_checked: "It was not really checked",
+  wrong: "The check got it wrong",
   scenario_wrong: "It is really a different scenario",
-  other: "Something else",
+  other: "The check got something else wrong",
 };
 
-// Which reasons make sense where. A scenario can be "really a different one";
-// an app has nothing a check said about it to be wrong about.
-export const REASONS_FOR: Record<FeedbackKind, readonly FeedbackReason[]> = {
-  app: ["comment", "other"],
-  run: ["comment", "wrong", "not_checked", "other"],
-  finding: ["comment", "wrong", "other"],
-  step: ["comment", "wrong", "not_checked", "other"],
-  scenario: ["comment", "wrong", "not_checked", "scenario_wrong", "other"],
+// What the check can have got wrong at each place. A finding was either wrong
+// or wrong in another way; only a scenario can be the wrong scenario.
+export const REASONS_FOR: Record<ReportKind, readonly FeedbackReason[]> = {
+  run: ["not_checked", "wrong", "other"],
+  finding: ["wrong", "other"],
+  step: ["not_checked", "wrong", "other"],
+  scenario: ["scenario_wrong", "not_checked", "wrong", "other"],
 };
 
 export const FEEDBACK_TEXT_MAX = 4000;
@@ -58,7 +62,7 @@ export type FeedbackActor = { userId: string; teamId: string; scope: TeamScope; 
 
 export type FeedbackRefusal = { ok: false; code: "forbidden" | "not_found" | "invalid_input"; error: string };
 
-export const NOT_OPEN = "Comments are not open for this team yet.";
+export const NOT_OPEN = "Reporting the check's mistakes is not open for this team yet.";
 
 export function mayComment(actor: Pick<FeedbackActor, "scope" | "features">): boolean {
   return hasFeature(actor.features, "shopify") && can(actor.scope, "feedback.write");
@@ -98,31 +102,35 @@ export async function resolveTarget(db: PrismaClient, teamId: string, t: Feedbac
   return { ...base, kind: "run" };
 }
 
-export type GiveFeedbackInput = { target: FeedbackTarget; reason?: string; text: string };
+export type GiveFeedbackInput = { target: FeedbackTarget; reason: string; text: string };
 
 export async function giveFeedback(
   db: PrismaClient,
   actor: FeedbackActor,
   input: GiveFeedbackInput,
-): Promise<{ ok: true; id: string; kind: FeedbackKind } | FeedbackRefusal> {
+): Promise<{ ok: true; id: string; kind: ReportKind } | FeedbackRefusal> {
   if (!hasFeature(actor.features, "shopify")) return { ok: false, code: "forbidden", error: NOT_OPEN };
   if (!can(actor.scope, "feedback.write")) {
-    return { ok: false, code: "forbidden", error: "Your access to this team is read-only. An admin or a member can comment." };
+    return { ok: false, code: "forbidden", error: "Your access to this team is read-only. An admin or a member can report the check's mistakes." };
+  }
+  if ("app_id" in input.target) {
+    return { ok: false, code: "invalid_input", error: "Report a mistake on a check, a finding, a step or a scenario — a check makes no claim about the app as a whole." };
   }
   const text = input.text.trim();
-  if (!text) return { ok: false, code: "invalid_input", error: "Write what you want to say first." };
+  if (!text) return { ok: false, code: "invalid_input", error: "Say what really happened, or what the check should have done." };
   if (text.length > FEEDBACK_TEXT_MAX) return { ok: false, code: "invalid_input", error: `Keep it under ${FEEDBACK_TEXT_MAX} characters.` };
   const target = await resolveTarget(db, actor.teamId, input.target);
-  if (!target) return { ok: false, code: "not_found", error: "Not found in this team." };
-  const reason = (input.reason ?? "comment") as FeedbackReason;
-  if (!REASONS_FOR[target.kind].includes(reason)) {
-    return { ok: false, code: "invalid_input", error: `On ${target.kind === "app" ? "an app" : `a ${target.kind}`} the reason is one of: ${REASONS_FOR[target.kind].join(", ")}.` };
+  if (!target || target.kind === "app") return { ok: false, code: "not_found", error: "Not found in this team." };
+  const kind = target.kind;
+  const reason = input.reason as FeedbackReason;
+  if (!REASONS_FOR[kind].includes(reason)) {
+    return { ok: false, code: "invalid_input", error: `On a ${kind} the mistake is one of: ${REASONS_FOR[kind].join(", ")}.` };
   }
   const row = await db.feedback.create({
     data: { ...teamOwned(actor.teamId), ...target, reason, text, authorId: actor.userId },
     select: { id: true },
   });
-  return { ok: true, id: row.id, kind: target.kind };
+  return { ok: true, id: row.id, kind };
 }
 
 export type FeedbackItem = {

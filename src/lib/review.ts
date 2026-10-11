@@ -45,8 +45,8 @@ export interface ReviewStep {
 }
 
 export interface ReviewJourney {
-  // CHE-434: the app's scenario this journey is a check of — what `comment`
-  // takes as scenario_id. Null for a one-off check of a URL.
+  // CHE-434: the app's scenario this journey is a check of — what
+  // `report_check_mistake` takes as scenario_id. Null for a one-off check of a URL.
   scenario_id: string | null;
   title: string;
   status: string;

@@ -1,7 +1,7 @@
 "use server";
 
-// CHE-434: a comment or correction from the page. The same giveFeedback the MCP
-// `comment` tool calls, so the two doors cannot disagree.
+// CHE-434: a report of the check's mistake from the page. The same giveFeedback
+// the MCP `report_check_mistake` tool calls, so the two doors cannot disagree.
 
 import { revalidatePath } from "next/cache";
 import { requireActionScope } from "@/lib/team-auth";
@@ -22,7 +22,7 @@ export async function giveFeedbackAction(
   const result = await giveFeedback(
     db,
     { userId: user.id, teamId: team.id, scope, features: await teamFeatures(db, team.id) },
-    { target, reason: String(formData.get("reason") ?? "comment"), text: String(formData.get("text") ?? "") },
+    { target, reason: String(formData.get("reason") ?? ""), text: String(formData.get("text") ?? "") },
   );
   if (!result.ok) return { error: result.error };
   revalidatePath(back);

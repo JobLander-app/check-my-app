@@ -1434,11 +1434,12 @@ model TelegramMessage {
 }
 
 // ─── Feedback (CHE-434) ──────────────────────────────────────────────────────
-// What someone on a team says about an app, a scenario (AppJourney) or a run —
-// a comment or a correction. Never rewrites what the run said; it sits beside
-// it. A row is filed onto our own board by the scheduler tick
+// Where CheckMyApp got a check wrong, reported by the team it checked: on a
+// run, a finding, a step or a scenario (AppJourney). A signal about OUR
+// mistake, never a chat about the team's app. Never rewrites what the run
+// said; it sits beside it. The scheduler tick files it onto our own board
 // (src/agent/feedback-filing.ts): status open → filed with issueIdentifier.
-// kind: app | run | finding | step | scenario · reason: FEEDBACK_REASONS.
+// kind: run | finding | step | scenario · reason: FEEDBACK_REASONS.
 
 model Feedback {
   id              String   @id @default(cuid())
@@ -1449,7 +1450,7 @@ model Feedback {
   stepId          String?
   appJourneyId    String?
   kind            String
-  reason          String   @default("comment")
+  reason          String
   text            String
   authorId        String
   status          String   @default("open")

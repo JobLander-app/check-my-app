@@ -25,8 +25,8 @@ export function JourneyStrips({
   feedback,
 }: {
   journeys: JourneyWithSteps[];
-  // CHE-434: the team's comments per scenario (AppJourney id), on its own team's
-  // verdict only.
+  // CHE-434: what the team reported the check got wrong, per scenario
+  // (AppJourney id), on its own team's verdict only.
   feedback?: JourneysFeedback;
   // CHE-240: our estimate and their measurement, keyed by journey id.
   numbers?: Record<string, JourneyNumbersProps>;
@@ -333,7 +333,7 @@ function JourneyCard({
               items={(feedback.byScenario[journey.appJourneyId ?? ""] ?? []).filter((c) => c.stepId === selected.id)}
               mayWrite={feedback.mayWrite}
               reasons={REASONS_FOR.step}
-              label={`Comment on step “${selected.label}”`}
+              label={`Was step “${selected.label}” checked wrong?`}
               open
             />
           )}
@@ -343,7 +343,7 @@ function JourneyCard({
             items={feedback.byScenario[journey.appJourneyId ?? ""] ?? []}
             mayWrite={feedback.mayWrite}
             reasons={REASONS_FOR.scenario}
-            label="Comment on this scenario"
+            label="Did the check get this scenario wrong?"
           />
         </div>
       )}
