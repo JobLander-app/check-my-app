@@ -21,6 +21,7 @@ import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
 import { isPendingShopifyApp } from "@/lib/session-view";
 import { teamByokKeyEnc } from "@/lib/byok";
+import { focusForRun, mergeFocus } from "@/lib/scenarios";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
@@ -281,7 +282,9 @@ export async function createWatchRun(
       // of team members (src/lib/recipients.ts), read when the verdict is out.
       scopeHints: watch.app?.scopeHints ?? null,
       userNotes: watch.app?.userNotes ?? null,
-      focusAreas: watch.app?.focusAreas ?? null,
+      // CHE-435: and every daily scenario the team wrote — what "check this
+      // every day" means.
+      focusAreas: mergeFocus(watch.app?.focusAreas, watch.appId ? await focusForRun(env.db, watch.appId) : null),
       // CHE-373: like scopeHints, read from the app as it is now.
       allowedOrigins: watch.app?.allowedOrigins ?? null,
       watchId: watch.id,

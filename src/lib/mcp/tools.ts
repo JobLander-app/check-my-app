@@ -49,6 +49,15 @@ import { connectApp } from "@/lib/shopify-connect";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
 import { FEEDBACK_REASONS, FEEDBACK_TEXT_MAX, STATUS_LABEL, giveFeedback, listFeedback, type FeedbackTarget } from "@/lib/feedback";
+import {
+  DESCRIPTION_MAX as SCENARIO_DESCRIPTION_MAX,
+  TITLE_MAX as SCENARIO_TITLE_MAX,
+  addScenario,
+  listScenarios,
+  removeScenario,
+  replaceScenario,
+  updateScenario,
+} from "@/lib/scenarios";
 
 // CHE-322: an agent may send the default account as `test_email`/`test_password`
 // (as before) or as the entry labelled "default" in `test_accounts` — the same
@@ -216,7 +225,33 @@ export const toolSchemas = {
       .boolean()
       .optional()
       .describe("With url only: a throwaway hostname (PR preview) — private, no app kept, deleted after ~7 days"),
+    scenarios: z
+      .array(z.string().min(1))
+      .max(20)
+      .optional()
+      .describe("With app_id: team scenario ids (from list_scenarios) to check this time, besides the daily ones"),
   },
+  // CHE-435: the app's scenarios, edited by id.
+  list_scenarios: { app_id: appId },
+  add_scenario: {
+    app_id: appId,
+    title: z.string().min(3).max(SCENARIO_TITLE_MAX).describe("What the scenario is, as a person would name it, e.g. 'Block a country'"),
+    description: z
+      .string()
+      .max(SCENARIO_DESCRIPTION_MAX)
+      .optional()
+      .describe("What a user does and what should happen, e.g. 'Add Germany in Block Countries; a German visitor sees the block page'"),
+    daily: z.boolean().optional().describe("true (default): checked by every check of the app. false: only when a check names it"),
+    replaces: z.string().min(1).optional().describe("scenario_id of a scenario the check found that is really this one; it is retired"),
+    run_now: z.boolean().optional().describe("Also start a check of the app now that covers it (spends the team's balance)"),
+  },
+  update_scenario: {
+    scenario_id: z.string().min(1).describe("From list_scenarios or get_review"),
+    title: z.string().min(3).max(SCENARIO_TITLE_MAX).optional().describe("New title (team scenarios only)"),
+    description: z.string().max(SCENARIO_DESCRIPTION_MAX).optional().describe("New description; \"\" clears it"),
+    daily: z.boolean().optional().describe("Checked by every check (true) or only when named (false)"),
+  },
+  remove_scenario: { scenario_id: z.string().min(1).describe("A team scenario's id; it is retired, its history kept") },
   get_check_status: { run_id: runId },
   wait_for_run: { run_id: runId },
   wait_for_review: { run_id: runId },
@@ -639,11 +674,19 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       deploy_sha?: string;
       deploy_env?: string;
       ephemeral?: boolean;
+      scenarios?: string[];
     }): Promise<ToolResult> {
       const denied = deny("run.start");
       if (denied) return denied;
       if (Boolean(args.app_id) === Boolean(args.url)) {
         return fail("invalid_input", "Pass app_id (a saved app) or url (a one-off check), not both and not neither.");
+      }
+      // CHE-435: scenarios named for this check must be the app's own.
+      if (args.scenarios?.length) {
+        if (!args.app_id) return fail("invalid_input", "scenarios go with app_id: they are a saved app's scenarios.");
+        const known = new Set(((await listScenarios(db, team.id, args.app_id)) ?? []).filter((s) => s.source === "team").map((s) => s.id));
+        const unknown = args.scenarios.filter((id) => !known.has(id));
+        if (unknown.length) return fail("not_found", `Not a team scenario of this app: ${unknown.join(", ")}. list_scenarios shows them.`);
       }
       const deploy = args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env ?? null } : null;
       // CHE-370: a deploy named by hand is the moment to say it can be automatic.
@@ -664,7 +707,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           { id: caller.user.id, teamId: team.id, plan },
           args.app_id,
           { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: caller.door },
-          { notes: args.notes, deploy: args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env } : undefined },
+          { notes: args.notes, deploy: args.deploy_sha ? { sha: args.deploy_sha, env: args.deploy_env } : undefined, scenarios: args.scenarios },
         );
         if ("error" in started) {
           if (started.error === "App not found.") return fail("not_found", "App not found", HINTS.not_found);
@@ -946,7 +989,80 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         })),
       });
     },
+
+    async list_scenarios(args: { app_id: string }): Promise<ToolResult> {
+      const denied = deny("read");
+      if (denied) return denied;
+      const list = await listScenarios(db, team.id, args.app_id);
+      if (!list) return fail("not_found", "App not found", HINTS.not_found);
+      return text({
+        ok: true,
+        app_id: args.app_id,
+        scenarios: list.map((s) => ({
+          scenario_id: s.id,
+          title: s.title,
+          description: s.description,
+          written_by: s.source === "team" ? "team" : "the check",
+          daily: s.daily,
+          last_result: s.status,
+          last_checked_at: s.lastWalkedAt,
+        })),
+      });
+    },
+
+    async add_scenario(args: { app_id: string; title: string; description?: string; daily?: boolean; replaces?: string; run_now?: boolean }): Promise<ToolResult> {
+      if (args.run_now) {
+        const denied = deny("run.start");
+        if (denied) return denied;
+      }
+      const input = { title: args.title, description: args.description, daily: args.daily };
+      if (args.replaces && !((await listScenarios(db, team.id, args.app_id)) ?? []).some((s) => s.id === args.replaces)) {
+        return fail("not_found", "replaces is not a scenario of this app. list_scenarios shows them.", HINTS.not_found);
+      }
+      const added = args.replaces
+        ? await replaceScenario(db, actor(), args.replaces, input)
+        : await addScenario(db, actor(), { appId: args.app_id, ...input });
+      if (!added.ok) return fail(added.code, added.error, added.code === "not_found" ? HINTS.not_found : undefined);
+      if (!args.run_now) return text({ ok: true, scenario_id: added.id, daily: args.daily ?? true });
+      const started = await startSavedApp(
+        db,
+        { id: caller.user.id, teamId: team.id, plan },
+        args.app_id,
+        { trigger: deps.trigger, siteCap: deps.siteCap, capture: deps.capture, source: caller.door },
+        { scenarios: [added.id] },
+      );
+      if ("error" in started) {
+        return text({ ok: true, scenario_id: added.id, check: { started: false, error: started.error, code: started.code ?? null } });
+      }
+      // A check that was already running was planned before this scenario
+      // existed: it is that run, and it does not cover the new one.
+      if (started.alreadyRunning) {
+        return text({
+          ok: true,
+          scenario_id: added.id,
+          check: { started: false, run_id: started.publicId, already_running: true, covers_this_scenario: false, ...urls(started.publicId) },
+          hint: `A check of this app was already running and does not cover this scenario. When it ends, call start_check with app_id and scenarios: ["${added.id}"].`,
+        });
+      }
+      return text({ ok: true, scenario_id: added.id, check: { started: true, run_id: started.publicId, covers_this_scenario: true, ...urls(started.publicId) } });
+    },
+
+    async update_scenario(args: { scenario_id: string; title?: string; description?: string; daily?: boolean }): Promise<ToolResult> {
+      const result = await updateScenario(db, actor(), args.scenario_id, { title: args.title, description: args.description, daily: args.daily });
+      if (!result.ok) return fail(result.code, result.error, result.code === "not_found" ? HINTS.not_found : undefined);
+      return text({ ok: true, scenario_id: args.scenario_id });
+    },
+
+    async remove_scenario(args: { scenario_id: string }): Promise<ToolResult> {
+      const result = await removeScenario(db, actor(), args.scenario_id);
+      if (!result.ok) return fail(result.code, result.error, result.code === "not_found" ? HINTS.not_found : undefined);
+      return text({ ok: true, scenario_id: args.scenario_id, removed: true });
+    },
   };
+
+  function actor() {
+    return { userId: caller.user.id, teamId: team.id, scope: caller.scope, features: team.features };
+  }
 }
 
 type ReportArgs = {
@@ -1047,6 +1163,18 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   list_check_mistakes:
     "Every reported mistake of the check on an app, a scenario or a check — who reported it, what, and its status " +
     "(received, with the CheckMyApp team, being fixed, fixed, not a mistake of the check).",
+  list_scenarios:
+    "The app's scenarios — what its checks look at: each with scenario_id, title, description, who wrote it (the team " +
+    "or the check), whether it is checked every time (daily) and its last result.",
+  add_scenario:
+    "Add a scenario to an app, in the team's words: a title and what a user does and what should happen. daily: true " +
+    "(default) puts it in every check of the app; daily: false keeps it for the checks that name it (start_check " +
+    "scenarios). run_now also starts a check now that covers it. If a scenario the check found is really a different " +
+    "one, pass its scenario_id as replaces.",
+  update_scenario:
+    "Change a scenario by id: a team scenario's title and description; any scenario's description and whether it is " +
+    "checked every time (daily).",
+  remove_scenario: "Remove a scenario the team wrote; its past checks stay. A scenario the check found is replaced, not removed.",
 };
 
 // CHE-433: the tools a team is shown follow what it has been given — a team
@@ -1114,6 +1242,18 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       "list_check_mistakes",
       { description: DESCRIPTIONS.list_check_mistakes, inputSchema: toolSchemas.list_check_mistakes },
       (a) => tools.list_check_mistakes(a),
+    );
+    server.registerTool("list_scenarios", { description: DESCRIPTIONS.list_scenarios, inputSchema: toolSchemas.list_scenarios }, (a) =>
+      tools.list_scenarios(a),
+    );
+    server.registerTool("add_scenario", { description: DESCRIPTIONS.add_scenario, inputSchema: toolSchemas.add_scenario }, (a) =>
+      tools.add_scenario(a),
+    );
+    server.registerTool("update_scenario", { description: DESCRIPTIONS.update_scenario, inputSchema: toolSchemas.update_scenario }, (a) =>
+      tools.update_scenario(a),
+    );
+    server.registerTool("remove_scenario", { description: DESCRIPTIONS.remove_scenario, inputSchema: toolSchemas.remove_scenario }, (a) =>
+      tools.remove_scenario(a),
     );
   }
 }

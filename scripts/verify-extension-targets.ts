@@ -52,6 +52,8 @@ const db = {
   },
   team,
   pendingCheck: { findUnique: async () => pending, update: async () => pending },
+  // CHE-435: the app's team scenarios join the run's focus; none here.
+  appJourney: { findMany: async () => [] },
   // CHE-395: a saved app is found as the team's, not as the person's who added it.
   app: { findFirst: async ({where}: {where: {teamId: string; id: string}}) => where.teamId === "team_owner" && where.id === "app" ? app : null },
 } as unknown as PrismaClient;

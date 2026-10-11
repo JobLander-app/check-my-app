@@ -253,14 +253,15 @@ async function main() {
   // 2 — the tool list.
   {
     const names = (await a.listTools()).tools.map((t) => t.name).sort();
-    const expected = ["connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
-      "latest_results", "list_apps", "list_check_mistakes", "report_check_mistake", "start_check", "update_app", "wait_for_review", "wait_for_run"];
-    check("tools: exactly the fifteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
-    // CHE-433 / CHE-434: a team without the "shopify" feature is offered neither
-    // the Shopify tool nor the reports of the check's mistakes.
-    const pilotOnly = new Set(["connect_shopify_app", "report_check_mistake", "list_check_mistakes"]);
+    const expected = ["add_scenario", "connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
+      "latest_results", "list_apps", "list_check_mistakes", "list_scenarios", "remove_scenario", "report_check_mistake", "start_check", "update_app",
+      "update_scenario", "wait_for_review", "wait_for_run"];
+    check("tools: exactly the nineteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    // CHE-433 / CHE-434 / CHE-435: a team without the "shopify" feature is
+    // offered neither the Shopify tool, the mistake reports nor the scenario tools.
+    const pilotOnly = new Set(["connect_shopify_app", "report_check_mistake", "list_check_mistakes", "list_scenarios", "add_scenario", "update_scenario", "remove_scenario"]);
     const namesB = (await b.listTools()).tools.map((t) => t.name).sort();
-    check("tools: a team without the shopify feature has the twelve, without the pilot's three",
+    check("tools: a team without the shopify feature has the twelve, without the pilot's tools",
       JSON.stringify(namesB) === JSON.stringify(expected.filter((n) => !pilotOnly.has(n))), namesB.join(", "));
   }
 

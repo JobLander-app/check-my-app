@@ -292,6 +292,16 @@ model AppJourney {
   // from its own history.
   scenario String?
 
+  // CHE-435: who says this journey exists. "discovered" — the check found it;
+  // "team" — someone on the team wrote it (src/lib/scenarios.ts). A team
+  // scenario's description is the team's words: what a user does and what
+  // should happen. A daily scenario is in every check's focus (Run.focusAreas);
+  // a once-scenario only in the check that names it.
+  source      String  @default("discovered")
+  description String?
+  daily       Boolean @default(true)
+  authorId    String?
+
   // Current state, updated by every run that walks it. status is the same
   // StepStatus roll-up the per-run row carries.
   status          String?

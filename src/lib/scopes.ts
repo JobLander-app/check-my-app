@@ -37,6 +37,8 @@ export type TeamAction =
   | "finding.mark"
   // CHE-434: commenting on / correcting an app, a scenario or a run.
   | "feedback.write"
+  // CHE-435: adding, editing and removing the app's scenarios.
+  | "scenario.write"
   | "ticket.create"
   | "specs.export"
   | "app.settings.write"
@@ -60,6 +62,7 @@ export const TEAM_ACTIONS: TeamAction[] = [
   "watch.configure",
   "finding.mark",
   "feedback.write",
+  "scenario.write",
   "ticket.create",
   "specs.export",
   "app.settings.write",
@@ -111,6 +114,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "watch.configure": true,
     "finding.mark": true,
     "feedback.write": true,
+    "scenario.write": true,
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
@@ -132,6 +136,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "watch.configure": true,
     "finding.mark": true,
     "feedback.write": true,
+    "scenario.write": true,
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
@@ -153,6 +158,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "watch.configure": false,
     "finding.mark": false,
     "feedback.write": false,
+    "scenario.write": false,
     "ticket.create": false,
     "specs.export": false,
     "app.settings.write": false,

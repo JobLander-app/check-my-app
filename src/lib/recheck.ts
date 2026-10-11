@@ -18,6 +18,7 @@ import { failedPaidCheck, PAID_RETRY_SOURCE } from "@/lib/failed-run";
 import { encryptSecret } from "@/lib/crypto";
 import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 import { teamByokKeyEnc } from "@/lib/byok";
+import { focusForRun, mergeFocus } from "@/lib/scenarios";
 
 export type RecheckResult =
   | { kind: "not_found" }
@@ -201,11 +202,12 @@ export async function createRecheckRun(
   // its default login and every named account. The run being re-checked lost
   // its passwords when it ended (workflow.ts "cleanup") unless a watch kept
   // them, so copying them forward re-checked a signed-in app signed out, and
-  // would carry no named account at all. Only the credentials come from the
-  // app: this run's notes and scope stay the ones it was started with.
+  // would carry no named account at all. The credentials come from the app,
+  // and so does its focus (CHE-435: the team's scenarios as they are now); this
+  // run's notes and scope stay the ones it was started with.
   const appLogin = !saved && prev.targetKind !== "extension" && prev.appId && prev.ownerId && prev.teamId
     ? await prisma.app.findFirst({ where: { ...teamOwned(prev.teamId), id: prev.appId },
-      select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true } }) : null;
+      select: { id: true, teamId: true, targetKind: true, testEmail: true, testPasswordEnc: true, storePasswordEnc: true, focusAreas: true } }) : null;
   const login = saved ?? appLogin ?? prev;
   // CHE-335 (Codex review of #207): a claimed re-check that never got started
   // is still owed — the claim goes back if anything below throws.
@@ -228,7 +230,10 @@ export async function createRecheckRun(
         byokKeyEnc: await teamByokKeyEnc(prisma, prev.teamId),
         scopeHints: prev.scopeHints,
         userNotes: saved ? saved.userNotes : prev.userNotes,
-        focusAreas: prev.focusAreas,
+        // CHE-435: a saved website's focus as it is now — its own words and the
+        // team's daily scenarios, so one added since is checked too. The old
+        // run's focus already holds the scenarios it had, so it is not merged.
+        focusAreas: appLogin ? mergeFocus(appLogin.focusAreas, await focusForRun(prisma, appLogin.id)) : prev.focusAreas,
         // CHE-373: scope, and so the origins it may act on, stay the run's own.
         allowedOrigins: prev.allowedOrigins,
         // A check of a saved app is heard about by the app's team members

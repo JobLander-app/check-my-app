@@ -13,6 +13,7 @@ import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { holdsPrivateTarget, PRIVATE_TARGET_MESSAGE } from "@/lib/private-target";
 import { isPendingShopifyApp, PENDING_SHOPIFY_APP } from "@/lib/session-view";
 import { teamByokKeyEnc } from "@/lib/byok";
+import { focusForRun, mergeFocus } from "@/lib/scenarios";
 
 // What one run of a saved app may add on top of the app's own settings. The
 // dashboard's button sends none of it; an agent starting the run after a deploy
@@ -21,6 +22,8 @@ import { teamByokKeyEnc } from "@/lib/byok";
 export interface SavedAppRunExtras {
   notes?: string;
   deploy?: { sha: string; env?: string };
+  // CHE-435: team scenarios (ids) to check this time, besides the daily ones.
+  scenarios?: string[];
 }
 
 // CHE-253: `owner` is the person acting and the team they act for. The quota
@@ -95,7 +98,9 @@ export async function startSavedApp(
       // CHE-436: if the team has a BYOK key, copy it — the agent decrypts and
       // uses it; the run is free on our balance.
       byokKeyEnc: await teamByokKeyEnc(db, owner.teamId),
-      scopeHints: app.scopeHints, userNotes, focusAreas: app.focusAreas,
+      // CHE-435: the app's own words, then the team's daily scenarios and the
+      // ones this check was asked to cover.
+      scopeHints: app.scopeHints, userNotes, focusAreas: mergeFocus(app.focusAreas, await focusForRun(db, app.id, extras.scenarios ?? [])),
       // CHE-373: the origins the owner allowed besides the app's own.
       allowedOrigins: app.allowedOrigins,
       deploySha: extras.deploy?.sha ?? null, deployEnv: extras.deploy?.env || null,
