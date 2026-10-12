@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { AppName } from "@/components/shopify-mark";
 import { recurrencesAsOf } from "@/lib/recurring";
 import { checkDelta, deltaLine } from "@/lib/check-delta";
 import { VerdictView } from "@/components/verdict-view";
@@ -42,7 +43,7 @@ export default async function CheckPage({
   const { user, db, team } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
+    select: { id: true, name: true, appSlug: true, targetUrl: true, targetKind: true },
   });
   // Not in the team you are acting as — but possibly in another of your teams:
   // the page says so and offers the switch, landing back on this check
@@ -50,7 +51,7 @@ export default async function CheckPage({
   if (!app) {
     const elsewhere = await db.app.findFirst({
       where: { ...memberOfRows(user.id), id: appId },
-      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+      select: { name: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
     });
     if (!elsewhere?.teamId) notFound();
     return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.check(appId, runNumber)} />;
@@ -91,7 +92,7 @@ export default async function CheckPage({
     recurrencesAsOf(db, team.id, app.id, runNumber),
   ]);
   const delta = asOf ? deltaLine(checkDelta(asOf.recurrences, asOf.checks, runNumber), run.quickPagesOpened !== null) : null;
-  const name = app.targetKind === "extension" ? extensionDisplayName(app.targetUrl) : app.appSlug;
+  const name = appLabel(app);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">
@@ -102,8 +103,8 @@ export default async function CheckPage({
               Health
             </Link>
             <span aria-hidden className="text-fg-faint">/</span>
-            <Link href={appPath.page(app.id)} className="max-w-[16rem] truncate font-mono hover:text-fg">
-              {name}
+            <Link href={appPath.page(app.id)} className="max-w-[16rem] font-mono hover:text-fg">
+              <AppName name={name} shopify={isShopifyApp(app)} />
             </Link>
             <span aria-hidden className="text-fg-faint">/</span>
             <span aria-current="page" className="text-fg">

@@ -6,7 +6,8 @@ import { VERDICT_META } from "@/lib/status";
 import { can } from "@/lib/scopes";
 import { PLAN_LIMITS, shouldSkipWatch, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { ShopifyMark } from "@/components/shopify-mark";
 import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
@@ -46,7 +47,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     select: {
-      id: true, ownerId: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
+      id: true, ownerId: true, name: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
       posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
       tracker: { select: { id: true } },
       watch: { select: { active: true, frequency: true, trialEndsAt: true } },
@@ -58,7 +59,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   if (!app) {
     const elsewhere = await db.app.findFirst({
       where: { ...memberOfRows(user.id), id: appId },
-      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+      select: { name: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
     });
     if (!elsewhere?.teamId) notFound();
     return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.page(appId)} />;
@@ -109,7 +110,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
-  const name = isExtension ? extensionDisplayName(app.targetUrl) : app.appSlug;
+  const name = appLabel(app);
   const meta = mine?.latest?.verdict ? VERDICT_META[mine.latest.verdict] : null;
   const watch = app.watch
     ? { active: app.watch.active, frequency: app.watch.frequency, trialEnded: shouldSkipWatch(app.watch, team.plan as UserPlan) }
@@ -138,7 +139,10 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       <div className="flex min-w-0 flex-col gap-6">
         <header className="flex flex-col gap-2.5">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="break-all font-mono text-[26px] font-medium leading-tight">{name}</h1>
+            <h1 className="flex min-w-0 items-center gap-2.5 break-all font-mono text-[26px] font-medium leading-tight">
+              {isShopifyApp(app) && <ShopifyMark className="h-6 w-6" />}
+              {name}
+            </h1>
             {meta && (
               <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${meta.pillClassName}`}>
                 {meta.label}

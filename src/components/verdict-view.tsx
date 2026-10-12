@@ -19,7 +19,9 @@ import { explainPrice } from "@/lib/check-price";
 import { CheckPrice } from "@/components/check-price";
 import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
-import { extensionDisplayName, extensionReportPublished } from "@/lib/extension-target";
+import { extensionReportPublished } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { AppName } from "@/components/shopify-mark";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 import { FeedbackThread } from "@/components/feedback-thread";
 import { REASONS_FOR, feedbackForRun, mayComment } from "@/lib/feedback";
@@ -93,6 +95,8 @@ export async function VerdictView({
       },
       watch: { select: { active: true } },
       llmUsage: true,
+      // CHE-457: what the team calls the app — the name alone, nothing else of the row.
+      app: { select: { name: true } },
     },
   });
   if (!run) notFound();
@@ -101,6 +105,8 @@ export async function VerdictView({
   if (!extensionReportPublished(run)) redirect(`/run/${run.publicId}`);
 
   const verdictMeta = run.verdict ? VERDICT_META[run.verdict] : null;
+  // CHE-457: what the team calls the app, in every sentence on this page.
+  const appName = appLabel({ ...run, name: run.app?.name }, run.extensionEvidence);
   const duration = formatDuration(run.startedAt, run.completedAt);
   // Tokens-model-money — the primary metric. Ledger rows when present (new
   // runs), Run.costUsd alone for runs that predate the LlmUsage table.
@@ -287,7 +293,9 @@ export async function VerdictView({
         <header className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="mono text-xl text-fg">{run.targetKind === "extension" ? extensionDisplayName(run.targetUrl, run.extensionEvidence) : run.appSlug}</h1>
+              <h1 className="mono text-xl text-fg">
+                <AppName name={appName} shopify={isShopifyApp(run)} />
+              </h1>
               <p className="mt-1 font-mono text-xs text-fg-faint">
                 Checked{" "}
                 {run.completedAt?.toLocaleString([], {
@@ -306,7 +314,7 @@ export async function VerdictView({
                 {isAdmin && run.deploySha &&
                   ` · deploy ${run.deploySha.slice(0, 7)}${run.deployEnv ? ` (${run.deployEnv})` : ""}`}
               </p>
-              {priceExplanation && <CheckPrice explanation={priceExplanation} title={`${run.appSlug}, check #${run.runNumber}`} />}
+              {priceExplanation && <CheckPrice explanation={priceExplanation} title={`${appName}, check #${run.runNumber}`} />}
               {isAdmin && totalTokens > 0 && (
                 <p className="mt-0.5 font-mono text-xs text-fg-faint">
                   {fmtTok(totalTokens)} tokens
@@ -439,7 +447,7 @@ export async function VerdictView({
           <footer className="card flex flex-wrap items-center justify-between gap-4 p-6">
             <div>
               <p className="font-medium text-fg">
-                Want us to keep watching {run.appSlug}?
+                Want us to keep watching {appName}?
               </p>
               <p className="mt-0.5 text-sm text-fg-muted">
                 Daily Watch — we re-run this every 24h, alert on regressions.

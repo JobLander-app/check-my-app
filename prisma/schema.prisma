@@ -1001,6 +1001,9 @@ model App {
   // hoped for.
   team      Team?   @relation(fields: [teamId], references: [id])
   teamId    String?
+  // CHE-457: what the team calls the app ("Securify", "OTP+"). The address key
+  // below never changes; this is only how the app is shown (src/lib/app-label.ts).
+  name      String?
   targetUrl String
   targetKind String @default("website")
   extensionId String?
