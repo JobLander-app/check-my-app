@@ -110,20 +110,59 @@ export function carriesMarker(text: string, marker: string): boolean {
   return `-${words(text)}-`.includes(`-${m}-`);
 }
 
+// The ledger holds every record every run ever made, and most open rows are
+// not ours to close (a customer's run, a kind we cannot reach). Those rows sort
+// first forever, so a single batch of the oldest ones could be all of them and
+// the eligible row behind them would never be seen. The query keeps out what
+// SQL can tell (a run with an owner, a kind that mentions "app"); whether the
+// target is one of our own hosts is a list in the environment, so it is judged
+// in code — and the sweep walks the ledger batch by batch until it is read to
+// the end. The page cap keeps one tick bounded however long the ledger grows.
+const LEFTOVER_MAX_PAGES = 50;
+
 export async function sweepSelfCheckLeftovers(env: AgentEnv, now: Date = new Date()): Promise<LeftoverSweepResult> {
   const cutoff = new Date(now.getTime() - GRACE_HOURS * 60 * 60 * 1000);
-  const open = await env.db.createdResource.findMany({
-    where: { deletedAt: null, createdAt: { lt: cutoff }, marker: { startsWith: MARKER_PREFIX } },
-    select: {
-      id: true,
-      kind: true,
-      marker: true,
-      run: { select: { targetUrl: true, ownerId: true, teamId: true } },
-    },
-    orderBy: { createdAt: "asc" },
-    take: LEFTOVER_BATCH,
-  });
+  const total: LeftoverSweepResult = { appsRemoved: 0, ledgerClosed: 0 };
+  let after: string | null = null;
+  for (let page = 0; page < LEFTOVER_MAX_PAGES; page++) {
+    const open: LedgerRow[] = await env.db.createdResource.findMany({
+      where: {
+        deletedAt: null,
+        createdAt: { lt: cutoff },
+        marker: { startsWith: MARKER_PREFIX },
+        kind: { contains: LEFTOVER_KIND },
+        run: { ownerId: { not: null } },
+      },
+      select: {
+        id: true,
+        kind: true,
+        marker: true,
+        run: { select: { targetUrl: true, ownerId: true, teamId: true } },
+      },
+      // The id breaks ties, so the cursor names one place in the order.
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: LEFTOVER_BATCH,
+      ...(after ? { cursor: { id: after }, skip: 1 } : {}),
+    });
+    if (open.length === 0) break;
+    after = open[open.length - 1].id;
 
+    const done = await sweepLeftoverBatch(env, open, now);
+    total.appsRemoved += done.appsRemoved;
+    total.ledgerClosed += done.ledgerClosed;
+    if (open.length < LEFTOVER_BATCH) break;
+  }
+  return total;
+}
+
+interface LedgerRow {
+  id: string;
+  kind: string;
+  marker: string;
+  run: { targetUrl: string; ownerId: string | null; teamId: string | null };
+}
+
+async function sweepLeftoverBatch(env: AgentEnv, open: LedgerRow[], now: Date): Promise<LeftoverSweepResult> {
   const ours = open.filter(
     (r) =>
       r.kind.trim().toLowerCase() === LEFTOVER_KIND &&
@@ -133,10 +172,13 @@ export async function sweepSelfCheckLeftovers(env: AgentEnv, now: Date = new Dat
   if (ours.length === 0) return { appsRemoved: 0, ledgerClosed: 0 };
 
   const ownerIds = [...new Set(ours.map((r) => r.run.ownerId as string))];
+  // "contains", not "startsWith": the agent names an app as it likes ("My
+  // CheckMyApp test r113"), and the marker, checked word by word below, is what
+  // decides — the query only has to not hide the app from it.
   const candidates = await env.db.app.findMany({
     where: {
       ownerId: { in: ownerIds },
-      OR: [{ appSlug: { startsWith: "checkmyapp-test-" } }, { name: { startsWith: "CheckMyApp test" } }],
+      OR: [{ appSlug: { contains: "checkmyapp-test-" } }, { name: { contains: "CheckMyApp test" } }],
     },
     select: { id: true, appSlug: true, name: true, ownerId: true, teamId: true },
   });

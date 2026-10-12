@@ -10,10 +10,15 @@
 // six weeks by runs that had created nothing.
 //
 // Driven through the real sweepSelfCheckLeftovers and the real findOrphans,
-// against an in-memory database that evaluates the `where` clauses used.
+// twice: against an in-memory database that evaluates the `where` clauses used
+// (the cases), and against a real D1 (Miniflare, every migration applied) with
+// more open ledger rows than one batch holds, the ones not ours sorting first —
+// which only a database that really applies `take` and `orderBy` can answer.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-self-check-leftovers.ts
 
+import "./fixtures/wasm-module-loader.mjs";
+import { realD1 } from "./fixtures/real-d1";
 import { findOrphans } from "@/agent/cleanup";
 import { carriesMarker, sweepSelfCheckLeftovers } from "@/agent/janitor";
 import type { AgentEnv } from "@/agent/env";
@@ -94,9 +99,11 @@ function build() {
     createdAt?: { lt: Date };
     marker?: { startsWith: string };
     ownerId?: { in: string[] };
-    OR?: Array<{ appSlug?: { startsWith: string }; name?: { startsWith: string } }>;
+    kind?: { contains: string };
+    run?: { ownerId: { not: null } };
+    OR?: Array<{ appSlug?: { contains: string }; name?: { contains: string } }>;
   };
-  const startsWith = (v: string | null, p: string) => (v ?? "").toLowerCase().startsWith(p.toLowerCase());
+  const contains = (v: string | null, p: string) => (v ?? "").toLowerCase().includes(p.toLowerCase());
   const db = {
     createdResource: {
       findMany: async ({ where }: { where: Where }) =>
@@ -107,6 +114,8 @@ function build() {
           .filter((r) => ("deletedAt" in where ? r.deletedAt === where.deletedAt : true))
           .filter((r) => (where.createdAt?.lt ? r.createdAt < where.createdAt.lt : true))
           .filter((r) => (where.marker?.startsWith ? r.marker.startsWith(where.marker.startsWith) : true))
+          .filter((r) => (where.kind?.contains ? contains(r.kind, where.kind.contains) : true))
+          .filter((r) => (where.run ? runs.find((x) => x.id === r.runId)!.ownerId !== null : true))
           .map((r) => ({ ...r, run: runs.find((x) => x.id === r.runId)! })),
       updateMany: async ({ where, data }: { where: Where; data: Partial<Ledger> }) => {
         const hit = ledger.filter((r) => (where.id?.in ? where.id.in.includes(r.id) : typeof where.appId === "object" ? where.appId.in.includes(r.appId ?? "") : false));
@@ -119,7 +128,7 @@ function build() {
         apps.filter(
           (a) =>
             Boolean(where.ownerId?.in.includes(a.ownerId)) &&
-            Boolean(where.OR?.some((c) => (c.appSlug ? startsWith(a.appSlug, c.appSlug.startsWith) : startsWith(a.name, c.name?.startsWith ?? "\0")))),
+            Boolean(where.OR?.some((c) => (c.appSlug ? contains(a.appSlug, c.appSlug.contains) : contains(a.name, c.name?.contains ?? "\0")))),
         ),
       deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
         for (const id of where.id.in) {
@@ -180,7 +189,70 @@ async function main() {
   check("a second sweep changes nothing", again.appsRemoved === 0 && again.ledgerClosed === 0, JSON.stringify(again));
 }
 
-main().then(
+// The ledger at real size. 250 open rows, older than the one that is ours, all
+// of them rows the sweep must leave alone: a customer's run (kind "app", a
+// marker, an owner — everything but our own host) and records of another kind.
+// A sweep that reads only the first batch of 200 sees none of ours and closes
+// nothing, every tick, for as long as those rows stay open.
+async function atRealSize() {
+  const real = await realD1();
+  try {
+    const { db } = real;
+    const day = (d: number) => new Date(Date.UTC(2026, 8, d, 10));
+    await db.user.create({ data: { id: "u", clerkUserId: "ck_u", email: "leftovers@example.test" } });
+    await db.team.create({ data: { id: "t", name: "T", plan: "business" } });
+    const app = (id: string, appSlug: string, over: object = {}) => ({ id, teamId: "t", ownerId: "u", appSlug, targetUrl: `https://${appSlug}`, targetKind: "website", ...over });
+    await db.app.createMany({
+      data: [
+        app("ours", "checkmyapp.dev"),
+        app("cust", "joblander.app"),
+        app("leftA", "checkmyapp-test-r900.example.com"),
+        // Named as the agent liked, not starting with the marker; its slug is
+        // not marker-shaped at all.
+        app("leftB", "shop.example.com", { name: "My CheckMyApp test r901" }),
+        app("keep", "checkmyapp-test-r9000.example.com"),
+      ] as never,
+    });
+    const run = (id: string, n: number, appId: string, targetUrl: string) => ({
+      id, publicId: `p_${id}`, runNumber: n, teamId: "t", ownerId: "u", appId, appSlug: `${appId}.test`, targetUrl, targetKind: "website",
+      status: "completed", verdict: "mostly_ok", priceUsd: 0.5, startedAt: day(1), createdAt: day(1), completedAt: day(1),
+    });
+    await db.run.createMany({
+      data: [
+        run("rCust", 1, "cust", "https://joblander.app"),
+        run("rA", 2, "ours", "https://checkmyapp.dev"),
+        run("rB", 3, "ours", "https://checkmyapp.dev"),
+      ] as never,
+    });
+    const row = (id: string, runId: string, kind: string, marker: string, d: Date) => ({ id, runId, kind, marker, createdAt: d });
+    const ineligible = Array.from({ length: 250 }, (_, i) =>
+      i % 5 === 0 ? row(`n${i}`, "rA", "story", `CheckMyApp test r${i}`, day(2)) : row(`n${i}`, "rCust", "app", `CheckMyApp test r${i}`, day(2)),
+    );
+    await db.createdResource.createMany({
+      data: [...ineligible, row("eA", "rA", "app", "CheckMyApp test r900", day(3)), row("eB", "rB", "app", "CheckMyApp test r901", day(3))],
+    });
+
+    const env = { db, bindings: {} } as unknown as AgentEnv;
+    const open = (id: string) => db.createdResource.findUnique({ where: { id }, select: { deletedAt: true } }).then((r) => r?.deletedAt ?? null);
+    const stillThere = async (id: string) => (await db.app.findUnique({ where: { id }, select: { id: true } })) !== null;
+
+    const result = await sweepSelfCheckLeftovers(env, NOW);
+    check("real D1: 250 rows of someone else's sort before ours, and ours is still found", (await open("eA")) !== null && (await open("eB")) !== null, JSON.stringify(result));
+    check("real D1: the apps of those rows are removed", !(await stillThere("leftA")) && !(await stillThere("leftB")));
+    check("real D1: an app named around the marker, not starting with it, is removed", !(await stillThere("leftB")));
+    check("real D1: r900 does not take r9000 with it", await stillThere("keep"));
+    check("real D1: our own app and a customer's survive", (await stillThere("ours")) && (await stillThere("cust")));
+    const stillOpen = await db.createdResource.count({ where: { id: { startsWith: "n" }, deletedAt: null } });
+    check("real D1: none of the 250 rows that are not ours was closed", stillOpen === 250, `${stillOpen} open`);
+    check("real D1: counts: two apps removed, two rows closed", result.appsRemoved === 2 && result.ledgerClosed === 2, JSON.stringify(result));
+    const again = await sweepSelfCheckLeftovers(env, NOW);
+    check("real D1: a second sweep changes nothing", again.appsRemoved === 0 && again.ledgerClosed === 0, JSON.stringify(again));
+  } finally {
+    await real.dispose();
+  }
+}
+
+main().then(atRealSize).then(
   () => {
     console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
     process.exit(failures === 0 ? 0 : 1);
