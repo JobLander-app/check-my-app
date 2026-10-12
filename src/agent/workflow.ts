@@ -39,7 +39,7 @@ import { extensionStepConfig, isExtensionTarget } from "./extension-contract";
 import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
-import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
+import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut, tellTeamSignedOut } from "./signed-out";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
@@ -663,6 +663,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         await step.do("tell-signed-out", async () => {
           const told = await tellOwnerSignedOut(env, { id: runId, appId: run.appId, appSlug: run.appSlug }, host);
           console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
+          return told.told;
+        });
+        // CHE-428: and the team whose app it is — once per ended sign-in.
+        await step.do("tell-team-signed-out", async () => {
+          const told = await tellTeamSignedOut(env, run, host);
+          console.log(`[session] run ${runId}: team ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
           return told.told;
         });
         if (run.notifyEmail || run.appId) {

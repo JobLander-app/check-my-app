@@ -24,6 +24,10 @@
 // scripts/verify-signed-out.ts drives these exact functions.
 
 import { AlreadySentError, NotSentError, sendRecorded, type SendDeps } from "@/lib/telegram-send";
+import { noticeIdempotencyKey, sendSignInEnded } from "@/lib/email";
+import { recipientsForApp } from "@/lib/recipients";
+import { alreadyScoped } from "@/lib/tenant-db";
+import { isOwnRun, silenceReason } from "./notify-verdict";
 import type { AgentBindings, AgentEnv } from "./env";
 
 /** Where the app's address led when it did not lead to the app; null = it led to the app. */
@@ -276,5 +280,76 @@ export async function tellOwnerSignedOut(
     if (error instanceof AlreadySentError) return { told: "already", sendId };
     const detail = error instanceof Error ? error.message : String(error);
     return { told: error instanceof NotSentError ? "failed" : "unknown", sendId, detail };
+  }
+}
+
+// ─── The team (CHE-428) ──────────────────────────────────────────────────────
+//
+// The Telegram line above reaches our owner. The team whose app it is used to
+// hear nothing but a daily "Not verified" — so the people who hear the app's
+// checks (recipients.ts, the same list as the verdict mail) get one mail per
+// ended sign-in, with the app's own sign-in page.
+//
+// "Once" is App.signedOutToldFor: the ended sign-in's id is claimed on the row
+// before the mail, so two runs meeting it cannot both send; if not one mail
+// went out, the claim is put back and the next run tries again. Each recipient
+// has its own provider idempotency key on top.
+
+export type TeamTold =
+  | { told: "sent"; to: number }
+  | { told: "already" | "nobody" | "silent" | "no_app" }
+  | { told: "failed"; detail: string };
+
+type TeamBindings = Pick<AgentBindings, "EMAIL_API_KEY" | "EMAIL_FROM" | "EMAIL_REPLY_TO" | "APP_URL" | "SESSION_SIGN_IN_URL" | "SELF_CHECK_HOSTS">;
+
+export async function tellTeamSignedOut(
+  env: { db: AgentEnv["db"]; bindings: TeamBindings },
+  run: { appId: string | null; appSlug: string; targetUrl: string; ownerId: string | null; teamId: string | null; watchId: string | null },
+  host: string,
+  send: typeof sendSignInEnded = sendSignInEnded,
+): Promise<TeamTold> {
+  if (!run.appId) return { told: "no_app" };
+  try {
+    // Rule 6: our own runs of our own product are silent, and so is a run of a
+    // self-check account — the same decision the verdict mail takes.
+    const owner = run.ownerId ? await env.db.user.findUnique({ where: { id: run.ownerId }, select: { isTestAccount: true } }) : null;
+    if (silenceReason({ targetUrl: run.targetUrl, ownRun: isOwnRun(run), ownedByTestAccount: owner?.isTestAccount === true, selfCheckHosts: env.bindings.SELF_CHECK_HOSTS })) {
+      return { told: "silent" };
+    }
+    const app = await env.db.app.findUnique({ ...alreadyScoped("the caller resolved this app"), where: { id: run.appId }, select: { sessionReachedAt: true, signedOutToldFor: true } });
+    if (!app) return { told: "no_app" };
+    const sendId = signedOutSendId(run.appId, app.sessionReachedAt ? new Date(app.sessionReachedAt) : null);
+    if (app.signedOutToldFor === sendId) return { told: "already" };
+    const to = (await recipientsForApp(env.db, run.appId)).to;
+    if (to.length === 0) return { told: "nobody" };
+    const claimed = await env.db.app.updateMany({ where: { id: run.appId, signedOutToldFor: app.signedOutToldFor }, data: { signedOutToldFor: sendId } });
+    if (claimed.count !== 1) return { told: "already" };
+    const signInUrl = signInUrlFor(env.bindings, run.appId) as string;
+    let sent = 0;
+    let lastError = "";
+    for (const address of to) {
+      try {
+        await send({
+          to: address,
+          appSlug: run.appSlug,
+          host,
+          signInUrl,
+          apiKey: env.bindings.EMAIL_API_KEY,
+          from: env.bindings.EMAIL_FROM,
+          replyTo: env.bindings.EMAIL_REPLY_TO,
+          idempotencyKey: noticeIdempotencyKey(sendId, address),
+        });
+        sent++;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (sent === 0) {
+      await env.db.app.updateMany({ where: { id: run.appId, signedOutToldFor: sendId }, data: { signedOutToldFor: app.signedOutToldFor } });
+      return { told: "failed", detail: lastError || "no mail went out" };
+    }
+    return { told: "sent", to: sent };
+  } catch (error) {
+    return { told: "failed", detail: error instanceof Error ? error.message : String(error) };
   }
 }

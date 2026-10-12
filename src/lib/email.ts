@@ -226,6 +226,63 @@ function fnv1a64(s: string): string {
   return h.toString(16).padStart(16, "0");
 }
 
+export interface SignInEndedArgs {
+  to: string;
+  appSlug: string;
+  // Where the app's address leads now, e.g. "accounts.shopify.com".
+  host: string;
+  // The app's own sign-in page on CheckMyApp.
+  signInUrl: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  idempotencyKey?: string;
+}
+
+// The words of the sign-in-ended mail, shared with its guard.
+export function signInEndedCopy(a: Pick<SignInEndedArgs, "appSlug" | "host">): { subject: string; body: string } {
+  return {
+    subject: `Checks of ${a.appSlug} are paused: the sign-in has ended`,
+    body:
+      `The sign-in the checks of ${a.appSlug} use has ended: the app's address now leads to ${a.host}. ` +
+      "Sign in again and the next check goes ahead on its own.",
+  };
+}
+
+// CHE-428: once per ended sign-in, to the people who hear the app's checks —
+// not only to our owner. Asks for access (a sign-in), the one thing rule 2 lets
+// us ask for; never for verification work.
+export async function sendSignInEnded(args: SignInEndedArgs): Promise<void> {
+  const copy = signInEndedCopy(args);
+  if (!args.apiKey || !args.from) {
+    console.log(`[email:dev] to=${args.to} subject="${copy.subject}" url=${args.signInUrl}`);
+    return;
+  }
+  const why = `You get this because you hear about the checks of ${args.appSlug}. One mail per ended sign-in.`;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+      ...(args.idempotencyKey ? { "Idempotency-Key": args.idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from: args.from,
+      to: [args.to],
+      subject: copy.subject,
+      ...replyToField(args.replyTo),
+      html: htmlDocument(
+        copy.subject,
+        `<p>${escapeHtml(copy.body)}</p>` +
+          `<p><a href="${escapeHtml(args.signInUrl)}">Sign in again</a></p><p>— CheckMyApp</p>`,
+        escapeHtml(why),
+      ),
+      text: `${copy.body}\n\nSign in again: ${args.signInUrl}\n\n— CheckMyApp\n\n${why}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, args.idempotencyKey);
+}
+
 interface WatchTrialPausedArgs {
   to: string;
   appSlug: string;
