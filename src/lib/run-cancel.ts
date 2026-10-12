@@ -13,7 +13,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { can, type TeamScope } from "@/lib/scopes";
-import { alreadyScoped, systemWide, teamOwned } from "@/lib/tenant-db";
+import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { clearedCredentials } from "@/lib/test-accounts";
 import { priceRun, voidRunPrice } from "@/agent/pricing";
 
@@ -118,26 +118,3 @@ export async function zeroCanceledPrice(db: PrismaClient, runId: string): Promis
   await voidRunPrice(db, runId);
 }
 
-/**
- * The scheduler's half of the refund: every stopped check whose price is not
- * yet 0 — the stop's own zeroing failed, or a priced step landed after it — is
- * zeroed on the next tick. Returns the runs it settled.
- */
-export async function settleCanceledPrices(db: PrismaClient): Promise<string[]> {
-  const rows = await db.run.findMany({
-    ...systemWide("scheduler"),
-    where: { status: "canceled", teamId: { not: null }, OR: [{ priceUsd: null }, { priceUsd: { not: 0 } }] },
-    select: { id: true },
-    take: 50,
-  });
-  const settled: string[] = [];
-  for (const r of rows) {
-    try {
-      await zeroCanceledPrice(db, r.id);
-      settled.push(r.id);
-    } catch (e) {
-      console.warn(`[cancel] settling ${r.id} failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  return settled;
-}

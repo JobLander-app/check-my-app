@@ -11,6 +11,9 @@
 
 import { releaseSession, sessionHost, SESSION_KIND, SESSION_LEASE_SECONDS, type SessionHost } from "./session-browser";
 import type { AgentEnv } from "./env";
+import type { PrismaClient } from "@/generated/prisma/client";
+import { systemWide } from "@/lib/tenant-db";
+import { zeroCanceledPrice } from "@/lib/run-cancel";
 
 export async function releaseCanceledLeases(
   env: AgentEnv,
@@ -32,4 +35,29 @@ export async function releaseCanceledLeases(
     if (await release(host, run.id)) released.push(run.id);
   }
   return released;
+}
+
+/**
+ * The scheduler's half of a stopped check's refund (Codex on #329): every
+ * stopped check whose price is not yet 0 — the stop's own zeroing failed, or a
+ * priced step landed after it — is zeroed on the next tick, and the bought
+ * balance it took goes back. Returns the runs it settled.
+ */
+export async function settleCanceledPrices(db: PrismaClient): Promise<string[]> {
+  const rows = await db.run.findMany({
+    ...systemWide("scheduler"),
+    where: { status: "canceled", teamId: { not: null }, OR: [{ priceUsd: null }, { priceUsd: { not: 0 } }] },
+    select: { id: true },
+    take: 50,
+  });
+  const settled: string[] = [];
+  for (const r of rows) {
+    try {
+      await zeroCanceledPrice(db, r.id);
+      settled.push(r.id);
+    } catch (e) {
+      console.warn(`[cancel] settling ${r.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return settled;
 }
