@@ -43,6 +43,10 @@ async function main() {
       db.run.create({ data: { id, publicId: `p_${id}`, runNumber: n, ownerId: "ann", teamId, targetUrl: "https://a.test/", appSlug: "a.test", status, ...extra } as never });
     await run("r1", 1, "ta", "walking", { events: JSON.stringify([{ at: now.toISOString(), phase: "walking", icon: "info", text: "Walking" }]) });
     await run("r2", 2, "ta", "completed");
+    await db.watch.create({ data: { id: "w1", ownerId: "ann", teamId: "ta", appSlug: "a.test", targetUrl: "https://a.test/" } as never });
+    const accounts = JSON.stringify([{ label: "admin", email: "a@a.test", passwordEnc: "enc-admin" }]);
+    await run("r5", 5, "ta", "walking", { testPasswordEnc: "enc-default", storePasswordEnc: "enc-store", testAccounts: accounts });
+    await run("r6", 6, "ta", "walking", { watchId: "w1", testPasswordEnc: "enc-default", testAccounts: accounts });
     await run("r3", 3, "tb", "walking");
     // Priced already, part of it from the bought balance (a step priced it, then the stop came).
     await run("r4", 4, "ta", "writing", { priceUsd: 1.2, priceFromTopupUsd: 1.2 });
@@ -76,6 +80,16 @@ async function main() {
     const r4 = await db.run.findUnique({ where: { id: "r4" } });
     eq("a check priced before the stop is zeroed", [r4?.status, r4?.priceUsd, r4?.priceFromTopupUsd], ["canceled", 0, 0]);
     eq("…and the bought balance it took goes back", (await db.team.findUnique({ where: { id: "ta" } }))?.topupUsd, 10);
+
+    await cancelRun(db, member, "p_r5", terminate, now);
+    const r5 = await db.run.findUnique({ where: { id: "r5" } });
+    eq(
+      "a stopped one-off check forgets every password — its workflow never reaches its own cleanup",
+      [r5?.testPasswordEnc, r5?.storePasswordEnc, (JSON.parse(r5?.testAccounts ?? "[]") as { passwordEnc: string | null; email: string }[]).map((a) => [a.email, a.passwordEnc])],
+      [null, null, [["a@a.test", null]]],
+    );
+    await cancelRun(db, member, "p_r6", terminate, now);
+    eq("…a watch's check keeps them for the watch's next one", (await db.run.findUnique({ where: { id: "r6" } }))?.testPasswordEnc, "enc-default");
 
     // 3. The session host.
     const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);

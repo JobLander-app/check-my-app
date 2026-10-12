@@ -13,7 +13,8 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { can, type TeamScope } from "@/lib/scopes";
-import { teamOwned } from "@/lib/tenant-db";
+import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { clearedCredentials } from "@/lib/test-accounts";
 import { priceRun, voidRunPrice } from "@/agent/pricing";
 
 export const IN_FLIGHT = ["queued", "connecting", "surface_scan", "discovery", "walking", "anatomy", "writing"] as const;
@@ -39,7 +40,10 @@ export async function cancelRun(
   if (!can(actor.scope, "run.start")) {
     return { ok: false, code: "forbidden", error: "Your access to this team is read-only. An admin or a member who can start checks can stop one." };
   }
-  const run = await db.run.findFirst({ where: { ...teamOwned(actor.teamId), publicId }, select: { id: true, status: true, events: true } });
+  const run = await db.run.findFirst({
+    where: { ...teamOwned(actor.teamId), publicId },
+    select: { id: true, status: true, events: true, watchId: true, testAccounts: true },
+  });
   if (!run) return { ok: false, code: "not_found", error: "Check not found in this team." };
   if (!(IN_FLIGHT as readonly string[]).includes(run.status)) {
     return { ok: false, code: "invalid_input", error: `This check has already finished (${run.status}); there is nothing to stop.` };
@@ -52,9 +56,21 @@ export async function cancelRun(
     events = [];
   }
   events.push({ at: now.toISOString(), phase: run.status, icon: "warn", text: stoppedLine(actor.name) });
+  // A one-off check forgets its passwords when it ends, and a stopped one ends
+  // here — its workflow is terminated and never reaches its own cleanup. A
+  // watch's run keeps them for the watch's next check, as on every other path.
+  const cleared = run.watchId ? {} : clearedCredentials(run);
   const moved = await db.run.updateMany({
+    ...alreadyScoped("already read in this request"),
     where: { id: run.id, status: { in: [...IN_FLIGHT] } },
-    data: { status: "canceled", completedAt: now, currentAction: null, errorMessage: `canceled by ${actor.name}`, events: JSON.stringify(events) },
+    data: {
+      status: "canceled",
+      completedAt: now,
+      currentAction: null,
+      errorMessage: `canceled by ${actor.name}`,
+      events: JSON.stringify(events),
+      ...cleared,
+    },
   });
   if (moved.count !== 1) {
     return { ok: false, code: "invalid_input", error: "This check finished just now; there is nothing to stop." };
