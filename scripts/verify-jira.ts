@@ -24,7 +24,7 @@ process.env.CREDENTIALS_SECRET ??= "verify-jira-secret";
 
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
-import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken } from "../src/lib/tracker/jira";
+import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken, jiraProjects, pickIssueType } from "../src/lib/tracker/jira";
 import { chooseJiraProject, connectJira, jiraChoices } from "../src/lib/tracker/jira-connect";
 import { saveLinearGrant } from "../src/lib/tracker/linear-connect";
 import { trackerFor } from "../src/lib/tracker/factory";
@@ -48,9 +48,15 @@ function fakeAtlassian() {
     issues: new Map<string, { status: string; resolution: string | null }>(),
     noBug: false,
     unauthorized: false,
-    projects: [{ key: "SEC", name: "Securify" }, { key: "OPS", name: "Ops" }],
+    projects: [{ key: "SEC", name: "Securify" }],
     sites: [{ id: "cloud-1", url: "https://securify.atlassian.net/", name: "securify", scopes: ["read:jira-work", "write:jira-work"] }],
     projectsBySite: {} as Record<string, { key: string; name: string }[]>,
+    // createmeta: what a project offers to create; null = Jira refuses to say.
+    issueTypes: [
+      { id: "1", name: "Bug", subtask: false, hierarchyLevel: 0 },
+      { id: "2", name: "Task", subtask: false, hierarchyLevel: 0 },
+      { id: "3", name: "Sub-task", subtask: true, hierarchyLevel: -1 },
+    ] as { id: string; name: string; subtask: boolean; hierarchyLevel: number }[] | null,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,8 +73,19 @@ function fakeAtlassian() {
     if (state.unauthorized) return json(401, { message: "Unauthorized" });
     if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(200, state.sites);
     const projectSearch = url.match(/^https:\/\/api\.atlassian\.com\/ex\/jira\/([^/]+)\/rest\/api\/3\/project\/search/);
-    if (projectSearch) return json(200, { values: state.projectsBySite[projectSearch[1]] ?? state.projects });
+    if (projectSearch) {
+      // Pages of at most 100, as Atlassian serves them.
+      const all = state.projectsBySite[projectSearch[1]] ?? state.projects;
+      const q = new URL(url).searchParams;
+      const startAt = Number(q.get("startAt") ?? 0);
+      const max = Math.min(Number(q.get("maxResults") ?? 50), 100);
+      return json(200, { values: all.slice(startAt, startAt + max), startAt, isLast: startAt + max >= all.length });
+    }
     const api = "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3";
+    if (url.startsWith(`${api}/issue/createmeta/`)) {
+      if (!state.issueTypes) return json(500, {});
+      return json(200, { issueTypes: state.issueTypes, total: state.issueTypes.length, startAt: 0 });
+    }
     if (url === `${api}/issue` && method === "POST") {
       if (state.noBug && body.fields.issuetype.name === "Bug") return json(400, { errors: { issuetype: "Specify a valid issue type" } });
       const key = `SEC-${state.issues.size + 1}`;
@@ -109,10 +126,26 @@ async function main() {
     const outcome = await connectJira(db, { appId: "a1", code: "code-1", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, Date.UTC(2026, 9, 12));
     const row = await db.trackerIntegration.findUnique({ where: { appId: "a1" } });
     eq("callback: connected", outcome, "jira_connected");
-    eq("callback: stored as jira, first project, the site's cloudId and URL", [row?.type, row?.teamId, row?.externalOrg, row?.externalUrl], ["jira", "SEC", "cloud-1", "https://securify.atlassian.net"]);
+    eq("callback: one project the grant reaches is the one filed into, with the site's cloudId and URL", [row?.type, row?.teamId, row?.externalOrg, row?.externalUrl], ["jira", "SEC", "cloud-1", "https://securify.atlassian.net"]);
     check("callback: tokens stored encrypted, never in clear", Boolean(row) && row!.accessTokenEnc !== "at-1" && decryptSecret(row!.accessTokenEnc) === "at-1" && decryptSecret(row!.refreshTokenEnc!) === "rt-1");
     check("callback: the code exchange sent the client secret to Atlassian only", atl.calls.filter((c) => JSON.stringify(c.body ?? "").includes("sec")).every((c) => c.url === "https://auth.atlassian.com/oauth/token"));
+    check("callback: projects are those the grant may create issues in", atl.calls.some((c) => c.url.includes("/project/search?action=create")));
 
+    // Several projects: nothing is guessed, nothing is filed until the team picks.
+    const several = fakeAtlassian();
+    several.state.projects = [{ key: "SEC", name: "Securify" }, { key: "HR", name: "People" }];
+    await db.app.create({ data: { id: "a4", teamId: "t1", ownerId: "u1", appSlug: "four.test", targetUrl: "https://four.test", targetKind: "website" } });
+    eq("callback: a grant reaching several projects asks the team to choose", await connectJira(db, { appId: "a4", code: "c", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, several.fetchImpl), "jira_choose_project");
+    const unchosen = (await db.trackerIntegration.findUnique({ where: { appId: "a4" } }))!;
+    eq("callback: …the grant is kept, with no project", [unchosen.type, unchosen.teamId, unchosen.externalOrg], ["jira", null, null]);
+    eq("callback: …and nothing is filed until one is chosen", await trackerFor(db, unchosen, { linear: {}, jira: { clientId: "cid", clientSecret: "sec" } }, several.fetchImpl), null);
+
+    // A site with more than a page of projects is read to the end.
+    const big = fakeAtlassian();
+    big.state.projects = Array.from({ length: 150 }, (_, i) => ({ key: `P${i}`, name: `Project ${i}` }));
+    eq("projects: every page is read (150 projects, pages of 100)", (await jiraProjects("at", "cloud-1", big.fetchImpl)).length, 150);
+
+    atl.state.projects = [{ key: "SEC", name: "Securify" }, { key: "OPS", name: "Ops" }];
     await db.trackerIntegration.update({ where: { appId: "a1" }, data: { teamId: "OPS" } });
     await connectJira(db, { appId: "a1", code: "code-2", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, atl.fetchImpl);
     eq("callback: a reconnect keeps the project the team chose", (await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))?.teamId, "OPS");
@@ -146,15 +179,31 @@ async function main() {
     const created = await tracker.createIssue({ title: "Checkout fails", description: "Line one\n\nLine two", labelNames: ["checkmyapp", "repo: shop"], stateName: "Backlog", priority: 2 });
     const post = atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).at(-1)!;
     const fields = (post.body as { fields: Record<string, unknown> }).fields;
-    eq("create: in the project, as a Bug, with priority High", [(fields.project as { key: string }).key, (fields.issuetype as { name: string }).name, (fields.priority as { name: string }).name], ["SEC", "Bug", "High"]);
+    eq("create: in the project, as the project's Bug type (by id), with priority High", [(fields.project as { key: string }).key, (fields.issuetype as { id: string }).id, (fields.priority as { name: string }).name], ["SEC", "1", "High"]);
     eq("create: the description as ADF paragraphs, blank lines dropped", (fields.description as { content: unknown[] }).content.length, 2);
     eq("create: labels without spaces (Jira refuses them)", fields.labels, ["checkmyapp", "repo:-shop"]);
     eq("create: returns the key and a browse link", [created.identifier, created.url], ["SEC-1", "https://securify.atlassian.net/browse/SEC-1"]);
     check("create: the call carries the access token", post.auth === "Bearer at-x", String(post.auth));
+    const lastPostedType = () => (atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).at(-1)!.body as { fields: { issuetype: { id?: string; name?: string } } }).fields.issuetype;
+
+    // A scheme with neither Bug nor Task, in another language: its standard type.
+    atl.state.issueTypes = [
+      { id: "20", name: "Эпик", subtask: false, hierarchyLevel: 1 },
+      { id: "21", name: "Задача", subtask: false, hierarchyLevel: 0 },
+      { id: "22", name: "Подзадача", subtask: true, hierarchyLevel: -1 },
+    ];
+    const localized = new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl);
+    await localized.createIssue({ title: "Localized", description: "x", labelNames: [], stateName: "Backlog", priority: 3 });
+    eq("create: a scheme without Bug or Task files as its standard type, never a sub-task", lastPostedType(), { id: "21" });
+    eq("create: the type picker prefers Task to anything else when there is no Bug", pickIssueType([{ id: "a", name: "Story" }, { id: "b", name: "task" }])?.id, "b");
+
+    // When Jira will not say what the project offers: Bug, then Task, by name.
+    atl.state.issueTypes = null;
     atl.state.noBug = true;
-    const task = await tracker.createIssue({ title: "No bugs here", description: "x", labelNames: [], stateName: "Backlog", priority: 3 });
-    const lastType = (atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).at(-1)!.body as { fields: { issuetype: { name: string } } }).fields.issuetype.name;
-    eq("create: a project without Bug gets a Task", [task.identifier, lastType], ["SEC-2", "Task"]);
+    const blind = new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl);
+    const task = await blind.createIssue({ title: "No bugs here", description: "x", labelNames: [], stateName: "Backlog", priority: 3 });
+    eq("create: without the project's types, a project without Bug gets a Task", [task.identifier, lastPostedType().name], ["SEC-3", "Task"]);
+    atl.state.noBug = false;
 
     await tracker.addComment("SEC-1", "Still present in run #4");
     check("comment: posted on the issue as ADF", atl.calls.some((c) => c.url.endsWith("/issue/SEC-1/comment") && (c.body as { body: { type: string } }).body.type === "doc"));
@@ -216,6 +265,7 @@ async function main() {
     // 7. Two sites, the second with its own projects.
     sw.state.sites = [...sw.state.sites, { id: "cloud-2", url: "https://other.atlassian.net", name: "other", scopes: ["read:jira-work", "write:jira-work"] }];
     sw.state.projectsBySite["cloud-2"] = [{ key: "WEB", name: "Website" }];
+    sw.state.projects = [{ key: "SEC", name: "Securify" }, { key: "OPS", name: "Ops" }];
     const a3 = (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))!;
     await db.trackerIntegration.update({ where: { appId: "a3" }, data: { tokenExpiresAt: new Date(Date.now() + 3600_000) } });
     const choices = await jiraChoices(db, { ...a3, tokenExpiresAt: new Date(Date.now() + 3600_000) }, { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl);

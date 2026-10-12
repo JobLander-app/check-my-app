@@ -29,6 +29,11 @@ export function JiraProjectSelect({
       }}
       className="max-w-full rounded border border-ink-700 bg-transparent px-1.5 py-0.5 font-mono text-[11px] text-fg-muted outline-none"
     >
+      {!current && (
+        <option value="" disabled className="bg-ink-950">
+          Choose a project
+        </option>
+      )}
       {choices.map((c) => (
         <option key={c.value} value={c.value} className="bg-ink-950">
           {c.label}

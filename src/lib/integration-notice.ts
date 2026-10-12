@@ -11,6 +11,7 @@ const NOTICES: Record<string, { text: string; ok: boolean }> = {
   linear_failed: { text: "Couldn't connect Linear — please try again.", ok: false },
   // CHE-438: Jira.
   jira_connected: { text: "Jira is connected — problems found on this app go to its project.", ok: true },
+  jira_choose_project: { text: "Jira is connected — choose the project this app's tickets go to; nothing is filed until you do.", ok: true },
   jira_unconfigured: { text: "Jira isn't available yet — the integration is being set up.", ok: false },
   jira_no_site: { text: "Jira connected, but the account reaches no Jira site we can file into — nothing was saved.", ok: false },
   jira_no_project: { text: "Jira connected, but the site has no project to file into — create one and connect again.", ok: false },

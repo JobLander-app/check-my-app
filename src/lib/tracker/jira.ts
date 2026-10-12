@@ -86,15 +86,54 @@ export async function jiraSites(accessToken: string, fetchImpl: Fetch = fetch): 
     .map((s) => ({ cloudId: s.id, url: s.url.replace(/\/+$/, ""), name: s.name }));
 }
 
-/** The site's projects (key + name), for the default and the picker. */
+// project/search pages at 100 at most; a site with more is read page by page,
+// up to this many pages, so a broken `isLast` cannot loop forever.
+const MAX_PROJECT_PAGES = 50;
+
+/**
+ * The site's projects the grant may file into (key + name), every page of
+ * them, for the picker. `action=create`: a project we could only look at is
+ * not a place to send tickets.
+ */
 export async function jiraProjects(accessToken: string, cloudId: string, fetchImpl: Fetch = fetch): Promise<{ key: string; name: string }[]> {
-  const res = await fetchImpl(`${API(cloudId)}/project/search?maxResults=100&orderBy=name`, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-  });
-  if (res.status === 401) throw new JiraAuthError("Jira refused the access token");
-  if (!res.ok) throw new Error(`Jira projects: ${res.status}`);
-  const body = (await res.json()) as { values?: { key: string; name: string }[] };
-  return (body.values ?? []).map((p) => ({ key: p.key, name: p.name }));
+  const out: { key: string; name: string }[] = [];
+  let startAt = 0;
+  for (let page = 0; page < MAX_PROJECT_PAGES; page++) {
+    const res = await fetchImpl(`${API(cloudId)}/project/search?action=create&orderBy=name&maxResults=100&startAt=${startAt}`, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    if (res.status === 401) throw new JiraAuthError("Jira refused the access token");
+    if (!res.ok) throw new Error(`Jira projects: ${res.status}`);
+    const body = (await res.json()) as { values?: { key: string; name: string }[]; isLast?: boolean };
+    const values = body.values ?? [];
+    out.push(...values.map((p) => ({ key: p.key, name: p.name })));
+    if (body.isLast !== false || values.length === 0) break;
+    startAt += values.length;
+  }
+  return out;
+}
+
+export interface JiraIssueType {
+  id: string;
+  name: string;
+  subtask?: boolean;
+  hierarchyLevel?: number;
+}
+
+/**
+ * The issue type a finding is filed as, from what the project offers: Bug, then
+ * Task, then the project's first standard (level 0) type, then any type that is
+ * not a sub-task. Names differ by scheme and language, so the project is asked.
+ */
+export function pickIssueType(types: JiraIssueType[]): JiraIssueType | null {
+  const usable = types.filter((t) => !t.subtask);
+  return (
+    usable.find((t) => /^bug$/i.test(t.name.trim())) ??
+    usable.find((t) => /^task$/i.test(t.name.trim())) ??
+    usable.find((t) => t.hierarchyLevel === 0) ??
+    usable[0] ??
+    null
+  );
 }
 
 export interface JiraCreds {
@@ -176,6 +215,30 @@ export class JiraTracker implements Tracker {
     return res;
   }
 
+  // The project's issue types, read once per tracker: undefined = not asked
+  // yet, null = Jira would not say (the filer then tries Bug and Task by name).
+  private issueType: JiraIssueType | null | undefined;
+
+  private async projectIssueType(): Promise<JiraIssueType | null> {
+    if (this.issueType !== undefined) return this.issueType;
+    const types: JiraIssueType[] = [];
+    let startAt = 0;
+    for (let page = 0; page < 10; page++) {
+      const res = await this.call(`/issue/createmeta/${encodeURIComponent(this.projectKey)}/issuetypes?startAt=${startAt}&maxResults=100`);
+      if (!res.ok) {
+        this.issueType = null;
+        return null;
+      }
+      const body = (await res.json()) as { issueTypes?: JiraIssueType[]; total?: number };
+      const got = body.issueTypes ?? [];
+      types.push(...got);
+      startAt += got.length;
+      if (got.length === 0 || (body.total ?? 0) <= startAt) break;
+    }
+    this.issueType = pickIssueType(types);
+    return this.issueType;
+  }
+
   async createIssue(draft: TicketDraft): Promise<CreatedIssue> {
     const base = {
       project: { key: this.projectKey },
@@ -183,13 +246,21 @@ export class JiraTracker implements Tracker {
       description: toAdf(draft.description),
       labels: draft.labelNames.map(jiraLabel),
     };
-    // Bug where the project has it, Task otherwise; a priority the project
-    // does not have is dropped rather than failing the ticket.
-    const attempts = [
-      { ...base, issuetype: { name: "Bug" }, priority: { name: PRIORITY_NAMES[draft.priority] ?? "Medium" } },
-      { ...base, issuetype: { name: "Bug" } },
-      { ...base, issuetype: { name: "Task" } },
-    ];
+    const priority = { name: PRIORITY_NAMES[draft.priority] ?? "Medium" };
+    // The type the project offers (projectIssueType); when Jira would not say,
+    // Bug and then Task by name. A priority the project does not have is
+    // dropped rather than failing the ticket.
+    const type = await this.projectIssueType();
+    const attempts = type
+      ? [
+          { ...base, issuetype: { id: type.id }, priority },
+          { ...base, issuetype: { id: type.id } },
+        ]
+      : [
+          { ...base, issuetype: { name: "Bug" }, priority },
+          { ...base, issuetype: { name: "Bug" } },
+          { ...base, issuetype: { name: "Task" } },
+        ];
     let last = "";
     for (const fields of attempts) {
       const res = await this.call("/issue", { method: "POST", body: JSON.stringify({ fields }) });

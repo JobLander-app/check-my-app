@@ -551,6 +551,9 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
                 Not connected.{tracker ? " Connecting Jira moves this app's tickets from Linear to Jira." : ""}
               </p>
             )}
+            {jira && !jira.teamId && (
+              <p className="text-xs text-status-confusing">⚠ No project chosen yet — nothing is filed until one is.</p>
+            )}
             {jira && jiraProjects.length > 0 && (
               <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
                 Tickets go to project

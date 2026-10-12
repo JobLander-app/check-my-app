@@ -8,7 +8,7 @@ import { alreadyScoped } from "@/lib/tenant-db";
 import { exchangeJiraCode, freshJiraToken, jiraProjects, jiraSites, type JiraCreds, type JiraTokenRow } from "./jira";
 import { retireTrackerLinks } from "./provider-switch";
 
-export type JiraConnectOutcome = "jira_connected" | "jira_failed" | "jira_no_site" | "jira_no_project";
+export type JiraConnectOutcome = "jira_connected" | "jira_choose_project" | "jira_failed" | "jira_no_site" | "jira_no_project";
 
 type AppRef = { id: string; teamId: string | null; ownerId: string | null; appSlug: string };
 
@@ -28,17 +28,20 @@ export async function connectJira(
   try {
     const token = await exchangeJiraCode(opts, fetchImpl);
     const sites = await jiraSites(token.access_token, fetchImpl);
+    if (sites.length === 0) return "jira_no_site";
     const existing = await db.trackerIntegration.findUnique({ where: { appId: opts.appId } });
-    // A reconnect keeps the site and project the team chose; a first connect
-    // takes the grant's first site and that site's first project, and the
-    // Integrations card offers every other one right after.
-    const site = (existing?.type === "jira" && sites.find((s) => s.cloudId === existing.externalOrg)) || sites[0];
-    if (!site) return "jira_no_site";
-    const projects = await jiraProjects(token.access_token, site.cloudId, fetchImpl);
-    const project = (existing?.type === "jira" && existing.externalOrg === site.cloudId && projects.find((p) => p.key === existing.teamId)) || projects[0];
-    if (!project) return "jira_no_project";
+    const options = (
+      await Promise.all(sites.map(async (site) => (await jiraProjects(token.access_token, site.cloudId, fetchImpl)).map((p) => ({ site, key: p.key }))))
+    ).flat();
+    if (options.length === 0) return "jira_no_project";
+    // A reconnect keeps the site and project the team chose. Otherwise a grant
+    // that reaches exactly one project files there; one that reaches several
+    // files nowhere until the team picks one on the Integrations card — a guess
+    // could send findings to a project other people read (Codex on #319).
+    const kept = existing?.type === "jira" ? options.find((o) => o.site.cloudId === existing.externalOrg && o.key === existing.teamId) : undefined;
+    const chosen = kept ?? (options.length === 1 ? options[0] : null);
     // Moving from Linear, or to another Jira site: the old keys mean nothing here.
-    if (existing && (existing.type !== "jira" || existing.externalOrg !== site.cloudId)) {
+    if (existing && (existing.type !== "jira" || existing.externalOrg !== (chosen?.site.cloudId ?? null))) {
       const app = await appRef(db, opts.appId);
       if (app) await retireTrackerLinks(db, app);
     }
@@ -47,12 +50,12 @@ export async function connectJira(
       accessTokenEnc: encryptSecret(token.access_token),
       refreshTokenEnc: token.refresh_token ? encryptSecret(token.refresh_token) : null,
       tokenExpiresAt: token.expires_in ? new Date(now + token.expires_in * 1000) : null,
-      teamId: project.key,
-      externalOrg: site.cloudId,
-      externalUrl: site.url,
+      teamId: chosen?.key ?? null,
+      externalOrg: chosen?.site.cloudId ?? null,
+      externalUrl: chosen?.site.url ?? null,
     };
     await db.trackerIntegration.upsert({ where: { appId: opts.appId }, create: { appId: opts.appId, ...data }, update: data });
-    return "jira_connected";
+    return chosen ? "jira_connected" : "jira_choose_project";
   } catch (err) {
     console.warn(`[jira] connect failed for ${opts.appId}: ${err instanceof Error ? err.message : String(err)}`);
     return "jira_failed";
