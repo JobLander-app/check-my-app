@@ -23,6 +23,10 @@ import { cancelRun, stoppedLine } from "../src/lib/run-cancel";
 import { releaseCanceledLeases } from "../src/agent/canceled-leases";
 import { SESSION_LEASE_SECONDS } from "../src/agent/session-browser";
 import type { AgentEnv } from "../src/agent/env";
+import { completeSignedOut } from "../src/agent/signed-out";
+import { completeClosedDoor } from "../src/agent/closed-door";
+import { loadVerdict } from "../src/lib/run-read";
+import { extensionReportPublished } from "../src/lib/extension-target";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -91,6 +95,20 @@ async function main() {
     await cancelRun(db, member, "p_r6", terminate, now);
     eq("…a watch's check keeps them for the watch's next one", (await db.run.findUnique({ where: { id: "r6" } }))?.testPasswordEnc, "enc-default");
 
+    // The early endings (a signed-out store, a closed door) are fenced too: a
+    // check stopped while they ran is not turned into "Not verified" (Codex on #329).
+    await run("e1", 21, "ta", "canceled", { completedAt: now });
+    const signedOut = await completeSignedOut({ db } as never, { id: "e1", targetUrl: "https://a.test/" }, "admin.shopify.com").then(() => "wrote", (e: Error) => e.name);
+    const door = await completeClosedDoor({ db } as never, { id: "e1", targetUrl: "https://a.test/" }, "forbidden").then(() => "wrote", (e: Error) => e.name);
+    const e1 = await db.run.findUnique({ where: { id: "e1" } });
+    eq("the signed-out and closed-door endings refuse a stopped check and leave it stopped", [signedOut, door, e1?.status, e1?.verdict], ["RunCanceled", "RunCanceled", "canceled", null]);
+
+    // What a stopped check wrote before the stop is not a result.
+    await db.journey.create({ data: { id: "j1", runId: "r1", order: 0, title: "Sign up", status: "ok" } as never });
+    await db.finding.create({ data: { id: "f1", runId: "r1", number: 1, title: "Half-written", category: "broken", severity: "high", detail: "{}" } as never });
+    const read = await loadVerdict(db, "p_r1");
+    eq("a stopped check publishes nothing it wrote before the stop", [extensionReportPublished({ targetKind: "website", status: "canceled", verdict: null }), read?.journeys.length, read?.findings.length], [false, 0, 0]);
+
     // 3. The session host.
     const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
     await run("s1", 11, "ta", "canceled", { targetKind: "session", completedAt: minutesAgo(5) });
@@ -137,6 +155,12 @@ async function main() {
 
   // 4. The doors.
   const scheduler = source("src/agent/scheduler.ts");
+  const endings = calls(wf).filter((c) => c.callee === "completeSignedOut" || c.callee === "completeClosedDoor");
+  check(
+    "…and the workflow turns those helpers' refusal into the non-retryable stop, at every call",
+    endings.length === 2 && endings.every((c) => ts.isPropertyAccessExpression(c.node.parent) && c.node.parent.name.text === "catch" && ts.isCallExpression(c.node.parent.parent) && c.node.parent.parent.arguments[0]?.getText(wf) === "stopIfCanceled"),
+    String(endings.length),
+  );
   check("the scheduler tick releases stopped session checks", calls(scheduler).some((c) => c.callee === "releaseCanceledLeases" && c.args.join(",") === "env,now"));
   const tools = source("src/lib/mcp/tools.ts");
   check("MCP cancel_check goes through cancelRun with the route's terminate", calls(tools).some((c) => c.callee === "cancelRun" && c.args[3]?.includes("terminate")));

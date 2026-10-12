@@ -40,6 +40,7 @@ import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
+import { RUN_CANCELED } from "@/lib/run-cancel";
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
@@ -657,7 +658,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         const host = scan.signedOut;
         await step.do("signed-out", async () => {
           await appendEvent(env, runId, "surface_scan", { icon: "warn", text: SIGNED_OUT_FEED });
-          await completeSignedOut(env, { id: runId, targetUrl: run.targetUrl }, host);
+          await completeSignedOut(env, { id: runId, targetUrl: run.targetUrl }, host).catch(stopIfCanceled);
         });
         await step.do("price-signed-out", async () => {
           await priceRun(env.db, runId);
@@ -703,7 +704,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             icon: "warn",
             text: "The first page turned the check away before anything loaded — nothing to check this run",
           });
-          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door);
+          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door).catch(stopIfCanceled);
         });
         await step.do("price-closed-door", async () => {
           await priceRun(env.db, runId);
@@ -2045,8 +2046,13 @@ async function transition(
   if (moved.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
 }
 
-// CHE-454: what a fenced write throws when the run was stopped meanwhile.
-const RUN_CANCELED = "the check was stopped by its team; nothing more is written";
+// CHE-454: a helper outside the workflow (signed-out.ts, closed-door.ts) whose
+// fenced write lost throws RunCanceledError; inside a step it becomes the
+// non-retryable stop, so the step is not retried into the same fence.
+function stopIfCanceled(err: unknown): never {
+  if (err instanceof Error && err.name === "RunCanceled") throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
+  throw err;
+}
 
 async function appendEvent(
   env: AgentEnv,

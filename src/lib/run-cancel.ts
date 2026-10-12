@@ -17,7 +17,17 @@ import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { clearedCredentials } from "@/lib/test-accounts";
 import { priceRun, voidRunPrice } from "@/agent/pricing";
 
-export const IN_FLIGHT = ["queued", "connecting", "surface_scan", "discovery", "walking", "anatomy", "writing"] as const;
+// What a fenced write throws when the run was stopped meanwhile. The workflow
+// recognises it by name or message and ends the run without writing more.
+export const RUN_CANCELED = "the check was stopped by its team; nothing more is written";
+export class RunCanceledError extends Error {
+  constructor() {
+    super(RUN_CANCELED);
+    this.name = "RunCanceled";
+  }
+}
+
+export const IN_FLIGHT =["queued", "connecting", "surface_scan", "discovery", "walking", "anatomy", "writing"] as const;
 
 /** What the feed says, and what the customer reads: who stopped it, and that it costs nothing. */
 export function stoppedLine(who: string): string {
