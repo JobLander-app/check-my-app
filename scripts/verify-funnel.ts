@@ -110,6 +110,39 @@ function main() {
       normalizePath("https://joblander.app/de/about"));
   }
 
+  console.log("\nA walk that ends by going back is a path that ended (the gap filed from run #204 on)");
+  {
+    const form = deriveFunnel(walk(
+      "https://checkmyapp.dev/check", "https://checkmyapp.dev/check?url=x", "https://checkmyapp.dev/checks/today",
+      "https://checkmyapp.dev/verdict/cmu3hza4l0003oo1oreo67pde", "https://checkmyapp.dev/check",
+    ));
+    check("form → verdict → back to the form is a funnel, without the way back",
+      form.ok && form.stages.join(" → ") === "/check → /checks/today → /verdict/:id", JSON.stringify(form));
+
+    const signIn = deriveFunnel(walk(
+      "https://checkmyapp.dev/check", "https://checkmyapp.dev/login", "https://checkmyapp.dev/dashboard",
+      "https://checkmyapp.dev/check",
+    ));
+    check("sign in, then back to where it began, is a funnel",
+      signIn.ok && signIn.stages.join(" → ") === "/check → /login → /dashboard", JSON.stringify(signIn));
+
+    const pingPong = deriveFunnel(walk("https://x.dev/list", "https://x.dev/item/1", "https://x.dev/list", "https://x.dev/item/2"));
+    check("list → item → list → another item ends on pages already seen: list → item",
+      pingPong.ok && pingPong.stages.join(" → ") === "/list → /item/:id", JSON.stringify(pingPong));
+
+    const middle = deriveFunnel(walk("https://x.dev/a", "https://x.dev/b", "https://x.dev/a", "https://x.dev/c"));
+    check("doubling back and then going somewhere new is still a wander",
+      !middle.ok && middle.refusal === "revisits", JSON.stringify(middle));
+
+    const onlyBack = deriveFunnel(walk("https://x.dev/a", "https://x.dev/a"));
+    check("going back does not turn one page into two",
+      !onlyBack.ok && onlyBack.refusal === "single_stage", JSON.stringify(onlyBack));
+
+    const long = deriveFunnel(walk(...Array.from({ length: MAX_FUNNEL_STAGES + 1 }, (_, i) => `https://x.dev/p${i}`), "https://x.dev/p0"));
+    check("a way back does not rescue an itinerary",
+      !long.ok && long.refusal === "wandering", JSON.stringify(long));
+  }
+
   console.log("\nRefusing is the point");
   {
     check("one page is arrival, not conversion",

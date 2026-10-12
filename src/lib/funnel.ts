@@ -201,21 +201,45 @@ export function deriveFunnel(actions: readonly RecordedOutcome[]): DerivedFunnel
     if (collapsed[collapsed.length - 1] !== path) collapsed.push(path);
   }
 
-  // 3. A walk that returns to a page it has already left is us looking around,
-  //    not a person moving through a product. Walk C.
+  // 3. A walk that FINISHES by going back is not doubling back inside the path.
+  //    "Check a website" ends on the verdict and then returns to the form;
+  //    "Sign in" ends signed in and then returns to where it began. Run #204
+  //    refused both as "revisits", and every run since has refused them again,
+  //    so two of the app's own core journeys had no funnel for weeks. The way
+  //    back is not a stage anybody converts through — the path ended before it.
+  //    Only the tail is dropped, and only pages the walk had already stood on:
+  //    a new page at the end is still part of the path.
+  const stages = [...collapsed];
+  const standingOn = new Set<string>();
+  let firstRepeat = stages.length;
+  for (let i = 0; i < stages.length; i++) {
+    if (standingOn.has(stages[i])) {
+      firstRepeat = i;
+      break;
+    }
+    standingOn.add(stages[i]);
+  }
+  // Everything from the first repeat onward must itself be pages already seen,
+  // or the doubling back is in the middle of the walk and not at its end.
+  const onlyWayBack = stages.slice(firstRepeat).every((p) => standingOn.has(p));
+  const path = onlyWayBack ? stages.slice(0, firstRepeat) : stages;
+
+  // 4. A walk that returns to a page it has already left, and then goes on to
+  //    somewhere new, is us looking around, not a person moving through a
+  //    product. Walk C.
   const seen = new Set<string>();
-  for (const p of collapsed) {
+  for (const p of path) {
     if (seen.has(p)) return { ok: false, refusal: "revisits", stages: collapsed };
     seen.add(p);
   }
 
-  if (collapsed.length < MIN_FUNNEL_STAGES) {
-    return { ok: false, refusal: "single_stage", stages: collapsed };
+  if (path.length < MIN_FUNNEL_STAGES) {
+    return { ok: false, refusal: "single_stage", stages: path };
   }
-  if (collapsed.length > MAX_FUNNEL_STAGES) {
-    return { ok: false, refusal: "wandering", stages: collapsed };
+  if (path.length > MAX_FUNNEL_STAGES) {
+    return { ok: false, refusal: "wandering", stages: path };
   }
-  return { ok: true, stages: collapsed };
+  return { ok: true, stages: path };
 }
 
 /**
