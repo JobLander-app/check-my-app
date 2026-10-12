@@ -48,6 +48,7 @@ import { hashApiKey } from "@/lib/apiKeys";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { handleMcpRequest, UNAUTHORIZED_MESSAGE } from "@/lib/mcp/handler";
 import { MAX_INSTRUCTIONS_CHARS, PILOT_PARAGRAPH } from "@/lib/mcp/instructions";
+import { memberToolsSentence } from "@/lib/mcp/tools";
 import { WAIT_BUDGET_MS, type McpDeps } from "@/lib/mcp/tools";
 import { PLAN_LIMITS, WATCH_TRIAL_DAYS, typicalPriceRange, usd } from "@/lib/plans";
 
@@ -443,6 +444,8 @@ async function main() {
     const denied = await call(reader, "start_check", { app_id: "app_a" });
     check("scope: a reader key cannot start a check",
       denied.isError && denied.out.code === "forbidden" && triggered.length === before, JSON.stringify(denied.out));
+    // Least privilege: a member key starts checks, so that is the key a reader is pointed to.
+    check("scope: the refusal names the smallest scope that would do (member, not admin)", denied.out.needs_scope === "member", String(denied.out.needs_scope));
     const readerCreate = await call(reader, "create_app", { url: "https://reader.test" });
     check("scope: a reader key cannot add an app", readerCreate.isError && readerCreate.out.code === "forbidden");
     const readerList = await call(reader, "list_apps");
@@ -627,6 +630,12 @@ async function main() {
     const asReader = await call(reader, "mark_finding", { run_id: "pub_a2", finding: 1, mark: "known" });
     check("member: a reader key is refused with a sentence, nothing marked",
       asReader.isError && asReader.out.code === "forbidden" && stub.table("finding").find((f) => f.id === "f2")?.mark === "none", JSON.stringify(asReader.out));
+    check("member: …and pointed to a member key, which marks findings", asReader.out.needs_scope === "member", String(asReader.out.needs_scope));
+    // A team without the pilot is not sent to the pilot's tools, which it is not offered.
+    const offPilot = [memberToolsSentence("reader", false), memberToolsSentence("member", false)].join(" ");
+    const pilotOnlyNames = ["list_scenarios", "list_check_mistakes", "scenario", "mistake", "mark", "connect_shopify_app", "add_store"];
+    check("member: a refusal off the pilot names none of the pilot's tools", pilotOnlyNames.every((n) => !offPilot.includes(n)), offPilot);
+    check("member: on the pilot it names them", ["list_scenarios", "scenarios", "marks findings"].every((n) => [memberToolsSentence("reader", true), memberToolsSentence("member", true)].join(" ").includes(n)));
     const missing = await call(a, "mark_finding", { run_id: "pub_a2", finding: 9, mark: "known" });
     check("member: a finding the check does not have is not_found", missing.isError && missing.out.code === "not_found", JSON.stringify(missing.out));
     const reported = await call(a, "report_check_mistake", { run_id: "pub_a2", reason: "wrong", text: "Sign-in works; the check pressed the wrong button." });

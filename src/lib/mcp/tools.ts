@@ -347,14 +347,25 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
 };
 
-// What a key of each scope can still do, said with every refusal (CHE-444).
-const MEMBER_TOOLS_SENTENCE: Record<TeamScope, string> = {
-  reader: "It reads everything: list_apps, latest_results, get_review, get_verdict, list_scenarios, list_check_mistakes.",
-  member:
-    "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check and marks findings; " +
-    "storing a login and connecting a Shopify store (connect_shopify_app) take an admin key.",
-  admin: "",
-};
+// What a key of each scope can still do, said with every refusal (CHE-444) —
+// naming only the tools this team is offered: the pilot's tools are registered
+// for a team given `shopify` alone (registerRemoteTools), and a refusal must
+// not send an agent to a call it does not have (CodeRabbit on #317).
+export function memberToolsSentence(scope: TeamScope, pilot: boolean): string {
+  if (scope === "reader") {
+    return `It reads everything: list_apps, latest_results, get_review, get_verdict${pilot ? ", list_scenarios, list_check_mistakes" : ""}.`;
+  }
+  if (scope === "member") {
+    return pilot
+      ? "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check and marks findings; " +
+          "storing a login and connecting a Shopify store (connect_shopify_app) take an admin key."
+      : "It reads everything and also starts checks (start_check); storing a login takes an admin key.";
+  }
+  return "";
+}
+
+// Least privilege first: a refusal names the smallest scope that would do.
+const SCOPES_UP: readonly TeamScope[] = ["reader", "member", "admin"];
 
 export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   const { db, origin } = deps;
@@ -403,8 +414,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   // 2026-10-12, on connect_shopify_app).
   function deny(action: TeamAction): ToolResult | null {
     if (can(caller.scope, action)) return null;
-    const needs = TEAM_SCOPES.find((s) => can(s, action)) ?? "admin";
-    const canStill = MEMBER_TOOLS_SENTENCE[caller.scope];
+    const needs = SCOPES_UP.find((s) => can(s, action)) ?? "admin";
+    const canStill = memberToolsSentence(caller.scope, hasFeature(team.features, "shopify"));
     return text(
       {
         ok: false,
