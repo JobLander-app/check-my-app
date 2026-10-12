@@ -6,7 +6,7 @@
 //      integration of type "jira"; a reconnect keeps the chosen project;
 //   3. refresh: an access token near expiry is refreshed and the rotated
 //      refresh token stored; a refused refresh is "reconnect", not a crash;
-//   4. JiraTracker: create (Bug, falling back to Task on 400), comment, and the
+//   4. JiraTracker: create (Bug, falling back to Task on 400), comment, label, and the
 //      outcome map — open / done / canceled by resolution / missing on 404;
 //      401 → reconnect;
 //   5. the factory picks Jira for a jira row and Linear for a linear row.
@@ -68,6 +68,8 @@ function fakeAtlassian() {
     }
     const commentMatch = url.match(/\/issue\/([A-Z]+-\d+)\/comment$/);
     if (commentMatch && method === "POST") return state.issues.has(commentMatch[1]) ? json(201, { id: "c1" }) : json(404, {});
+    const editMatch = url.match(/\/issue\/([A-Z]+-\d+)$/);
+    if (editMatch && method === "PUT") return state.issues.has(editMatch[1]) ? new Response(null, { status: 204 }) : json(404, {});
     const issueMatch = url.match(/\/issue\/([A-Z]+-\d+)\?fields=/);
     if (issueMatch) {
       const issue = state.issues.get(issueMatch[1]);
@@ -147,6 +149,12 @@ async function main() {
 
     await tracker.addComment("SEC-1", "Still present in run #4");
     check("comment: posted on the issue as ADF", atl.calls.some((c) => c.url.endsWith("/issue/SEC-1/comment") && (c.body as { body: { type: string } }).body.type === "doc"));
+
+    await tracker.addLabel("SEC-1", "checkmyapp mender");
+    const edit = atl.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/issue/SEC-1")).at(-1);
+    eq("label: added to the existing issue, spaces made dashes", edit?.body, { update: { labels: [{ add: "checkmyapp-mender" }] } });
+    const gone = await tracker.addLabel("SEC-99", "x").then(() => null, (e) => e);
+    check("label: an issue that is gone is an error, not a silent pass", gone instanceof Error && !(gone instanceof JiraAuthError), String(gone));
 
     eq("outcome: in progress is open", await tracker.getIssueOutcome("SEC-1"), "open");
     atl.state.issues.set("SEC-1", { status: "done", resolution: "Done" });

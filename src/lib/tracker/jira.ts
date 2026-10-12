@@ -152,6 +152,9 @@ export function toAdf(text: string) {
 // Linear's scale (1 Urgent … 4 Low) onto Jira's default priority names.
 const PRIORITY_NAMES: Record<number, string> = { 1: "Highest", 2: "High", 3: "Medium", 4: "Low" };
 
+// Jira labels cannot contain spaces.
+const jiraLabel = (name: string) => name.replace(/\s+/g, "-");
+
 // A resolution that means "this is not a bug", read as Canceled (Contract v2).
 const NOT_A_BUG = /won.?t do|won.?t fix|duplicate|cannot reproduce|declined|not a bug/i;
 
@@ -178,7 +181,7 @@ export class JiraTracker implements Tracker {
       project: { key: this.projectKey },
       summary: draft.title.slice(0, 250),
       description: toAdf(draft.description),
-      labels: draft.labelNames.map((l) => l.replace(/\s+/g, "-")),
+      labels: draft.labelNames.map(jiraLabel),
     };
     // Bug where the project has it, Task otherwise; a priority the project
     // does not have is dropped rather than failing the ticket.
@@ -203,6 +206,15 @@ export class JiraTracker implements Tracker {
   async addComment(issueId: string, body: string): Promise<void> {
     const res = await this.call(`/issue/${encodeURIComponent(issueId)}/comment`, { method: "POST", body: JSON.stringify({ body: toAdf(body) }) });
     if (!res.ok) throw new Error(`Jira addComment failed: ${res.status} ${await res.text()}`);
+  }
+
+  // A Jira label needs no creating, and adding one the issue has is a no-op.
+  async addLabel(issueId: string, labelName: string): Promise<void> {
+    const res = await this.call(`/issue/${encodeURIComponent(issueId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ update: { labels: [{ add: jiraLabel(labelName) }] } }),
+    });
+    if (!res.ok) throw new Error(`Jira addLabel failed: ${res.status} ${await res.text()}`);
   }
 
   async getIssueOutcome(issueId: string): Promise<IssueOutcome> {
