@@ -5,7 +5,6 @@ import { useFormStatus } from "react-dom";
 import { renameTeamAction } from "@/app/team/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TEAM_NAME_MAX } from "@/lib/team-name";
 
 // CHE-446: the team's name, set by its admin. Everyone on the team sees it in
 // the switcher and on invitations; only an admin is shown this form.
@@ -18,7 +17,9 @@ export function TeamNameForm({ name }: { name: string }) {
       <form action={formAction} className="mt-4 flex flex-wrap items-end gap-3">
         <label className="min-w-0 flex-1 basis-64">
           <span className="sr-only">Team name</span>
-          <Input name="name" defaultValue={state?.saved ?? name} required maxLength={TEAM_NAME_MAX} autoComplete="organization" />
+          {/* No maxLength: HTML counts UTF-16 units, the server counts characters
+              (TEAM_NAME_MAX) — the server's sentence says when it is too long. */}
+          <Input name="name" defaultValue={state?.saved ?? name} required autoComplete="organization" />
         </label>
         <SaveButton />
       </form>
