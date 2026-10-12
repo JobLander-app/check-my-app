@@ -172,7 +172,7 @@ export default async function AppSettingsSection({
           would refuse them on save. */}
       {section === "accounts" &&
         (can(scope, "app.credentials.write") ? (
-          <Accounts appId={app.id} teamId={team.id} testEmail={app.testEmail} isExtension={isExtension} save={save} />
+          <Accounts appId={app.id} teamId={team.id} testEmail={app.testEmail} hasStorePassword={Boolean(app.storePasswordEnc)} isExtension={isExtension} save={save} />
         ) : (
           <p className="card p-5 text-sm text-fg-muted">
             {app.testEmail ? `Signs in as ${app.testEmail}. ` : "No test login yet. "}
@@ -205,7 +205,21 @@ function SaveRow({ label }: { label: string }) {
 
 // How a check signs in: the default login, and — for a website — named accounts
 // besides it (CHE-322). Passwords are write-only: a blank box keeps the current one.
-async function Accounts({ appId, teamId, testEmail, isExtension, save }: { appId: string; teamId: string; testEmail: string | null; isExtension: boolean; save: Save }) {
+async function Accounts({
+  appId,
+  teamId,
+  testEmail,
+  hasStorePassword,
+  isExtension,
+  save,
+}: {
+  appId: string;
+  teamId: string;
+  testEmail: string | null;
+  hasStorePassword: boolean;
+  isExtension: boolean;
+  save: Save;
+}) {
   const { db } = await requireUser();
   // Label and email only — the password never reaches the page.
   const testAccounts = isExtension ? [] : await listTestAccounts(db, teamId, appId);
@@ -223,6 +237,28 @@ async function Accounts({ appId, teamId, testEmail, isExtension, save }: { appId
         <Input name="testEmail" type="email" placeholder="test@your-app.com" defaultValue={testEmail ?? ""} autoComplete="off" />
         <Input name="testPassword" type="password" placeholder="••••••••" autoComplete="new-password" />
       </div>
+
+      {/* CHE-443: the card's "Add the store password" lands here. Until now the
+          password could only be set through MCP (CHE-372), so the link led to a
+          page with nowhere to put it. */}
+      {!isExtension && (
+        <div className="card space-y-3 p-5">
+          <div>
+            <p className="text-sm font-medium text-fg">Store password</p>
+            <p className="text-xs text-fg-faint">
+              For a store that shows a password page before anything else. {hasStorePassword ? "One is set. " : ""}Same
+              encryption, same rule: a blank box keeps the current one.
+            </p>
+          </div>
+          <Input name="storePassword" type="password" placeholder="••••••••" aria-label="Store password" autoComplete="new-password" />
+          {hasStorePassword && (
+            <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+              <input type="checkbox" name="storePasswordRemove" value="1" className="h-4 w-4 rounded border-ink-600 bg-ink-900" />
+              Remove the store password
+            </label>
+          )}
+        </div>
+      )}
 
       {!isExtension && (
         <div className="card space-y-3 p-5">

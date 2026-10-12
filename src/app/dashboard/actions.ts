@@ -231,6 +231,9 @@ export async function updateAppSettings(appId: string, section: string, formData
         ? {
             testEmail: text("testEmail"),
             testPassword: text("testPassword") || undefined,
+            // CHE-443: write-only like the login password — a blank box keeps
+            // it, the Remove box clears it ("" is the clear, as in update_app).
+            storePassword: text("storePassword") || (formData.get("storePasswordRemove") ? "" : undefined),
             // CHE-322: the named accounts' rows, saved with the default login.
             testAccounts: testAccountsFromForm(formData),
           }

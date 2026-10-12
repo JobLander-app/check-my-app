@@ -416,6 +416,16 @@ async function main() {
   check("…and only what is the team's to act on (not our incapacity)", /causeRoute\(g\.cause\) === "admin"/.test(page));
   const card = src("src/components/needs-attention.tsx");
   check("the card has no button and no form: the cause is text, with a link to where it is fixed", !/<button|<form/.test(card));
+  // "Add the store password" goes to the accounts section, so the password must
+  // be settable there — it used to be MCP-only, and the link led nowhere.
+  const settings = src("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
+  const settingsAction = src("src/app/dashboard/actions.ts");
+  check(
+    "the accounts section the card links to has a store password box, and the save reads it",
+    /ACCESS_ACTION[\s\S]*store_password: \{[^}]*to: "accounts"/.test(src("src/lib/step-cause.ts")) &&
+      /name="storePassword"/.test(settings) &&
+      /storePassword: text\("storePassword"\)/.test(settingsAction),
+  );
   const gaps = src("src/agent/capability-gaps.ts");
   check("the gap filer puts `mender` on every ticket it opens and on every recurrence", /selfPolicy\(self, "\[Checker gap\] \{verdict\}", \[MENDER_LABEL\]\)/.test(gaps) && /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)/.test(gaps));
 
