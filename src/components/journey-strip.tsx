@@ -23,6 +23,7 @@ export function JourneyStrips({
   carriedRunNumbers,
   carriedRunDays,
   feedback,
+  causeTexts,
 }: {
   journeys: JourneyWithSteps[];
   // CHE-434: what the team reported the check got wrong, per journey of this
@@ -39,6 +40,10 @@ export function JourneyStrips({
   carriedRunNumbers?: Record<string, number>;
   // …and the day that run walked it ("Sep 23", UTC), CHE-331.
   carriedRunDays?: Record<string, string>;
+  // CHE-443: why each unchecked step was not checked, keyed by step id — the
+  // sentence the page decided (src/lib/step-cause.ts). Absent for a team that
+  // has not been given it: the step then reads as it always did.
+  causeTexts?: Record<string, string>;
 }) {
   if (journeys.length === 0) {
     return (
@@ -81,6 +86,7 @@ export function JourneyStrips({
           carriedDay={journey.carriedFromRunId ? carriedRunDays?.[journey.carriedFromRunId] : undefined}
           feedback={feedback}
           position={i + 1}
+          causeTexts={causeTexts}
         />
       ))}
     </section>
@@ -99,6 +105,7 @@ function JourneyCard({
   numbers,
   feedback,
   position,
+  causeTexts,
 }: {
   journey: JourneyWithSteps;
   collapsedByDefault: boolean;
@@ -108,6 +115,7 @@ function JourneyCard({
   feedback?: JourneysFeedback;
   // 1-based, as the review lists journeys — what a comment's target names.
   position: number;
+  causeTexts?: Record<string, string>;
 }) {
   const [open, setOpen] = useState(!collapsedByDefault);
   const [selected, setSelected] = useState<Step | null>(null);
@@ -283,13 +291,21 @@ function JourneyCard({
                     <p className="mt-1.5 line-clamp-2 h-8 text-[11px] leading-4 text-fg-muted">
                       {step.label}
                     </p>
+                    {/* CHE-443: an unchecked step says why, in text. The line
+                        has the same height on every card so the row stays even. */}
+                    {causeTexts && (
+                      <p className="mt-1 line-clamp-3 h-9 text-[10px] leading-3 text-fg-faint">
+                        {/* The first sentence: the cause. The detail below has the rest. */}
+                        {(causeTexts[step.id] ?? "").split(/(?<=\.)\s/)[0]}
+                      </p>
+                    )}
                   </button>
                 </div>
               );
             })}
           </div>
 
-          {selected && <StepDetail step={selected} onZoom={setLightbox} />}
+          {selected && <StepDetail step={selected} cause={causeTexts?.[selected.id]} onZoom={setLightbox} />}
 
           {journey.summary && (
             /* Takeaway zone (NN/g "insights"): full-width bar with a left
@@ -355,9 +371,11 @@ function JourneyCard({
 // screenshot / console / network excerpts.
 function StepDetail({
   step,
+  cause,
   onZoom,
 }: {
   step: Step;
+  cause?: string;
   onZoom: (l: { src: string; caption: string }) => void;
 }) {
   const s = STEP_STATUS_META[step.status];
@@ -366,6 +384,7 @@ function StepDetail({
       <p className={`font-mono text-xs ${s.className}`}>
         {s.emoji} {s.label} — {step.label}
       </p>
+      {cause && <p className="mt-1 text-sm text-fg-muted">{cause}</p>}
       {step.screenshotUrl && (
         /* eslint-disable-next-line @next/next/no-img-element */
         <img

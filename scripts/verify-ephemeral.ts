@@ -632,6 +632,10 @@ async function main() {
       // with its run (above), so these never outlive what they name.
       "Feedback.findingId",
       "Feedback.stepId",
+      // CHE-443: the run that first met a cause on an app. Written only for a
+      // run of a saved app (noticeNewCauses skips an ephemeral one) and never
+      // read back: nothing looks the run up.
+      "CauseNotice.firstRunId",
     ];
     const handled = new Set([...DELETED, ...DETACHED]);
     const expected = owned;

@@ -93,6 +93,7 @@ function stubBoard() {
     async addComment(issueId: string, body: string) {
       comments.push({ issueId, body });
     },
+    async addLabel() {},
     async getIssueOutcome(): Promise<IssueOutcome> {
       return "open";
     },

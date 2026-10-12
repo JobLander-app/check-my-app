@@ -71,6 +71,7 @@ import {
   routeRefusalFiledAs,
 } from "./capability-gaps";
 import { fileRunFailure } from "./run-failures";
+import { noticeNewCauses } from "./cause-notice";
 import { measureRunJourneys, measurementNote } from "./journey-measurement";
 import { GAP_CLASSES } from "./gap-classes";
 import { auditCreatedResources } from "./cleanup";
@@ -664,6 +665,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           const told = await tellOwnerSignedOut(env, { id: runId, appId: run.appId, appSlug: run.appSlug }, host);
           console.log(`[session] run ${runId}: sign-in ended (${host}); owner ${told.told}${"detail" in told ? ` — ${told.detail}` : ""}`);
           return told.told;
+        });
+        // CHE-443: the admin hears once that the sign-in ended, whatever the
+        // chat was told — the mail is per cause and app, the chat per sign-in.
+        await step.do("admin-causes-signed-out", async () => {
+          await noticeNewCauses(env, runId);
         });
         if (run.notifyEmail || run.appId) {
           await step.do("notify-signed-out", () => notifyAndRecord(env, this.env, runId, run, "unverified"));
@@ -1333,6 +1339,15 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           const text = err instanceof Error ? err.message : String(err);
           console.warn(`[capability] gap filing failed: ${text}`);
         }
+      });
+
+      // CHE-443: what this run left unchecked for a reason that is the team's to
+      // act on (a store password, a rule that stops a check on purpose) goes to
+      // its admin, once per cause for the app. Its own step so a retry of
+      // anything around it cannot mail twice; never fails the run.
+      await step.do("admin-causes", async () => {
+        const told = await noticeNewCauses(env, runId);
+        for (const t of told) console.log(`[cause-notice] run ${runId}: ${t.cause} ${t.result}`);
       });
 
       // CHE-239: what the customer's own analytics say happened on the journeys

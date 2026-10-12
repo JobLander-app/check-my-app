@@ -356,6 +356,87 @@ export async function sendBalanceUsedUp({ to, appSlug, reason, apiKey, from, rep
   await refuseUnlessRepeat(res, idempotencyKey);
 }
 
+interface CauseNoticeArgs {
+  to: string;
+  appSlug: string;
+  // The sentence the step shows (causeText) — the mail says the same thing.
+  causeSentence: string;
+  // What the admin does about it, and where; both absent when the cause asks nothing.
+  actionText?: string;
+  actionUrl?: string;
+  // A few of the steps it kept unchecked, by name.
+  stepLabels: string[];
+  appUrl: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  idempotencyKey?: string;
+}
+
+// CHE-443: sent to a team's admin the first time a cause keeps a step of an app
+// from being checked — a store password that is missing, a rule that stops a
+// check on purpose. One mail per cause and app, never one per run: the same
+// cause on the next run sends nothing (CauseNotice is the memory of that, and
+// the idempotency key the second belt). It describes the customer's product
+// only and asks for access, never for verification work (CLAUDE.md §1, §2).
+export async function sendCauseNotice({
+  to,
+  appSlug,
+  causeSentence,
+  actionText,
+  actionUrl,
+  stepLabels,
+  appUrl,
+  apiKey,
+  from,
+  replyTo,
+  idempotencyKey,
+}: CauseNoticeArgs): Promise<void> {
+  const subject = `Part of ${appSlug} was not checked`;
+
+  if (!apiKey || !from) {
+    console.log(`[email:dev] to=${to} subject="${subject}" url=${actionUrl ?? appUrl}`);
+    return;
+  }
+
+  const steps = stepLabels.slice(0, 3);
+  const why = `You get this because you are an admin of the team that owns ${appSlug}. This is the only mail about this cause; the app's page keeps showing it for as long as it stands.`;
+  const action =
+    actionText && actionUrl
+      ? `<p><a href="${escapeHtml(actionUrl)}">${escapeHtml(actionText)}</a></p>`
+      : actionText
+        ? `<p>${escapeHtml(actionText)}.</p>`
+        : "";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      ...replyToField(replyTo),
+      html: htmlDocument(
+        subject,
+        `<p>${escapeHtml(causeSentence)}</p>` +
+          (steps.length ? `<p>Steps it kept unchecked: ${steps.map((l) => escapeHtml(l)).join("; ")}.</p>` : "") +
+          action +
+          `<p><a href="${escapeHtml(appUrl)}">Open ${escapeHtml(appSlug)}</a></p><p>— CheckMyApp</p>`,
+        escapeHtml(why),
+      ),
+      text:
+        `${causeSentence}\n\n` +
+        (steps.length ? `Steps it kept unchecked: ${steps.join("; ")}.\n\n` : "") +
+        (actionText ? `${actionText}${actionUrl ? `: ${actionUrl}` : "."}\n\n` : "") +
+        `Open ${appSlug}: ${appUrl}\n\n— CheckMyApp\n\n${why}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, idempotencyKey);
+}
+
 interface TeamInviteArgs {
   to: string;
   teamName: string;

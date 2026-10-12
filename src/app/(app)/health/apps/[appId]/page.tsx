@@ -20,6 +20,10 @@ import { appRunsTheAction } from "@/lib/release-action";
 import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { OtherTeamApp } from "@/components/other-team-app";
+import { NeedsAttention } from "@/components/needs-attention";
+import { teamHasFeature } from "@/lib/team-features";
+import { causeRoute } from "@/lib/step-cause";
+import { causesOfAppsLatestRun } from "@/lib/step-cause-load";
 
 const TIMELINE = 12;
 const FINISHED = ["completed", "partial"];
@@ -120,6 +124,14 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // asks for — the scope and a plan that carries tracker integrations. Anyone
   // else would follow it into a refusal.
   const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
+  // CHE-443: what the team's admin has to act on — the unchecked steps whose
+  // cause is not ours. Only for an admin of a team given `shopify`; the rest of
+  // the team sees the cause on the step, not a task.
+  const attention =
+    scope === "admin" && (await teamHasFeature(db, team.id, "shopify"))
+      ? await causesOfAppsLatestRun(db, team.id, app.id)
+      : null;
+  const attentionGroups = attention?.groups.filter((g) => causeRoute(g.cause) === "admin") ?? [];
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -193,6 +205,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       </div>
 
       <aside className="flex min-w-0 flex-col gap-[18px]">
+        {attention && <NeedsAttention appId={app.id} runNumber={attention.runNumber} groups={attentionGroups} />}
         <section className="card flex flex-col gap-2 p-[18px]">
           <div className="text-[13px] text-fg-muted">This app costs</div>
           <div className="flex items-baseline gap-2">
