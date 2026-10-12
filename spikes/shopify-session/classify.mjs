@@ -8,7 +8,16 @@
 export const TARGET_URL =
   "https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country";
 
-export const STATES = ["ok", "login_page", "captcha", "2fa", "error"];
+// "proxy": the residential proxy refused to carry the probe at all (CHE-453) —
+// out of paid traffic (402) or its credentials refused (407). Nothing about
+// the session: on 2026-10-12 an "error" from this told the owner to sign in
+// again, when what was needed was a top-up.
+export const STATES = ["ok", "login_page", "captcha", "2fa", "error", "proxy"];
+
+/** Pure: the proxy's own answer to a plain request → "proxy" when it is the cause, else null. */
+export function proxyState(status) {
+  return status === 402 || status === 407 ? "proxy" : null;
+}
 
 // Whatever the page settles on first: the embedded app's frame (signed in), a
 // sign-in field, a captcha, or a one-time-code field.
@@ -86,6 +95,16 @@ export function challengeKind({ hasCaptchaFrame, hasTurnstile }) {
  */
 export function shouldNotify(history, state) {
   if (state === "ok") return false;
+  // The proxy is said once per outage, at once — whether or not the session
+  // was ok before, since a top-up is needed either way. A later sign-in drop
+  // is its own message: only an earlier "proxy" line silences this one.
+  if (state === "proxy") {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].state !== "proxy") break;
+      if (history[i].notified) return false;
+    }
+    return true;
+  }
   let lastOk = -1;
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].state === "ok") {
@@ -95,7 +114,7 @@ export function shouldNotify(history, state) {
   }
   if (lastOk < 0) return false;
   const sinceOk = history.slice(lastOk + 1);
-  if (sinceOk.some((line) => line.notified)) return false;
+  if (sinceOk.some((line) => line.notified && line.state !== "proxy")) return false;
   if (state === "error") return sinceOk.length > 0 && sinceOk[sinceOk.length - 1].state === "error";
   return true;
 }

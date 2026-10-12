@@ -5,7 +5,7 @@
 // Pure rules from spikes/shopify-session; no browser, no network, no env.
 
 import assert from "node:assert/strict";
-import { classify, parseLog, shouldNotify } from "../spikes/shopify-session/classify.mjs";
+import { STATES, classify, parseLog, proxyState, shouldNotify } from "../spikes/shopify-session/classify.mjs";
 import { cookiesForAdmin, tunnelledWsEndpoint } from "../spikes/shopify-session/portability.mjs";
 
 let failures = 0;
@@ -80,6 +80,26 @@ check("one error is a blip; two in a row is a drop", () => {
   assert.equal(shouldNotify([L("ok"), L("error")], "error"), true);
   assert.equal(shouldNotify([L("ok"), L("error"), L("error", { notified: true })], "error"), false);
 });
+
+// CHE-453, 2026-10-12: the proxy ran out of paid traffic and the probe told the
+// owner to sign in again. The proxy's own answer is its own state and message.
+check("the proxy's 402 or 407 is the proxy; anything else is not its answer", () => {
+  assert.equal(proxyState(402), "proxy");
+  assert.equal(proxyState(407), "proxy");
+  for (const s of [200, 301, 403, 502, null]) assert.equal(proxyState(s), null);
+});
+check("the proxy is said at once, once per outage, whatever came before", () => {
+  assert.equal(shouldNotify([], "proxy"), true);
+  assert.equal(shouldNotify([L("ok")], "proxy"), true);
+  assert.equal(shouldNotify([L("ok"), L("proxy", { notified: true })], "proxy"), false);
+  assert.equal(shouldNotify([L("ok"), L("proxy", { notified: false, notify_error: "telegram HTTP 502" })], "proxy"), true);
+  assert.equal(shouldNotify([L("proxy", { notified: true }), L("ok")], "proxy"), true);
+});
+check("a sign-in drop after the proxy was told is still its own message", () => {
+  assert.equal(shouldNotify([L("ok"), L("proxy", { notified: true })], "login_page"), true);
+  assert.equal(shouldNotify([L("ok"), L("proxy", { notified: true }), L("login_page", { notified: true })], "login_page"), false);
+});
+check("the proxy is a state the log names", () => assert.ok(STATES.includes("proxy")));
 
 check("a torn last line does not stop the log from being read", () => {
   const lines = parseLog('{"state":"ok"}\n{"state":"login_page","notified":true}\n{"state":"cap');
