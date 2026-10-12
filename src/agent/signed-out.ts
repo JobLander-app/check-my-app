@@ -25,6 +25,7 @@
 
 import { AlreadySentError, NotSentError, sendRecorded, type SendDeps } from "@/lib/telegram-send";
 import type { AgentBindings, AgentEnv } from "./env";
+import { RunCanceledError } from "@/lib/run-cancel";
 
 /** Where the app's address led when it did not lead to the app; null = it led to the app. */
 export function landedOutside(landedUrl: string, targetUrl: string, allowedOrigins: readonly string[]): string | null {
@@ -144,8 +145,10 @@ export async function completeSignedOut(
       },
     });
   }
-  await env.db.run.update({
-    where: { id: run.id },
+  // CHE-454: fenced like every write that ends a run — a check stopped while
+  // this step ran stays stopped (Codex on #329).
+  const done = await env.db.run.updateMany({
+    where: { id: run.id, status: { not: "canceled" } },
     data: {
       status: "partial",
       verdict: "unverified",
@@ -156,6 +159,7 @@ export async function completeSignedOut(
       costUsd: 0,
     },
   });
+  if (done.count === 0) throw new RunCanceledError();
   return "unverified";
 }
 

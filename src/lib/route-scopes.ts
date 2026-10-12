@@ -175,6 +175,9 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // CHE-329: "Run it again" on a failed run — the same re-check, same gates.
   "src/app/verdict/actions.ts#retryFailedRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "src/app/verdict/actions.ts#enableWatchAction": { kind: "row", decidedIn: "src/lib/watch-enable.ts" },
+  // CHE-454: Stop on a live check — run.start in the team the run belongs to,
+  // whichever team the person is acting as, the same rule as MCP cancel_check.
+  "src/app/run/actions.ts#stopRunAction": { kind: "row", decidedIn: "src/lib/run-cancel.ts" },
   // Accepting is not a team action — the person is not on the team yet. The
   // token they hold is the capability, and the invitation row decides
   // (src/lib/invites.ts), which is exactly what `row` means.
