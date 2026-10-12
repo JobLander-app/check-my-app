@@ -34,6 +34,10 @@ export const KEPT: KeptItem[] = [
     lead: "Tools you connect.",
     text: "For Jira, Linear, GitHub or PostHog the access token is stored encrypted. From Jira we keep the site and project you chose and the keys of the issues we filed, and we read back only what became of those issues. We do not store Atlassian account ids, names or email addresses.",
   },
+  {
+    lead: "Webhooks you add.",
+    text: "The addresses you give us, a Slack webhook among them; each check's result is posted to them.",
+  },
   { lead: "Payments.", text: "A payment processor takes the payment; we never see or store card numbers." },
   { lead: "How the site is used.", text: "Product analytics and session replay, with form inputs masked." },
 ];
@@ -54,19 +58,25 @@ export const PROCESSORS: Processor[] = [
     role: "hosting, the database and file storage, and the bot check on the check form",
     evidence: /getCloudflareContext/,
     packages: [/^@cloudflare\//, /^@opennextjs\/cloudflare$/],
-    hosts: ["challenges.cloudflare.com"],
+    hosts: ["challenges.cloudflare.com", "api.cloudflare.com"],
   },
-  { role: "sign-in", evidence: /@clerk\/nextjs/, packages: [/^@clerk\//], hosts: [] },
+  { role: "sign-in", evidence: /from "@clerk\/nextjs/, packages: [/^@clerk\//], hosts: [] },
   { role: "payments", evidence: /from "stripe"/, packages: [/^stripe$/], hosts: [] },
-  { role: "email delivery", evidence: /api\.resend\.com/, packages: [], hosts: ["api.resend.com"] },
-  { role: "product analytics", evidence: /posthog-js/, packages: [/^posthog/], hosts: [] },
+  { role: "email delivery", evidence: /api\.resend\.com\/emails/, packages: [], hosts: ["api.resend.com"] },
+  { role: "product analytics", evidence: /from "posthog-js"/, packages: [/^posthog/], hosts: ["us.i.posthog.com"] },
   {
     role: "the AI models a check runs on, which receive the content of the pages being checked",
-    evidence: /openrouter\.ai|api\.anthropic\.com/,
+    evidence: /openrouter\.ai\/api/,
     packages: [/^@anthropic-ai\//],
-    hosts: [],
+    hosts: ["openrouter.ai"],
   },
-  { role: "a chat service that carries notices about checks", evidence: /api\.telegram\.org/, packages: [], hosts: ["api.telegram.org"] },
+  {
+    role: "a video site's public lookup, which tells us whether a video your pages link to exists",
+    evidence: /youtube\.com\/oembed/,
+    packages: [],
+    hosts: ["www.youtube.com"],
+  },
+  { role: "a chat service that carries notices about checks", evidence: /api\.telegram\.org\/bot/, packages: [], hosts: ["api.telegram.org"] },
 ];
 
 export function processorsSentence(processors: Processor[] = PROCESSORS): string {

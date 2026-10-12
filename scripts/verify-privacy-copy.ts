@@ -1,30 +1,33 @@
 // CHE-438 / R18: the privacy page says only what the code does.
 //
 // src/lib/privacy-copy.ts holds the page's sentences and, next to each claim,
-// what in the code makes it true. This guard checks:
+// what in the code makes it true. This guard reads the implementation (src/
+// without comments, without generated code and without the copy module
+// itself, so a claim can never be its own evidence) and checks:
 //
 //   1. language: every sentence passes the verdict-language guards and names
 //      no processor brand (CLAUDE.md §1: what we run on is ours);
 //   2. processors, both ways:
-//        - each processor the page lists is still used (its evidence is in src/);
-//        - each service SDK in package.json, and each host the code fetches by
-//          a literal URL, belongs to a listed processor or to a tool the
-//          customer connects. A new processor turns this red until the page
-//          names it.
-//      Hosts reached through a constant (`fetch(API_URL)`) are not scanned;
-//      the evidence direction covers the processors that call that way;
+//        - each processor the page lists is still used (its evidence is in
+//          the implementation);
+//        - each service SDK in package.json belongs to a listed processor;
+//        - each host written as a URL anywhere in the implementation, whether
+//          fetched directly or through a constant, is a listed processor, a
+//          tool the customer connects, or classified below as receiving
+//          nothing from us, with the reason.
+//      A new service turns this red until the page names it;
 //   3. stored data:
 //        - TrackerIntegration and IssueLink have exactly the columns the
 //          "Tools you connect" sentence was written against, so a new column
 //          is a new thing kept and must be read against the page;
 //        - the token and test-password writers the page speaks of encrypt;
-//        - the Jira client stores no Atlassian account id, name or email;
+//        - the Jira client asks for no Atlassian account id, name or email;
 //        - analytics masks inputs.
 //
-// Each checker is pure and has a self-test that feeds it a defect, so the
-// guard is seen catching it (R19).
+// Each checker is pure and has a self-test that feeds it the defect it
+// exists for, so the guard is seen catching it (R19).
 //
-// Usage: npx tsx --tsconfig tsconfig.json scripts/verify-privacy-copy.ts
+// Usage: npm run verify:privacy-copy
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -42,7 +45,7 @@ function check(name: string, ok: boolean, detail = "") {
 
 // ── pure checkers ───────────────────────────────────────────────────────────
 
-const BRANDS = /\b(cloudflare|clerk|stripe|resend|anthropic|openrouter|claude|openai|gpt|gemini|deepseek|telegram|playwright|headless)\b/i;
+const BRANDS = /\b(cloudflare|clerk|stripe|resend|anthropic|openrouter|claude|openai|gpt|gemini|deepseek|telegram|youtube|playwright|headless)\b/i;
 
 function languageProblems(sentences: string[]): string[] {
   return sentences.flatMap((s) => [
@@ -50,6 +53,15 @@ function languageProblems(sentences: string[]): string[] {
     ...(hasHomework(s) ? [`homework: ${s}`] : []),
     ...(BRANDS.test(s) ? [`brand: ${s}`] : []),
   ]);
+}
+
+/** Source text without comments. A URL keeps its "//" because a ":" precedes it. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+}
+
+function unusedProcessors(processors: Processor[], sources: string[]): string[] {
+  return processors.filter((p) => !sources.some((s) => p.evidence.test(s))).map((p) => p.role);
 }
 
 // A dependency that is a service someone else runs, rather than a library that
@@ -61,9 +73,18 @@ function unclaimedPackages(deps: string[], processors: Processor[]): string[] {
   return deps.filter((d) => SERVICE_SDK.test(d) && !processors.some((p) => p.packages.some((re) => re.test(d))));
 }
 
+function literalHosts(sources: string[]): string[] {
+  const hosts = new Set<string>();
+  for (const src of sources) {
+    for (const m of src.matchAll(/https?:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi)) hosts.add(m[1].toLowerCase());
+  }
+  return [...hosts].sort();
+}
+
 // The customer's own tools, named on the page under "Tools you connect".
 const CONNECTED_TOOL_HOSTS = new Set([
   "api.linear.app",
+  "linear.app",
   "api.github.com",
   "api.atlassian.com",
   "auth.atlassian.com",
@@ -72,8 +93,25 @@ const CONNECTED_TOOL_HOSTS = new Set([
   "eu.posthog.com",
 ]);
 
+// Hosts written in the code that receive nothing of the customer's from us.
+const RECEIVES_NOTHING: Record<string, string> = {
+  "checkmyapp.dev": "our own site",
+  "127.0.0.1": "the machine a check runs on",
+  "joblander.app": "an app being checked (the extension's companion page), not a service we use",
+  "admin.shopify.com": "the customer's own store admin, opened as the app being checked",
+  "chromewebstore.google.com": "links to the customer's own extension listing",
+  "github.com": "links shown on our pages",
+  "github.io": "an entry in a list of shared domain suffixes, never called",
+  "com.au": "an entry in a list of shared domain suffixes, never called",
+  "hooks.slack.com": "placeholder text in the webhook field; the customer's own webhook is under \"Webhooks you add\"",
+  "app.example.com": "an example address in help text",
+  "your-app.com": "an example address in help text",
+  "your-app.example.com": "an example address in help text",
+  "your-stack.example.com": "an example address in help text",
+};
+
 function unclaimedHosts(hosts: string[], processors: Processor[]): string[] {
-  return hosts.filter((h) => !CONNECTED_TOOL_HOSTS.has(h) && !processors.some((p) => p.hosts.includes(h)));
+  return hosts.filter((h) => !CONNECTED_TOOL_HOSTS.has(h) && !(h in RECEIVES_NOTHING) && !processors.some((p) => p.hosts.includes(h)));
 }
 
 function modelColumns(schema: string, model: string): string[] | null {
@@ -93,25 +131,19 @@ function columnDrift(actual: string[] | null, expected: string[]): string {
   return [...added.map((c) => `+${c}`), ...removed.map((c) => `-${c}`)].join(" ");
 }
 
-// ── reading the repository ──────────────────────────────────────────────────
+// ── reading the implementation ──────────────────────────────────────────────
+
+const COPY_MODULE = path.join(repoRoot, "src/lib/privacy-copy.ts");
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) return e.name === "generated" ? [] : walk(p);
-    return /\.(ts|tsx)$/.test(e.name) ? [p] : [];
+    return /\.(ts|tsx)$/.test(e.name) && p !== COPY_MODULE ? [p] : [];
   });
 }
 
-const SOURCES = walk(path.join(repoRoot, "src")).map((f) => readFileSync(f, "utf8"));
-
-function fetchedHosts(): string[] {
-  const hosts = new Set<string>();
-  for (const src of SOURCES) {
-    for (const m of src.matchAll(/fetch\(\s*[`"']https:\/\/([a-z0-9.-]+)/g)) hosts.add(m[1]);
-  }
-  return [...hosts].sort();
-}
+const IMPLEMENTATION = walk(path.join(repoRoot, "src")).map((f) => stripComments(readFileSync(f, "utf8")));
 
 // What the "Tools you connect" sentence was written against.
 const TRACKER_COLUMNS = ["id", "app", "appId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "teamId", "externalOrg", "createdAt", "updatedAt"];
@@ -122,8 +154,16 @@ const ISSUE_LINK_COLUMNS = ["id", "app", "appId", "dedupKey", "externalIssueId",
 check("self-test: a brand in a sentence is caught", languageProblems(["Pages go to Anthropic."]).length === 1);
 check("self-test: homework is caught", languageProblems(["Verify this in a real browser yourself."]).length > 0);
 check("self-test: a clean sentence passes", languageProblems(["We keep your data while your account exists."]).length === 0);
+check("self-test: comments are not code", literalHosts([stripComments("// see https://api.mailgun.net\nconst a = 1;")]).length === 0);
+check(
+  "self-test: a processor with no evidence in the implementation is caught",
+  unusedProcessors([{ role: "mail", evidence: /api\.mailgun\.net/, packages: [], hosts: [] }], ["const x = 1;"]).join() === "mail",
+);
 check("self-test: a new service SDK is caught", unclaimedPackages(["@sentry/nextjs", "zod"], PROCESSORS).join() === "@sentry/nextjs");
-check("self-test: a new fetched host is caught", unclaimedHosts(["api.mailgun.net", "api.resend.com", "api.linear.app"], PROCESSORS).join() === "api.mailgun.net");
+check(
+  "self-test: a host fetched through a constant is caught",
+  unclaimedHosts(literalHosts([stripComments('const API = "https://api.mailgun.net/v3";\nawait fetch(API);')]), PROCESSORS).join() === "api.mailgun.net",
+);
 check(
   "self-test: a new column is caught",
   columnDrift(modelColumns("model T {\n  id String\n  accountId String\n}\n", "T"), ["id"]) === "+accountId",
@@ -132,23 +172,24 @@ check(
 // ── the page against the code ───────────────────────────────────────────────
 
 const sentences = privacySentences();
-check("the page has sentences to check", sentences.length >= 8, String(sentences.length));
+check("the page has sentences to check", sentences.length >= 9, String(sentences.length));
 const lang = languageProblems(sentences);
 check("language: no leak, no homework, no processor brand", lang.length === 0, lang.join(" | "));
 
-for (const p of PROCESSORS) {
-  check(`processor still used: ${p.role}`, SOURCES.some((s) => p.evidence.test(s)), String(p.evidence));
-}
+const unused = unusedProcessors(PROCESSORS, IMPLEMENTATION);
+check("every listed processor is still used by the implementation", unused.length === 0, unused.join(" | "));
 
 const pkg = JSON.parse(read("package.json")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
 const strayPkgs = unclaimedPackages(deps, PROCESSORS);
 check("every service SDK is a listed processor", strayPkgs.length === 0, strayPkgs.join(", "));
 
-const hosts = fetchedHosts();
-check("the fetched-host scan finds hosts (the scan itself works)", hosts.length > 0, hosts.join(", "));
+const hosts = literalHosts(IMPLEMENTATION);
+check("the host scan finds the processors' own hosts (the scan itself works)", ["api.resend.com", "openrouter.ai", "www.youtube.com"].every((h) => hosts.includes(h)), hosts.join(", "));
 const strayHosts = unclaimedHosts(hosts, PROCESSORS);
-check("every host fetched by a literal URL is a listed processor or a connected tool", strayHosts.length === 0, strayHosts.join(", "));
+check("every host in the implementation is a listed processor, a connected tool, or receives nothing", strayHosts.length === 0, strayHosts.join(", "));
+const staleNothing = Object.keys(RECEIVES_NOTHING).filter((h) => !hosts.includes(h));
+check("every \"receives nothing\" entry is still in the code (no dead exemptions)", staleNothing.length === 0, staleNothing.join(", "));
 
 const schema = read("prisma/schema.prisma");
 const trackerDrift = columnDrift(modelColumns(schema, "TrackerIntegration"), TRACKER_COLUMNS);
@@ -168,11 +209,11 @@ check(
   passwordWrites.length > 0 && passwordWrites.every((l) => /passwordEnc:\s*encryptSecret\(/.test(l)),
   `${passwordWrites.length} write(s)`,
 );
-check("analytics masks form inputs", SOURCES.some((s) => /maskAllInputs:\s*true/.test(s)));
+check("analytics masks form inputs", IMPLEMENTATION.some((s) => /maskAllInputs:\s*true/.test(s)));
 
 const jira = "src/lib/tracker/jira.ts";
 if (existsSync(path.join(repoRoot, jira))) {
-  check("the Jira client asks for no Atlassian account id, name or email", !/accountId|emailAddress|displayName|\/myself\b/.test(read(jira)));
+  check("the Jira client asks for no Atlassian account id, name or email", !/accountId|emailAddress|displayName|\/myself\b/.test(stripComments(read(jira))));
 } else {
   console.log("skip  the Jira client is not on this branch yet");
 }
