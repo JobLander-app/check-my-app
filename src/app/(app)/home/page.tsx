@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { ConnectAgent } from "@/components/connect-agent";
 import { teamBalance, usd, watchTrialState } from "@/lib/plans";
 import { appCanRun } from "@/lib/plan-status";
+import { byokRefusal } from "@/lib/byok-credit";
 import type { UserPlan } from "@/lib/enums";
 import { teamOwned } from "@/lib/tenant-db";
 import { extensionCheckFor } from "@/lib/viewer-flags";
@@ -99,6 +100,9 @@ export default async function HomePage({
 
   // The scheduler's own gate, per watched app: a watch the balance cannot pay
   // for, or one past its trial, is not running — said here, with the way out.
+  // CHE-458: a team key that cannot pay is said once, by the banner above every
+  // page, not as a balance problem per app.
+  const keyPaused = Boolean(await byokRefusal(db, team.id));
   const paused = (
     await Promise.all(
       watches
@@ -106,7 +110,8 @@ export default async function HomePage({
         .map(async (w) => {
           const trial = watchTrialState(w, plan);
           if (trial.kind === "ended") return { id: w.appId!, why: "trial" as const };
-          return (await appCanRun(db, { id: team.id, plan }, balance, w.appSlug)).ok ? null : { id: w.appId!, why: "balance" as const };
+          const can = await appCanRun(db, { id: team.id, plan }, balance, w.appSlug, keyPaused);
+          return can.why === "balance" ? { id: w.appId!, why: "balance" as const } : null;
         }),
     )
   ).filter((p) => p !== null);

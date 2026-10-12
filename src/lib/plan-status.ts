@@ -127,12 +127,15 @@ export async function appCanRun(
   team: { id: string; plan: UserPlan },
   balance: TeamBalance,
   appSlug: string,
-  // CHE-458: the gate's own answer when the team's key cannot pay (the caller
-  // reads it once for all apps).
-  keyPaused = false,
-): Promise<{ ok: boolean; estimate_usd: number }> {
+  // CHE-458: whether the team's own key cannot pay — required, so no caller can
+  // forget it and report a check as able to start when the gate will refuse it
+  // (CodeRabbit on #332). The caller reads it once for all apps (byokRefusal).
+  keyPaused: boolean,
+): Promise<{ ok: boolean; estimate_usd: number; why: "team_key" | "balance" | null }> {
   const estimate = await estimateCheckPrice(db, team, appSlug);
-  return { ok: !keyPaused && balanceDecision(team.plan, balance, estimate).ok, estimate_usd: estimate };
+  if (keyPaused) return { ok: false, estimate_usd: estimate, why: "team_key" };
+  const ok = balanceDecision(team.plan, balance, estimate).ok;
+  return { ok, estimate_usd: estimate, why: ok ? null : "balance" };
 }
 
 // ---------------------------------------------------------------------------

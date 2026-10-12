@@ -587,9 +587,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
                     ? "paused"
                     : trial.kind === "ended"
                       ? "trial_ended"
-                      : money && !money.can.ok
-                        ? "paused_balance"
-                        : "active",
+                      : money?.can.why === "team_key"
+                        ? // CHE-458: the team's own OpenRouter key, not our balance.
+                          "paused_team_key"
+                        : money?.can.why === "balance"
+                          ? "paused_balance"
+                          : "active",
                   frequency: a.watch.frequency,
                   next_run_at: a.watch.active ? a.watch.nextRunAt : null,
                   trial_days_left: trial.kind === "active" ? trial.daysLeft : null,
@@ -702,7 +705,18 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // promise the scheduler then silently breaks — seen live 2026-09-28 on a
       // Free team with $0 left. Say what will happen and hand over both ways out.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
-      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug);
+      const keyPaused = await byokRefusal(db, team.id);
+      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug, Boolean(keyPaused));
+      // CHE-458: the team's own key cannot pay — the check waits for it, not for us.
+      if (can.why === "team_key") {
+        return text({
+          ok: true,
+          app_id: result.app.id,
+          app: result.app.appSlug,
+          paused_by_team_key: keyPaused,
+          hint: `Saved, with a recurring check — but it waits: ${keyPaused} Tell the user.`,
+        });
+      }
       if (!can.ok) {
         return text({
           ok: true,

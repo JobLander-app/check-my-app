@@ -8,6 +8,7 @@
 // spends its team's balance (CHE-327) — a team whose balance is used is paused.
 
 import { nextRunNumber } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
 import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
@@ -54,6 +55,23 @@ const TRIAL_RECHECK_HOURS = 1;
 // added later is classified once, in enums.ts, and everything that asks "is
 // anything still running" follows without being edited.
 const TERMINAL_STATUSES = TERMINAL_RUN_STATUSES;
+
+// Which watches are due this tick. CHE-458: a team whose own key cannot pay is
+// left out of the window altogether — its watches stay due and come back the
+// tick its key can pay again. Read into the window, a skipped watch would keep
+// its place at the front and starve every watch behind it (CodeRabbit on #332).
+export function dueWatchWhere(now: Date) {
+  return {
+    active: true,
+    frequency: { not: "manual" },
+    AND: [
+      { OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }] },
+      { OR: [{ teamId: null }, { team: { OR: [{ openrouterKeyEnc: null }, { openrouterKeyNoCreditAt: null }] } }] },
+    ],
+  } satisfies Prisma.WatchWhereInput;
+}
+
+export const DUE_WATCH_CANDIDATES = CANDIDATE_LIMIT;
 
 export interface TickResult {
   started: string[];
@@ -115,11 +133,7 @@ export async function runDueWatches(
   }
 
   const due = await env.db.watch.findMany({
-    where: {
-      active: true,
-      frequency: { not: "manual" },
-      OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }],
-    },
+    where: dueWatchWhere(now),
     // SQLite sorts NULL first, so watches that have never fired go to the front.
     orderBy: { nextRunAt: "asc" },
     take: CANDIDATE_LIMIT,

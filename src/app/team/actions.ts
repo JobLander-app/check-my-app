@@ -30,7 +30,7 @@ import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
 import { saveTeamKey } from "@/lib/byok";
-import { encryptSecret } from "@/lib/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
 import { renameTeam } from "@/lib/team-name";
 import type { UserPlan } from "@/lib/enums";
@@ -202,7 +202,7 @@ export async function setTeamByokAction(_prev: ByokFormState, formData: FormData
   await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("billing.manage");
   if (!(await teamHasFeature(db, team.id, "shopify"))) return { error: "This team cannot use its own key yet." };
-  const saved = await saveTeamKey(db, team.id, String(formData.get("key") ?? ""), { encrypt: encryptSecret });
+  const saved = await saveTeamKey(db, team.id, String(formData.get("key") ?? ""), { encrypt: encryptSecret, decrypt: decryptSecret });
   if (!saved.ok) return { error: saved.reason };
   const masked = saved.masked;
   await recordTeamEvent(db, {

@@ -44,7 +44,7 @@ import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSes
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
-import { BYOK_NO_CREDIT_STOP, markKeyNoCredit } from "@/lib/byok-credit";
+import { isTeamKeyDry, recordTeamKeyDry } from "@/lib/byok-credit";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
@@ -1491,7 +1491,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // OpenRouter account behind their key. That is their access, not our
       // outage: the key is marked, nothing more starts on it until it can pay,
       // and every place says why. Nothing is filed on our board.
-      const teamKeyDry = budget && Boolean(run.byokKeyEnc) && Boolean(run.teamId);
+      const teamKeyDry = isTeamKeyDry({ budget, byokKeyEnc: run.byokKeyEnc, teamId: run.teamId });
       const ourBudget = budget && !teamKeyDry;
       // Returns the phase the run died in (Run.status until this write), for
       // the ticket below.
@@ -1569,10 +1569,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         const sessionOutage = err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE);
         if (teamKeyDry) {
           console.warn(`[byok] run ${runId} stopped: team ${run.teamId}'s OpenRouter key has no credit`);
-          await markKeyNoCredit(env.db, run.teamId!, new Date());
-          // No watch retry: the scheduler skips the team's watches while the
-          // key cannot pay, and starts them again once it can (byok-credit.ts).
-          await appendEvent(env, runId, "connecting", { icon: "warn", text: BYOK_NO_CREDIT_STOP });
+          // The key paused (only if it is still the team's) and the feed told —
+          // nothing else: no watch retry, the scheduler leaves the team's
+          // watches until the key can pay (byok-credit.ts).
+          await recordTeamKeyDry(env.db, { id: runId, teamId: run.teamId!, byokKeyEnc: run.byokKeyEnc!, phase: "connecting" }, new Date());
         } else if (ourBudget || sessionOutage) {
           console.error(`[${budget ? "budget" : "session-outage"}] run ${runId} aborted: ${budget ? "LLM provider refused for credit state" : msg}`);
           // CHE-329: the feed is public (the live page, get_check_status's

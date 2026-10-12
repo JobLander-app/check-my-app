@@ -13,8 +13,11 @@ import { ONLY_ADMINS, keyStatusLine, type StoredKey } from "@/lib/byok-copy";
 // longer be read is said to be unusable, never shown as working.
 export function TeamModelKey({ stored, mayManage, noCredit = false }: { stored: StoredKey; mayManage: boolean; noCredit?: boolean }) {
   const [state, formAction] = useActionState(setTeamByokAction, null);
-  // CHE-458: a key just saved and found with no credit says so at once.
-  const status = keyStatusLine(stored, noCredit || Boolean(state?.noCredit));
+  // CHE-458: the server's answer decides — the save revalidates the page, so a
+  // key found with no credit shows at once, and one the scheduler later finds
+  // can pay stops showing it (CodeRabbit on #332: an OR with the form's own
+  // state kept a cleared pause on screen).
+  const status = keyStatusLine(stored, noCredit);
 
   return (
     <section className="card mt-6 p-6">

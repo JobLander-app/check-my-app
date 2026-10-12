@@ -188,14 +188,16 @@ async function main() {
 
   // saveTeamKey, called: the key is stored only when the check says ok.
   const writes: unknown[] = [];
-  const keyDb = { team: { update: async (args: unknown) => { writes.push(args); return {}; } } } as never;
+  const keyDb = { team: { findUnique: async () => null, update: async (args: unknown) => { writes.push(args); return {}; } } } as never;
   const enc = (p: string) => `enc(${p.length})`;
-  const refused = await saveTeamKey(keyDb, "t1", full, { encrypt: enc, check: async () => ({ ok: false, reason: "no" }) });
+  // CHE-458: the credit question is answered here, never by the network.
+  const keyDeps = { encrypt: enc, decrypt: (b: string) => b, probe: async () => "credit" as const };
+  const refused = await saveTeamKey(keyDb, "t1", full, { ...keyDeps, check: async () => ({ ok: false, reason: "no" }) });
   assert.equal(refused.ok, false, "a refused key is not saved");
   assert.equal(writes.length, 0, "…nothing is written");
-  assert.equal((await saveTeamKey(keyDb, "t1", "   ", { encrypt: enc, check: async () => ({ ok: true }) })).ok, false, "an empty key is not saved");
+  assert.equal((await saveTeamKey(keyDb, "t1", "   ", { ...keyDeps, check: async () => ({ ok: true }) })).ok, false, "an empty key is not saved");
   assert.equal(writes.length, 0, "…nothing is written");
-  const accepted = await saveTeamKey(keyDb, "t1", ` ${full} `, { encrypt: enc, check: async () => ({ ok: true }) });
+  const accepted = await saveTeamKey(keyDb, "t1", ` ${full} `, { ...keyDeps, check: async () => ({ ok: true }) });
   assert.deepEqual([accepted.ok, writes.length], [true, 1], "an accepted key is written once");
   assert.equal(JSON.stringify(writes[0]).includes(full), false, "…encrypted, never in the clear");
   console.log("✓ actions: admin only; a key is stored only after OpenRouter accepts it, encrypted; behind shopify");

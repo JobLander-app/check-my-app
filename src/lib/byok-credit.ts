@@ -20,7 +20,11 @@ export const BYOK_NO_CREDIT =
   "Checks are paused: the team's own OpenRouter key has no credit. They start again on their own once the OpenRouter account has credit.";
 
 /** What the feed of a check stopped by it says. */
-export const BYOK_NO_CREDIT_STOP = "This check stopped: the team's own OpenRouter key has no credit. Nothing was published, and it costs nothing.";
+// Only what this path establishes: nothing was published, and we charge
+// nothing for it. Calls the key paid for before the 402 are the team's own
+// OpenRouter bill, and "costs nothing" would claim otherwise (CodeRabbit on #332).
+export const BYOK_NO_CREDIT_STOP =
+  "This check stopped: the team's own OpenRouter key has no credit. Nothing was published, and CheckMyApp charges nothing for it.";
 
 export const RECHECK_EVERY_MS = 60 * 60 * 1000;
 
@@ -38,12 +42,59 @@ export async function byokRefusal(db: PrismaClient, teamId: string | null | unde
   return byokPaused(team) ? BYOK_NO_CREDIT : null;
 }
 
-export async function markKeyNoCredit(db: PrismaClient, teamId: string, now: Date): Promise<void> {
-  await db.team.update({ where: { id: teamId }, data: { openrouterKeyNoCreditAt: now, openrouterKeyCheckedAt: now } });
+// Every write about a key's credit names the key it is about — the encrypted
+// value the run carried, or the one the re-check read — and lands only while
+// that key is still the team's. A run that started on an old key cannot pause a
+// new one, and a re-check of an old key cannot clear a new key's pause
+// (CodeRabbit on #332). Returns whether it wrote.
+export async function markKeyNoCredit(db: PrismaClient, teamId: string, keyEnc: string, now: Date): Promise<boolean> {
+  const r = await db.team.updateMany({ where: { id: teamId, openrouterKeyEnc: keyEnc }, data: { openrouterKeyNoCreditAt: now, openrouterKeyCheckedAt: now } });
+  return r.count === 1;
 }
 
-export async function clearKeyNoCredit(db: PrismaClient, teamId: string, now: Date): Promise<void> {
-  await db.team.update({ where: { id: teamId }, data: { openrouterKeyNoCreditAt: null, openrouterKeyCheckedAt: now } });
+export async function clearKeyNoCredit(db: PrismaClient, teamId: string, keyEnc: string, now: Date): Promise<boolean> {
+  const r = await db.team.updateMany({ where: { id: teamId, openrouterKeyEnc: keyEnc }, data: { openrouterKeyNoCreditAt: null, openrouterKeyCheckedAt: now } });
+  return r.count === 1;
+}
+
+async function markKeyAsked(db: PrismaClient, teamId: string, keyEnc: string, now: Date): Promise<void> {
+  await db.team.updateMany({ where: { id: teamId, openrouterKeyEnc: keyEnc }, data: { openrouterKeyCheckedAt: now } });
+}
+
+// The re-check's share of a tick: a few teams, asked at once, each answer
+// bounded by the probe's timeout — so the due watches are read within seconds
+// whatever the number of paused teams (CodeRabbit on #332).
+export const RECHECKS_PER_TICK = 5;
+export const PROBE_TIMEOUT_MS = 8_000;
+
+/** A run stopped on a credit refusal: the team's key, when the run carried it. */
+export function isTeamKeyDry(run: { budget: boolean; byokKeyEnc: string | null; teamId: string | null }): boolean {
+  return run.budget && Boolean(run.byokKeyEnc) && Boolean(run.teamId);
+}
+
+/**
+ * The workflow's whole answer to a check stopped by the team's key: the key is
+ * paused (if it is still the team's) and the check's feed says why. Nothing
+ * else — no watch retry, nothing on our board; the scheduler leaves the
+ * team's watches until the key can pay. In one place, so it is run in a test
+ * rather than read off the workflow's source.
+ */
+export async function recordTeamKeyDry(
+  db: PrismaClient,
+  run: { id: string; teamId: string; byokKeyEnc: string; phase: string },
+  now: Date,
+): Promise<void> {
+  await markKeyNoCredit(db, run.teamId, run.byokKeyEnc, now);
+  const row = await db.run.findUnique({ where: { id: run.id }, select: { events: true } });
+  let events: unknown[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row?.events ?? "[]");
+    if (Array.isArray(parsed)) events = parsed;
+  } catch {
+    events = [];
+  }
+  events.push({ at: now.toISOString(), phase: run.phase, icon: "warn", text: BYOK_NO_CREDIT_STOP });
+  await db.run.update({ where: { id: run.id }, data: { events: JSON.stringify(events) } });
 }
 
 export type Credit = "credit" | "no_credit" | "unknown";
@@ -55,7 +106,7 @@ export type Credit = "credit" | "no_credit" | "unknown";
 // proves nothing and changes nothing.
 export const PROBE_MODEL = "openai/gpt-4o-mini";
 
-export async function probeKeyCredit(key: string, fetchImpl: typeof fetch = fetch, timeoutMs = 15_000): Promise<Credit> {
+export async function probeKeyCredit(key: string, fetchImpl: typeof fetch = fetch, timeoutMs = PROBE_TIMEOUT_MS): Promise<Credit> {
   let res: Response;
   try {
     res = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
@@ -89,23 +140,25 @@ export async function recheckPausedKeys(
       openrouterKeyNoCreditAt: { not: null },
       OR: [{ openrouterKeyCheckedAt: null }, { openrouterKeyCheckedAt: { lte: new Date(now.getTime() - RECHECK_EVERY_MS) } }],
     },
+    // The longest-waiting first, a few per tick; the rest are asked next tick.
+    orderBy: { openrouterKeyCheckedAt: "asc" },
+    take: RECHECKS_PER_TICK,
     select: { id: true, openrouterKeyEnc: true },
   });
-  const cleared: string[] = [];
-  for (const team of due) {
-    let key: string;
-    try {
-      key = decrypt(team.openrouterKeyEnc!);
-    } catch {
-      await db.team.update({ where: { id: team.id }, data: { openrouterKeyCheckedAt: now } });
-      continue;
-    }
-    if ((await probe(key)) === "credit") {
-      await clearKeyNoCredit(db, team.id, now);
-      cleared.push(team.id);
-    } else {
-      await db.team.update({ where: { id: team.id }, data: { openrouterKeyCheckedAt: now } });
-    }
-  }
-  return cleared;
+  const answers = await Promise.all(
+    due.map(async (team) => {
+      const keyEnc = team.openrouterKeyEnc!;
+      let key: string;
+      try {
+        key = decrypt(keyEnc);
+      } catch {
+        await markKeyAsked(db, team.id, keyEnc, now);
+        return null;
+      }
+      if ((await probe(key)) === "credit") return (await clearKeyNoCredit(db, team.id, keyEnc, now)) ? team.id : null;
+      await markKeyAsked(db, team.id, keyEnc, now);
+      return null;
+    }),
+  );
+  return answers.filter((id): id is string => id !== null);
 }

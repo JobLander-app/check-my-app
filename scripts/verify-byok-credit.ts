@@ -23,7 +23,20 @@ import "./fixtures/wasm-module-loader.mjs";
 import ts from "typescript";
 import { realD1 } from "./fixtures/real-d1";
 import { calls, jsx, source } from "./fixtures/ts-source";
-import { BYOK_NO_CREDIT, PROBE_MODEL, byokRefusal, probeKeyCredit, recheckPausedKeys } from "../src/lib/byok-credit";
+import {
+  BYOK_NO_CREDIT,
+  BYOK_NO_CREDIT_STOP,
+  PROBE_MODEL,
+  RECHECKS_PER_TICK,
+  byokRefusal,
+  clearKeyNoCredit,
+  isTeamKeyDry,
+  markKeyNoCredit,
+  probeKeyCredit,
+  recheckPausedKeys,
+  recordTeamKeyDry,
+} from "../src/lib/byok-credit";
+import { DUE_WATCH_CANDIDATES, dueWatchWhere } from "../src/agent/scheduler";
 import { saveTeamKey } from "../src/lib/byok";
 import { admitTeamCheck } from "../src/lib/plans";
 import { keyStatusLine } from "../src/lib/byok-copy";
@@ -60,7 +73,7 @@ async function main() {
     await db.app.create({ data: { id: "eb", teamId: "ts", ownerId: "u", appSlug: "securification.ai", targetUrl: "https://securification.ai/", targetKind: "website" } });
     const accepted = async () => ({ ok: true as const });
 
-    const saved = await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0001", { check: accepted, encrypt: encryptSecret, probe: async () => "no_credit", now: t0 });
+    const saved = await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0001", { check: accepted, encrypt: encryptSecret, decrypt: decryptSecret, probe: async () => "no_credit", now: t0 });
     eq("a key saved on an account with no credit is paused the moment it is saved", [saved.ok && saved.noCredit, (await db.team.findUnique({ where: { id: "ts" } }))?.openrouterKeyNoCreditAt?.toISOString()], [true, t0.toISOString()]);
     const gate = await admitTeamCheck(db, { id: "ts", plan: "business" }, "securification.ai", t0);
     eq("the gate every start goes through refuses, with the sentence", gate, { ok: false, code: "byok_no_credit", reason: BYOK_NO_CREDIT });
@@ -90,26 +103,87 @@ async function main() {
     eq("topped up since: the re-check finds it can pay, and the pause is gone", [await recheckPausedKeys(db, fourHours, decryptSecret, async (k) => (probes.push(k), "credit")), await byokRefusal(db, "ts"), probes], [["ts"], null, ["sk-or-v1-securify-key-0001"]]);
     eq("…so the gate admits a check again", (await admitTeamCheck(db, { id: "ts", plan: "business" }, "securification.ai", fourHours)).ok, true);
 
-    await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0001", { check: accepted, encrypt: encryptSecret, probe: async () => "no_credit", now: fourHours });
-    await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0002", { check: accepted, encrypt: encryptSecret, probe: async () => "credit", now: fourHours });
+    const enc1 = (await db.team.findUnique({ where: { id: "ts" } }))!.openrouterKeyEnc!;
+    // The same key saved again while OpenRouter does not answer: still paused.
+    await markKeyNoCredit(db, "ts", enc1, fourHours);
+    await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0001", { check: accepted, encrypt: encryptSecret, decrypt: decryptSecret, probe: async () => "unknown", now: fourHours });
+    eq("the same key re-saved while OpenRouter does not answer stays paused", Boolean(await byokRefusal(db, "ts")), true);
+    await saveTeamKey(db, "ts", "sk-or-v1-securify-key-0002", { check: accepted, encrypt: encryptSecret, decrypt: decryptSecret, probe: async () => "credit", now: fourHours });
     eq("a new key that can pay clears the pause an old one left", await byokRefusal(db, "ts"), null);
+
+    // Writes bound to the key they are about.
+    const enc2 = (await db.team.findUnique({ where: { id: "ts" } }))!.openrouterKeyEnc!;
+    eq("a run that started on the old key cannot pause the new one", [await markKeyNoCredit(db, "ts", enc1, fourHours), await byokRefusal(db, "ts")], [false, null]);
+    await markKeyNoCredit(db, "ts", enc2, fourHours);
+    eq("…nor can a re-check of the old key clear the new key's pause", [await clearKeyNoCredit(db, "ts", enc1, fourHours), Boolean(await byokRefusal(db, "ts"))], [false, true]);
+
+    // The workflow's answer to a 402 on the team's key, run on the rows.
+    eq("the team's key is the one that ran dry only on a credit refusal of a run that carried it",
+      [isTeamKeyDry({ budget: true, byokKeyEnc: "e", teamId: "t" }), isTeamKeyDry({ budget: true, byokKeyEnc: null, teamId: "t" }), isTeamKeyDry({ budget: false, byokKeyEnc: "e", teamId: "t" })], [true, false, false]);
+    await clearKeyNoCredit(db, "ts", enc2, fourHours);
+    const next = new Date(fourHours.getTime() + 24 * 3600_000);
+    await db.watch.create({ data: { id: "w1", ownerId: "u", teamId: "ts", appId: "eb", appSlug: "securification.ai", targetUrl: "https://securification.ai/", frequency: "daily", nextRunAt: next } as never });
+    await db.run.create({ data: { id: "r1", publicId: "p_r1", runNumber: 1, ownerId: "u", teamId: "ts", appId: "eb", watchId: "w1", appSlug: "securification.ai", targetUrl: "https://securification.ai/", status: "walking", byokKeyEnc: enc2, events: JSON.stringify([{ at: fourHours.toISOString(), phase: "walking", icon: "info", text: "Walking" }]) } as never });
+    await recordTeamKeyDry(db, { id: "r1", teamId: "ts", byokKeyEnc: enc2, phase: "connecting" }, fourHours);
+    const r1 = await db.run.findUnique({ where: { id: "r1" } });
+    eq("a 402 on the team's key pauses it and the feed says why, in words that claim nothing about their OpenRouter bill",
+      [Boolean(await byokRefusal(db, "ts")), JSON.parse(r1!.events!).at(-1).text, /costs nothing/.test(BYOK_NO_CREDIT_STOP)], [true, BYOK_NO_CREDIT_STOP, false]);
+    eq("…and leaves the watch as it was — no retry", (await db.watch.findUnique({ where: { id: "w1" } }))?.nextRunAt?.toISOString(), next.toISOString());
+
+    // The scheduler's window: paused teams never take its places.
+    await db.team.create({ data: { id: "tok", name: "Other", plan: "business" } });
+    const past = new Date(fourHours.getTime() - 3600_000);
+    for (let i = 0; i < DUE_WATCH_CANDIDATES + 3; i++) {
+      await db.watch.create({ data: { id: `wp${i}`, ownerId: "u", teamId: "ts", appSlug: `p${i}.test`, targetUrl: `https://p${i}.test/`, frequency: "daily", nextRunAt: new Date(past.getTime() - (i + 1) * 60_000) } as never });
+    }
+    await db.watch.create({ data: { id: "wok", ownerId: "u", teamId: "tok", appSlug: "ok.test", targetUrl: "https://ok.test/", frequency: "daily", nextRunAt: past } as never });
+    const window = await db.watch.findMany({ where: dueWatchWhere(fourHours), orderBy: { nextRunAt: "asc" }, take: DUE_WATCH_CANDIDATES, select: { id: true } });
+    eq(`${DUE_WATCH_CANDIDATES + 3} due watches of a paused team, earlier than another team's: the other team's watch is still in the window, and none of theirs`,
+      [window.some((w) => w.id === "wok"), window.filter((w) => w.id.startsWith("wp")).length], [true, 0]);
+
+    // The re-check's share of a tick.
+    for (let i = 0; i < RECHECKS_PER_TICK + 2; i++) {
+      await db.team.create({ data: { id: `tp${i}`, name: `P${i}`, plan: "business", openrouterKeyEnc: encryptSecret(`sk-or-v1-paused-${i}`), openrouterKeyNoCreditAt: past } as never });
+    }
+    let inFlight = 0;
+    let most = 0;
+    const asked2: string[] = [];
+    await recheckPausedKeys(db, fourHours, decryptSecret, async (k) => {
+      asked2.push(k);
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return "no_credit";
+    });
+    eq(`one tick asks at most ${RECHECKS_PER_TICK} keys, at the same time`, [asked2.length, most > 1], [RECHECKS_PER_TICK, true]);
+
+    // MCP: a watch paused by the key is said to be, not as a balance problem.
+    await markKeyNoCredit(db, "ts", enc2, fourHours);
+    const apps = parse(await tools.list_apps()).apps as { app_id: string; watch: { state: string } }[];
+    eq("list_apps: the watch is paused by the team's key, not by the balance", apps.find((a) => a.app_id === "eb")?.watch.state, "paused_team_key");
   } finally {
     await real.dispose();
   }
 
-  // 4. Wiring.
+  // 4. Wiring, as syntax.
   const wf = source("src/agent/workflow.ts");
   const dry = initializer(wf, "teamKeyDry");
-  check("the workflow tells the team's key from ours by the run's own key", Boolean(dry && /budget/.test(dry) && /run\.byokKeyEnc/.test(dry)), dry ?? "");
-  const branch = ifWith(wf, "teamKeyDry", (n) => calls(wf, n.thenStatement).some((c) => c.callee === "markKeyNoCredit"));
-  check("…marks the key and says why in the feed, without a watch retry", Boolean(branch) && calls(wf, branch!.thenStatement).some((c) => c.callee === "appendEvent" && c.args[3] === "{ icon: \"warn\", text: BYOK_NO_CREDIT_STOP }") && !calls(wf, branch!.thenStatement).some((c) => /watch\.update/.test(c.callee)));
+  check("the workflow decides it by isTeamKeyDry over the run's own key", Boolean(dry && ts.isCallExpression(dry) && dry.expression.getText(wf) === "isTeamKeyDry" && /run\.byokKeyEnc/.test(dry.getText(wf))));
+  const branch = ifWith(wf, "teamKeyDry", () => true);
+  const inBranch = branch ? calls(wf, branch.thenStatement).map((c) => c.callee) : [];
+  eq("…and its branch does recordTeamKeyDry and nothing else (a log line aside)", inBranch.filter((c) => c !== "console.warn"), ["recordTeamKeyDry"]);
   const filing = calls(wf).find((c) => c.callee === "step.do" && c.args[0] === '"file-failure"');
-  check("…and files nothing on our board for it", Boolean(filing) && /if \(teamKeyDry\) return null;/.test(filing!.node.getText(wf)));
+  const body = filing && ts.isArrowFunction(filing.node.arguments[1]) && ts.isBlock(filing.node.arguments[1].body) ? filing.node.arguments[1].body : undefined;
+  const first = body?.statements[0];
+  check("…and files nothing on our board for it: the filing step's first statement returns for it",
+    Boolean(first && ts.isIfStatement(first) && first.expression.getText(wf) === "teamKeyDry" && ts.isReturnStatement(first.thenStatement)));
   const sched = source("src/agent/scheduler.ts");
   const skip = ifWith(sched, 'admitted.code === "byok_no_credit"', () => true);
   const pause = calls(sched).find((c) => c.callee === "pauseBalanceUsedUp");
-  check("the scheduler skips the watch without pausing it or mailing a balance notice", Boolean(skip && pause) && skip!.getStart(sched) < pause!.node.getStart(sched) && skip!.thenStatement.getText(sched).trim() === "continue;");
-  check("…and re-checks paused keys on its tick", calls(sched).some((c) => c.callee === "recheckPausedKeys"));
+  check("the scheduler skips the watch without pausing it or mailing a balance notice", Boolean(skip && pause) && skip!.getStart(sched) < pause!.node.getStart(sched) && ts.isContinueStatement(skip!.thenStatement));
+  check("…reads its window through dueWatchWhere and re-checks paused keys on its tick",
+    calls(sched).some((c) => c.callee === "dueWatchWhere") && calls(sched).some((c) => c.callee === "recheckPausedKeys"));
   const layout = source("src/app/(app)/layout.tsx");
   check("every signed-in page shows the banner while paused", jsx(layout).some((e) => e.tag === "KeyPausedBanner" && e.guard === "paused") && calls(layout).some((c) => c.callee === "byokPaused"));
   const teamPage = source("src/app/(app)/settings/team/page.tsx");
@@ -119,10 +193,10 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-function initializer(sf: ts.SourceFile, name: string): string | null {
-  let found: string | null = null;
+function initializer(sf: ts.SourceFile, name: string): ts.Expression | null {
+  let found: ts.Expression | null = null;
   const visit = (n: ts.Node) => {
-    if (!found && ts.isVariableDeclaration(n) && n.name.getText(sf) === name && n.initializer) found = n.initializer.getText(sf);
+    if (!found && ts.isVariableDeclaration(n) && n.name.getText(sf) === name && n.initializer) found = n.initializer;
     n.forEachChild(visit);
   };
   visit(sf);

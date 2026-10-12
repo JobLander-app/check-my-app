@@ -72,7 +72,13 @@ export async function saveTeamKey(
   db: PrismaClient,
   teamId: string,
   key: string,
-  deps: { check?: (key: string) => Promise<KeyCheck>; encrypt: (plain: string) => string; probe?: (key: string) => Promise<Credit>; now?: Date },
+  deps: {
+    check?: (key: string) => Promise<KeyCheck>;
+    encrypt: (plain: string) => string;
+    decrypt: (blob: string) => string;
+    probe?: (key: string) => Promise<Credit>;
+    now?: Date;
+  },
 ): Promise<{ ok: true; masked: string; noCredit: boolean } | { ok: false; reason: string }> {
   const k = key.trim();
   if (!k) return { ok: false, reason: "Paste the key first." };
@@ -80,15 +86,25 @@ export async function saveTeamKey(
   if (!verdict.ok) return verdict;
   // CHE-458: a key OpenRouter accepts can still sit on an account with no
   // credit (Securify, 2026-10-12). Asked once here, so the pause shows the
-  // moment the key is added rather than after a check fails on it; a new key
-  // also clears the pause an old one left.
+  // moment the key is added rather than after a check fails on it.
   const now = deps.now ?? new Date();
-  const noCredit = (await (deps.probe ?? probeKeyCredit)(k)) === "no_credit";
+  const credit = await (deps.probe ?? probeKeyCredit)(k);
+  // An answer that proves nothing never lifts a pause it found: the same key
+  // saved again while OpenRouter does not answer stays paused (CodeRabbit on
+  // #332). A different key starts unpaused — a check on it says soon enough.
+  const before = await db.team.findUnique({ where: { id: teamId }, select: { openrouterKeyEnc: true, openrouterKeyNoCreditAt: true } });
+  let sameKey = false;
+  try {
+    sameKey = Boolean(before?.openrouterKeyEnc) && deps.decrypt(before!.openrouterKeyEnc!) === k;
+  } catch {
+    sameKey = false;
+  }
+  const noCreditAt = credit === "no_credit" ? now : credit === "credit" ? null : sameKey ? (before?.openrouterKeyNoCreditAt ?? null) : null;
   await db.team.update({
     where: { id: teamId },
-    data: { openrouterKeyEnc: deps.encrypt(k), openrouterKeyNoCreditAt: noCredit ? now : null, openrouterKeyCheckedAt: now },
+    data: { openrouterKeyEnc: deps.encrypt(k), openrouterKeyNoCreditAt: noCreditAt, openrouterKeyCheckedAt: now },
   });
-  return { ok: true, masked: maskKey(k), noCredit };
+  return { ok: true, masked: maskKey(k), noCredit: noCreditAt !== null };
 }
 
 // What the Team page says about a stored key: its masked form, or that it can
