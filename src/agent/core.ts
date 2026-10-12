@@ -46,6 +46,13 @@ export interface AgentLoopArgs {
   // extra turns execute tools normally: a create_cleanup walk still has to
   // delete what it created and call record_deleted (CHE-90).
   wrapUpAfter?: { tool: string; extraIterations: number; note: string };
+  // The loop may not end on the model's say-so while `satisfied()` is false:
+  // the model is told `note` and gets another turn, at most `maxNudges` times.
+  // A walk that stopped talking without ever calling report_step left no step,
+  // no screenshot and no trail, so whatever it saw could not be said at all
+  // (a journey signed in on a preview app, run #337, re-filed every run since).
+  // Asking costs one turn; not asking costs the whole journey's coverage.
+  untilSatisfied?: { satisfied: () => boolean; note: string; maxNudges: number };
 }
 
 export interface AgentLoopResult {
@@ -101,7 +108,9 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     onProgress,
     imageWindow,
     wrapUpAfter,
+    untilSatisfied,
   } = args;
+  let nudges = 0;
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: task }];
   const transcript: TranscriptEntry[] = [];
   let iterations = 0;
@@ -162,6 +171,17 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     }
 
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
+      if (untilSatisfied && !untilSatisfied.satisfied() && nudges < untilSatisfied.maxNudges && iterations < cap) {
+        nudges += 1;
+        console.warn(`[agent] iter ${iterations}: the model stopped before the required call — asking again (${nudges}/${untilSatisfied.maxNudges})`);
+        // An assistant turn may not be empty; keep whatever it said.
+        messages.push({
+          role: "assistant",
+          content: response.content.length ? response.content : [{ type: "text", text: "(no reply)" }],
+        });
+        messages.push({ role: "user", content: untilSatisfied.note });
+        continue;
+      }
       endedBy = "model";
       break;
     }

@@ -386,6 +386,21 @@ export async function walkOneJourney(args: {
         // still happens in synthesis (Opus, thinking on).
         thinking: "off",
         onProgress,
+        // A walk that ends in prose without one report_step leaves nothing a
+        // customer can open (CHE-420 made that a coverage gap of ours). Ask
+        // once more, before it ends, for what it did — including that it could
+        // not get in. Model-facing only: it never reaches a Step's text.
+        untilSatisfied: {
+          satisfied: () => stepOrder > 0,
+          maxNudges: 1,
+          note:
+            "You have not called report_step for this journey. Nothing you saw can be recorded " +
+            "until you do. Call report_step now for what you did and saw — a screenshot first for " +
+            "evidence. If you were stopped before the journey's first step (could not sign in, the " +
+            "page did not load, the module was not reachable), report that as the step with its " +
+            "honest status: broken if the product returned an error or showed wrong data, skipped " +
+            "with unverifiedReason otherwise. Then continue the journey or finish with the summary.",
+        },
         // CHE-130: screenshots accumulated in the walking context and were
         // re-read every iteration — a full joblander walk went $0.91 → $2.31
         // when vision nav landed. Keep only the last few in view.
