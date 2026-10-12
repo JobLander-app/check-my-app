@@ -130,11 +130,13 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // cause is not ours. Only for an admin of a team given `shopify`; the rest of
   // the team sees the cause on the step, not a task.
   const forAdmin = scope === "admin" && (await teamHasFeature(db, team.id, "shopify"));
-  const attention = forAdmin ? await causesOfAppsLatestRun(db, team.id, app.id) : null;
-  const attentionGroups = attention?.groups.filter((g) => causeRoute(g.cause) === "admin") ?? [];
   // CHE-434 place 9: and every report a member made about the check, newest
-  // first, with where it stands (received → … → fixed / not a mistake).
-  const attentionReports = forAdmin ? await latestAppFeedback(db, team.id, app.id, CARD_REPORTS) : [];
+  // first, with where it stands (received → … → fixed / not a mistake). The two
+  // reads are independent and start together (Codex on #320).
+  const [attention, attentionReports] = forAdmin
+    ? await Promise.all([causesOfAppsLatestRun(db, team.id, app.id), latestAppFeedback(db, team.id, app.id, CARD_REPORTS)])
+    : [null, []];
+  const attentionGroups = attention?.groups.filter((g) => causeRoute(g.cause) === "admin") ?? [];
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">

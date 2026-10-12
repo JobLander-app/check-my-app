@@ -460,15 +460,26 @@ async function main() {
     calls(page).some((c) => c.callee === "causeRoute" && c.args[0] === "g.cause" && /=== "admin"$/.test(c.node.parent.getText(page))),
   );
   // CHE-434 place 9: the members' reports sit on the same card, for the same admin.
-  const reportsInit = initializerOf(page, "attentionReports");
+  // `const [attention, attentionReports] = forAdmin ? await Promise.all([…]) : […]`
+  let reportsInit: ts.Expression | undefined;
+  const findPair = (n: ts.Node) => {
+    if (ts.isVariableDeclaration(n) && ts.isArrayBindingPattern(n.name) && /attentionReports/.test(n.name.getText(page)) && n.initializer) reportsInit = n.initializer;
+    n.forEachChild(findPair);
+  };
+  findPair(page);
+  const both = reportsInit && ts.isConditionalExpression(reportsInit) ? calls(page, reportsInit.whenTrue) : [];
   check(
     "the card also lists the team's reports about the check, for the same admin",
     Boolean(reportsInit) &&
       ts.isConditionalExpression(reportsInit!) &&
       reportsInit.condition.getText(page) === "forAdmin" &&
       // The newest few, asked of the database — not a slice of the first 200 (Codex on #320).
-      calls(page, reportsInit.whenTrue).some((c) => c.callee === "latestAppFeedback" && c.args.join(",") === "db,team.id,app.id,CARD_REPORTS") &&
+      both.some((c) => c.callee === "latestAppFeedback" && c.args.join(",") === "db,team.id,app.id,CARD_REPORTS") &&
       card?.props.reports === "attentionReports",
+  );
+  check(
+    "…read together with the causes, not after them (Codex on #320)",
+    both.some((c) => c.callee === "Promise.all" && /causesOfAppsLatestRun/.test(c.args[0] ?? "") && /latestAppFeedback/.test(c.args[0] ?? "")),
   );
   // Every sentence the card says about a report comes from one pure module and
   // passes the language guards whole (R18; Codex on #320).

@@ -23,7 +23,9 @@ export function reportLine(r: Pick<FeedbackItem, "reason" | "findingNumber" | "s
 
 /** The second line: what was said, and by whom. */
 export function reportQuote(r: Pick<FeedbackItem, "text" | "author">): string {
-  const text = r.text.length > QUOTE_MAX ? `${r.text.slice(0, QUOTE_MAX)}…` : r.text;
+  // By characters (code points), so an emoji at the cut is kept whole (Codex on #320).
+  const chars = [...r.text];
+  const text = chars.length > QUOTE_MAX ? `${chars.slice(0, QUOTE_MAX).join("")}…` : r.text;
   return `“${text}” — ${r.author}`;
 }
 
