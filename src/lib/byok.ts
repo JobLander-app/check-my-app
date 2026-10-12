@@ -35,21 +35,21 @@ export function maskKey(key: string): string {
 
 export type KeyCheck = { ok: true } | { ok: false; reason: string };
 
-const CHECK_TIMEOUT_MS = 10_000;
+export const CHECK_TIMEOUT_MS = 10_000;
 const NO_ANSWER = "OpenRouter did not answer. Nothing was saved — try again in a minute.";
 
 // OpenRouter answers GET /api/v1/key with 200 and the key's details for a key it
 // accepts, and 401 for one it does not (checked 2026-10-11). Only a 200 that
 // carries those details counts: anything else proves nothing about the key. A
 // provisioning or management key is accepted there but cannot call a model.
-export async function checkOpenRouterKey(key: string, fetchImpl: typeof fetch = fetch): Promise<KeyCheck> {
+export async function checkOpenRouterKey(key: string, fetchImpl: typeof fetch = fetch, timeoutMs = CHECK_TIMEOUT_MS): Promise<KeyCheck> {
   const k = key.trim();
   if (!k.startsWith("sk-or-")) return { ok: false, reason: "That is not an OpenRouter key — they start with sk-or-." };
   let res: Response;
   try {
     res = await fetchImpl("https://openrouter.ai/api/v1/key", {
       headers: { Authorization: `Bearer ${k}` },
-      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     return { ok: false, reason: NO_ANSWER };

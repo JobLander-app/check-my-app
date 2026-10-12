@@ -16,7 +16,10 @@ import { encryptSecret, decryptSecret } from "../src/lib/crypto";
 import { priceRun } from "../src/agent/pricing";
 import { makeLlm } from "../src/agent/llm";
 import type { AgentBindings } from "../src/agent/env";
-import { checkOpenRouterKey, maskKey, saveTeamKey, storedKeyView } from "../src/lib/byok";
+import { CHECK_TIMEOUT_MS, checkOpenRouterKey, maskKey, saveTeamKey, storedKeyView } from "../src/lib/byok";
+import { ONLY_ADMINS, keyStatusLine } from "../src/lib/byok-copy";
+import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
+import ts from "typescript";
 import { can } from "../src/lib/scopes";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -131,10 +134,18 @@ async function main() {
   assert.equal((await checkOpenRouterKey(full, answer(200, {}))).ok, false, "a 200 without the key's details proves nothing → refused");
   const notJson = (async () => new Response("<html>gateway</html>", { status: 200 })) as unknown as typeof fetch;
   assert.equal((await checkOpenRouterKey(full, notJson)).ok, false, "a 200 that is not JSON → refused");
-  let signalled = false;
-  const watched = (async (_u: unknown, init?: RequestInit) => { signalled = init?.signal instanceof AbortSignal; return new Response(JSON.stringify({ data: { usage: 0 } })); }) as unknown as typeof fetch;
-  await checkOpenRouterKey(full, watched);
-  assert.ok(signalled, "the request to OpenRouter carries a deadline");
+  // An OpenRouter that never answers: the request is cut off at its deadline.
+  const hanging = ((_u: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as unknown as typeof fetch;
+  const t0 = Date.now();
+  // AbortSignal.timeout's timer does not keep Node alive: without this the
+  // process would exit mid-await, silently, with code 0.
+  const keepAlive = setInterval(() => {}, 1_000);
+  const timedOut = await checkOpenRouterKey(full, hanging, 30);
+  clearInterval(keepAlive);
+  assert.equal(timedOut.ok, false, "an OpenRouter that never answers → nothing saved");
+  assert.ok(Date.now() - t0 < 2_000, `…cut off at the deadline, not waited out (${Date.now() - t0} ms)`);
+  assert.equal(CHECK_TIMEOUT_MS, 10_000, "the deadline in use is 10 s");
   assert.equal((await checkOpenRouterKey(full, answer(401))).ok, false, "401 → refused");
   assert.equal((await checkOpenRouterKey(full, answer(200, { is_provisioning_key: true }))).ok, false, "provisioning key → refused");
   assert.equal((await checkOpenRouterKey(full, answer(200, { is_management_key: true }))).ok, false, "management key → refused");
@@ -145,13 +156,21 @@ async function main() {
   assert.equal(called, false, "…without sending a foreign key to OpenRouter");
   console.log("✓ checkOpenRouterKey: only a key OpenRouter accepts, and that can run models, is saved");
 
-  const actions = read("src/app/team/actions.ts");
-  const setBody = bodyOf(actions, "setTeamByokAction");
-  const removeBody = bodyOf(actions, "removeTeamByokAction");
-  assert.ok(/requireActionScope\("billing\.manage"\)/.test(setBody) && /requireActionScope\("billing\.manage"\)/.test(removeBody), "both actions are billing.manage");
+  // The actions, read as syntax: every call each one makes, with its arguments.
+  const setCalls = callsIn("src/app/team/actions.ts", "setTeamByokAction");
+  const removeCalls = callsIn("src/app/team/actions.ts", "removeTeamByokAction");
+  const arg0 = (calls: Call[], name: string) => calls.find((c) => c.callee === name)?.args[0];
+  assert.equal(arg0(setCalls, "requireActionScope"), '"billing.manage"', "setting a key is billing.manage");
+  assert.equal(arg0(removeCalls, "requireActionScope"), '"billing.manage"', "removing a key is billing.manage");
   assert.ok(can("admin", "billing.manage") && !can("member", "billing.manage") && !can("reader", "billing.manage"), "billing.manage is admin only");
-  assert.ok(/saveTeamKey\(db, team\.id, /.test(setBody) && /encrypt: encryptSecret/.test(setBody), "the action stores through saveTeamKey, encrypted");
-  assert.ok(/teamHasFeature\(db, team\.id, "shopify"\)/.test(setBody), "setting a key is behind the shopify feature");
+  const save = setCalls.find((c) => c.callee === "saveTeamKey");
+  assert.ok(save && /encrypt: encryptSecret/.test(save.args[3] ?? ""), "the action stores through saveTeamKey, encrypted");
+  assert.deepEqual(
+    setCalls.filter((c) => /\.(update|updateMany|upsert|create|executeRaw|\$executeRaw)$/.test(c.callee)).map((c) => c.callee),
+    [],
+    "…and writes nothing itself: no store can bypass the check",
+  );
+  assert.ok(setCalls.some((c) => c.callee === "teamHasFeature" && c.args[2] === '"shopify"'), "setting a key is behind the shopify feature");
 
   // saveTeamKey, called: the key is stored only when the check says ok.
   const writes: unknown[] = [];
@@ -172,26 +191,85 @@ async function main() {
   assert.deepEqual(storedKeyView(testKey, decryptSecret), { masked: maskKey(decryptSecret(testKey)) }, "a readable key → its masked form");
   assert.deepEqual(storedKeyView("not.a.blob", decryptSecret), { unreadable: true }, "an unreadable key → unusable, never 'a key is set'");
 
-  const page = read("src/app/(app)/settings/team/page.tsx");
-  assert.ok(/teamHasFeature\(db, team\.id, "shopify"\)/.test(page) && /\{showModelKey && <TeamModelKey/.test(page), "the section shows only on shopify teams");
-  assert.ok(/<TeamModelKey stored=\{storedKey\} mayManage=\{can\(scope, "billing\.manage"\)\} \/>/.test(page), "the browser gets the stored key's view and the server's own answer to who may change it");
+  // The page, read as syntax: the one <TeamModelKey>, its guard and its props.
+  const usage = jsxUsage("src/app/(app)/settings/team/page.tsx", "TeamModelKey");
+  assert.equal(usage.length, 1, "the page renders the section once");
+  assert.equal(usage[0].guard, "showModelKey", "…only when the team has the shopify feature");
+  assert.ok(callsIn("src/app/(app)/settings/team/page.tsx", "TeamPage").some((c) => c.callee === "teamHasFeature" && c.args[2] === '"shopify"'), "…which is the shopify flag");
+  assert.deepEqual(usage[0].props, { stored: "storedKey", mayManage: 'can(scope, "billing.manage")' }, "the browser gets the stored key's view and the server's own answer to who may change it");
   const component = read("src/components/team-model-key.tsx");
   assert.ok(!/openrouterKeyEnc|decryptSecret|@\/lib\/crypto/.test(component), "the client component never touches the stored key");
-  assert.ok(/mayManage \?/.test(component) && /Only an admin of this team/.test(component), "members read, admins write");
-  console.log("✓ page: shopify teams only; members see the status, admins the form; only the masked key reaches the browser");
+
+  // The words: status only, never homework or our machinery.
+  const lines = [keyStatusLine(null).text, keyStatusLine({ masked: "sk-or-…4567" }).text, keyStatusLine({ unreadable: true }).text, ONLY_ADMINS];
+  for (const line of lines) {
+    assert.ok(!hasHomework(line) && !hasEnvironmentLeak(line), `no homework, no machinery: "${line.slice(0, 50)}…"`);
+  }
+  assert.equal(keyStatusLine({ unreadable: true }).tone, "broken", "an unusable key reads as broken");
+  assert.ok(!/paste|replace|admin/i.test(keyStatusLine({ unreadable: true }).text), "…and states the status without telling anyone what to do");
+  console.log("✓ page: shopify teams only; members see the status, admins the form; only the masked key reaches the browser; the words state a status");
 
   console.log("\nAll BYOK invariants hold.");
+  finished = true;
 }
+
+// A guard that stops before its last line has proved nothing: make that a failure.
+let finished = false;
+process.on("exit", (code) => {
+  if (code === 0 && !finished) {
+    console.error("verify-byok stopped before its last check");
+    process.exitCode = 1;
+  }
+});
 
 function read(rel: string): string {
   return readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
 }
 
-function bodyOf(text: string, fn: string): string {
-  const at = text.indexOf(`export async function ${fn}`);
-  if (at < 0) return "";
-  const next = text.indexOf("\nexport ", at + 1);
-  return text.slice(at, next < 0 ? text.length : next);
+type Call = { callee: string; args: string[] };
+
+function source(rel: string): ts.SourceFile {
+  return ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, rel.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+}
+
+// Every call expression inside the named function declaration.
+function callsIn(rel: string, fn: string): Call[] {
+  const sf = source(rel);
+  const out: Call[] = [];
+  const walk = (n: ts.Node) => {
+    if (ts.isCallExpression(n)) out.push({ callee: n.expression.getText(sf), args: n.arguments.map((a) => a.getText(sf)) });
+    n.forEachChild(walk);
+  };
+  sf.forEachChild((n) => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === fn && n.body) walk(n.body);
+  });
+  return out;
+}
+
+// Each <Tag …/> in the file: its props as source text, and the identifier it is
+// rendered behind (`{guard && <Tag/>}`), if any.
+function jsxUsage(rel: string, tag: string): { props: Record<string, string>; guard: string | null }[] {
+  const sf = source(rel);
+  const out: { props: Record<string, string>; guard: string | null }[] = [];
+  const walk = (n: ts.Node) => {
+    if ((ts.isJsxSelfClosingElement(n) || ts.isJsxOpeningElement(n)) && n.tagName.getText(sf) === tag) {
+      const props: Record<string, string> = {};
+      for (const p of n.attributes.properties) {
+        if (ts.isJsxAttribute(p) && p.initializer && ts.isJsxExpression(p.initializer) && p.initializer.expression) {
+          props[p.name.getText(sf)] = p.initializer.expression.getText(sf);
+        }
+      }
+      const parent = n.parent;
+      const guard =
+        parent && ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+          ? parent.left.getText(sf)
+          : null;
+      out.push({ props, guard });
+    }
+    n.forEachChild(walk);
+  };
+  walk(sf);
+  return out;
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
