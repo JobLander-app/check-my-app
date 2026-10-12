@@ -14,7 +14,7 @@
 //     (open / fixed / not a mistake);
 //   - checks that met an ended sign-in.
 
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { causesOfRun } from "@/lib/step-cause-load";
 import { parseTeamFeatures } from "@/lib/team-features";
 import { systemWide } from "@/lib/tenant-db";
@@ -43,7 +43,8 @@ export async function buildPilotDigest(db: PrismaClient, now: Date): Promise<str
       select: { id: true, appSlug: true, verdict: true, bottomLine: true },
       orderBy: { completedAt: "asc" },
     });
-    const count = (where: Record<string, unknown>) => db.feedback.count({ where: { ...systemWide("measurement"), teamId: team.id, ...where } });
+    // Typed by Prisma's own filter, so a misspelled field fails the build (Codex on #321).
+    const count = (where: Prisma.FeedbackWhereInput) => db.feedback.count({ where: { ...systemWide("measurement"), teamId: team.id, ...where } });
     const [newReports, fixed, wontFix, open] = await Promise.all([
       count({ createdAt: { gte: since } }),
       count({ status: "fixed" }),

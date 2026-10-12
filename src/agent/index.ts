@@ -47,7 +47,7 @@ export default {
 
   // Cron (*/15) — start the Watch rows that have come due. Awaited rather than
   // waitUntil'd so a failure shows up as a failed cron invocation in the logs.
-  async scheduled(_controller: ScheduledController, env: AgentBindings): Promise<void> {
+  async scheduled(controller: ScheduledController, env: AgentBindings): Promise<void> {
     const { started, skipped } = await runDueWatches(env);
     console.log(`[scheduler] tick: started ${started.length}, skipped ${skipped}`);
     // CHE-434: reports of the check's mistakes, to our board — after the due
@@ -69,7 +69,9 @@ export default {
     }
     // CHE-441: the pilot's daily digest — acts only on the 07:00 UTC ticks,
     // and sends once a day (its send id is the date).
-    const digest = await sendPilotDigest({ db: makeAgentEnv(env).db, bindings: env });
+    // The tick's own time, not the moment it ran: a cron event delivered late
+    // still counts as its hour, and its day (Codex on #321).
+    const digest = await sendPilotDigest({ db: makeAgentEnv(env).db, bindings: env }, new Date(controller.scheduledTime));
     if (digest !== "not_now") console.log(`[pilot-digest] ${digest}`);
   },
 };

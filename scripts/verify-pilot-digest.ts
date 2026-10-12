@@ -87,7 +87,10 @@ async function main() {
   }
 
   // Wired into the scheduler's tick.
-  check("the scheduler calls it on every tick", calls(source("src/agent/index.ts")).some((c) => c.callee === "sendPilotDigest"));
+  const tick = calls(source("src/agent/index.ts")).find((c) => c.callee === "sendPilotDigest");
+  check("the scheduler calls it on every tick", Boolean(tick));
+  // A cron event delivered late still counts as its own hour and day (Codex on #321).
+  eq("…at the tick's scheduled time, not the moment it ran", tick?.args[1], "new Date(controller.scheduledTime)");
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
