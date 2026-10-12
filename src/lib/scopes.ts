@@ -218,6 +218,16 @@ export function canMintKey(minter: TeamScope, keyScope: TeamScope): boolean {
   return LADDER.indexOf(keyScope) <= LADDER.indexOf(minter);
 }
 
+// The scope a new key asks for. "self" is the minter's own — the key a person
+// gives their own coding agent, which acts as them (CHE-451: an admin's agent
+// got a member key and could not do what its admin can, Securify 2026-10-12).
+// A named scope is taken as named; anything else is a member key. Whether the
+// minter may have it is mintRefusal's question, asked after.
+export function keyScopeFor(minter: TeamScope, asked: string): TeamScope {
+  if (asked === "self") return minter;
+  return (TEAM_SCOPES as string[]).includes(asked) ? (asked as TeamScope) : "member";
+}
+
 export function mintRefusal(minter: TeamScope, keyScope: TeamScope): string | null {
   if (canMintKey(minter, keyScope)) return null;
   return `You can't create a ${keyScope} key — a key can't do more than the person who made it.`;
