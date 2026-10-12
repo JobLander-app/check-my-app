@@ -19,6 +19,7 @@ process.env.CREDENTIALS_SECRET ??= "verify-app-name-secret";
 import "./fixtures/wasm-module-loader.mjs";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { realD1 } from "./fixtures/real-d1";
 import { calls, jsx, source } from "./fixtures/ts-source";
 import { APP_NAME_MAX, appLabel, checkAppName, isShopifyApp } from "../src/lib/app-label";
@@ -91,6 +92,21 @@ async function main() {
   const appPage = source("src/app/(app)/health/apps/[appId]/page.tsx");
   check("the app's own page marks it in its title", jsx(appPage).some((e) => e.tag === "ShopifyMark" && e.guard === "isShopifyApp(app)"));
 
+  // Every place a page or component prints an app's address — a JSX child or a
+  // template string that reads `.appSlug` — enumerated, not sampled
+  // (CodeRabbit on #331). Each is either gone to the label or on this list,
+  // with the reason the address itself is what the reader needs there.
+  const ADDRESS_MEANT: Record<string, string> = {
+    "src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx#Shown everywhere instead of {app.appSlug}":
+      "the Name field says which address the name stands for",
+    "src/app/(app)/release/page.tsx#{r.appSlug}": "a release of an address no app was saved for: the address is all it has",
+    "src/app/checks/today/page.tsx#{run.appSlug}": "the public list of today's anonymous checks: a stranger's address, no app, no name",
+    "src/components/submit-form.tsx#{lookup.appSlug}": "the public form answering the address a stranger just typed",
+  };
+  const printed = addressPrints(files.filter((f) => /^src\/(app|components)\//.test(f) && f.endsWith(".tsx")));
+  const unexplained = printed.filter((p) => !Object.keys(ADDRESS_MEANT).some((k) => k === `${p.file}#${p.context}`));
+  eq("no page prints an app's address where its name belongs — every print site is the label or a listed reason", unexplained.map((p) => `${p.file}:${p.line} ${p.text}`), []);
+
   // 4. The mail.
   const notify = source("src/agent/notify-verdict.ts");
   const send = calls(notify).find((c) => c.callee === "sendVerdictReady");
@@ -98,6 +114,36 @@ async function main() {
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
+}
+
+// A JSX child expression or a template string that reads an `appSlug`, with the
+// JSX text just before it (so a listed reason names its sentence, not a line).
+function addressPrints(files: string[]): { file: string; line: number; text: string; context: string }[] {
+  const out: { file: string; line: number; text: string; context: string }[] = [];
+  for (const file of files) {
+    const sf = source(file);
+    // What is printed: `x.appSlug` itself. `label ?? x.appSlug` prints the label
+    // and falls back to the address only for an app the label map does not
+    // have (a deleted one) — that is the label rule, and it is not reported.
+    const printsAddress = (e: ts.Expression) => ts.isPropertyAccessExpression(e) && e.name.text === "appSlug";
+    const visit = (n: ts.Node) => {
+      const child = ts.isJsxExpression(n) && n.expression && !ts.isJsxAttribute(n.parent) && printsAddress(n.expression);
+      const template = ts.isTemplateExpression(n) && n.templateSpans.some((s) => printsAddress(s.expression));
+      if (child || template) {
+        const prev = ts.isJsxExpression(n) && ts.isJsxElement(n.parent) ? n.parent.children[n.parent.children.indexOf(n as never) - 1] : undefined;
+        const lead = prev && ts.isJsxText(prev) ? prev.getText(sf).trim() : "";
+        out.push({
+          file,
+          line: sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1,
+          text: n.getText(sf).replace(/\s+/g, " ").slice(0, 100),
+          context: `${lead} ${n.getText(sf)}`.trim(),
+        });
+      }
+      n.forEachChild(visit);
+    };
+    visit(sf);
+  }
+  return out;
 }
 
 function walk(dir: string): string[] {

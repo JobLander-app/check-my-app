@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { appLabel } from "@/lib/app-label";
 import { requireUser } from "@/lib/auth";
 import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
@@ -21,7 +22,7 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
   const { user, db, team } = await requireUser();
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
+    select: { id: true, name: true, appSlug: true, targetUrl: true, targetKind: true },
   });
   if (!app) {
     const elsewhere = await db.app.findFirst({
@@ -40,7 +41,7 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
-      <Link href={appPath.page(app.id)} className="text-[13px] text-fg-muted hover:text-accent">← {app.appSlug}</Link>
+      <Link href={appPath.page(app.id)} className="text-[13px] text-fg-muted hover:text-accent">← {appLabel(app)}</Link>
       <h1 className="mt-3 text-2xl font-semibold">{SIGN_IN_COPY.title(store)}</h1>
       <p className="mt-2 max-w-2xl text-sm text-fg-muted">{SIGN_IN_COPY.intro}</p>
       {token ? (
