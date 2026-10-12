@@ -146,7 +146,8 @@ function walk(dir: string): string[] {
 const IMPLEMENTATION = walk(path.join(repoRoot, "src")).map((f) => stripComments(readFileSync(f, "utf8")));
 
 // What the "Tools you connect" sentence was written against.
-const TRACKER_COLUMNS = ["id", "app", "appId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "teamId", "externalOrg", "createdAt", "updatedAt"];
+// externalUrl (CHE-438) is the Jira site's address: "the site … you chose".
+const TRACKER_COLUMNS = ["id", "app", "appId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "teamId", "externalOrg", "externalUrl", "createdAt", "updatedAt"];
 const ISSUE_LINK_COLUMNS = ["id", "app", "appId", "dedupKey", "externalIssueId", "status", "defectClass", "findingId", "occurrences", "escalatedAt", "firstSeenRunId", "lastSeenAt", "createdAt", "updatedAt"];
 
 // ── self-tests: each checker catches the defect it exists for ───────────────
