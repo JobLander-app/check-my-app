@@ -31,4 +31,20 @@ export interface Tracker {
   createIssue(draft: TicketDraft): Promise<CreatedIssue>;
   addComment(issueId: string, body: string): Promise<void>;
   getIssueOutcome(issueId: string): Promise<IssueOutcome>;
+  // CHE-441: the latest comment on the ticket that starts with "Answer:", its
+  // text after the prefix, or null. How whoever settled a pilot report says, in
+  // words its author will read, what was found. Optional: only our own board's
+  // tracker needs it.
+  latestAnswer?(issueId: string): Promise<string | null>;
+}
+
+export const ANSWER_PREFIX = /^\s*answer:\s*/i;
+
+/** The text of the newest comment that starts with "Answer:", or null. */
+export function answerFrom(comments: { body: string; createdAt: string }[]): string | null {
+  const answers = comments
+    .filter((c) => ANSWER_PREFIX.test(c.body))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const text = answers[0]?.body.replace(ANSWER_PREFIX, "").trim();
+  return text ? text : null;
 }

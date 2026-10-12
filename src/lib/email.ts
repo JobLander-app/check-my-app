@@ -435,3 +435,72 @@ export async function sendTeamInvite({
     return null;
   }
 }
+
+export interface FeedbackAnswerArgs {
+  to: string;
+  appSlug: string;
+  // The author's own words, quoted back so they know which report this is.
+  theirWords: string;
+  outcome: "fixed" | "wont_fix";
+  // What we found, when the check was right. Required for wont_fix.
+  answer?: string | null;
+  // Where to look: the verdict the report was about, or the app.
+  url: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  idempotencyKey?: string;
+}
+
+// The words of a feedback answer, shared by the mail and its guard (CHE-441).
+export function feedbackAnswerCopy(a: Pick<FeedbackAnswerArgs, "appSlug" | "outcome" | "answer">): { subject: string; lead: string; detail: string } {
+  if (a.outcome === "fixed") {
+    return {
+      subject: `Fixed: what you reported on ${a.appSlug}`,
+      lead: `You told us the check of ${a.appSlug} got something wrong. We fixed it.`,
+      detail: "The next check of the app runs with the fix.",
+    };
+  }
+  return {
+    subject: `About what you reported on ${a.appSlug}`,
+    lead: `You told us the check of ${a.appSlug} got something wrong. We looked into it, and this time the check was right.`,
+    detail: a.answer ?? "",
+  };
+}
+
+// CHE-441: one mail to the person who reported a mistake of the check, when it
+// is settled — fixed, or the check was right and here is what we found. The
+// idempotency key is the row's, so a retried tick never mails twice.
+export async function sendFeedbackAnswer(args: FeedbackAnswerArgs): Promise<void> {
+  const copy = feedbackAnswerCopy(args);
+  if (!args.apiKey || !args.from) {
+    console.log(`[email:dev] to=${args.to} subject="${copy.subject}" url=${args.url}`);
+    return;
+  }
+  const quote = args.theirWords.replace(/\s+/g, " ").trim().slice(0, 500);
+  const why = "You get this because you reported this on CheckMyApp. Nothing else will follow about it.";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+      ...(args.idempotencyKey ? { "Idempotency-Key": args.idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from: args.from,
+      to: [args.to],
+      subject: copy.subject,
+      ...replyToField(args.replyTo),
+      html: htmlDocument(
+        copy.subject,
+        `<p>${escapeHtml(copy.lead)}</p>` +
+          `<blockquote style="margin:12px 0;padding-left:12px;border-left:3px solid #ddd;color:#444">${escapeHtml(quote)}</blockquote>` +
+          (copy.detail ? `<p>${escapeHtml(copy.detail)}</p>` : "") +
+          `<p><a href="${escapeHtml(args.url)}">Open it on CheckMyApp</a></p><p>— CheckMyApp</p>`,
+        escapeHtml(why),
+      ),
+      text: `${copy.lead}\n\n> ${quote}\n\n${copy.detail ? `${copy.detail}\n\n` : ""}Open it on CheckMyApp: ${args.url}\n\n— CheckMyApp\n\n${why}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, args.idempotencyKey);
+}

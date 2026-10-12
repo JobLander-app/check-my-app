@@ -1,4 +1,4 @@
-import type { Tracker, TicketDraft, CreatedIssue, IssueOutcome } from "./types";
+import { answerFrom, type Tracker, type TicketDraft, type CreatedIssue, type IssueOutcome } from "./types";
 import { linearAuthHeader } from "./linear-auth";
 
 // Linear adapter over the GraphQL API (CHE-31). Multi-tenant SaaS auth = OAuth2
@@ -130,6 +130,14 @@ export class LinearTracker implements Tracker {
     if (type === "completed") return "done";
     if (type === "canceled") return "canceled";
     return "open";
+  }
+
+  async latestAnswer(issueId: string): Promise<string | null> {
+    const data = await this.gql<{ issue: { comments: { nodes: { body: string; createdAt: string }[] } } | null }>(
+      `query($id:String!){ issue(id:$id){ comments(first: 100){ nodes { body createdAt } } } }`,
+      { id: issueId },
+    );
+    return data.issue ? answerFrom(data.issue.comments.nodes) : null;
   }
 
   async addComment(issueId: string, body: string): Promise<void> {

@@ -1474,6 +1474,12 @@ model Feedback {
   // tick that died, and the row is filed again.
   claimedAt       DateTime?
   issueIdentifier String?
+  // CHE-441: what we found, in plain words, when the check turned out to be
+  // right ("wont_fix") — read from the ticket's "Answer:" comment — and when
+  // the author was told the outcome. Null answeredAt on a settled row means
+  // the mail is still owed, and the next tick sends it.
+  answer          String?
+  answeredAt      DateTime?
   createdAt       DateTime @default(now())
 
   @@index([teamId, appId])
