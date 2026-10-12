@@ -260,7 +260,14 @@ export function makeLlm(env: AgentBindings, byokOpenRouterKey?: string): LlmConf
   const effectiveEnv: AgentBindings = byok
     ? { ...env, OPENROUTER_API_KEY: byokOpenRouterKey, ANTHROPIC_API_KEY: "" }
     : env;
-  const viaKey = (model: string) => (byok && !model.includes("/") ? (openRouterTwin(model) ?? model) : model);
+  // A direct id with no OpenRouter twin has no road on the team's key: the run
+  // stops here, with our reason, rather than call a provider with no key.
+  const viaKey = (model: string) => {
+    if (!byok || model.includes("/")) return model;
+    const twin = openRouterTwin(model);
+    if (!twin) throw new Error(`BYOK run: model ${model} has no OpenRouter route, so it cannot run on the team's key`);
+    return twin;
+  };
   const navModel = viaKey(effectiveEnv.ANTHROPIC_NAV_MODEL ?? warnFallback("ANTHROPIC_NAV_MODEL", RECOMMENDED_TIER.navModel));
   const synthModel = viaKey(
     effectiveEnv.ANTHROPIC_SYNTH_MODEL ?? warnFallback("ANTHROPIC_SYNTH_MODEL", RECOMMENDED_TIER.synthModel),
