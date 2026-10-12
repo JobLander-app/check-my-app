@@ -19,6 +19,28 @@ export function proxyState(status) {
   return status === 402 || status === 407 ? "proxy" : null;
 }
 
+/**
+ * Pure: what the owner is told for each proxy answer. Not a sign-in either way
+ * — the session may be fine. 402 is traffic to buy; 407 is the proxy refusing
+ * our login, which no top-up fixes (Codex on #330: one text for both sent the
+ * owner to pay when the credentials were the problem).
+ */
+export function proxyMessage(status, at) {
+  const tail = "Входить в Shopify заново не нужно. Пока прокси стоит, проверки Shopify-аппов падают как наш сбой и ничего не публикуют.";
+  if (status === 407) {
+    return (
+      `Резидентный прокси session host (IPRoyal) отклоняет наш логин (${at}): ответ 407.\n` +
+      `Деньги ни при чём: учётные данные в секрете session-host-proxy (Secret Manager) не совпадают с IPRoyal — их нужно обновить и перезапустить session-proxy.\n` +
+      tail
+    );
+  }
+  return (
+    `Резидентный прокси session host (IPRoyal) не пропускает трафик (${at}): ответ 402 — кончился оплаченный трафик.\n` +
+    `Нужно пополнить IPRoyal: https://dashboard.iproyal.com/\n` +
+    tail
+  );
+}
+
 // Whatever the page settles on first: the embedded app's frame (signed in), a
 // sign-in field, a captcha, or a one-time-code field.
 //

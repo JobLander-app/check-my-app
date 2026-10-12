@@ -22,7 +22,7 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { request } from "node:http";
 import { chromium } from "playwright-core";
-import { observe, parseLog, proxyState, shouldNotify } from "./classify.mjs";
+import { observe, parseLog, proxyMessage, proxyState, shouldNotify } from "./classify.mjs";
 
 const CDP = process.env.PROBE_CDP ?? "http://127.0.0.1:9222";
 const LOG = process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl";
@@ -86,14 +86,14 @@ function proxyStatus() {
 // checkmyapp.dev (PROBE_SIGN_IN_URL), the form is already open and fresh
 // (door.mjs), a passkey request fails at once instead of opening a window
 // (viewer.mjs), and paste is the person's own browser's.
-async function notifyOwner(state, at) {
+async function notifyOwner(state, at, proxyStatus) {
   let token;
   try {
     token = await botToken();
   } catch (error) {
     return `token: ${error.message}`;
   }
-  const text = state === "proxy" ? proxyText(at) :
+  const text = state === "proxy" ? proxyMessage(proxyStatus, at) :
     `Сессия Shopify admin на session host закончилась: ${REASON[state] ?? state} (${at}).\n` +
     `Нужно войти заново (vladislav@otp.plus): ${SESSION_URL}\n` +
     `Форма входа откроется сама, пароль вставляется как обычно (Cmd+V).\n` +
@@ -108,15 +108,6 @@ async function notifyOwner(state, at) {
   } catch {
     return "telegram unreachable";
   }
-}
-
-// Not a sign-in: the session may be fine. What is needed is traffic.
-function proxyText(at) {
-  return (
-    `Резидентный прокси session host (IPRoyal) не пропускает трафик (${at}): ответ 402 — кончился оплаченный трафик.\n` +
-    `Входить в Shopify заново не нужно. Нужно пополнить IPRoyal: https://dashboard.iproyal.com/\n` +
-    `Пока прокси стоит, проверки Shopify-аппов падают как наш сбой и ничего не публикуют.`
-  );
 }
 
 async function main() {
@@ -148,7 +139,7 @@ async function main() {
 
   const history = parseLog(await readFile(LOG, "utf8").catch(() => ""));
   if (shouldNotify(history, line.state)) {
-    const failure = await notifyOwner(line.state, at);
+    const failure = await notifyOwner(line.state, at, line.proxy_status);
     line.notified = failure === null;
     if (failure) line.notify_error = failure;
   }

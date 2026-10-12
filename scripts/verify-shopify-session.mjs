@@ -5,7 +5,7 @@
 // Pure rules from spikes/shopify-session; no browser, no network, no env.
 
 import assert from "node:assert/strict";
-import { STATES, classify, parseLog, proxyState, shouldNotify } from "../spikes/shopify-session/classify.mjs";
+import { STATES, classify, parseLog, proxyMessage, proxyState, shouldNotify } from "../spikes/shopify-session/classify.mjs";
 import { cookiesForAdmin, tunnelledWsEndpoint } from "../spikes/shopify-session/portability.mjs";
 
 let failures = 0;
@@ -100,6 +100,15 @@ check("a sign-in drop after the proxy was told is still its own message", () => 
   assert.equal(shouldNotify([L("ok"), L("proxy", { notified: true }), L("login_page", { notified: true })], "login_page"), false);
 });
 check("the proxy is a state the log names", () => assert.ok(STATES.includes("proxy")));
+check("402 tells the owner to top up; 407 says the credentials are refused, and not to pay", () => {
+  const paid = proxyMessage(402, "t");
+  const login = proxyMessage(407, "t");
+  assert.match(paid, /402/);
+  assert.match(paid, /пополнить IPRoyal/);
+  assert.match(login, /407/);
+  assert.match(login, /session-host-proxy/);
+  assert.doesNotMatch(login, /пополнить|кончился оплаченный трафик/);
+});
 
 check("a torn last line does not stop the log from being read", () => {
   const lines = parseLog('{"state":"ok"}\n{"state":"login_page","notified":true}\n{"state":"cap');
