@@ -48,6 +48,36 @@ If the ticket cannot be done as written — it contradicts the rules, needs a
 credential, money or a decision only the owner can make — change nothing and
 end with `MENDER_BLOCKED: <the one thing that is needed>`.
 
+Never change a ticket's state yourself; the script does.
+
+## Screens and emails
+
+You may change them. The pull request is labelled `ui` by the script, and the
+reviewer shows the owner the before/after before it is merged. In your report,
+list every screen or email that looks different and how.
+
+## Too big for one pull request
+
+Split the ticket instead of starting it when it holds more than one
+independent change, or when the prompt says a previous attempt reached the cap.
+With the Linear tools, create one sub-issue per change: parent = this ticket,
+label `mender`, team "Check My App", each with its own "Done when". Change no
+code, list the sub-issues, and end with `MENDER_SPLIT`.
+
+## "[Pilot feedback]" tickets
+
+A member of a pilot team marked where a check went wrong. The ticket carries
+their words and the verdict link; read the verdict page (webfetch, it is
+public) and the code that produced the part they point at.
+
+- The check was wrong → fix the checker like any ticket. When the pull request
+  is merged the ticket closes as Done and the member is told it is fixed. If an
+  open ticket already covers the same cause, link it as related and fix it here.
+- The check was right → change nothing. End with one line
+  `Answer: <what the check saw and why it holds, in words the member reads>`
+  under `CLAUDE.md` §1, then `MENDER_ANSWERED`. The member receives that line.
+- You cannot tell without our run data → `MENDER_BLOCKED: <what you need>`.
+
 ## Review rounds
 
 When you are run again on the same branch, the prompt carries the review
