@@ -115,7 +115,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "POST /api/integrations/github": { kind: "team", action: "integration.connect" },
   "DELETE /api/integrations/github": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/start": { kind: "team", action: "integration.connect" },
+  "GET /api/integrations/jira/start": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/callback": { kind: "team", action: "integration.connect" },
+  "GET /api/integrations/jira/callback": { kind: "team", action: "integration.connect" },
   // CHE-369: installing the GitHub App lets the team's deploys start checks
   // the team pays for — the same gate as a tracker.
   "GET /api/integrations/github/app/start": { kind: "team", action: "integration.connect" },

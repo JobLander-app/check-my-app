@@ -9,6 +9,12 @@ const NOTICES: Record<string, { text: string; ok: boolean }> = {
   linear_connected: { text: "Linear is connected — problems found on this app go to its board.", ok: true },
   linear_unconfigured: { text: "Linear isn't connected yet — the integration is being set up.", ok: false },
   linear_failed: { text: "Couldn't connect Linear — please try again.", ok: false },
+  // CHE-438: Jira.
+  jira_connected: { text: "Jira is connected — problems found on this app go to its project.", ok: true },
+  jira_unconfigured: { text: "Jira isn't available yet — the integration is being set up.", ok: false },
+  jira_no_site: { text: "Jira connected, but the account reaches no Jira site we can file into — nothing was saved.", ok: false },
+  jira_no_project: { text: "Jira connected, but the site has no project to file into — create one and connect again.", ok: false },
+  jira_failed: { text: "Couldn't connect Jira — please try again.", ok: false },
   posthog_connected: { text: "PostHog is connected — we can read your funnels, and only read them.", ok: true },
   posthog_declined: { text: "PostHog wasn't connected — the request was declined on PostHog's screen.", ok: false },
   posthog_unavailable: { text: "PostHog couldn't be reached just now — please try again in a minute.", ok: false },

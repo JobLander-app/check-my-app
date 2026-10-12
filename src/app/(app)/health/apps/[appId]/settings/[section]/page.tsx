@@ -428,8 +428,12 @@ type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; track
 // per integration, each with its state and its own action.
 async function Integrations({ app, teamId, plan, scope, githubError, save }: { app: AppWithIntegrations; teamId: string; plan: UserPlan; scope: TeamScope; githubError: string | undefined; save: Save }) {
   const { db } = await requireUser();
-  const tracker = app.tracker;
+  // CHE-438: an app files into one tracker — Linear or Jira. Each card reads
+  // only its own kind; connecting one replaces the other.
+  const jira = app.tracker?.type === "jira" ? app.tracker : null;
+  const tracker = app.tracker && app.tracker.type !== "jira" ? app.tracker : null;
   const health = trackerHealth(tracker, new Date());
+  const jiraHealth = trackerHealth(jira, new Date());
   const env = getCloudflareContext().env as Record<string, string | undefined>;
   // Which of the workspace's teams the tickets land in. Best-effort — a
   // transient Linear error hides the picker and shows the stored name.
@@ -518,6 +522,34 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
             </Button>
           </form>
         )}
+      </div>
+
+      {/* Jira — the same job as Linear, for a team whose tracker is Jira (CHE-438). */}
+      <div className="card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-fg">
+              Jira <span className="text-xs font-normal text-fg-faint">· issue tracker</span>
+            </p>
+            {jira && jiraHealth ? (
+              <p className={`text-xs ${jiraHealth.tone === "ok" ? "text-status-ok" : jiraHealth.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
+                {jiraHealth.tone === "ok" ? "✓" : "⚠"} {jiraHealth.text}
+                {jira.teamId && ` · project ${jira.teamId}`}
+                {jira.externalUrl && ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}`}
+              </p>
+            ) : (
+              <p className="text-xs text-fg-faint">
+                Not connected.{tracker ? " Connecting Jira moves this app's tickets from Linear to Jira." : ""}
+              </p>
+            )}
+          </div>
+          <a
+            href={`/api/integrations/jira/start?appId=${app.id}`}
+            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
+          >
+            {jira ? "Reconnect →" : "Connect →"}
+          </a>
+        </div>
       </div>
 
       {/* PostHog — which project holds this app's data (CHE-237). */}
