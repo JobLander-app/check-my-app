@@ -20,14 +20,17 @@
 //   PROBE_LOG   JSONL log              default /var/lib/session-host/probe.jsonl
 
 import { appendFile, readFile } from "node:fs/promises";
+import { request } from "node:http";
 import { chromium } from "playwright-core";
-import { observe, parseLog, shouldNotify } from "./classify.mjs";
+import { observe, parseLog, proxyMessage, proxyState, shouldNotify } from "./classify.mjs";
 
 const CDP = process.env.PROBE_CDP ?? "http://127.0.0.1:9222";
 const LOG = process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl";
 const OWNER_CHAT = "101333337";
 const SECRET = "checkmyapp-telegram-bot-token";
 const SESSION_URL = process.env.PROBE_SIGN_IN_URL ?? "https://session.checkmyapp.dev";
+// The local forward proxy Chrome goes out through (tinyproxy → IPRoyal).
+const PROXY = process.env.PROBE_PROXY ?? "http://127.0.0.1:3128";
 
 const METADATA = "http://metadata.google.internal/computeMetadata/v1";
 
@@ -56,6 +59,25 @@ const REASON = {
   error: "проба второй час подряд не может открыть админку",
 };
 
+// CHE-453: ask the proxy itself, over plain HTTP, whether it carries anything.
+// A forward-proxy GET of an http:// address: the proxy's own status comes back
+// (402 when IPRoyal's traffic is used up), not a tunnel failure with no reason.
+function proxyStatus() {
+  return new Promise((resolve) => {
+    const proxy = new URL(PROXY);
+    const req = request(
+      { host: proxy.hostname, port: Number(proxy.port), method: "GET", path: "http://example.com/", headers: { host: "example.com" }, timeout: 20_000 },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? null);
+      },
+    );
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+}
+
 // Returns an error description, or null when the message went out. The
 // description never contains the request URL — it carries the bot token.
 //
@@ -64,14 +86,14 @@ const REASON = {
 // checkmyapp.dev (PROBE_SIGN_IN_URL), the form is already open and fresh
 // (door.mjs), a passkey request fails at once instead of opening a window
 // (viewer.mjs), and paste is the person's own browser's.
-async function notifyOwner(state, at) {
+async function notifyOwner(state, at, proxyStatus) {
   let token;
   try {
     token = await botToken();
   } catch (error) {
     return `token: ${error.message}`;
   }
-  const text =
+  const text = state === "proxy" ? proxyMessage(proxyStatus, at) :
     `Сессия Shopify admin на session host закончилась: ${REASON[state] ?? state} (${at}).\n` +
     `Нужно войти заново (vladislav@otp.plus): ${SESSION_URL}\n` +
     `Форма входа откроется сама, пароль вставляется как обычно (Cmd+V).\n` +
@@ -104,14 +126,20 @@ async function main() {
   } finally {
     await page?.close().catch(() => {});
   }
+  // An error may be the proxy, not the session: ask it before naming a cause.
+  if (result.state === "error") {
+    const status = await proxyStatus();
+    if (proxyState(status)) result = { ...result, state: "proxy", proxy_status: status };
+  }
 
   const line = { at, state: result.state, url_host: result.url_host, url_path: result.url_path, ms: Date.now() - started };
   if (result.challenge) line.challenge = result.challenge;
   if (result.detail) line.detail = result.detail;
+  if (result.proxy_status) line.proxy_status = result.proxy_status;
 
   const history = parseLog(await readFile(LOG, "utf8").catch(() => ""));
   if (shouldNotify(history, line.state)) {
-    const failure = await notifyOwner(line.state, at);
+    const failure = await notifyOwner(line.state, at, line.proxy_status);
     line.notified = failure === null;
     if (failure) line.notify_error = failure;
   }
