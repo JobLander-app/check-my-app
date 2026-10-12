@@ -41,6 +41,8 @@ import { explainRunPrice } from "@/lib/check-price";
 import { appPriceRange, teamBalance } from "@/lib/plans";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
+import { FINDING_MARKS } from "@/lib/validation";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
@@ -294,6 +296,14 @@ export const toolSchemas = {
           "scenario_wrong: it is really a different scenario (scenarios only) · other",
       ),
     text: z.string().min(1).max(FEEDBACK_TEXT_MAX).describe("What really happened, or what the check should have done"),
+  },
+  // CHE-444: what the team decided about a finding, as the verdict page's buttons do.
+  mark_finding: {
+    run_id: runId,
+    finding: z.number().int().positive().describe("The finding's number, e.g. 3 for #003"),
+    mark: z
+      .enum(FINDING_MARKS)
+      .describe("known: fine as it is, not reported again · watch: check it first next time · fixed · false_positive: not a bug · none: clear the mark"),
   },
   list_check_mistakes: {
     app_id: z.string().min(1).optional().describe("Every report on any check or scenario of this app"),
@@ -1046,6 +1056,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       return text({ ok: true, report_id: result.id, about: result.kind, status: STATUS_LABEL.open });
     },
 
+    async mark_finding(args: { run_id: string; finding: number; mark: (typeof FINDING_MARKS)[number] }): Promise<ToolResult> {
+      const denied = deny("finding.mark");
+      if (denied) return denied;
+      const run = await db.run.findFirst({
+        where: { ...teamOwned(team.id), publicId: args.run_id },
+        select: { id: true, appId: true, teamId: true, appSlug: true },
+      });
+      if (!run) return runNotFound();
+      const finding = await db.finding.findFirst({ where: { runId: run.id, number: args.finding }, select: { id: true } });
+      if (!finding) return fail("not_found", `Check ${args.run_id} has no finding #${String(args.finding).padStart(3, "0")}.`, HINTS.not_found);
+      await db.finding.update({ where: { id: finding.id }, data: { mark: args.mark } });
+      // The same follow-up as the verdict page's buttons: Issues counts what is open.
+      await recountOpenIssuesOfRun(db, run);
+      return text({ ok: true, run_id: args.run_id, finding: args.finding, mark: args.mark });
+    },
+
     async list_check_mistakes(args: { app_id?: string; scenario_id?: string; run_id?: string }): Promise<ToolResult> {
       const denied = deny("read");
       if (denied) return denied;
@@ -1265,6 +1291,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(scenario_wrong), or another mistake of the check (other). Name it by run_id — optionally with a finding number, " +
     "or a journey position and step position as get_review lists them — or by scenario_id from get_review. The words " +
     "go to the CheckMyApp team as they are; list_check_mistakes shows what happened to each.",
+  mark_finding:
+    "Record what the team decided about a finding, as the verdict page's buttons do: known (fine as it is — not " +
+    "reported again), watch (checked first next time), fixed, false_positive (not a bug), or none to clear it. " +
+    "Name it by run_id and the finding's number.",
   list_check_mistakes:
     "Every reported mistake of the check on an app, a scenario or a check — who reported it, what, and its status " +
     "(received, with the CheckMyApp team, being fixed, fixed, not a mistake of the check).",
@@ -1349,6 +1379,9 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       "list_check_mistakes",
       { description: DESCRIPTIONS.list_check_mistakes, inputSchema: toolSchemas.list_check_mistakes },
       (a) => tools.list_check_mistakes(a),
+    );
+    server.registerTool("mark_finding", { description: DESCRIPTIONS.mark_finding, inputSchema: toolSchemas.mark_finding }, (a) =>
+      tools.mark_finding(a),
     );
     server.registerTool("list_scenarios", { description: DESCRIPTIONS.list_scenarios, inputSchema: toolSchemas.list_scenarios }, (a) =>
       tools.list_scenarios(a),
