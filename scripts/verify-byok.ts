@@ -210,7 +210,7 @@ async function main() {
   assert.equal(usage.length, 1, "the page renders the section once");
   assert.equal(usage[0].guard, "showModelKey", "…only when the team has the shopify feature");
   assert.ok(callsIn("src/app/(app)/settings/team/page.tsx", "TeamPage").some((c) => c.callee === "teamHasFeature" && c.args[2] === '"shopify"'), "…which is the shopify flag");
-  assert.deepEqual(usage[0].props, { stored: "storedKey", mayManage: 'can(scope, "billing.manage")' }, "the browser gets the stored key's view and the server's own answer to who may change it");
+  assert.deepEqual(usage[0].props, { stored: "storedKey", mayManage: 'can(scope, "billing.manage")', noCredit: "byokPaused(keyRow)" }, "the browser gets the stored key's view, the server's own answer to who may change it, and whether the key can pay (CHE-458)");
   const component = read("src/components/team-model-key.tsx");
   assert.ok(!/openrouterKeyEnc|decryptSecret|@\/lib\/crypto/.test(component), "the client component never touches the stored key");
 

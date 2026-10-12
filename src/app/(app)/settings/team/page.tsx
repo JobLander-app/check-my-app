@@ -160,9 +160,7 @@ export default async function TeamPage() {
         {mayManage && <p className="mt-4 text-xs text-fg-muted">{REMOVAL_KEEPS_EVERYTHING}</p>}
       </section>
 
-      {showModelKey && (
-        <TeamModelKey stored={storedKey} mayManage={can(scope, "billing.manage")} noCredit={byokPaused(keyRow)} />
-      )}
+      {showModelKey && <TeamModelKey stored={storedKey} mayManage={can(scope, "billing.manage")} noCredit={byokPaused(keyRow)} />}
 
       {mayInvite && (
         <section className="card mt-6 p-6">
