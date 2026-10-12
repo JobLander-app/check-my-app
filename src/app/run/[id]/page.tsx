@@ -7,6 +7,7 @@ import { appLabel, isShopifyApp } from "@/lib/app-label";
 import { failedRunWasFree } from "@/lib/failed-run";
 import { canMutateOwned, getOptionalUser } from "@/lib/auth";
 import { can, type TeamScope } from "@/lib/scopes";
+import { unstoppableReason } from "@/lib/run-cancel";
 import { paidRetryOwed } from "@/lib/recheck";
 import { publicRow } from "@/lib/tenant-db";
 
@@ -15,9 +16,13 @@ export const dynamic = "force-dynamic";
 const STOPPED_CARD = "It was stopped before it finished. Nothing was published, and it costs nothing.";
 
 // CHE-454: Stop is offered to whoever the server would let stop it — a member
-// or an admin of the run's own team.
-async function mayStopRun(db: Awaited<ReturnType<typeof getDbFromContext>>, teamId: string | null): Promise<boolean> {
-  if (!teamId) return false;
+// or an admin of the run's own team — on a check that can be stopped at all.
+async function mayStopRun(
+  db: Awaited<ReturnType<typeof getDbFromContext>>,
+  run: { teamId: string | null; targetKind: string; app: { writeMode: string } | null },
+): Promise<boolean> {
+  const teamId = run.teamId;
+  if (!teamId || unstoppableReason(run)) return false;
   const user = await getOptionalUser(db);
   if (!user) return false;
   const member = await db.membership.findFirst({ where: { teamId, userId: user.id }, select: { scope: true } });
@@ -52,7 +57,7 @@ export default async function RunPage({
       paidCheckoutSessionId: true,
       testEmail: true,
       // CHE-457: what the team calls the app, when the check is of a saved one.
-      app: { select: { name: true } },
+      app: { select: { name: true, writeMode: true } },
     },
   });
   if (!run) notFound();
@@ -109,7 +114,7 @@ export default async function RunPage({
         runNumber={run.runNumber}
         startedAt={run.startedAt.toISOString()}
         notifyEmail={run.notifyEmail}
-        mayStop={await mayStopRun(prisma, run.teamId)}
+        mayStop={await mayStopRun(prisma, run)}
       />
     </main>
   );

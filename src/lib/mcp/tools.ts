@@ -1344,7 +1344,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   cancel_check:
     "Stop a check that is still running — started by mistake, on the wrong store or app, or no longer needed. It stops " +
     "at once, publishes nothing and costs nothing; its status becomes canceled. A check that has finished cannot be " +
-    "stopped. Needs a key that can start checks (member or admin).",
+    "stopped, nor can an extension check or one allowed to create test records — they clean up at their own end. " +
+    "Needs a key that can start checks (member or admin).",
   wait_for_run:
     "Wait for a run to finish, then return its verdict (bottom line, findings by severity, verdict URL) and its " +
     "price with the work it paid for (price_usd, journeys_walked, steps_walked, price_explanation). Each call " +

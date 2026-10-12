@@ -14,6 +14,7 @@ import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
 import { releaseCanceledLeases } from "./canceled-leases";
+import { settleCanceledPrices } from "@/lib/run-cancel";
 import { dispatchMender } from "./mender-dispatch";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
@@ -123,6 +124,14 @@ export async function runDueWatches(
     if (released.length) console.log(`[session] released ${released.length} stopped check(s)`);
   } catch (err) {
     console.warn(`[session] release of stopped checks failed: ${err instanceof Error ? err.message : err}`);
+  }
+  // …and a stopped check whose price is not yet 0 is zeroed here, its bought
+  // balance returned, whatever happened to the stop's own request.
+  try {
+    const settled = await settleCanceledPrices(env.db);
+    if (settled.length) console.log(`[cancel] zeroed ${settled.length} stopped check(s)`);
+  } catch (err) {
+    console.warn(`[cancel] settling stopped checks failed: ${err instanceof Error ? err.message : err}`);
   }
 
   // CHE-423: a run whose hand-off to the workflow threw is still `queued` with

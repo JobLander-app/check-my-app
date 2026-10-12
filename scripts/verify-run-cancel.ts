@@ -19,7 +19,7 @@ import "./fixtures/wasm-module-loader.mjs";
 import ts from "typescript";
 import { realD1 } from "./fixtures/real-d1";
 import { calls, jsx, properties, source } from "./fixtures/ts-source";
-import { cancelRun, stoppedLine } from "../src/lib/run-cancel";
+import { cancelRun, settleCanceledPrices, stoppedLine } from "../src/lib/run-cancel";
 import { releaseCanceledLeases } from "../src/agent/canceled-leases";
 import { SESSION_LEASE_SECONDS } from "../src/agent/session-browser";
 import type { AgentEnv } from "../src/agent/env";
@@ -108,6 +108,25 @@ async function main() {
     await db.finding.create({ data: { id: "f1", runId: "r1", number: 1, title: "Half-written", category: "broken", severity: "high", detail: "{}" } as never });
     const read = await loadVerdict(db, "p_r1");
     eq("a stopped check publishes nothing it wrote before the stop", [extensionReportPublished({ targetKind: "website", status: "canceled", verdict: null }), read?.journeys.length, read?.findings.length], [false, 0, 0]);
+
+    // Checks that clean up after themselves at their end run to it (Codex on #329).
+    await db.app.create({ data: { id: "app_w", teamId: "ta", ownerId: "ann", appSlug: "w.test", targetUrl: "https://w.test/", writeMode: "create_cleanup" } as never });
+    await run("x1", 31, "ta", "walking", { targetKind: "extension" });
+    await run("x2", 32, "ta", "walking", { appId: "app_w" });
+    const ext = await cancelRun(db, member, "p_x1", terminate, now);
+    const writes = await cancelRun(db, member, "p_x2", terminate, now);
+    eq("an extension check and a check that may create records are not stopped midway, and say why",
+      [ext.ok, writes.ok, (await db.run.findUnique({ where: { id: "x1" } }))?.status, (await db.run.findUnique({ where: { id: "x2" } }))?.status, terminated.includes("x1") || terminated.includes("x2")],
+      [false, false, "walking", "walking", false]);
+    check("…in a sentence each", !ext.ok && /extension/.test(ext.error) && !writes.ok && /test records/.test(writes.error));
+
+    // The refund does not hang on the stop's own request.
+    await db.run.update({ where: { id: "r4" }, data: { priceUsd: 0.9, priceFromTopupUsd: 0.9 } });
+    await db.team.update({ where: { id: "ta" }, data: { topupUsd: 9.1 } });
+    const settled = await settleCanceledPrices(db);
+    const r4b = await db.run.findUnique({ where: { id: "r4" } });
+    eq("the tick zeroes a stopped check still priced, and the bought balance goes back", [settled.includes("r4"), r4b?.priceUsd, (await db.team.findUnique({ where: { id: "ta" } }))?.topupUsd], [true, 0, 10]);
+    eq("…and has nothing to do the next time", await settleCanceledPrices(db), []);
 
     // 3. The session host.
     const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);

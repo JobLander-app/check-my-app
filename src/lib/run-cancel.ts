@@ -13,7 +13,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { can, type TeamScope } from "@/lib/scopes";
-import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { alreadyScoped, systemWide, teamOwned } from "@/lib/tenant-db";
 import { clearedCredentials } from "@/lib/test-accounts";
 import { priceRun, voidRunPrice } from "@/agent/pricing";
 
@@ -40,6 +40,17 @@ export type CancelResult =
   | { ok: true; runId: string; publicId: string; was: string }
   | { ok: false; code: "forbidden" | "not_found" | "invalid_input"; error: string };
 
+/** Why a check cannot be stopped midway, or null when it can. */
+export function unstoppableReason(run: { targetKind: string; app: { writeMode: string } | null }): string | null {
+  if (run.targetKind === "extension") {
+    return "An extension check cannot be stopped midway: it holds a browser session that only its own end releases. It finishes on its own.";
+  }
+  if (run.app?.writeMode === "create_cleanup") {
+    return "This check may create test records and removes them at its end, so it cannot be stopped midway. It finishes on its own.";
+  }
+  return null;
+}
+
 export async function cancelRun(
   db: PrismaClient,
   actor: CancelActor,
@@ -52,12 +63,20 @@ export async function cancelRun(
   }
   const run = await db.run.findFirst({
     where: { ...teamOwned(actor.teamId), publicId },
-    select: { id: true, status: true, events: true, watchId: true, testAccounts: true },
+    select: { id: true, status: true, events: true, watchId: true, testAccounts: true, targetKind: true, app: { select: { writeMode: true } } },
   });
   if (!run) return { ok: false, code: "not_found", error: "Check not found in this team." };
   if (!(IN_FLIGHT as readonly string[]).includes(run.status)) {
     return { ok: false, code: "invalid_input", error: `This check has already finished (${run.status}); there is nothing to stop.` };
   }
+  // Two kinds of check clean up after themselves at their own end, and that end
+  // is what a stop would cut off (Codex on #329): an extension check holds a
+  // paid browser session only its own disposal releases, and a check allowed to
+  // create records deletes them and audits what it made last. Stopped midway,
+  // either would leave something behind in the customer's account. Until their
+  // cleanup can run on a stop, they run to their end — said, not silently.
+  const unstoppable = unstoppableReason(run);
+  if (unstoppable) return { ok: false, code: "invalid_input", error: unstoppable };
   let events: unknown[] = [];
   try {
     const parsed: unknown = JSON.parse(run.events ?? "[]");
@@ -85,10 +104,40 @@ export async function cancelRun(
   if (moved.count !== 1) {
     return { ok: false, code: "invalid_input", error: "This check finished just now; there is nothing to stop." };
   }
-  // $0, and any bought balance a price had taken goes back. Never fatal.
-  await priceRun(db, run.id)
-    .then(() => voidRunPrice(db, run.id))
-    .catch((e) => console.warn(`[cancel] zeroing ${run.id} did not happen: ${e instanceof Error ? e.message : String(e)}`));
+  // $0, and any bought balance a price had taken goes back. If it fails here,
+  // the scheduler's next tick does it (settleCanceledPrices) — the refund does
+  // not depend on this request getting through (Codex on #329).
+  await zeroCanceledPrice(db, run.id).catch((e) => console.warn(`[cancel] zeroing ${run.id} deferred to the tick: ${e instanceof Error ? e.message : String(e)}`));
   await terminate(run.id).catch((e) => console.warn(`[cancel] terminating ${run.id}: ${e instanceof Error ? e.message : String(e)}`));
   return { ok: true, runId: run.id, publicId, was: run.status };
+}
+
+/** A stopped check's price is 0, and bought balance a price took goes back. Idempotent. */
+export async function zeroCanceledPrice(db: PrismaClient, runId: string): Promise<void> {
+  await priceRun(db, runId);
+  await voidRunPrice(db, runId);
+}
+
+/**
+ * The scheduler's half of the refund: every stopped check whose price is not
+ * yet 0 — the stop's own zeroing failed, or a priced step landed after it — is
+ * zeroed on the next tick. Returns the runs it settled.
+ */
+export async function settleCanceledPrices(db: PrismaClient): Promise<string[]> {
+  const rows = await db.run.findMany({
+    ...systemWide("scheduler"),
+    where: { status: "canceled", teamId: { not: null }, OR: [{ priceUsd: null }, { priceUsd: { not: 0 } }] },
+    select: { id: true },
+    take: 50,
+  });
+  const settled: string[] = [];
+  for (const r of rows) {
+    try {
+      await zeroCanceledPrice(db, r.id);
+      settled.push(r.id);
+    } catch (e) {
+      console.warn(`[cancel] settling ${r.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return settled;
 }
