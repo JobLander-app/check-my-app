@@ -41,11 +41,11 @@ export type CancelResult =
   | { ok: false; code: "forbidden" | "not_found" | "invalid_input"; error: string };
 
 /** Why a check cannot be stopped midway, or null when it can. */
-export function unstoppableReason(run: { targetKind: string; app: { writeMode: string } | null }): string | null {
+export function unstoppableReason(run: { targetKind: string; app: { writeMode: string } | null; createdAny?: boolean }): string | null {
   if (run.targetKind === "extension") {
     return "An extension check cannot be stopped midway: it holds a browser session that only its own end releases. It finishes on its own.";
   }
-  if (run.app?.writeMode === "create_cleanup") {
+  if (run.app?.writeMode === "create_cleanup" || run.createdAny) {
     return "This check may create test records and removes them at its end, so it cannot be stopped midway. It finishes on its own.";
   }
   return null;
@@ -75,7 +75,11 @@ export async function cancelRun(
   // create records deletes them and audits what it made last. Stopped midway,
   // either would leave something behind in the customer's account. Until their
   // cleanup can run on a stop, they run to their end — said, not silently.
-  const unstoppable = unstoppableReason(run);
+  // The app's setting can change under a running check, so the run's own
+  // ledger decides too: a check that has created anything is never cut short
+  // (Codex on #329).
+  const created = await db.createdResource.count({ where: { runId: run.id } });
+  const unstoppable = unstoppableReason({ ...run, createdAny: created > 0 });
   if (unstoppable) return { ok: false, code: "invalid_input", error: unstoppable };
   let events: unknown[] = [];
   try {

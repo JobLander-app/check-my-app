@@ -26,7 +26,7 @@ import { SESSION_LEASE_SECONDS } from "../src/agent/session-browser";
 import type { AgentEnv } from "../src/agent/env";
 import { completeSignedOut } from "../src/agent/signed-out";
 import { completeClosedDoor } from "../src/agent/closed-door";
-import { loadVerdict } from "../src/lib/run-read";
+import { loadRunStatus, loadVerdict } from "../src/lib/run-read";
 import { extensionReportPublished } from "../src/lib/extension-target";
 
 let failures = 0;
@@ -120,6 +120,17 @@ async function main() {
       [ext.ok, writes.ok, (await db.run.findUnique({ where: { id: "x1" } }))?.status, (await db.run.findUnique({ where: { id: "x2" } }))?.status, terminated.includes("x1") || terminated.includes("x2")],
       [false, false, "walking", "walking", false]);
     check("…in a sentence each", !ext.ok && /extension/.test(ext.error) && !writes.ok && /test records/.test(writes.error));
+
+    // The run's own ledger decides too: a check that has created a record is
+    // not cut short, even if its app's setting was changed since (Codex on #329).
+    await run("x3", 33, "ta", "walking");
+    await db.createdResource.create({ data: { runId: "x3", kind: "story", marker: "CheckMyApp test 1" } as never });
+    const made = await cancelRun(db, member, "p_x3", terminate, now);
+    eq("a check that has created a record runs to its cleanup", [made.ok, (await db.run.findUnique({ where: { id: "x3" } }))?.status], [false, "walking"]);
+
+    // A stopped check's status carries no verdict, whatever a step wrote first.
+    await db.run.update({ where: { id: "r1" }, data: { verdict: "broken" } });
+    eq("get_check_status of a stopped check names no verdict, and keeps its feed", [(await loadRunStatus(db, "p_r1"))?.verdict, ((await loadRunStatus(db, "p_r1"))?.events ?? []).length > 0], [null, true]);
 
     // The refund does not hang on the stop's own request.
     await db.run.update({ where: { id: "r4" }, data: { priceUsd: 0.9, priceFromTopupUsd: 0.9 } });
