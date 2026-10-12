@@ -5,6 +5,7 @@
 
 import { makeAgentEnv, type AgentBindings } from "./env";
 import { fileOpenFeedback } from "./feedback-filing";
+import { answerFeedback } from "./feedback-answers";
 import { runDueWatches } from "./scheduler";
 import type { CheckRunParams } from "./workflow";
 import { CheckRunWorkflow } from "./workflow";
@@ -55,6 +56,15 @@ export default {
       if (filed.length || failed) console.log(`[feedback] filed ${filed.join(", ") || "none"}, ${failed} waiting`);
     } catch (err) {
       console.warn(`[feedback] filing failed: ${err instanceof Error ? err.message : err}`);
+    }
+    // CHE-441: a settled report goes back to its author, once.
+    try {
+      const { settled, mailed, waiting } = await answerFeedback(makeAgentEnv(env));
+      if (settled.length || mailed.length || waiting.length) {
+        console.log(`[feedback-answer] settled ${settled.length}, mailed ${mailed.length}, waiting ${waiting.length}`);
+      }
+    } catch (err) {
+      console.warn(`[feedback-answer] failed: ${err instanceof Error ? err.message : err}`);
     }
   },
 };
