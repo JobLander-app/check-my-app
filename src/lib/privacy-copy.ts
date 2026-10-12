@@ -19,6 +19,17 @@ export const PRIVACY_UPDATED = "12 October 2026";
 export const PRIVACY_DESCRIPTION =
   "What CheckMyApp keeps about you and the apps you ask it to check, who processes it, and how to have it deleted.";
 
+// The heading, split where the page sets one word in the accent colour.
+export const PRIVACY_HEADING = { before: "What we keep, and ", accent: "why", after: "." };
+
+export const SECTION_TITLES = {
+  label: "privacy",
+  kept: "What we keep",
+  processors: "Who processes it",
+  removal: "How long, and how to remove it",
+  contact: "controller & contact",
+};
+
 export interface KeptItem {
   lead: string;
   text: string;
@@ -36,7 +47,9 @@ export const KEPT: KeptItem[] = [
   },
   {
     lead: "Webhooks you add.",
-    text: "The addresses you give us, a Slack webhook among them; each check's result is posted to them.",
+    // Recurring checks only: workflow.ts posts to webhooks when the run has a
+    // watch, and the guard holds that condition.
+    text: "The addresses you give us, a Slack webhook among them; the result of each recurring check is posted to them.",
   },
   { lead: "Payments.", text: "A payment processor takes the payment; we never see or store card numbers." },
   { lead: "How the site is used.", text: "Product analytics and session replay, with form inputs masked." },
@@ -96,13 +109,23 @@ export const REMOVAL: string[] = [
 export const OPERATOR = "Vladislav Sorokin";
 export const CONTACT_EMAIL = "sorokinvj@gmail.com";
 
-/** Every sentence the page shows, for the guard. */
+export const CONTACT_LINES = {
+  operator: `Operator: ${OPERATOR} (independent developer)`,
+  contact: "Contact:",
+  updated: `Last updated: ${PRIVACY_UPDATED}`,
+  about: "About CheckMyApp →",
+};
+
+/** Every piece of text the page shows, for the guard. */
 export function privacySentences(): string[] {
   return [
     PRIVACY_DESCRIPTION,
+    `${PRIVACY_HEADING.before}${PRIVACY_HEADING.accent}${PRIVACY_HEADING.after}`,
+    ...Object.values(SECTION_TITLES),
     ...KEPT.map((k) => `${k.lead} ${k.text}`),
     processorsSentence(),
     NOT_SOLD,
     ...REMOVAL,
+    ...Object.values(CONTACT_LINES),
   ];
 }

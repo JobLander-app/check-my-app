@@ -210,6 +210,18 @@ check(
   `${passwordWrites.length} write(s)`,
 );
 check("analytics masks form inputs", IMPLEMENTATION.some((s) => /maskAllInputs:\s*true/.test(s)));
+// "the result of each recurring check is posted to them": the webhook step runs
+// for watch runs only. If it ever runs for every check, the sentence changes.
+check(
+  "webhooks are posted for recurring checks, as the page says",
+  /if \(run\.watchId[^)]*\)\s*\{\s*await step\.do\("notify-integrations"/.test(stripComments(read("src/agent/workflow.ts"))),
+);
+
+// R18: the page renders the module's words and has none of its own.
+const literalText = (src: string) => [...stripComments(src).matchAll(/>([^<>{}]*[A-Za-z][^<>{}]*)</g)].map((m) => m[1].trim());
+check("self-test: literal JSX text is caught", literalText("<p>Hello there</p><p>{x}</p>").join() === "Hello there");
+const pageText = literalText(read("src/app/privacy/page.tsx"));
+check("the page has no text of its own (all of it comes from privacy-copy.ts)", pageText.length === 0, pageText.join(" | "));
 
 const jira = "src/lib/tracker/jira.ts";
 if (existsSync(path.join(repoRoot, jira))) {
