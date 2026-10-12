@@ -52,6 +52,8 @@ import {
 import { SELF_CHECK_REFUSED_OBSERVED, hasEnvironmentLeak, hasHomework, hasNarration } from "@/lib/verdict-language";
 import { signedOutObserved } from "@/agent/signed-out";
 import { STORE_LOCKED_OBSERVED, STORE_MISSING_OBSERVED } from "@/agent/tools";
+import ts from "typescript";
+import { calls, elementAccesses, initializerOf, jsx, jsxTextAt, properties, source, type Call } from "./fixtures/ts-source";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -60,7 +62,6 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const src = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 
 const skipped = (over: Partial<CauseStep>): CauseStep => ({ status: "skipped", label: "A step", attempted: null, observed: null, ...over });
 
@@ -174,27 +175,32 @@ async function main() {
   // The unique index the migration creates, proven on a real SQLite.
   {
     const db = new DatabaseSync(":memory:");
-    db.exec(`PRAGMA foreign_keys = ON;`);
-    db.exec(`CREATE TABLE "App" ("id" TEXT NOT NULL PRIMARY KEY);`);
-    const dir = path.join(root, "prisma/migrations");
-    const file = readdirSync(dir).find((f) => /^\d+_cause_notice\.sql$/.test(f));
-    check("a migration creates CauseNotice", Boolean(file), file ?? "");
-    db.exec(readFileSync(path.join(dir, file as string), "utf8"));
-    db.exec(`INSERT INTO "App" VALUES ('a1')`);
-    const ins = () => db.exec(`INSERT INTO "CauseNotice" ("id","appId","cause","firstRunId") VALUES ('${Math.random()}','a1','read_only','r1')`);
-    ins();
-    let second = "";
     try {
+      db.exec(`PRAGMA foreign_keys = ON;`);
+      db.exec(`CREATE TABLE "App" ("id" TEXT NOT NULL PRIMARY KEY);`);
+      const dir = path.join(root, "prisma/migrations");
+      const file = readdirSync(dir).find((f) => /^\d+_cause_notice\.sql$/.test(f));
+      check("a migration creates CauseNotice", Boolean(file), file ?? "");
+      if (!file) throw new Error("no *_cause_notice.sql migration");
+      db.exec(readFileSync(path.join(dir, file), "utf8"));
+      db.exec(`INSERT INTO "App" VALUES ('a1')`);
+      const ins = () => db.exec(`INSERT INTO "CauseNotice" ("id","appId","cause","firstRunId") VALUES ('${Math.random()}','a1','read_only','r1')`);
       ins();
-    } catch (e) {
-      second = (e as Error).message;
+      let second = "";
+      try {
+        ins();
+      } catch (e) {
+        second = (e as Error).message;
+      }
+      check("the same cause twice on one app is refused by the table itself", /unique/i.test(second), second);
+      db.exec(`INSERT INTO "CauseNotice" ("id","appId","cause","firstRunId") VALUES ('x','a1','missing_access:store_password','r1')`);
+      check("another cause on the same app is fine", true);
+      db.exec(`DELETE FROM "App" WHERE id='a1'`);
+      const remaining = db.prepare(`SELECT * FROM "CauseNotice"`).all();
+      check("deleting its app deletes its CauseNotice rows", remaining.length === 0, `${remaining.length} rows remain`);
+    } finally {
+      db.close();
     }
-    check("the same cause twice on one app is refused by the table itself", /unique/i.test(second), second);
-    db.exec(`INSERT INTO "CauseNotice" ("id","appId","cause","firstRunId") VALUES ('x','a1','missing_access:store_password','r1')`);
-    check("another cause on the same app is fine", true);
-    db.exec(`DELETE FROM "App" WHERE id='a1'`);
-    const remaining = db.prepare(`SELECT * FROM "CauseNotice"`).all();
-    check("deleting its app deletes its CauseNotice rows", remaining.length === 0, `${remaining.length} rows remain`);
   }
 
   type Row = { appId: string; cause: string; firstRunId: string; sentAt: Date | null };
@@ -270,6 +276,7 @@ async function main() {
     check("…the access one names where to act, on the app", w.mails.some((m) => m.actionUrl === "https://checkmyapp.dev/health/apps/app-1/settings/accounts"), w.mails.map((m) => m.actionUrl).join(","));
     check("…two notices stamped as sent", w.notices.length === 2 && w.notices.every((n) => n.sentAt !== null));
     check("…and the outcome says so", out.filter((o) => o.result === "told").length === 2);
+    check("the steps are read only through a run of the run's own team", w.queries.every((q) => q.includes('"run":{"teamId":"team-1"}')), w.queries[0]);
 
     // The same causes, next run.
     w.addRun("r2", [...checked, ...stopped(9), ...noPassword(2), ...ours(5)]);
@@ -399,35 +406,70 @@ async function main() {
 
   // ─── 6. the places that use it ────────────────────────────────────────────
   console.log("\n6. wiring\n");
-  const wf = src("src/agent/workflow.ts");
-  check('the workflow tells the admin after a walked run ("admin-causes")', /step\.do\("admin-causes",[\s\S]{0,200}noticeNewCauses\(env, runId\)/.test(wf));
-  check('…and after a run that ended at a sign-in that had ended ("admin-causes-signed-out")', /step\.do\("admin-causes-signed-out",[\s\S]{0,120}noticeNewCauses\(env, runId\)/.test(wf));
-  const view = src("src/components/verdict-view.tsx");
-  check("the verdict page gives every unchecked step its sentence, for a team given `shopify`", /teamHasFeature\(prisma, run\.teamId, "shopify"\)/.test(view) && /causeLine\(/.test(view) && /causeTexts=\{causeTexts\}/.test(view));
-  const strip = src("src/components/journey-strip.tsx");
-  check("the strip prints it on the card and in the step's detail", /causeTexts\[step\.id\]/.test(strip) && /cause=\{causeTexts\?\.\[selected\.id\]\}/.test(strip));
-  const page = src("src/app/(app)/health/apps/[appId]/page.tsx");
+  // Read as syntax (scripts/fixtures/ts-source.ts), not as text: a reformat
+  // must neither break these nor make them pass by accident.
+  const called = (callsList: Call[], callee: string, args: string[]) =>
+    callsList.some((c) => c.callee === callee && JSON.stringify(c.args) === JSON.stringify(args));
+  const wf = source("src/agent/workflow.ts");
+  const stepBody = (name: string) => calls(wf).find((c) => c.callee === "step.do" && c.args[0] === `"${name}"`)?.node.arguments[1];
+  const tellsAdmin = (name: string) => {
+    const body = stepBody(name);
+    return Boolean(body) && called(calls(wf, body), "noticeNewCauses", ["env", "runId"]);
+  };
+  check('the workflow tells the admin after a walked run ("admin-causes")', tellsAdmin("admin-causes"));
+  check('…and after a run that ended at a sign-in that had ended ("admin-causes-signed-out")', tellsAdmin("admin-causes-signed-out"));
+
+  const view = source("src/components/verdict-view.tsx");
+  check(
+    "the verdict page gives every unchecked step its sentence, for a team given `shopify`",
+    called(calls(view), "teamHasFeature", ["prisma", "run.teamId", '"shopify"']) &&
+      calls(view).some((c) => c.callee === "causeLine") &&
+      jsx(view).some((e) => e.tag === "JourneyStrips" && e.props.causeTexts === "causeTexts"),
+  );
+  const strip = source("src/components/journey-strip.tsx");
+  check(
+    "the strip prints it on the card and in the step's detail",
+    elementAccesses(strip).some(([o, i]) => o === "causeTexts" && i === "step.id") &&
+      jsx(strip).some((e) => e.tag === "StepDetail" && e.props.cause === "causeTexts?.[selected.id]"),
+  );
+
+  const page = source("src/app/(app)/health/apps/[appId]/page.tsx");
+  const attention = initializerOf(page, "attention");
+  const gate = attention && ts.isConditionalExpression(attention) ? attention.condition : undefined;
+  const card = jsx(page).find((e) => e.tag === "NeedsAttention");
+  const aside = jsx(page).find((e) => e.tag === "aside");
+  const cost = jsxTextAt(page, "This app costs")[0];
   check(
     "the app page shows the admin card first in its right column, for an admin of a `shopify` team",
-    /scope === "admin" && \(await teamHasFeature\(db, team\.id, "shopify"\)\)/.test(page) &&
-      page.indexOf("<NeedsAttention") > page.indexOf("<aside") &&
-      page.indexOf("<NeedsAttention") < page.indexOf("This app costs"),
+    Boolean(gate) &&
+      ts.isBinaryExpression(gate!) &&
+      gate.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      gate.left.getText(page) === 'scope === "admin"' &&
+      called(calls(page, gate.right), "teamHasFeature", ["db", "team.id", '"shopify"']) &&
+      Boolean(card && aside && cost !== undefined) &&
+      card!.node.getStart(page) > aside!.node.getStart(page) &&
+      card!.node.getStart(page) < cost,
   );
-  check("…and only what is the team's to act on (not our incapacity)", /causeRoute\(g\.cause\) === "admin"/.test(page));
-  const card = src("src/components/needs-attention.tsx");
-  check("the card has no button and no form: the cause is text, with a link to where it is fixed", !/<button|<form/.test(card));
+  check(
+    "…and only what is the team's to act on (not our incapacity)",
+    calls(page).some((c) => c.callee === "causeRoute" && c.args[0] === "g.cause" && /=== "admin"$/.test(c.node.parent.getText(page))),
+  );
+  const cardSf = source("src/components/needs-attention.tsx");
+  check("the card has no button and no form: the cause is text, with a link to where it is fixed", !jsx(cardSf).some((e) => e.tag === "button" || e.tag === "form"));
   // "Add the store password" goes to the accounts section, so the password must
   // be settable there — it used to be MCP-only, and the link led nowhere.
-  const settings = src("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
-  const settingsAction = src("src/app/dashboard/actions.ts");
   check(
     "the accounts section the card links to has a store password box, and the save reads it",
-    /ACCESS_ACTION[\s\S]*store_password: \{[^}]*to: "accounts"/.test(src("src/lib/step-cause.ts")) &&
-      /name="storePassword"/.test(settings) &&
-      /storePassword: text\("storePassword"\)/.test(settingsAction),
+    properties(source("src/lib/step-cause.ts"), "store_password").some((v) => /to: "accounts"/.test(v)) &&
+      jsx(source("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx")).some((e) => e.tag === "Input" && e.props.name === '"storePassword"') &&
+      properties(source("src/app/dashboard/actions.ts"), "storePassword").some((v) => v.startsWith('text("storePassword")')),
   );
-  const gaps = src("src/agent/capability-gaps.ts");
-  check("the gap filer puts `mender` on every ticket it opens and on every recurrence", /selfPolicy\(self, "\[Checker gap\] \{verdict\}", \[MENDER_LABEL\]\)/.test(gaps) && /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)/.test(gaps));
+  const gaps = source("src/agent/capability-gaps.ts");
+  check(
+    "the gap filer puts `mender` on every ticket it opens and on every recurrence",
+    called(calls(gaps), "selfPolicy", ["self", '"[Checker gap] {verdict}"', "[MENDER_LABEL]"]) &&
+      called(calls(gaps), "tracker.addLabel", ["outcome.identifier", "MENDER_LABEL"]),
+  );
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);

@@ -24,7 +24,7 @@ import { causeAction, causeText, isMailedToAdmin, type StepCause } from "@/lib/s
 import { causesOfRun } from "@/lib/step-cause-load";
 import { teamHasFeature } from "@/lib/team-features";
 import { appPath } from "@/lib/app-shell";
-import { systemWide } from "@/lib/tenant-db";
+import { systemWide, teamOwned } from "@/lib/tenant-db";
 import type { AgentBindings, AgentEnv } from "./env";
 
 export type CauseSend = typeof sendCauseNotice;
@@ -71,13 +71,13 @@ async function noticeNewCausesOrThrow(
   if (!run?.appId || !run.teamId || run.ephemeral) return [];
   if (!(await teamHasFeature(env.db, run.teamId, "shopify"))) return [];
 
-  const { groups } = await causesOfRun(env.db, runId, { walkedOnly: true });
+  const { groups } = await causesOfRun(env.db, run.teamId, runId, { walkedOnly: true });
   const mailed = groups.filter((g) => isMailedToAdmin(g.cause));
   if (mailed.length === 0) return [];
 
   const admins = [
     ...new Set(
-      (await env.db.membership.findMany({ where: { teamId: run.teamId, scope: "admin" }, select: { user: { select: { email: true } } } }))
+      (await env.db.membership.findMany({ where: { ...teamOwned(run.teamId), scope: "admin" }, select: { user: { select: { email: true } } } }))
         .map((m) => m.user.email.trim().toLowerCase())
         .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)),
     ),
@@ -87,14 +87,15 @@ async function noticeNewCausesOrThrow(
   const out: CauseNoticeOutcome[] = [];
   for (const group of mailed) {
     const { cause } = group;
-    const known = await env.db.causeNotice.findUnique({ where: { appId_cause: { appId: run.appId, cause } } });
+    // CauseNotice has no team column: its app is the run's, read above.
+    const known = await env.db.causeNotice.findUnique({ ...systemWide("agent workflow"), where: { appId_cause: { appId: run.appId, cause } } });
     if (known?.sentAt) {
       out.push({ cause, result: "already", admins: 0 });
       continue;
     }
     if (!known) {
       try {
-        await env.db.causeNotice.create({ data: { appId: run.appId, cause, firstRunId: runId } });
+        await env.db.causeNotice.create({ ...systemWide("agent workflow"), data: { appId: run.appId, cause, firstRunId: runId } });
       } catch (error) {
         // Another run of this app claimed it between our read and our write: it sends.
         if (isUniqueViolation(error)) {
@@ -137,7 +138,7 @@ async function noticeNewCausesOrThrow(
     // stop the next run retrying the admin whose send failed. The retry cannot
     // double-mail the others — each recipient has its own idempotency key.
     const everyone = told === admins.length;
-    if (everyone) await env.db.causeNotice.update({ where: { appId_cause: { appId: run.appId, cause } }, data: { sentAt: new Date() } });
+    if (everyone) await env.db.causeNotice.update({ ...systemWide("agent workflow"), where: { appId_cause: { appId: run.appId, cause } }, data: { sentAt: new Date() } });
     out.push({ cause, result: everyone ? "told" : "failed", admins: told });
   }
   return out;

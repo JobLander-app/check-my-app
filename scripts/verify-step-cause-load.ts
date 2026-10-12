@@ -66,7 +66,7 @@ async function main() {
     check("the run is at real size", total + CARRIED > 100, String(total + CARRIED));
 
     // 1–2. One run.
-    const walked = await causesOfRun(db, "r3", { walkedOnly: true });
+    const walked = await causesOfRun(db, "ta", "r3", { walkedOnly: true });
     eq(
       "walked only: causes by size, most steps first",
       walked.groups.map((g) => [g.cause, g.steps]),
@@ -78,14 +78,15 @@ async function main() {
       [walked.summary.total, walked.summary.unchecked, walked.summary.defects.length],
       [total, CAPABILITY + ACCESS + NO_REASON, NO_REASON],
     );
-    const all = await causesOfRun(db, "r3", { walkedOnly: false });
+    const all = await causesOfRun(db, "ta", "r3", { walkedOnly: false });
     eq(
       "with carried journeys: their cause joins",
       all.groups.map((g) => [g.cause, g.steps]),
       [["our_capability:new_tab", CAPABILITY], ["missing_access:store_password", ACCESS], ["missing_access:test_account", CARRIED]],
     );
     eq("with carried journeys: every step counts", all.summary.total, total + CARRIED);
-    eq("a run with no steps has no causes", (await causesOfRun(db, "r2", { walkedOnly: false })).groups, []);
+    eq("a run with no steps has no causes", (await causesOfRun(db, "ta", "r2", { walkedOnly: false })).groups, []);
+    eq("another team reads none of this run's steps by its id", (await causesOfRun(db, "tb", "r3", { walkedOnly: false })).summary.total, 0);
 
     // 3. The app's latest.
     const latest = await causesOfAppsLatestRun(db, "ta", "a1");

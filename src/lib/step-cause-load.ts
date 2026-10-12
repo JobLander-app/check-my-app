@@ -29,9 +29,11 @@ const LABELS_PER_GROUP = 3;
  * is what a mail about "this run" and a share "per run" count; the app's page
  * wants them all, since a carried step is still what the app looks like now.
  */
-export async function causesOfRun(db: PrismaClient, runId: string, opts: { walkedOnly: boolean }): Promise<RunCauses> {
+export async function causesOfRun(db: PrismaClient, teamId: string, runId: string, opts: { walkedOnly: boolean }): Promise<RunCauses> {
+  // Steps carry no team of their own: the run they belong to must be the
+  // team's, or a run id from anywhere would read another team's step labels.
   const steps = await db.step.findMany({
-    where: { journey: { runId, ...(opts.walkedOnly ? { carriedFromRunId: null } : {}) } },
+    where: { journey: { runId, run: teamOwned(teamId), ...(opts.walkedOnly ? { carriedFromRunId: null } : {}) } },
     select: { label: true, status: true, unverifiedReason: true, gapClass: true, observed: true, attempted: true },
     orderBy: [{ journey: { order: "asc" } }, { order: "asc" }],
   });
@@ -55,5 +57,5 @@ export async function causesOfAppsLatestRun(db: PrismaClient, teamId: string, ap
     select: { id: true, runNumber: true },
   });
   if (!run) return null;
-  return { ...(await causesOfRun(db, run.id, { walkedOnly: false })), runNumber: run.runNumber };
+  return { ...(await causesOfRun(db, teamId, run.id, { walkedOnly: false })), runNumber: run.runNumber };
 }
