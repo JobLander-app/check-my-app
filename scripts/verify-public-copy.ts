@@ -28,6 +28,7 @@ const SOURCES = [
   "src/app/pricing",
   "src/app/faq",
   "src/app/about",
+  "src/app/privacy",
   "src/app/page.tsx",
   "src/app/paid",
   "src/app/checks/today",
