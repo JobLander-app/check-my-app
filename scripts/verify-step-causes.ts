@@ -462,7 +462,7 @@ async function main() {
     "the accounts section the card links to has a store password box, and the save reads it",
     properties(source("src/lib/step-cause.ts"), "store_password").some((v) => /to: "accounts"/.test(v)) &&
       jsx(source("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx")).some((e) => e.tag === "Input" && e.props.name === '"storePassword"') &&
-      properties(source("src/app/dashboard/actions.ts"), "storePassword").some((v) => v.startsWith('text("storePassword")')),
+      properties(source("src/app/dashboard/actions.ts"), "storePassword").some((v) => /^formData\.get\("storePasswordRemove"\) \? "" : text\("storePassword"\)/.test(v)),
   );
   const gaps = source("src/agent/capability-gaps.ts");
   check(
