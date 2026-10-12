@@ -30,7 +30,7 @@ import { assertCanStartRun, watchTrialState } from "@/lib/plans";
 import { releaseActionHint, teamRunsTheAction } from "@/lib/release-action";
 import { loadReview } from "@/lib/review";
 import { loadRunStatus, loadVerdict, type RunStatusPayload } from "@/lib/run-read";
-import { can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
+import { TEAM_SCOPES, can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
 import { startCheck } from "@/lib/start-check";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { appSlugFromUrl } from "@/lib/utils";
@@ -41,6 +41,8 @@ import { explainRunPrice } from "@/lib/check-price";
 import { appPriceRange, teamBalance } from "@/lib/plans";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
+import { FINDING_MARKS } from "@/lib/validation";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
@@ -295,6 +297,14 @@ export const toolSchemas = {
       ),
     text: z.string().min(1).max(FEEDBACK_TEXT_MAX).describe("What really happened, or what the check should have done"),
   },
+  // CHE-444: what the team decided about a finding, as the verdict page's buttons do.
+  mark_finding: {
+    run_id: runId,
+    finding: z.number().int().positive().describe("The finding's number, e.g. 3 for #003"),
+    mark: z
+      .enum(FINDING_MARKS)
+      .describe("known: fine as it is, not reported again · watch: check it first next time · fixed · false_positive: not a bug · none: clear the mark"),
+  },
   list_check_mistakes: {
     app_id: z.string().min(1).optional().describe("Every report on any check or scenario of this app"),
     scenario_id: z.string().min(1).optional().describe("Or on this scenario"),
@@ -337,6 +347,26 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
 };
 
+// What a key of each scope can still do, said with every refusal (CHE-444) —
+// naming only the tools this team is offered: the pilot's tools are registered
+// for a team given `shopify` alone (registerRemoteTools), and a refusal must
+// not send an agent to a call it does not have (CodeRabbit on #317).
+export function memberToolsSentence(scope: TeamScope, pilot: boolean): string {
+  if (scope === "reader") {
+    return `It reads everything: list_apps, latest_results, get_review, get_verdict${pilot ? ", list_scenarios, list_check_mistakes" : ""}.`;
+  }
+  if (scope === "member") {
+    return pilot
+      ? "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check and marks findings; " +
+          "storing a login and connecting a Shopify store (connect_shopify_app) take an admin key."
+      : "It reads everything and also starts checks (start_check); storing a login takes an admin key.";
+  }
+  return "";
+}
+
+// Least privilege first: a refusal names the smallest scope that would do.
+const SCOPES_UP: readonly TeamScope[] = ["reader", "member", "admin"];
+
 export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   const { db, origin } = deps;
   const team = caller.team;
@@ -378,9 +408,27 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   // CHE-325: what the plan allows and what is left, next to the apps it bounds.
   const planStatus = () => loadPlanStatus(db, { id: team.id, plan }, origin, new Date(deps.now()));
 
+  // CHE-444: a refusal says which key this is, which key would do, and what
+  // this one still can — an agent told only "an admin can do that" cannot tell
+  // whether start_check or add_scenario will be refused next (Securify's agent,
+  // 2026-10-12, on connect_shopify_app).
   function deny(action: TeamAction): ToolResult | null {
     if (can(caller.scope, action)) return null;
-    return fail("forbidden", refusal(caller.scope, action) ?? "Not allowed", HINTS.forbidden);
+    const needs = SCOPES_UP.find((s) => can(s, action)) ?? "admin";
+    const canStill = memberToolsSentence(caller.scope, hasFeature(team.features, "shopify"));
+    return text(
+      {
+        ok: false,
+        code: "forbidden",
+        error: refusal(caller.scope, action) ?? "Not allowed",
+        key_scope: caller.scope,
+        needs_scope: needs,
+        hint:
+          `This is a ${caller.scope} key; this call needs ${needs === "admin" ? "an admin" : `a ${needs}`} key. ` +
+          `${canStill} An admin of the team mints keys at ${origin}/settings/api-keys.`,
+      },
+      true,
+    );
   }
 
   // The team's run, or nothing. Reads below go through the shared loaders,
@@ -1046,6 +1094,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       return text({ ok: true, report_id: result.id, about: result.kind, status: STATUS_LABEL.open });
     },
 
+    async mark_finding(args: { run_id: string; finding: number; mark: (typeof FINDING_MARKS)[number] }): Promise<ToolResult> {
+      const denied = deny("finding.mark");
+      if (denied) return denied;
+      const run = await db.run.findFirst({
+        where: { ...teamOwned(team.id), publicId: args.run_id },
+        select: { id: true, appId: true, teamId: true, appSlug: true },
+      });
+      if (!run) return runNotFound();
+      const finding = await db.finding.findFirst({ where: { runId: run.id, number: args.finding }, select: { id: true } });
+      if (!finding) return fail("not_found", `Check ${args.run_id} has no finding #${String(args.finding).padStart(3, "0")}.`, HINTS.not_found);
+      await db.finding.update({ where: { id: finding.id }, data: { mark: args.mark } });
+      // The same follow-up as the verdict page's buttons: Issues counts what is open.
+      await recountOpenIssuesOfRun(db, run);
+      return text({ ok: true, run_id: args.run_id, finding: args.finding, mark: args.mark });
+    },
+
     async list_check_mistakes(args: { app_id?: string; scenario_id?: string; run_id?: string }): Promise<ToolResult> {
       const denied = deny("read");
       if (denied) return denied;
@@ -1265,6 +1329,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(scenario_wrong), or another mistake of the check (other). Name it by run_id — optionally with a finding number, " +
     "or a journey position and step position as get_review lists them — or by scenario_id from get_review. The words " +
     "go to the CheckMyApp team as they are; list_check_mistakes shows what happened to each.",
+  mark_finding:
+    "Record what the team decided about a finding, as the verdict page's buttons do: known (fine as it is — not " +
+    "reported again), watch (checked first next time), fixed, false_positive (not a bug), or none to clear it. " +
+    "Name it by run_id and the finding's number.",
   list_check_mistakes:
     "Every reported mistake of the check on an app, a scenario or a check — who reported it, what, and its status " +
     "(received, with the CheckMyApp team, being fixed, fixed, not a mistake of the check).",
@@ -1349,6 +1417,9 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       "list_check_mistakes",
       { description: DESCRIPTIONS.list_check_mistakes, inputSchema: toolSchemas.list_check_mistakes },
       (a) => tools.list_check_mistakes(a),
+    );
+    server.registerTool("mark_finding", { description: DESCRIPTIONS.mark_finding, inputSchema: toolSchemas.mark_finding }, (a) =>
+      tools.mark_finding(a),
     );
     server.registerTool("list_scenarios", { description: DESCRIPTIONS.list_scenarios, inputSchema: toolSchemas.list_scenarios }, (a) =>
       tools.list_scenarios(a),
