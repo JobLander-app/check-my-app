@@ -16,6 +16,7 @@
 
 import type { AgentEnv } from "./env";
 import { sweepExpiredEphemeralRuns, type EphemeralSweepResult } from "@/lib/ephemeral";
+import { isSelfUrl } from "./self-hosts";
 
 // Long enough that the owner can sign in after a nightly self-check and see
 // what happened; short enough that nothing accumulates.
@@ -38,7 +39,18 @@ export async function sweepTestAccounts(env: AgentEnv, now: Date = new Date()): 
 
   const ids = stale.map((a) => a.id);
   const watches = await env.db.watch.count({ where: { appId: { in: ids } } });
+  await removeApps(env, ids);
 
+  console.log(
+    `[janitor] removed ${stale.length} test-account app(s): ${stale.map((a) => a.appSlug).join(", ")}`,
+  );
+  return { appsRemoved: stale.length, watchesRemoved: watches, slugs: stale.map((a) => a.appSlug) };
+}
+
+// What removing an App takes with it, in the order the foreign keys allow.
+// Shared by the test-account sweep and the self-check leftover sweep so the two
+// can never disagree about what an app's removal leaves behind.
+async function removeApps(env: AgentEnv, ids: string[]): Promise<void> {
   // Runs are detached rather than deleted: their verdict pages are the record
   // of what the self-check saw, and they cost money to produce.
   await env.db.run.updateMany({ where: { appId: { in: ids } }, data: { appId: null, watchId: null } });
@@ -56,11 +68,103 @@ export async function sweepTestAccounts(env: AgentEnv, now: Date = new Date()): 
   // CHE-322: stored credentials never outlive the app they sign in to.
   await env.db.testAccount.deleteMany({ where: { appId: { in: ids } } });
   await env.db.app.deleteMany({ where: { id: { in: ids } } });
+}
+
+// Leftovers of a self-check that ran under an ordinary account.
+//
+// sweepTestAccounts keys on who owns the app, and checkmyapp.dev is checked as
+// the owner's own account (CLAUDE.md §6: a self-check is identified by its
+// target, not by whose account owns the row). So an app the checker registered
+// there — "CheckMyApp test r113", from a run before the self-check guard made
+// our hosts read-only — was never swept, its ledger row stayed open, and every
+// later run of our own product found the same row and filed the same
+// "[Checker gap] Checker leaves test records behind" again: 60 comments over
+// six weeks about one record, no run of which had created anything.
+//
+// The ledger row is the evidence of what the checker made, and the marker it
+// carries is unique to one run ("CheckMyApp test r<N>"), so the app is found by
+// that marker — never by "looks like a test" — inside the account that ran the
+// check. Only records of kind "app" are removed: the App table is the one place
+// such a record lives, so finding no match means it is already gone and the
+// ledger can say so. Every other kind of record stays open, because we cannot
+// reach it from here and closing it would hide a real leftover.
+const LEFTOVER_KIND = "app";
+const MARKER_PREFIX = "CheckMyApp test r";
+const LEFTOVER_BATCH = 200;
+
+export interface LeftoverSweepResult {
+  appsRemoved: number;
+  ledgerClosed: number;
+}
+
+// Both a marker and a name/slug are folded to lower-case words so that
+// "CheckMyApp test r113" is found in "checkmyapp-test-r113.example.com" — and
+// r11 is not found in r113: the marker must end where a word ends.
+function words(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+export function carriesMarker(text: string, marker: string): boolean {
+  const m = words(marker);
+  if (!m) return false;
+  return `-${words(text)}-`.includes(`-${m}-`);
+}
+
+export async function sweepSelfCheckLeftovers(env: AgentEnv, now: Date = new Date()): Promise<LeftoverSweepResult> {
+  const cutoff = new Date(now.getTime() - GRACE_HOURS * 60 * 60 * 1000);
+  const open = await env.db.createdResource.findMany({
+    where: { deletedAt: null, createdAt: { lt: cutoff }, marker: { startsWith: MARKER_PREFIX } },
+    select: {
+      id: true,
+      kind: true,
+      marker: true,
+      run: { select: { targetUrl: true, ownerId: true, teamId: true } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: LEFTOVER_BATCH,
+  });
+
+  const ours = open.filter(
+    (r) =>
+      r.kind.trim().toLowerCase() === LEFTOVER_KIND &&
+      r.run.ownerId !== null &&
+      isSelfUrl(r.run.targetUrl, env.bindings.SELF_CHECK_HOSTS),
+  );
+  if (ours.length === 0) return { appsRemoved: 0, ledgerClosed: 0 };
+
+  const ownerIds = [...new Set(ours.map((r) => r.run.ownerId as string))];
+  const candidates = await env.db.app.findMany({
+    where: {
+      ownerId: { in: ownerIds },
+      OR: [{ appSlug: { startsWith: "checkmyapp-test-" } }, { name: { startsWith: "CheckMyApp test" } }],
+    },
+    select: { id: true, appSlug: true, name: true, ownerId: true, teamId: true },
+  });
+
+  const removeIds = new Set<string>();
+  const removedSlugs: string[] = [];
+  for (const r of ours) {
+    for (const a of candidates) {
+      if (a.ownerId !== r.run.ownerId) continue;
+      if (r.run.teamId && a.teamId && a.teamId !== r.run.teamId) continue;
+      if (!carriesMarker(a.appSlug, r.marker) && !(a.name && carriesMarker(a.name, r.marker))) continue;
+      if (!removeIds.has(a.id)) removedSlugs.push(a.appSlug);
+      removeIds.add(a.id);
+    }
+  }
+  if (removeIds.size > 0) await removeApps(env, [...removeIds]);
+
+  // Closed with what happened, so the ledger stays a record and not a blank.
+  await env.db.createdResource.updateMany({
+    where: { id: { in: ours.map((r) => r.id) } },
+    data: { deletedAt: now, cleanupNote: "removed by the janitor — a record of a past self-check" },
+  });
 
   console.log(
-    `[janitor] removed ${stale.length} test-account app(s): ${stale.map((a) => a.appSlug).join(", ")}`,
+    `[janitor] closed ${ours.length} self-check ledger row(s), removed ${removeIds.size} app(s)` +
+      `${removedSlugs.length ? `: ${removedSlugs.join(", ")}` : ""}`,
   );
-  return { appsRemoved: stale.length, watchesRemoved: watches, slugs: stale.map((a) => a.appSlug) };
+  return { appsRemoved: removeIds.size, ledgerClosed: ours.length };
 }
 
 // CHE-132: a signed-in one-off check has an owner but no App row, so the
