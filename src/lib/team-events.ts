@@ -32,6 +32,8 @@ export type TeamEventAction =
   | "billing.checkout_started"
   | "billing.byok_set"
   | "billing.byok_removed"
+  // the team itself
+  | "team.renamed"
   // the app and what we may do to it
   | "app.created"
   | "app.settings_changed"

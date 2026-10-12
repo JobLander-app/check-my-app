@@ -42,6 +42,8 @@ const MUST_LOG: [string, string][] = [
   // CHE-448: who changed the key that pays for the model, and when.
   ["src/app/team/actions.ts", "setTeamByokAction"],
   ["src/app/team/actions.ts", "removeTeamByokAction"],
+  // CHE-446: who renamed the team, from what.
+  ["src/app/team/actions.ts", "renameTeamAction"],
   ["src/app/invite/[token]/actions.ts", "acceptInviteAction"],
   ["src/app/dashboard/actions.ts", "createApiKey"],
   ["src/app/dashboard/actions.ts", "revokeApiKey"],

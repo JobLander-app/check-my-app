@@ -181,6 +181,7 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/team/actions.ts#removeMemberAction": { kind: "team", action: "member.remove" },
   // CHE-448: the team's own OpenRouter key decides who pays for the model.
   "src/app/team/actions.ts#setTeamByokAction": { kind: "team", action: "billing.manage" },
+  "src/app/team/actions.ts#renameTeamAction": { kind: "team", action: "team.rename" },
   "src/app/team/actions.ts#removeTeamByokAction": { kind: "team", action: "billing.manage" },
   // Leaving is not an admin action: everybody on the team may do it, and the
   // last-admin rule (src/lib/membership.ts) is what stops the one case where
