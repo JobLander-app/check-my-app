@@ -56,6 +56,7 @@ import ts from "typescript";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NeedsAttention } from "@/components/needs-attention";
+import { REPORTS_HEADING, reportLine, reportLink, reportQuote, reportStatus } from "@/lib/report-card-copy";
 import { calls, elementAccesses, initializerOf, jsx, jsxTextAt, properties, source, type Call } from "./fixtures/ts-source";
 
 let failures = 0;
@@ -465,9 +466,21 @@ async function main() {
     Boolean(reportsInit) &&
       ts.isConditionalExpression(reportsInit!) &&
       reportsInit.condition.getText(page) === "forAdmin" &&
-      calls(page, reportsInit.whenTrue).some((c) => c.callee === "listFeedback" && c.args[0] === "db" && c.args[1] === "team.id") &&
+      // The newest few, asked of the database — not a slice of the first 200 (Codex on #320).
+      calls(page, reportsInit.whenTrue).some((c) => c.callee === "latestAppFeedback" && c.args.join(",") === "db,team.id,app.id,CARD_REPORTS") &&
       card?.props.reports === "attentionReports",
   );
+  // Every sentence the card says about a report comes from one pure module and
+  // passes the language guards whole (R18; Codex on #320).
+  const sample = { reason: "wrong" as const, text: "The list is empty only for us", author: "Ann", status: "filed", findingNumber: null, stepLabel: null, scenarioTitle: "Block a country", runPublicId: null, scenarioId: "s1" };
+  const copy = [REPORTS_HEADING, reportLine(sample), reportQuote(sample), reportStatus(sample), reportLink(sample, "/scope")?.text ?? ""];
+  check("the card's report sentences pass the homework, leak and narration guards", copy.every((s) => !hasHomework(s) && !hasEnvironmentLeak(s) && !hasNarration(s)), copy.join(" | "));
+  const scenarioReport = [reportLine(sample), reportLink(sample, "/health/apps/a1/settings/scope")];
+  check("a report on a scenario names the scenario and links to the app's scenarios",
+    JSON.stringify(scenarioReport) === JSON.stringify(["The check got it wrong · scenario “Block a country”", { href: "/health/apps/a1/settings/scope", text: "the scenario" }]),
+    JSON.stringify(scenarioReport));
+  const cardText = source("src/components/needs-attention.tsx");
+  check("…and the card writes none of them itself (no report text in its JSX)", jsxTextAt(cardText, "team reported").length === 0 && jsxTextAt(cardText, "the check").length === 0);
   const rendered = renderToStaticMarkup(
     createElement(NeedsAttention, {
       appId: "a1",
@@ -476,7 +489,7 @@ async function main() {
       reports: [
         {
           id: "f1", kind: "finding", reason: "wrong", text: "The list is empty only for us", author: "Ann", at: "2026-10-12T10:00:00.000Z",
-          status: "fixed", findingNumber: 3, journeyId: null, stepId: null, stepLabel: null, runPublicId: "pubA", scenarioId: null,
+          status: "fixed", findingNumber: 3, journeyId: null, stepId: null, stepLabel: null, runPublicId: "pubA", scenarioId: null, scenarioTitle: null,
         },
       ],
     }),

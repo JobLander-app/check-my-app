@@ -2,7 +2,8 @@ import Link from "next/link";
 import { appPath } from "@/lib/app-shell";
 import { causeAction, causeText } from "@/lib/step-cause";
 import type { CauseGroup } from "@/lib/step-cause-load";
-import { REASON_LABEL, STATUS_LABEL, type FeedbackItem, type FeedbackReason } from "@/lib/feedback";
+import type { FeedbackItem } from "@/lib/feedback";
+import { REPORTS_HEADING, reportLine, reportLink, reportQuote, reportStatus } from "@/lib/report-card-copy";
 
 // How many of the team's reports the card lists; the rest are a link away.
 export const CARD_REPORTS = 5;
@@ -59,31 +60,29 @@ export function NeedsAttention({
       {reports.length > 0 && (
         <>
           <div className={`text-[13px] text-fg-muted ${groups.length > 0 ? "mt-2 border-t border-ink-700 pt-3" : ""}`}>
-            What your team reported the check got wrong.
+            {REPORTS_HEADING}
           </div>
           <ul className="flex flex-col gap-3">
-            {reports.map((r) => (
-              <li key={r.id} className="text-[13px]">
-                <span className="block">
-                  {REASON_LABEL[r.reason as FeedbackReason] ?? r.reason}
-                  {r.findingNumber !== null ? ` · finding #${String(r.findingNumber).padStart(3, "0")}` : r.stepLabel ? ` · “${r.stepLabel}”` : ""}
-                </span>
-                <span className="block text-fg-muted">
-                  “{r.text.length > 140 ? `${r.text.slice(0, 140)}…` : r.text}” — {r.author}
-                </span>
-                <span className="block text-fg-muted">
-                  {STATUS_LABEL[r.status] ?? r.status}
-                  {r.runPublicId && (
-                    <>
-                      {" · "}
-                      <Link href={`/verdict/${r.runPublicId}`} className="text-accent hover:underline">
-                        the check
-                      </Link>
-                    </>
-                  )}
-                </span>
-              </li>
-            ))}
+            {reports.map((r) => {
+              const link = reportLink(r, appPath.section(appId, "scope"));
+              return (
+                <li key={r.id} className="text-[13px]">
+                  <span className="block">{reportLine(r)}</span>
+                  <span className="block text-fg-muted">{reportQuote(r)}</span>
+                  <span className="block text-fg-muted">
+                    {reportStatus(r)}
+                    {link && (
+                      <>
+                        {" · "}
+                        <Link href={link.href} className="text-accent hover:underline">
+                          {link.text}
+                        </Link>
+                      </>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </>
       )}

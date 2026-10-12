@@ -22,7 +22,7 @@ import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { OtherTeamApp } from "@/components/other-team-app";
 import { CARD_REPORTS, NeedsAttention } from "@/components/needs-attention";
-import { listFeedback } from "@/lib/feedback";
+import { latestAppFeedback } from "@/lib/feedback";
 import { teamHasFeature } from "@/lib/team-features";
 import { causeRoute } from "@/lib/step-cause";
 import { causesOfAppsLatestRun } from "@/lib/step-cause-load";
@@ -134,7 +134,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   const attentionGroups = attention?.groups.filter((g) => causeRoute(g.cause) === "admin") ?? [];
   // CHE-434 place 9: and every report a member made about the check, newest
   // first, with where it stands (received → … → fixed / not a mistake).
-  const attentionReports = forAdmin ? ((await listFeedback(db, team.id, { app_id: app.id })) ?? []).slice(-CARD_REPORTS).reverse() : [];
+  const attentionReports = forAdmin ? await latestAppFeedback(db, team.id, app.id, CARD_REPORTS) : [];
 
   return (
     <main className="mx-auto grid w-full max-w-6xl items-start gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_340px]">
