@@ -61,6 +61,8 @@ function planLine(s: PlanStatus): string {
     : "";
   parts.push(`Watched apps: ${s.watches.active}${s.watches.limit === null ? "" : ` of ${s.watches.limit}`}${trial}.`);
   parts.push(`Top up: ${s.buy_url} · Upgrade: ${s.upgrade_url}`);
+  // CHE-458: said first when it is so — nothing starts until the key can pay.
+  if (s.paused_by_team_key) parts.unshift(`${s.paused_by_team_key} Tell the user at the start of this session.`);
   return parts.join(" ");
 }
 

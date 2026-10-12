@@ -44,6 +44,7 @@ import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSes
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
+import { isTeamKeyDry, recordTeamKeyDry } from "@/lib/byok-credit";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
@@ -1486,6 +1487,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         err instanceof LlmBudgetError ||
         (err instanceof Error &&
           (err.name === "LlmBudgetError" || /available credits|payment_required/i.test(msg)));
+      // CHE-458: on a BYOK run the credit that ran out is the TEAM's — their
+      // OpenRouter account behind their key. That is their access, not our
+      // outage: the key is marked, nothing more starts on it until it can pay,
+      // and every place says why. Nothing is filed on our board.
+      const teamKeyDry = isTeamKeyDry({ budget, byokKeyEnc: run.byokKeyEnc, teamId: run.teamId });
+      const ourBudget = budget && !teamKeyDry;
       // Returns the phase the run died in (Run.status until this write), for
       // the ticket below.
       const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean }> => {
@@ -1525,9 +1532,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           data: {
             status: "failed",
             ...cleared,
-            errorMessage: budget
-              ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
-              : msg,
+            errorMessage: teamKeyDry
+              ? `team key: the team's OpenRouter key has no credit — nothing was published. ${msg}`.slice(0, 500)
+              : budget
+                ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
+                : msg,
           },
         });
         // CHE-327: a failed run costs the customer nothing (rule 4: our
@@ -1558,7 +1567,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // CHE-453: the session host's egress dying is the same kind of outage —
         // ours, said in the feed the same way, and the watch tries again.
         const sessionOutage = err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE);
-        if (budget || sessionOutage) {
+        if (teamKeyDry) {
+          console.warn(`[byok] run ${runId} stopped: team ${run.teamId}'s OpenRouter key has no credit`);
+          // The key paused (only if it is still the team's) and the feed told —
+          // nothing else: no watch retry, the scheduler leaves the team's
+          // watches until the key can pay (byok-credit.ts).
+          await recordTeamKeyDry(env.db, { id: runId, teamId: run.teamId!, byokKeyEnc: run.byokKeyEnc!, phase: "connecting" }, new Date());
+        } else if (ourBudget || sessionOutage) {
           console.error(`[${budget ? "budget" : "session-outage"}] run ${runId} aborted: ${budget ? "LLM provider refused for credit state" : msg}`);
           // CHE-329: the feed is public (the live page, get_check_status's
           // recent_events) — it says what happened to the check, not which of
@@ -1584,6 +1599,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // the owner a day later on the customer's page. Its own step, so a
       // retried "fail" cannot count one failure twice; never throws.
       await step.do("file-failure", async () => {
+        // CHE-458: the team's own key running dry is not ours to file.
+        if (teamKeyDry) return null;
         const note = await fileRunFailure(env, runId, { message: msg, budget, ...ended });
         if (note) console.log(`[run-failure] ${note.text}`);
         return note?.text ?? null;

@@ -39,6 +39,7 @@ import { EXTENSION_ON_DEMAND, configureWatch, enableWatchForApp } from "@/lib/wa
 import { BALANCE_PATH, PRICING_PATH, appCanRun, loadPlanStatus } from "@/lib/plan-status";
 import { explainRunPrice } from "@/lib/check-price";
 import { appPriceRange, teamBalance } from "@/lib/plans";
+import { byokRefusal } from "@/lib/byok-credit";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { recountOpenIssuesOfRun } from "@/lib/open-issues";
@@ -328,6 +329,8 @@ export type FailureCode =
   | "quota_free"
   | "quota_site"
   | "quota_balance"
+  // CHE-458: the team's own OpenRouter key cannot pay; nothing to buy from us.
+  | "byok_no_credit"
   | "ephemeral_requires_owner";
 
 // CHE-325: the refusals an upgrade answers carry `upgrade_url`, so the agent
@@ -346,6 +349,8 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows and give them upgrade_url.",
   not_found: "Not one of this team's apps or runs. list_apps and latest_results show what exists.",
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
+  byok_no_credit:
+    "The team's checks run on its own OpenRouter key, and that OpenRouter account has no credit. Tell the user; checks start again on their own once it has credit. Do not retry.",
 };
 
 // What a key of each scope can still do, said with every refusal (CHE-444) —
@@ -515,12 +520,14 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // now — the gate's own decision, so "paused" here is what the scheduler
       // will do on the next tick.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      // CHE-458: a team key that cannot pay stops every app alike.
+      const keyPaused = Boolean(await byokRefusal(db, team.id));
       const perApp = new Map(
         await Promise.all(
           apps.map(async (a) => {
             const [range, can] = await Promise.all([
               appPriceRange(db, { id: team.id, plan }, a.appSlug),
-              appCanRun(db, { id: team.id, plan }, balance, a.appSlug),
+              appCanRun(db, { id: team.id, plan }, balance, a.appSlug, keyPaused),
             ]);
             return [a.id, { range, can }] as const;
           }),
@@ -584,9 +591,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
                     ? "paused"
                     : trial.kind === "ended"
                       ? "trial_ended"
-                      : money && !money.can.ok
-                        ? "paused_balance"
-                        : "active",
+                      : money?.can.why === "team_key"
+                        ? // CHE-458: the team's own OpenRouter key, not our balance.
+                          "paused_team_key"
+                        : money?.can.why === "balance"
+                          ? "paused_balance"
+                          : "active",
                   frequency: a.watch.frequency,
                   next_run_at: a.watch.active ? a.watch.nextRunAt : null,
                   trial_days_left: trial.kind === "active" ? trial.daysLeft : null,
@@ -699,7 +709,18 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // promise the scheduler then silently breaks — seen live 2026-09-28 on a
       // Free team with $0 left. Say what will happen and hand over both ways out.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
-      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug);
+      const keyPaused = await byokRefusal(db, team.id);
+      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug, Boolean(keyPaused));
+      // CHE-458: the team's own key cannot pay — the check waits for it, not for us.
+      if (can.why === "team_key") {
+        return text({
+          ok: true,
+          app_id: result.app.id,
+          app: result.app.appSlug,
+          paused_by_team_key: keyPaused,
+          hint: `Saved, with a recurring check — but it waits: ${keyPaused} Tell the user.`,
+        });
+      }
       if (!can.ok) {
         return text({
           ok: true,
