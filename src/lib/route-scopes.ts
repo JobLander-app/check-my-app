@@ -161,6 +161,11 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/(app)/health/issues/actions.ts#markFinding": { kind: "team", action: "finding.mark" },
   // CHE-434: a comment on an app, a scenario or a run, resolved inside the team.
   "src/app/feedback/actions.ts#giveFeedbackAction": { kind: "team", action: "feedback.write" },
+  // CHE-435: the app's scenarios, each looked up inside the team.
+  "src/app/scenarios/actions.ts#addScenarioAction": { kind: "team", action: "scenario.write" },
+  "src/app/scenarios/actions.ts#updateScenarioAction": { kind: "team", action: "scenario.write" },
+  "src/app/scenarios/actions.ts#replaceScenarioAction": { kind: "team", action: "scenario.write" },
+  "src/app/scenarios/actions.ts#removeScenarioAction": { kind: "team", action: "scenario.write" },
   "src/app/verdict/actions.ts#recheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "src/app/verdict/actions.ts#fullRecheckRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   // CHE-329: "Run it again" on a failed run — the same re-check, same gates.

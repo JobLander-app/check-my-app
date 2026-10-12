@@ -33,6 +33,9 @@ import { AnalyticsProject } from "@/components/analytics-project";
 import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
 import { DeleteAppSection } from "@/components/delete-app";
+import { ScenarioList } from "@/components/scenario-list";
+import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
+import { hasFeature, teamFeatures } from "@/lib/team-features";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +73,9 @@ export default async function AppSettingsSection({
   const isExtension = app.targetKind === "extension";
   const meta = SETTINGS_SECTIONS.find((s) => s.key === section)!;
   const save = updateAppSettings.bind(null, app.id, section);
+  // CHE-435: the scenario list, behind `shopify` like the rest of the pilot.
+  const features = await teamFeatures(db, team.id);
+  const scenarios = section === "scope" && hasFeature(features, "shopify") ? await listScenarios(db, team.id, app.id) : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -98,6 +104,10 @@ export default async function AppSettingsSection({
         >
           {notice.text}
         </p>
+      )}
+
+      {section === "scope" && scenarios && (
+        <ScenarioList appId={app.id} scenarios={scenarios} mayEdit={mayEditScenarios({ scope, features })} />
       )}
 
       {section === "scope" && (

@@ -350,6 +350,8 @@ async function main() {
       counter: { upsert: async () => ({ value: ++serial }) },
       team: { findUnique: async () => ({ topupUsd: 0 }) },
       testAccount: { findMany: async () => [] },
+      // CHE-435: the app's team scenarios join the run's focus; none here.
+      appJourney: { findMany: async () => [] },
       app: { findFirst: async () => app },
       run: {
         ...noSpend,
