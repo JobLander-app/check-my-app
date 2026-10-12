@@ -14,6 +14,7 @@
 // pay again (one 1-token request, at most once an hour per team).
 
 import type { PrismaClient } from "@/generated/prisma/client";
+import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 
 /** The one sentence every place says while the key cannot pay. */
 export const BYOK_NO_CREDIT =
@@ -85,7 +86,8 @@ export async function recordTeamKeyDry(
   now: Date,
 ): Promise<void> {
   await markKeyNoCredit(db, run.teamId, run.byokKeyEnc, now);
-  const row = await db.run.findUnique({ where: { id: run.id }, select: { events: true } });
+  const row = await db.run.findFirst({ where: { ...teamOwned(run.teamId), id: run.id }, select: { events: true } });
+  if (!row) return;
   let events: unknown[] = [];
   try {
     const parsed: unknown = JSON.parse(row?.events ?? "[]");
@@ -94,7 +96,7 @@ export async function recordTeamKeyDry(
     events = [];
   }
   events.push({ at: now.toISOString(), phase: run.phase, icon: "warn", text: BYOK_NO_CREDIT_STOP });
-  await db.run.update({ where: { id: run.id }, data: { events: JSON.stringify(events) } });
+  await db.run.update({ ...alreadyScoped("already read in this request"), where: { id: run.id }, data: { events: JSON.stringify(events) } });
 }
 
 export type Credit = "credit" | "no_credit" | "unknown";
