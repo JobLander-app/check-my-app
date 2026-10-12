@@ -939,6 +939,34 @@ async function main() {
     }
   }
 
+
+  // ─── CHE-86's own bucket: a target that rate-limits us ───────────────────
+  // The sentences are the ones filed on CHE-86 (runs #344, #353, #352): the
+  // product's own limit answering our volume. They landed on "unclassified"
+  // because no class named a refusal that is neither a challenge nor a 403.
+  {
+    console.log("\nrate limit — the target answers 429\n");
+    const T = "https://pr-357.preview.joblander.app";
+    const rl: [string, GapEvidence, GapClass][] = [
+      ["run #344: the demo's preview request returned HTTP 429", { text: 'The request to /api/public/insight-preview returned HTTP 429 (Too Many Requests) and the overlay showed "You\'ve used all free tries".', targetOrigin: T }, "rate_limited"],
+      ["run #353: POST returned 429", { text: "The preview endpoint POST /api/public/insight-preview returned HTTP 429 (Too Many Requests).", targetOrigin: "https://joblander.app" }, "rate_limited"],
+      ["run #265: answered 429", { text: "The widget's preview endpoint (/api/public/insight-preview) answered 429 and the widget showed a gate.", targetOrigin: "https://joblander.app" }, "rate_limited"],
+      ["run #352: a store rate limiting requests", { text: 'The scan could not run: "Store is rate limiting requests. Please try again later."', targetOrigin: "https://securification.ai" }, "rate_limited"],
+      ["a request that was rate-limited", { text: "The second request was rate-limited, so the list never loaded.", targetOrigin: T }, "rate_limited"],
+      // What must not move.
+      ["a price of $429 is not a status", { text: "The Pro plan costs $429 a year and the page did not load.", targetOrigin: T }, "unclassified"],
+      ["a Rate limiting settings page is a product noun, not a refusal", { text: "The Rate limiting settings page could not be read.", targetOrigin: T }, "unclassified"],
+      ["a foreign host's 429 is still not this class", { text: "UNREACHABLE (HTTP 429 from vk.com) https://vk.com/share.php", targetOrigin: "https://theins.ru" }, "egress_unreachable"],
+      ["a 429 beside a named capability keeps that capability (new tab)", { text: "The link opens in a new tab; the page behind it returned HTTP 429.", targetOrigin: T }, "new_tab"],
+      ["a challenge on the target is still a captcha", { text: "A Cloudflare security challenge blocked the page.", targetOrigin: T }, "captcha"],
+    ];
+    for (const [name, ev, want] of rl) {
+      const got = classifyGap(ev);
+      check(`rate limit: ${name}`, got === want, got);
+    }
+    check("rate_limited is a class with its own label (its own ticket)", GAP_CLASSES.rate_limited.label.length > 0 && keyFor("rate_limited") !== PROD_KEYS.unclassified.key);
+  }
+
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
   process.exit(failures ? 1 : 0);
 }
