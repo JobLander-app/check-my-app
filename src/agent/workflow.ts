@@ -43,6 +43,7 @@ import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSigned
 import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
+import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
@@ -1058,6 +1059,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (gap === "missing_access") return completeExtensionAccessCheck(env, runId, (discovery?.costUsd ?? 0) + walkCost);
           if (gap) throw new NonRetryableError("internal: the extension's core result and cleanup were not established; no verdict may be published", "ExtensionRuntimeError");
         }
+        // CHE-453: a session run whose walk met nothing of the app is our
+        // outage (the host's egress died mid-run, run #373): fail it with an
+        // internal reason through the catch below — no verdict, no mail, $0.
+        if (isSession) {
+          const walked = await env.db.journey.findMany({
+            where: { runId },
+            select: { status: true, carriedFromRunId: true, steps: { select: { status: true, unverifiedReason: true } } },
+          });
+          if (sessionWalkReachedNothing(walked)) throw new NonRetryableError(SESSION_OUTAGE_MESSAGE, "SessionOutageError");
+        }
         await transition(env, runId, "writing", { icon: "info", text: "Writing your verdict" });
         const structured = extensionEvidence ? await prepareExtensionPublication(env, runId, extensionEvidence) : null;
         const synth = structured ?? await synthesizeVerdict({ env, llm, runId, anatomy, knowledge }).catch(
@@ -1544,8 +1555,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             }] })) console.warn(`[extension-gap] ${note.text}`);
           } catch (error) { console.warn(`[extension-gap] filing failed: ${String(error)}`); }
         }
-        if (budget) {
-          console.error(`[budget] run ${runId} aborted: LLM provider refused for credit state`);
+        // CHE-453: the session host's egress dying is the same kind of outage —
+        // ours, said in the feed the same way, and the watch tries again.
+        const sessionOutage = err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE);
+        if (budget || sessionOutage) {
+          console.error(`[${budget ? "budget" : "session-outage"}] run ${runId} aborted: ${budget ? "LLM provider refused for credit state" : msg}`);
           // CHE-329: the feed is public (the live page, get_check_status's
           // recent_events) — it says what happened to the check, not which of
           // our providers did it. The retry is promised only where it exists.
