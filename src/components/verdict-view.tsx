@@ -19,7 +19,9 @@ import { explainPrice } from "@/lib/check-price";
 import { CheckPrice } from "@/components/check-price";
 import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
-import { extensionDisplayName, extensionReportPublished } from "@/lib/extension-target";
+import { extensionReportPublished } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { AppName } from "@/components/shopify-mark";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 import { FeedbackThread } from "@/components/feedback-thread";
 import { REASONS_FOR, feedbackForRun, mayComment } from "@/lib/feedback";
@@ -93,6 +95,8 @@ export async function VerdictView({
       },
       watch: { select: { active: true } },
       llmUsage: true,
+      // CHE-457: what the team calls the app — the name alone, nothing else of the row.
+      app: { select: { name: true } },
     },
   });
   if (!run) notFound();
@@ -287,7 +291,9 @@ export async function VerdictView({
         <header className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="mono text-xl text-fg">{run.targetKind === "extension" ? extensionDisplayName(run.targetUrl, run.extensionEvidence) : run.appSlug}</h1>
+              <h1 className="mono text-xl text-fg">
+                <AppName name={appLabel({ ...run, name: run.app?.name }, run.extensionEvidence)} shopify={isShopifyApp(run)} />
+              </h1>
               <p className="mt-1 font-mono text-xs text-fg-faint">
                 Checked{" "}
                 {run.completedAt?.toLocaleString([], {

@@ -36,6 +36,7 @@ import { DeleteAppSection } from "@/components/delete-app";
 import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
 import { hasFeature, teamFeatures } from "@/lib/team-features";
+import { APP_NAME_MAX } from "@/lib/app-label";
 
 export const dynamic = "force-dynamic";
 
@@ -112,6 +113,14 @@ export default async function AppSettingsSection({
 
       {section === "scope" && (
         <form action={save} className="flex flex-col gap-4">
+          {/* CHE-457: what the team calls the app — shown everywhere instead of its address. */}
+          <label className="card block space-y-2 p-5">
+            <span className="text-sm font-medium text-fg">Name</span>
+            <span className="block text-xs text-fg-faint">
+              Shown everywhere instead of {app.appSlug}. The address and the app&apos;s history stay as they are.
+            </span>
+            <Input name="name" maxLength={APP_NAME_MAX} placeholder={app.appSlug} defaultValue={app.name ?? ""} />
+          </label>
           {isExtension && <ExtensionSettings initialValue={readExtensionOptions(app.extensionConfig)} />}
           {/* The owner's voice — visually the loudest thing in the settings. */}
           <div className="rounded-xl border border-accent/40 bg-accent/5 p-5">

@@ -222,6 +222,8 @@ export async function updateAppSettings(appId: string, section: string, formData
   const patch: AppSettingsPatch | null =
     section === "scope"
       ? {
+          // CHE-457: what the team calls the app; a blank box clears it.
+          name: text("name"),
           focusAreas: text("focusAreas"),
           writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
           scopeHints: text("scopeHints"),

@@ -26,7 +26,7 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
   if (!app) {
     const elsewhere = await db.app.findFirst({
       where: { ...memberOfRows(user.id), id: appId },
-      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+      select: { name: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
     });
     if (!elsewhere?.teamId) notFound();
     return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.signIn(appId)} />;

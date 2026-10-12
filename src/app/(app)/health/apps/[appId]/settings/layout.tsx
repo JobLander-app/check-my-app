@@ -2,7 +2,8 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { ShopifyMark } from "@/components/shopify-mark";
 import { sectionsFor } from "@/lib/app-settings-sections";
 import { SettingsNav } from "@/components/app-settings/settings-nav";
 import { RunSavedApp } from "@/components/run-saved-app";
@@ -15,7 +16,7 @@ export default async function AppSettingsLayout({ children, params }: { children
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     select: {
-      id: true, appSlug: true, targetUrl: true, targetKind: true,
+      id: true, name: true, appSlug: true, targetUrl: true, targetKind: true,
       runs: { orderBy: { createdAt: "desc" }, take: 1, select: { extensionEvidence: true } },
     },
   });
@@ -23,16 +24,20 @@ export default async function AppSettingsLayout({ children, params }: { children
   // team it belongs to and offers the switch (CHE-261) — no frame around that.
   if (!app) return <>{children}</>;
   const isExtension = app.targetKind === "extension";
+  const name = appLabel(app, app.runs[0]?.extensionEvidence);
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 py-10">
       <header className="flex flex-col gap-4">
         <div>
           <Link href={appPath.page(app.id)} className="text-xs text-fg-faint hover:underline">
-            ← {isExtension ? extensionDisplayName(app.targetUrl, app.runs[0]?.extensionEvidence) : app.appSlug}
+            ← {name}
           </Link>
           <p className="section-label mt-3">{isExtension ? "extension settings" : "app settings"}</p>
-          <h1 className="text-3xl font-semibold tracking-tight">{isExtension ? extensionDisplayName(app.targetUrl, app.runs[0]?.extensionEvidence) : app.appSlug}</h1>
+          <h1 className="flex items-center gap-2.5 text-3xl font-semibold tracking-tight">
+            {isShopifyApp(app) && <ShopifyMark className="h-7 w-7" />}
+            {name}
+          </h1>
           <p className="break-all text-sm text-fg-muted">{app.targetUrl}</p>
           {isExtension && (
             <div className="mt-4">

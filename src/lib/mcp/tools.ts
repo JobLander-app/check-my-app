@@ -181,6 +181,7 @@ export const toolSchemas = {
   },
   update_app: {
     app_id: appId,
+    name: z.string().max(200).optional().describe("What the team calls the app, shown instead of its address (at most 60 characters); \"\" clears it"),
     scenarios: z.string().max(2000).optional().describe("Replaces the app's scenarios; \"\" clears them"),
     limits: z.string().max(2000).optional().describe("Replaces the limits; \"\" clears them"),
     notes: z.string().max(2000).optional().describe("Replaces the notes; \"\" clears them"),
@@ -438,6 +439,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
+          name: true,
           appSlug: true,
           targetUrl: true,
           targetKind: true,
@@ -500,6 +502,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           return {
             app_id: a.id,
             app: a.appSlug,
+            // CHE-457: what the team calls it — the name people see, or null.
+            name: a.name,
             url: a.targetUrl,
             kind: a.targetKind,
             scenarios: a.focusAreas,
@@ -676,6 +680,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
 
     async update_app(args: {
       app_id: string;
+      name?: string;
       scenarios?: string;
       limits?: string;
       notes?: string;
@@ -694,6 +699,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return fail("invalid_input", 'The default account is removed with test_email "" and test_password "".');
       }
       const patch: AppSettingsPatch = {
+        // CHE-457: "" clears it, as on the settings page.
+        name: args.name,
         focusAreas: args.scenarios,
         scopeHints: args.limits,
         userNotes: args.notes,
@@ -1216,7 +1223,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "the app on that store (signing in only if the account cannot open it); the app's team scenarios come with it. " +
     "Then start_check with shopify_app and store checks the app there.",
   update_app:
-    "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
+    "Change a saved app: its name, scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
     "test_accounts adds or updates named accounts by label; remove_test_accounts deletes them. When a verdict says " +
     "the store password is needed or was not accepted, set it here.",

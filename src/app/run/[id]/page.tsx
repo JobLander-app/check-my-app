@@ -3,7 +3,7 @@ import { getDbFromContext } from "@/lib/db";
 import { RunLive } from "@/components/run-live";
 import { RunFailed } from "@/components/run-failed";
 import { isTerminal } from "@/lib/status";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel, isShopifyApp } from "@/lib/app-label";
 import { failedRunWasFree } from "@/lib/failed-run";
 import { canMutateOwned } from "@/lib/auth";
 import { paidRetryOwed } from "@/lib/recheck";
@@ -38,6 +38,8 @@ export default async function RunPage({
       id: true,
       paidCheckoutSessionId: true,
       testEmail: true,
+      // CHE-457: what the team calls the app, when the check is of a saved one.
+      app: { select: { name: true } },
     },
   });
   if (!run) notFound();
@@ -76,8 +78,9 @@ export default async function RunPage({
     <main className="mx-auto max-w-5xl px-4 py-10">
       <RunLive
         publicId={run.publicId}
-        appSlug={run.targetKind === "extension" ? extensionDisplayName(run.targetUrl, run.extensionEvidence) : run.appSlug}
+        appSlug={appLabel({ ...run, name: run.app?.name }, run.extensionEvidence)}
         isExtension={run.targetKind === "extension"}
+        isShopify={isShopifyApp(run)}
         runNumber={run.runNumber}
         startedAt={run.startedAt.toISOString()}
         notifyEmail={run.notifyEmail}
