@@ -217,7 +217,8 @@ export function signInUrlFor(bindings: Pick<TellBindings, "SESSION_SIGN_IN_URL" 
   return bindings.SESSION_SIGN_IN_URL?.trim() || null;
 }
 
-function sendDeps(bindings: TellBindings, token: string): SendDeps {
+// Exported for the other messages to the owner's chat (CHE-441's digest).
+export function sendDeps(bindings: Pick<TellBindings, "DB">, token: string): SendDeps {
   return {
     d1: async (sql, params) => {
       const answer = await bindings.DB.prepare(sql).bind(...params).all();
