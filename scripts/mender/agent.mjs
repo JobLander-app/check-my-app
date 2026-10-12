@@ -29,6 +29,7 @@ import { join } from "node:path";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
 const LABEL = "mender";
+const LABEL_ID = "f623d304-3b3e-4c10-8af6-9a20b8b2d054";
 const MODEL = process.env.MENDER_MODEL ?? "anthropic/claude-sonnet-5.5";
 const BUDGET = Number(process.env.MENDER_BUDGET ?? 5);
 const MAX_TURNS = Number(process.env.MENDER_MAX_TURNS ?? 8);
@@ -69,10 +70,11 @@ const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8",
 const gh = (args) => sh("gh", args);
 const ghJson = (args) => JSON.parse(gh(args) || "null");
 const clean = (text) => String(text ?? "").replace(/MENDER_DONE/g, "").trim();
-// A run that reached the cap says so: the ticket is too big for one unit and
-// should be split (#306 spent $5.03 over 80 steps; CHE-445).
+// A run that reached the cap says so, and the next attempt splits the ticket
+// first (#306 spent $5.03 over 80 steps; owner 2026-10-12: Mender splits).
+const CAP_NOTE = "cap — Mender splits this ticket next";
 const footer = (r) => `\n\n— Mender · ${MODEL} · ${r.steps} steps · $${Number(r.cost).toFixed(2)}` +
-  (Number(r.cost) >= BUDGET ? ` · **reached the $${BUDGET} cap — consider splitting this ticket**` : "");
+  (Number(r.cost) >= BUDGET ? ` · **reached the $${BUDGET} ${CAP_NOTE}**` : "");
 
 async function linear(query, variables = {}) {
   const r = await fetch("https://api.linear.app/graphql", {
@@ -96,12 +98,46 @@ async function setState(issueId, name) {
 
 // ─── Picking the work ────────────────────────────────────────────────────────
 
-/** Oldest first; a ticket already tried MAX_ATTEMPTS times without a PR steps aside. */
+/** Outside an epic, or in one whose lead labelled the epic too. Picking AND releasing obey it (Codex, #333). */
+export const givenToMender = (i) => !i.parent || i.parent.labels.nodes.some((l) => l.name === LABEL);
+
+// Open = still in flight, triage included (the tracker contract, src/lib/tracker/types.ts).
+export const OPEN = ["triage", "backlog", "unstarted", "started"];
+
+/**
+ * Oldest first; a ticket already tried MAX_ATTEMPTS times without a PR steps
+ * aside. Ticket rules (owner, 2026-10-12): a ticket inside an epic is taken
+ * only when the epic carries the label too — the epic's lead agent says so by
+ * labelling it (CHE-443 was taken from another session's epic unannounced);
+ * and a ticket Mender split waits while its parts are open.
+ */
 export function chooseTicket(issues) {
   return [...issues]
     .filter((i) => ["backlog", "unstarted"].includes(i.state.type))
     .filter((i) => i.comments.nodes.filter((c) => c.body.includes(ATTEMPT_MARK)).length < MAX_ATTEMPTS)
+    .filter(givenToMender)
+    .filter((i) => !(i.children?.nodes ?? []).some((c) => OPEN.includes(c.state.type)))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
+}
+
+/** Paths whose change a user sees: screens and emails. The owner sees them before merge. */
+// Customer sentences live outside JSX too (`*-copy.ts`, `*-mail.ts`; Codex, #333).
+export const UI = [/^src\/(app|components)\/.*\.(tsx|css)$/, /^src\/lib\/[^/]*(email|mail|copy)[^/]*\.tsx?$/, /^public\//];
+export const uiPaths = (paths) => paths.filter((p) => UI.some((re) => re.test(p)));
+
+/** A "[Pilot feedback]" ticket the check got right is answered, not fixed (CHE-441's contract). */
+export const isFeedback = (title) => String(title).startsWith("[Pilot feedback]");
+export const answerOf = (text) => String(text).match(/^Answer: .+$/m)?.[0] ?? null;
+
+// What only Mender's own answer can leak: the model, its cost, its tokens
+// (CLAUDE.md §10; Codex, #333). A verdict never names these, so the shared
+// guard does not look for them.
+export const OUR_MACHINERY = /\$\s?\d|\btokens?\b|\b(claude|sonnet|opus|haiku|gpt|openai|anthropic|openrouter|opencode|mender|llm|ai model|language model)\b/i;
+
+/** The rules CHE-441 applies before mailing an answer, from main's own file (no npm ci here). */
+export async function usableAnswer(answer) {
+  const { hasHomework, hasEnvironmentLeak } = await import("../../src/lib/verdict-language.ts");
+  return !hasHomework(answer) && !hasEnvironmentLeak(answer) && !OUR_MACHINERY.test(answer);
 }
 
 /**
@@ -133,7 +169,7 @@ async function findWork({ release = true } = {}) {
     const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, lastRoundAt: rounds.at(-1)?.createdAt ?? "", roundsUsed: rounds.length });
     if (pending.length) return { kind: "review", pr, pending, round: rounds.length + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() ?? null };
   }
-  const fields = "id identifier title url createdAt state{type name} comments{nodes{body}}";
+  const fields = "id identifier title url createdAt state{type name} comments{nodes{body}} parent{identifier labels{nodes{name}}} children{nodes{state{type}}}";
   const pinned = process.env.TICKET;
   if (pinned) {
     const d = await linear(`query($i:String!){issue(id:$i){${fields}}}`, { i: pinned });
@@ -166,7 +202,7 @@ async function findWork({ release = true } = {}) {
 
 /** Labelled tickets Mender claimed (In Progress) that have no open Mender PR. */
 export function stranded(issues, openTickets) {
-  return issues.filter((i) => i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
+  return issues.filter((i) => givenToMender(i) && i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
 }
 
 // ─── Running the agent ───────────────────────────────────────────────────────
@@ -211,6 +247,8 @@ async function runAgent(prompt) {
     session = r.session; cost += r.cost; steps += r.steps; text = r.text || text;
     say(`turn ${turn + 1}: ${r.steps} steps, $${r.cost.toFixed(4)} (total $${cost.toFixed(4)})`);
     if (/MENDER_BLOCKED/.test(text)) return { status: "blocked", text, cost, steps };
+    if (/MENDER_SPLIT/.test(text)) return { status: "split", text, cost, steps };
+    if (/MENDER_ANSWERED/.test(text)) return { status: "answered", text, cost, steps };
     if (!/MENDER_DONE/.test(text)) { message = "Continue with the ticket. Use your tools; end with MENDER_DONE when the checks pass."; continue; }
     const failing = failingChecks();
     if (!failing) return { status: "done", text, cost, steps };
@@ -248,7 +286,9 @@ async function work() {
   say(`ticket ${issue.identifier}: ${issue.title}`);
   await setState(issue.id, "In Progress");
   const baseSha = sh("git", ["rev-parse", "HEAD"]);
-  const r = await runAgent(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.`);
+  const capped = issue.comments.nodes.some((c) => c.body.includes(CAP_NOTE));
+  const r = await runAgent(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.` +
+    (capped ? ` A previous attempt reached the $${BUDGET} cap: split the ticket first (.mender/MENDER.md "Too big for one pull request").` : ""));
   const patch = r.status === "done" ? patchFrom(baseSha) : "";
   writeFileSync(PATCH, patch);
   writeFileSync(OUT, JSON.stringify({ kind: "ticket", issue, baseSha, result: r, changed: patch.length > 0 }));
@@ -272,7 +312,14 @@ export function stagedPaths(cwd = process.cwd()) {
 function stage(baseSha) {
   sh("git", ["checkout", "-q", "--detach", baseSha]);
   sh("git", ["apply", "--index", "--binary", PATCH]);
-  return forbiddenPaths(stagedPaths());
+  return stagedPaths();
+}
+
+/** A PR that changes screens or emails is labelled `ui`: the reviewer shows the owner before merging. */
+function markUi(url, paths) {
+  if (!uiPaths(paths).length) return;
+  gh(["label", "create", "ui", "--color", "FBCA04", "--description", "Changes screens or emails: owner sees them before merge", "--force"]);
+  gh(["pr", "edit", url, "--add-label", "ui"]);
 }
 
 export function branchFor(issue) {
@@ -320,8 +367,10 @@ async function publish() {
   if (job.kind === "none") return;
   const r = job.result;
   const target = await trustedTarget(job);
+  let paths = [];
   if (job.changed) {
-    const bad = stage(job.baseSha);
+    paths = stage(job.baseSha);
+    const bad = forbiddenPaths(paths);
     if (bad.length) {
       sh("git", ["reset", "-q", "--hard"]);
       job.changed = false;
@@ -332,7 +381,7 @@ async function publish() {
   if (job.kind === "review") {
     const { pr, ticket } = target;
     const round = Math.max(1, Math.min(MAX_ROUNDS, Number(job.round) || 1));
-    if (job.changed) push(pr.headRefName, `Review round ${round} (${ticket})`);
+    if (job.changed) { push(pr.headRefName, `Review round ${round} (${ticket})`); markUi(pr.url, paths); }
     gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${clean(r.text) || "(no report)"}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
     if (ticket) {
       const d = await linear(`query($i:String!){issue(id:$i){id}}`, { i: ticket });
@@ -341,6 +390,35 @@ async function publish() {
     return;
   }
   const { issue } = target;
+  // Split into parts (created by the model with the Linear tools): the ticket
+  // waits in Todo while they are open, and this is not a failed attempt —
+  // unless no open part exists on Linear, whatever the model said (Codex, #333).
+  if (r.status === "split") {
+    const d = await linear(`query($i:String!){issue(id:$i){children{nodes{id state{type} labels{nodes{name}}}}}}`, { i: issue.id });
+    const parts = d.issue.children.nodes.filter((c) => OPEN.includes(c.state.type));
+    // Every open part enters the queue, whether or not the model labelled it.
+    for (const c of parts.filter((c) => !c.labels.nodes.some((l) => l.name === LABEL))) {
+      await linear("mutation($i:String!,$l:String!){issueAddLabel(id:$i,labelId:$l){success}}", { i: c.id, l: LABEL_ID });
+    }
+    if (parts.length) {
+      await comment(issue.id, `**Mender split this ticket** into the sub-issues below; each is taken on its own.\n\n${clean(r.text)}${footer(r)}`);
+      return setState(issue.id, "Todo");
+    }
+    r.status = "split without sub-issues";
+  }
+  // A "[Pilot feedback]" report the check got right: Canceled with a comment
+  // that starts "Answer: …", which CHE-441 mails to its author. The model only
+  // writes the answer; the state is set here, only on a feedback ticket, only
+  // for an answer the customer-language rules pass (the mail would refuse it
+  // and the report would wait forever), and the answer comment carries nothing
+  // else — the author reads all of it (Codex, #333).
+  const answer = r.status === "answered" && !job.changed && isFeedback(issue.title) ? answerOf(r.text) : null;
+  if (answer && (await usableAnswer(answer))) {
+    await comment(issue.id, `**Mender: the check was right.**${footer(r)}`);
+    await comment(issue.id, answer);
+    return setState(issue.id, "Canceled");
+  }
+  if (answer) r.status = "answer refused by the customer-language rules";
   if (!job.changed) {
     await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${clean(r.text) || "(no report)"}${footer(r)}`);
     return setState(issue.id, "Todo");
@@ -353,6 +431,7 @@ async function publish() {
   const existing = gh(["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty"]);
   const url = existing || gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
     "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerged by a person, never by Mender.`]);
+  markUi(url, paths);
   gh(["pr", "comment", url, "--body", "@coderabbitai review"]);
   await comment(issue.id, `${ATTEMPT_MARK}\n**Pull request opened:** ${url}\nCodeRabbit asked to review.\n\n${clean(r.text)}${footer(r)}`);
   await setState(issue.id, "In Review");

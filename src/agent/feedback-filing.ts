@@ -125,7 +125,9 @@ async function draftFor(env: AgentEnv, board: GapBoard, row: Row) {
   return {
     title: `[Pilot feedback] ${app?.appSlug ?? "app"} · ${what}: ${firstWords}`.slice(0, 200),
     description: lines.join("\n"),
-    labelNames: ["pilot-feedback"],
+    // Mender takes every report (owner, 2026-10-12): it fixes the checker, or
+    // answers "Answer: …" when the check was right (.mender/MENDER.md).
+    labelNames: ["pilot-feedback", "mender"],
     stateName: "Backlog",
     priority: row.reason === "wrong" || row.reason === "not_checked" ? 2 : 3,
   };
