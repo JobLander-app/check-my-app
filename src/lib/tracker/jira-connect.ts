@@ -5,7 +5,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { encryptSecret } from "@/lib/crypto";
 import { alreadyScoped } from "@/lib/tenant-db";
-import { exchangeJiraCode, freshJiraToken, jiraProjects, jiraSites, type JiraCreds, type JiraTokenRow } from "./jira";
+import { JiraTracker, exchangeJiraCode, freshJiraToken, jiraProjects, jiraSites, type JiraCreds, type JiraTokenRow } from "./jira";
 import { retireTrackerLinks } from "./provider-switch";
 
 export type JiraConnectOutcome = "jira_connected" | "jira_choose_project" | "jira_failed" | "jira_no_site" | "jira_no_project";
@@ -87,6 +87,22 @@ export async function jiraChoices(db: PrismaClient, row: JiraTokenRow, creds: Ji
     ),
   );
   return perSite.flat();
+}
+
+/**
+ * Required fields of the chosen project that a ticket of ours cannot fill, for
+ * the Integrations card: a project that would refuse every ticket is said to
+ * be one before a finding is lost to it.
+ */
+export async function jiraProjectBlockers(
+  db: PrismaClient,
+  row: JiraTokenRow & { teamId: string | null; externalOrg: string | null; externalUrl: string | null },
+  creds: JiraCreds,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  if (!row.teamId || !row.externalOrg) return [];
+  const token = await freshJiraToken(db, row, creds, fetchImpl);
+  return new JiraTracker(token, row.externalOrg, row.teamId, row.externalUrl ?? "", fetchImpl).blockers();
 }
 
 export type JiraChoiceOutcome = "chosen" | "not_jira" | "unknown_choice";

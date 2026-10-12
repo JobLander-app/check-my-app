@@ -33,7 +33,7 @@ import { AnalyticsProject } from "@/components/analytics-project";
 import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
 import { JiraProjectSelect } from "@/components/jira-project-select";
-import { jiraChoices } from "@/lib/tracker/jira-connect";
+import { jiraChoices, jiraProjectBlockers } from "@/lib/tracker/jira-connect";
 import { DeleteAppSection } from "@/components/delete-app";
 import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
@@ -451,6 +451,10 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
         () => [] as { value: string; label: string }[],
       )
     : [];
+  // Required fields of the chosen project that a ticket of ours cannot fill.
+  const jiraBlockers = jira
+    ? await jiraProjectBlockers(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(() => [] as string[])
+    : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
   const [projectChoices, fromAction, github] = await Promise.all([
@@ -553,6 +557,11 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
             )}
             {jira && !jira.teamId && (
               <p className="text-xs text-status-confusing">⚠ No project chosen yet — nothing is filed until one is.</p>
+            )}
+            {jira?.teamId && jiraBlockers.length > 0 && (
+              <p className="text-xs text-status-broken">
+                ⚠ Tickets can&apos;t be filed in {jira.teamId}: it requires {jiraBlockers.join(", ")}, which CheckMyApp can&apos;t fill. Choose another project.
+              </p>
             )}
             {jira && jiraProjects.length > 0 && (
               <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">

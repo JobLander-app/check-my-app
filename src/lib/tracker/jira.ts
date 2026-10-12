@@ -113,6 +113,22 @@ export async function jiraProjects(accessToken: string, cloudId: string, fetchIm
   return out;
 }
 
+export interface JiraCreateField {
+  fieldId: string;
+  name?: string;
+  required?: boolean;
+  hasDefaultValue?: boolean;
+}
+
+// What a ticket of ours sets, or Jira sets on its own (the reporter is the
+// account that files).
+const WE_SET = new Set(["summary", "project", "issuetype", "description", "labels", "priority", "reporter"]);
+
+/** Required fields with no default that a ticket of ours does not set. */
+export function unfillableFields(fields: JiraCreateField[]): string[] {
+  return fields.filter((f) => f.required && !f.hasDefaultValue && !WE_SET.has(f.fieldId)).map((f) => f.name ?? f.fieldId);
+}
+
 export interface JiraIssueType {
   id: string;
   name: string;
@@ -239,12 +255,55 @@ export class JiraTracker implements Tracker {
     return this.issueType;
   }
 
+  // The create screen of the chosen type, read once: which fields a ticket may
+  // set, and which required ones it cannot. null = Jira would not say.
+  private plan: { settable: Set<string> | null; blockers: string[] } | undefined;
+
+  private async filingPlan(): Promise<{ settable: Set<string> | null; blockers: string[] }> {
+    if (this.plan) return this.plan;
+    const type = await this.projectIssueType();
+    let fields: JiraCreateField[] | null = null;
+    if (type) {
+      fields = [];
+      let startAt = 0;
+      for (let page = 0; page < 10; page++) {
+        const res = await this.call(`/issue/createmeta/${encodeURIComponent(this.projectKey)}/issuetypes/${encodeURIComponent(type.id)}?startAt=${startAt}&maxResults=100`);
+        if (!res.ok) {
+          fields = null;
+          break;
+        }
+        const body = (await res.json()) as { fields?: JiraCreateField[]; results?: JiraCreateField[]; total?: number };
+        const got = body.fields ?? body.results ?? [];
+        fields.push(...got);
+        startAt += got.length;
+        if (got.length === 0 || (body.total ?? 0) <= startAt) break;
+      }
+    }
+    this.plan = fields ? { settable: new Set(fields.map((f) => f.fieldId)), blockers: unfillableFields(fields) } : { settable: null, blockers: [] };
+    return this.plan;
+  }
+
+  /** Required fields of the project's create screen that a ticket of ours cannot fill. */
+  async blockers(): Promise<string[]> {
+    return (await this.filingPlan()).blockers;
+  }
+
   async createIssue(draft: TicketDraft): Promise<CreatedIssue> {
+    // A project whose create screen requires a field we cannot fill would
+    // refuse every ticket; say which field, rather than send one to fail.
+    const plan = await this.filingPlan();
+    if (plan.blockers.length > 0) {
+      throw new Error(`Jira project ${this.projectKey} requires ${plan.blockers.join(", ")}, which CheckMyApp cannot fill`);
+    }
+    // Only what the create screen offers is sent; when Jira would not say,
+    // everything, as before.
+    const offers = (field: string) => !plan.settable || plan.settable.has(field);
+    const labels = draft.labelNames.map(jiraLabel);
     const base = {
       project: { key: this.projectKey },
       summary: draft.title.slice(0, 250),
-      description: toAdf(draft.description),
-      labels: draft.labelNames.map(jiraLabel),
+      ...(offers("description") ? { description: toAdf(draft.description) } : {}),
+      ...(offers("labels") && labels.length > 0 ? { labels } : {}),
     };
     const priority = { name: PRIORITY_NAMES[draft.priority] ?? "Medium" };
     // The type the project offers (projectIssueType); when Jira would not say,
@@ -253,7 +312,7 @@ export class JiraTracker implements Tracker {
     const type = await this.projectIssueType();
     const attempts = type
       ? [
-          { ...base, issuetype: { id: type.id }, priority },
+          ...(offers("priority") ? [{ ...base, issuetype: { id: type.id }, priority }] : []),
           { ...base, issuetype: { id: type.id } },
         ]
       : [

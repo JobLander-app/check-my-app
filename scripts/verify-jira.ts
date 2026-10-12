@@ -24,7 +24,7 @@ process.env.CREDENTIALS_SECRET ??= "verify-jira-secret";
 
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
-import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken, jiraProjects, pickIssueType } from "../src/lib/tracker/jira";
+import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken, jiraProjects, pickIssueType, unfillableFields } from "../src/lib/tracker/jira";
 import { chooseJiraProject, connectJira, jiraChoices } from "../src/lib/tracker/jira-connect";
 import { saveLinearGrant } from "../src/lib/tracker/linear-connect";
 import { trackerFor } from "../src/lib/tracker/factory";
@@ -57,6 +57,16 @@ function fakeAtlassian() {
       { id: "2", name: "Task", subtask: false, hierarchyLevel: 0 },
       { id: "3", name: "Sub-task", subtask: true, hierarchyLevel: -1 },
     ] as { id: string; name: string; subtask: boolean; hierarchyLevel: number }[] | null,
+    // createmeta per type: the create screen; null = Jira refuses to say.
+    fields: [
+      { fieldId: "summary", name: "Summary", required: true },
+      { fieldId: "project", name: "Project", required: true },
+      { fieldId: "issuetype", name: "Issue Type", required: true },
+      { fieldId: "reporter", name: "Reporter", required: true, hasDefaultValue: false },
+      { fieldId: "description", name: "Description", required: false },
+      { fieldId: "labels", name: "Labels", required: false },
+      { fieldId: "priority", name: "Priority", required: false },
+    ] as { fieldId: string; name: string; required: boolean; hasDefaultValue?: boolean }[] | null,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -82,6 +92,10 @@ function fakeAtlassian() {
       return json(200, { values: all.slice(startAt, startAt + max), startAt, isLast: startAt + max >= all.length });
     }
     const api = "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3";
+    if (/\/issue\/createmeta\/[^/]+\/issuetypes\/[^/?]+/.test(url)) {
+      if (!state.fields) return json(500, {});
+      return json(200, { fields: state.fields, total: state.fields.length, startAt: 0 });
+    }
     if (url.startsWith(`${api}/issue/createmeta/`)) {
       if (!state.issueTypes) return json(500, {});
       return json(200, { issueTypes: state.issueTypes, total: state.issueTypes.length, startAt: 0 });
@@ -204,6 +218,28 @@ async function main() {
     const task = await blind.createIssue({ title: "No bugs here", description: "x", labelNames: [], stateName: "Backlog", priority: 3 });
     eq("create: without the project's types, a project without Bug gets a Task", [task.identifier, lastPostedType().name], ["SEC-3", "Task"]);
     atl.state.noBug = false;
+    atl.state.issueTypes = [{ id: "1", name: "Bug", subtask: false, hierarchyLevel: 0 }];
+
+    // The create screen decides what is sent.
+    const lastPostedFields = () => (atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).at(-1)!.body as { fields: Record<string, unknown> }).fields;
+    const defaultFields = atl.state.fields!;
+    atl.state.fields = defaultFields.filter((f) => f.fieldId !== "labels" && f.fieldId !== "priority");
+    await new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl).createIssue({ title: "Plain screen", description: "x", labelNames: ["checkmyapp"], stateName: "Backlog", priority: 2 });
+    eq("create: labels and priority are left out when the create screen has no such fields", ["labels" in lastPostedFields(), "priority" in lastPostedFields(), "description" in lastPostedFields()], [false, false, true]);
+
+    atl.state.fields = [...defaultFields, { fieldId: "customfield_10010", name: "Team", required: true, hasDefaultValue: false }];
+    const postsBefore = atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).length;
+    const blocked = new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl);
+    const refused = await blocked.createIssue({ title: "Needs a team", description: "x", labelNames: [], stateName: "Backlog", priority: 3 }).then(() => null, (e) => e);
+    check("create: a required field we cannot fill is named, and no ticket is sent to fail", refused instanceof Error && /Team/.test(refused.message) && atl.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issue")).length === postsBefore, String(refused));
+    eq("create: …the same field is what the card shows", await blocked.blockers(), ["Team"]);
+    atl.state.fields = [...defaultFields, { fieldId: "customfield_10010", name: "Team", required: true, hasDefaultValue: true }];
+    eq("create: a required field with a default is Jira's to fill", await new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl).blockers(), []);
+    eq("create: the reporter, required on many screens, is Jira's to fill", unfillableFields([{ fieldId: "reporter", name: "Reporter", required: true }]), []);
+    atl.state.fields = null;
+    await new JiraTracker("at-x", "cloud-1", "SEC", "https://securify.atlassian.net", atl.fetchImpl).createIssue({ title: "Screen unknown", description: "x", labelNames: ["checkmyapp"], stateName: "Backlog", priority: 2 });
+    check("create: when Jira will not show the screen, labels and priority are sent as before", "labels" in lastPostedFields() && "priority" in lastPostedFields());
+    atl.state.fields = defaultFields;
 
     await tracker.addComment("SEC-1", "Still present in run #4");
     check("comment: posted on the issue as ADF", atl.calls.some((c) => c.url.endsWith("/issue/SEC-1/comment") && (c.body as { body: { type: string } }).body.type === "doc"));
