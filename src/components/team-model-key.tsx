@@ -11,9 +11,10 @@ import { ONLY_ADMINS, keyStatusLine, type StoredKey } from "@/lib/byok-copy";
 // everyone else on the team sees whether there is one. The browser only ever
 // gets the masked form — the key itself stays on the server. A key that can no
 // longer be read is said to be unusable, never shown as working.
-export function TeamModelKey({ stored, mayManage }: { stored: StoredKey; mayManage: boolean }) {
+export function TeamModelKey({ stored, mayManage, noCredit = false }: { stored: StoredKey; mayManage: boolean; noCredit?: boolean }) {
   const [state, formAction] = useActionState(setTeamByokAction, null);
-  const status = keyStatusLine(stored);
+  // CHE-458: a key just saved and found with no credit says so at once.
+  const status = keyStatusLine(stored, noCredit || Boolean(state?.noCredit));
 
   return (
     <section className="card mt-6 p-6">
@@ -30,7 +31,8 @@ export function TeamModelKey({ stored, mayManage }: { stored: StoredKey; mayMana
             <SaveButton replacing={Boolean(stored)} />
           </form>
           {state?.error && <p className="mt-2 text-sm text-status-broken">{state.error}</p>}
-          {state?.saved && <p className="mt-2 text-sm text-fg-muted">Saved. New checks run on {state.saved}.</p>}
+          {state?.saved && !state.noCredit && <p className="mt-2 text-sm text-fg-muted">Saved. New checks run on {state.saved}.</p>}
+          {state?.saved && state.noCredit && <p className="mt-2 text-sm text-fg-muted">Saved {state.saved}.</p>}
           {stored && (
             <form action={removeTeamByokAction} className="mt-4">
               <Button type="submit" variant="outline" className="py-1.5">Remove key</Button>

@@ -21,6 +21,8 @@ import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
 import { isPendingShopifyApp } from "@/lib/session-view";
 import { teamByokKeyEnc } from "@/lib/byok";
+import { recheckPausedKeys } from "@/lib/byok-credit";
+import { decryptSecret } from "@/lib/crypto";
 import { focusForRun, mergeFocus } from "@/lib/scenarios";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
@@ -83,6 +85,16 @@ export async function runDueWatches(
     await sweepExpiredEphemeral(env, now);
   } catch (err) {
     console.warn(`[janitor] ephemeral sweep failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // CHE-458: a team whose own OpenRouter key could not pay — asked again once
+  // an hour, before the due watches are read, so a key topped up since starts
+  // its watches in this same tick.
+  try {
+    const resumed = await recheckPausedKeys(env.db, now, decryptSecret);
+    if (resumed.length) console.log(`[byok] key can pay again: ${resumed.join(", ")}`);
+  } catch (err) {
+    console.warn(`[byok] re-check of paused keys failed: ${err instanceof Error ? err.message : err}`);
   }
 
   // CHE-423: a run whose hand-off to the workflow threw is still `queued` with
@@ -198,6 +210,10 @@ export async function runDueWatches(
         if (!admitted.ok) {
           skipped++;
           console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — ${admitted.reason}`);
+          // CHE-458: the team's own key cannot pay. The watch is not paused and
+          // nobody is mailed about a balance: it stays due, and starts on the
+          // first tick after the key can pay again (recheckPausedKeys).
+          if (admitted.code === "byok_no_credit") continue;
           await pauseBalanceUsedUp(env, bindings, { ...watch, teamId: watch.teamId, plan, reason: admitted.reason }, now);
           continue;
         }

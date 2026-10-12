@@ -764,6 +764,13 @@ model Team {
   // for every team whose checks run on our key and our bill. When set, the
   // team's checks are free on our balance — their OpenRouter account pays.
   openrouterKeyEnc String?
+  // CHE-458: when the team's key was found to have no credit (a check on it got
+  // OpenRouter's 402, or the check at save did). While set, nothing starts on
+  // the key and every place says why; cleared by a new key or by the scheduler
+  // finding the key can pay again. `openrouterKeyCheckedAt` paces that
+  // re-check (once an hour per team).
+  openrouterKeyNoCreditAt DateTime?
+  openrouterKeyCheckedAt  DateTime?
 
   topUps BalanceTopUp[]
   memberships Membership[]

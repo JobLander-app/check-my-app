@@ -9,6 +9,7 @@
 // therefore $0 for every run that carries byokKeyEnc (enforced in pricing.ts).
 
 import type { PrismaClient } from "@/generated/prisma/client";
+import { probeKeyCredit, type Credit } from "@/lib/byok-credit";
 
 /**
  * The encrypted BYOK key for a team, or null if the team has no BYOK key.
@@ -71,14 +72,23 @@ export async function saveTeamKey(
   db: PrismaClient,
   teamId: string,
   key: string,
-  deps: { check?: (key: string) => Promise<KeyCheck>; encrypt: (plain: string) => string },
-): Promise<{ ok: true; masked: string } | { ok: false; reason: string }> {
+  deps: { check?: (key: string) => Promise<KeyCheck>; encrypt: (plain: string) => string; probe?: (key: string) => Promise<Credit>; now?: Date },
+): Promise<{ ok: true; masked: string; noCredit: boolean } | { ok: false; reason: string }> {
   const k = key.trim();
   if (!k) return { ok: false, reason: "Paste the key first." };
   const verdict = await (deps.check ?? checkOpenRouterKey)(k);
   if (!verdict.ok) return verdict;
-  await db.team.update({ where: { id: teamId }, data: { openrouterKeyEnc: deps.encrypt(k) } });
-  return { ok: true, masked: maskKey(k) };
+  // CHE-458: a key OpenRouter accepts can still sit on an account with no
+  // credit (Securify, 2026-10-12). Asked once here, so the pause shows the
+  // moment the key is added rather than after a check fails on it; a new key
+  // also clears the pause an old one left.
+  const now = deps.now ?? new Date();
+  const noCredit = (await (deps.probe ?? probeKeyCredit)(k)) === "no_credit";
+  await db.team.update({
+    where: { id: teamId },
+    data: { openrouterKeyEnc: deps.encrypt(k), openrouterKeyNoCreditAt: noCredit ? now : null, openrouterKeyCheckedAt: now },
+  });
+  return { ok: true, masked: maskKey(k), noCredit };
 }
 
 // What the Team page says about a stored key: its masked form, or that it can

@@ -39,6 +39,7 @@ import { EXTENSION_ON_DEMAND, configureWatch, enableWatchForApp } from "@/lib/wa
 import { BALANCE_PATH, PRICING_PATH, appCanRun, loadPlanStatus } from "@/lib/plan-status";
 import { explainRunPrice } from "@/lib/check-price";
 import { appPriceRange, teamBalance } from "@/lib/plans";
+import { byokRefusal } from "@/lib/byok-credit";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
 import { recountOpenIssuesOfRun } from "@/lib/open-issues";
@@ -327,6 +328,8 @@ export type FailureCode =
   | "quota_free"
   | "quota_site"
   | "quota_balance"
+  // CHE-458: the team's own OpenRouter key cannot pay; nothing to buy from us.
+  | "byok_no_credit"
   | "ephemeral_requires_owner";
 
 // CHE-325: the refusals an upgrade answers carry `upgrade_url`, so the agent
@@ -345,6 +348,8 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows and give them upgrade_url.",
   not_found: "Not one of this team's apps or runs. list_apps and latest_results show what exists.",
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
+  byok_no_credit:
+    "The team's checks run on its own OpenRouter key, and that OpenRouter account has no credit. Tell the user; checks start again on their own once it has credit. Do not retry.",
 };
 
 // What a key of each scope can still do, said with every refusal (CHE-444) —
@@ -513,12 +518,14 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // now — the gate's own decision, so "paused" here is what the scheduler
       // will do on the next tick.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      // CHE-458: a team key that cannot pay stops every app alike.
+      const keyPaused = Boolean(await byokRefusal(db, team.id));
       const perApp = new Map(
         await Promise.all(
           apps.map(async (a) => {
             const [range, can] = await Promise.all([
               appPriceRange(db, { id: team.id, plan }, a.appSlug),
-              appCanRun(db, { id: team.id, plan }, balance, a.appSlug),
+              appCanRun(db, { id: team.id, plan }, balance, a.appSlug, keyPaused),
             ]);
             return [a.id, { range, can }] as const;
           }),

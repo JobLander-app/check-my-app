@@ -32,6 +32,7 @@ import {
 } from "@/lib/plans";
 import { BALANCE_PATH, PRICING_PATH } from "@/lib/balance-links";
 import { teamOwned } from "@/lib/tenant-db";
+import { byokRefusal } from "@/lib/byok-credit";
 
 export { BALANCE_PATH, PRICING_PATH };
 
@@ -59,6 +60,9 @@ export interface PlanStatus {
   upgrade_url: string;
   // Top up the balance ($10, $25 or $50).
   buy_url: string;
+  // CHE-458: the team's checks run on its own OpenRouter key and that key
+  // cannot pay — the sentence that says so, or null.
+  paused_by_team_key: string | null;
 }
 
 export function balanceBlock(b: TeamBalance): PlanStatus["balance"] {
@@ -78,9 +82,10 @@ export async function loadPlanStatus(
   now: Date = new Date(),
 ): Promise<PlanStatus> {
   const free = team.plan === "free";
-  const [balance, watchesActive, trialWatches] = await Promise.all([
+  const [balance, watchesActive, keyPaused, trialWatches] = await Promise.all([
     teamBalance(db, team, now),
     activeWatchCount(db, team.id),
+    byokRefusal(db, team.id),
     // Only Free has a trial (watchTrialState answers "none" for any other plan).
     free
       ? db.watch.findMany({
@@ -109,6 +114,7 @@ export async function loadPlanStatus(
     watch_trial,
     upgrade_url: `${origin}${PRICING_PATH}`,
     buy_url: `${origin}${BALANCE_PATH}`,
+    paused_by_team_key: keyPaused,
   };
 }
 
@@ -121,9 +127,12 @@ export async function appCanRun(
   team: { id: string; plan: UserPlan },
   balance: TeamBalance,
   appSlug: string,
+  // CHE-458: the gate's own answer when the team's key cannot pay (the caller
+  // reads it once for all apps).
+  keyPaused = false,
 ): Promise<{ ok: boolean; estimate_usd: number }> {
   const estimate = await estimateCheckPrice(db, team, appSlug);
-  return { ok: balanceDecision(team.plan, balance, estimate).ok, estimate_usd: estimate };
+  return { ok: !keyPaused && balanceDecision(team.plan, balance, estimate).ok, estimate_usd: estimate };
 }
 
 // ---------------------------------------------------------------------------
