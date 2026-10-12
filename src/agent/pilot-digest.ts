@@ -39,14 +39,15 @@ export async function buildPilotDigest(db: PrismaClient, now: Date): Promise<str
   let anything = false;
   for (const team of teams) {
     const runs = await db.run.findMany({
-      where: { ...systemWide("measurement"), teamId: team.id, completedAt: { gte: since }, status: { in: ["completed", "partial"] } },
+      // Both ends at the tick, so a late delivery counts nothing twice (Codex on #321).
+      where: { ...systemWide("measurement"), teamId: team.id, completedAt: { gte: since, lte: now }, status: { in: ["completed", "partial"] } },
       select: { id: true, appSlug: true, verdict: true, bottomLine: true },
       orderBy: { completedAt: "asc" },
     });
     // Typed by Prisma's own filter, so a misspelled field fails the build (Codex on #321).
     const count = (where: Prisma.FeedbackWhereInput) => db.feedback.count({ where: { ...systemWide("measurement"), teamId: team.id, ...where } });
     const [newReports, fixed, wontFix, open] = await Promise.all([
-      count({ createdAt: { gte: since } }),
+      count({ createdAt: { gte: since, lte: now } }),
       count({ status: "fixed" }),
       count({ status: "wont_fix" }),
       count({ status: { in: ["open", "filing", "filed"] } }),
@@ -79,7 +80,27 @@ export async function buildPilotDigest(db: PrismaClient, now: Date): Promise<str
     lines.push(`  reports: ${newReports} new today; all time ${open} open, ${fixed} fixed, ${wontFix} not a mistake`);
   }
   if (!anything) return null;
-  return [`Пилот Shopify, ${now.toISOString().slice(0, 10)} (за 24 ч):`, ...lines].join("\n");
+  return capDigest([`Пилот Shopify, ${now.toISOString().slice(0, 10)} (за 24 ч):`, ...lines]);
+}
+
+// Telegram refuses a message over 4096 characters outright, and a refused
+// digest would be retried, refused again, and never read (Codex on #321). The
+// digest keeps whole lines up to the limit and says how many it left out.
+export const TELEGRAM_MAX = 4096;
+export function capDigest(lines: string[], max = TELEGRAM_MAX): string {
+  const out: string[] = [];
+  let used = 0;
+  const room = max - 40;
+  for (let i = 0; i < lines.length; i++) {
+    const next = lines[i].length + 1;
+    if (used + next > room) {
+      out.push(`… и ещё ${lines.length - i} строк — полностью в D1.`);
+      break;
+    }
+    out.push(lines[i]);
+    used += next;
+  }
+  return out.join("\n");
 }
 
 export type DigestOutcome = "not_now" | "off" | "nothing" | "sent" | "already" | "failed";

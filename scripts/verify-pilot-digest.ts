@@ -12,7 +12,7 @@
 
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
-import { buildPilotDigest, digestSendId, sendPilotDigest } from "../src/agent/pilot-digest";
+import { TELEGRAM_MAX, buildPilotDigest, capDigest, digestSendId, sendPilotDigest } from "../src/agent/pilot-digest";
 import type { SendDeps } from "../src/lib/telegram-send";
 import { calls, source } from "./fixtures/ts-source";
 
@@ -87,6 +87,10 @@ async function main() {
   }
 
   // Wired into the scheduler's tick.
+  // Within Telegram's limit, whatever the number of teams (Codex on #321).
+  const long = capDigest(Array.from({ length: 400 }, (_, i) => `• team ${i} — checks: 3 (all_good 3)`));
+  check("a digest never exceeds Telegram's 4096 characters, and says what it left out", long.length <= TELEGRAM_MAX && /и ещё \d+ строк/.test(long), String(long.length));
+  check("…a short one is untouched", capDigest(["a", "b"]) === "a\nb");
   const tick = calls(source("src/agent/index.ts")).find((c) => c.callee === "sendPilotDigest");
   check("the scheduler calls it on every tick", Boolean(tick));
   // A cron event delivered late still counts as its own hour and day (Codex on #321).
