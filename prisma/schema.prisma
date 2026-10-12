@@ -910,6 +910,27 @@ model AppNotifier {
   @@index([userId])
 }
 
+// CHE-443: the admin is told once about each cause that keeps a step of an app
+// from being checked (a missing store password, a stopped-on-purpose rule), not
+// once per run — the same cause on the next run mails nothing. The row is the
+// memory of that: unique per app and cause, created before the mail goes out
+// (so two runs finishing together cannot both send) and stamped when it has.
+// A row with no `sentAt` is a mail that did not go and is tried again.
+model CauseNotice {
+  id         String    @id @default(cuid())
+  app        App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  appId      String
+  // A StepCause (src/lib/step-cause.ts), e.g. "missing_access:store_password".
+  cause      String
+  // The run that first met it, so the mail can say where it was seen.
+  firstRunId String
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([appId, cause])
+  @@index([appId])
+}
+
 model TeamInvite {
   id     String @id @default(cuid())
   team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
@@ -1047,6 +1068,7 @@ model App {
   notifiers AppNotifier[]
   watch   Watch?
   tracker TrackerIntegration?
+  causeNotices CauseNotice[]
   repo    RepoIntegration?
   policy  TicketPolicy?
   // CHE-369: the repository this app is deployed from — one per app, the

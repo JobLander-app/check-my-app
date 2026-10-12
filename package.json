@@ -28,6 +28,7 @@
     "agent:dev": "wrangler dev --config wrangler-agent.jsonc",
     "agent:typecheck": "tsc --noEmit -p tsconfig.agent.json",
     "verify:all": "node scripts/verify-all.mjs",
+    "verify:step-causes": "tsx --tsconfig tsconfig.json scripts/verify-step-causes.ts",
     "verify:gates": "tsx --tsconfig tsconfig.json scripts/verify-credential-gate.ts",
     "verify:invite-mail": "tsx --tsconfig tsconfig.json scripts/verify-invite-mail.ts",
     "verify:doer": "node scripts/verify-doer.mjs",
