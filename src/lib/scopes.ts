@@ -52,6 +52,8 @@ export type TeamAction =
   | "member.scope.change"
   | "apikey.manage"
   | "billing.manage"
+  // CHE-446: the team's name, as everyone on it and every invite reads it.
+  | "team.rename"
   | "team.delete";
 
 export const TEAM_ACTIONS: TeamAction[] = [
@@ -74,6 +76,7 @@ export const TEAM_ACTIONS: TeamAction[] = [
   "member.scope.change",
   "apikey.manage",
   "billing.manage",
+  "team.rename",
   "team.delete",
 ];
 
@@ -99,6 +102,7 @@ export const ADMIN_ONLY: TeamAction[] = [
   "member.scope.change",
   "apikey.manage",
   "billing.manage",
+  "team.rename",
   "team.delete",
 ];
 
@@ -126,6 +130,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "member.scope.change": true,
     "apikey.manage": true,
     "billing.manage": true,
+    "team.rename": true,
     "team.delete": true,
   },
   member: {
@@ -148,6 +153,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "member.scope.change": false,
     "apikey.manage": false,
     "billing.manage": false,
+    "team.rename": false,
     "team.delete": false,
   },
   reader: {
@@ -170,6 +176,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "member.scope.change": false,
     "apikey.manage": false,
     "billing.manage": false,
+    "team.rename": false,
     "team.delete": false,
   },
 };

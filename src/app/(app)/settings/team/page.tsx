@@ -15,6 +15,7 @@ import { storedKeyView } from "@/lib/byok";
 import { decryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
 import { TeamModelKey } from "@/components/team-model-key";
+import { TeamNameForm } from "@/components/team-name-form";
 import {
   changeScopeAction,
   inviteMemberAction,
@@ -94,6 +95,8 @@ export default async function TeamPage() {
           .
         </p>
       </header>
+
+      {can(scope, "team.rename") && <TeamNameForm name={team.name} />}
 
       {/* CHE-356: the plan in one line, in Billing's own sentence; the money
           itself — what the apps cost, top-ups, invoices — is on Billing. */}

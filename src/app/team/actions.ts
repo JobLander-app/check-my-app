@@ -32,6 +32,7 @@ import { getStripeEnv } from "@/lib/stripe";
 import { saveTeamKey } from "@/lib/byok";
 import { encryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
+import { renameTeam } from "@/lib/team-name";
 import type { UserPlan } from "@/lib/enums";
 import type { TeamScope } from "@/lib/scopes";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -167,6 +168,29 @@ export async function removeMemberAction(userId: string): Promise<void> {
     summary: `removed ${email} from the team — their apps, checks and tickets stayed`,
   });
   revalidatePath("/settings/team");
+}
+
+// CHE-446: the team's name. Admin only; the server refuses a member whatever
+// the page shows. Everything that names the team reads Team.name, so the
+// switcher, the next invite and the MCP instructions follow on their own.
+export type TeamNameFormState = { error?: string; saved?: string } | null;
+
+export async function renameTeamAction(_prev: TeamNameFormState, formData: FormData): Promise<TeamNameFormState> {
+  await refuseSelfCheck("/settings/team");
+  const { user, db, team } = await requireActionScope("team.rename");
+  const result = await renameTeam(db, team.id, String(formData.get("name") ?? ""));
+  if (!result.ok) return { error: result.reason };
+  if (result.changed) {
+    await recordTeamEvent(db, {
+      teamId: team.id,
+      actorUserId: user.id,
+      action: "team.renamed",
+      subject: result.name,
+      summary: `renamed the team from "${result.previous}" to "${result.name}"`,
+    });
+  }
+  revalidatePath("/", "layout");
+  return { saved: result.name };
 }
 
 // CHE-448: the team's own OpenRouter key (BYOK, CHE-436). Admin only — the key
