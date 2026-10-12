@@ -21,6 +21,7 @@ import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { appRepoFromForm, mappingEventSummary, saveAppRepo } from "@/lib/github-mapping";
+import { chooseJiraProject } from "@/lib/tracker/jira-connect";
 
 // Re-point an app's tracker to a different team (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
@@ -46,6 +47,30 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
     subject: app.appSlug,
     summary: `pointed ${app.appSlug}'s tickets at ${teamName}`,
   });
+}
+
+// Which Jira project (and site) an app's tickets go to (CHE-438). Only the
+// value travels from the client; chooseJiraProject checks it against what the
+// grant reaches now.
+export async function setJiraProject(appId: string, value: string) {
+  await refuseSelfCheck(appPath.page(appId));
+  const { user, db, team } = await requireActionScope("integration.connect");
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(team.id), id: appId },
+    select: { id: true, appSlug: true },
+  });
+  if (!app) throw new Error("app not found");
+  const env = getCloudflareContext().env as Record<string, string | undefined>;
+  const outcome = await chooseJiraProject(db, app.id, value, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET });
+  if (outcome !== "chosen") throw new Error(`Jira project not set: ${outcome}`);
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "integration.connected",
+    subject: app.appSlug,
+    summary: `pointed ${app.appSlug}'s tickets at Jira project ${value.split("/").pop()}`,
+  });
+  revalidatePath(appPath.section(app.id, "integrations"));
 }
 
 // Outbound integrations (CHE-53): generic webhook + Slack incoming webhook,

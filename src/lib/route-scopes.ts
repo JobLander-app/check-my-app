@@ -132,6 +132,8 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
 // and the same registry. Keyed "file#export".
 export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/dashboard/actions.ts#setTrackerTeam": { kind: "team", action: "integration.connect" },
+  // CHE-438: the Jira project (and site) an app's tickets go to.
+  "src/app/dashboard/actions.ts#setJiraProject": { kind: "team", action: "integration.connect" },
   "src/app/dashboard/actions.ts#setIntegrationEndpoints": { kind: "team", action: "integration.connect" },
   // CHE-369: which repository deploys an app, and whether its deploys start checks. Per app now.
   "src/app/dashboard/actions.ts#setAppGitHubRepo": { kind: "team", action: "integration.connect" },

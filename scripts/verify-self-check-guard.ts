@@ -410,7 +410,8 @@ function inventory() {
         const src = readFileSync(path.join(repoRoot, `src/app/api/integrations/${provider}/callback/route.ts`), "utf8");
         const nonceAt = src.search(/[nN]once[^\n]*!== nonce/);
         const exchangeAt = src.indexOf("exchangeCode(");
-        const writeAt = src.search(/\.upsert\(/);
+        // CHE-438: the Linear write lives in saveLinearGrant (linear-connect.ts).
+        const writeAt = src.search(/\.upsert\(|saveLinearGrant\(/);
         return nonceAt > 0 && exchangeAt > nonceAt && writeAt > exchangeAt;
       }) &&
       // CHE-369: the nonce is compared (when a state travelled), the

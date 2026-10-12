@@ -32,6 +32,8 @@ import { WatchSettings } from "@/components/watch-settings";
 import { AnalyticsProject } from "@/components/analytics-project";
 import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
+import { JiraProjectSelect } from "@/components/jira-project-select";
+import { jiraChoices } from "@/lib/tracker/jira-connect";
 import { DeleteAppSection } from "@/components/delete-app";
 import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
@@ -442,6 +444,13 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
         .then(fetchTeams)
         .catch(() => [] as { id: string; name: string }[])
     : [];
+  // CHE-438: every project on every site the Jira grant reaches. Best-effort,
+  // like the Linear teams: an Atlassian error hides the picker.
+  const jiraProjects = jira
+    ? await jiraChoices(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(
+        () => [] as { value: string; label: string }[],
+      )
+    : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
   const [projectChoices, fromAction, github] = await Promise.all([
@@ -534,12 +543,22 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
             {jira && jiraHealth ? (
               <p className={`text-xs ${jiraHealth.tone === "ok" ? "text-status-ok" : jiraHealth.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
                 {jiraHealth.tone === "ok" ? "✓" : "⚠"} {jiraHealth.text}
-                {jira.teamId && ` · project ${jira.teamId}`}
-                {jira.externalUrl && ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}`}
+                {jiraProjects.length === 0 && jira.teamId && ` · project ${jira.teamId}`}
+                {jiraProjects.length === 0 && jira.externalUrl && ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}`}
               </p>
             ) : (
               <p className="text-xs text-fg-faint">
                 Not connected.{tracker ? " Connecting Jira moves this app's tickets from Linear to Jira." : ""}
+              </p>
+            )}
+            {jira && jiraProjects.length > 0 && (
+              <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+                Tickets go to project
+                <JiraProjectSelect
+                  appId={app.id}
+                  choices={jiraProjects}
+                  current={jira.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
+                />
               </p>
             )}
           </div>

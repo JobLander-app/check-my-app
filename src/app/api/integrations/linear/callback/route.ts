@@ -7,7 +7,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
 import { activeTeamContext } from "@/lib/teams";
 import { exchangeCode, fetchFirstTeam } from "@/lib/tracker/linear-oauth";
-import { encryptSecret } from "@/lib/crypto";
+import { saveLinearGrant } from "@/lib/tracker/linear-connect";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 
@@ -77,39 +77,9 @@ export async function GET(req: NextRequest) {
     return fail(req, app.id);
   }
 
-  const expiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000) : null;
-  const accessTokenEnc = encryptSecret(token.access_token);
-  // Without the refresh token the integration dies when the 24h access token
-  // does (CHE-68) — freshLinearToken needs it to renew silently.
-  const refreshTokenEnc = token.refresh_token ? encryptSecret(token.refresh_token) : null;
-
-  // A reconnect must not clobber the owner's chosen team: the first-team
-  // default is for first connects only (resetting joblander → first workspace
-  // team on 2026-08-25 is how this line got here).
-  const existing = await db.trackerIntegration.findUnique({ where: { appId } });
-  const team = existing?.teamId
-    ? { id: existing.teamId, name: existing.externalOrg ?? undefined }
-    : await fetchFirstTeam(token.access_token);
-
-  await db.trackerIntegration.upsert({
-    where: { appId },
-    create: {
-      appId,
-      type: "linear",
-      accessTokenEnc,
-      refreshTokenEnc,
-      teamId: team?.id ?? null,
-      externalOrg: team?.name ?? null,
-      tokenExpiresAt: expiresAt,
-    },
-    update: {
-      accessTokenEnc,
-      refreshTokenEnc,
-      teamId: team?.id ?? null,
-      externalOrg: team?.name ?? null,
-      tokenExpiresAt: expiresAt,
-    },
-  });
+  // The team kept on a reconnect, the type set on a switch from Jira, and the
+  // Jira links retired: src/lib/tracker/linear-connect.ts (CHE-438).
+  await saveLinearGrant(db, app, token, () => fetchFirstTeam(token.access_token));
 
   return back(req, "linear_connected", app.id);
 }

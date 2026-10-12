@@ -9,16 +9,24 @@
 //   4. JiraTracker: create (Bug, falling back to Task on 400), comment, label, and the
 //      outcome map — open / done / canceled by resolution / missing on 404;
 //      401 → reconnect;
-//   5. the factory picks Jira for a jira row and Linear for a linear row.
+//   5. the factory picks Jira for a jira row and Linear for a linear row;
+//   6. switching trackers: an issue key means nothing in another tracker, so
+//      Linear → Jira, Jira → Linear and a move to another Jira site retire the
+//      in-flight links (ledger "superseded", then removed) and keep suppressed
+//      and resolved ones; a reconnect to the same site keeps them; a Linear
+//      grant on a Jira row becomes a Linear row with a Linear team;
+//   7. the project picker lists every project on every site, and a choice is
+//      checked against the grant, never taken as sent.
 //
-// Usage: npx tsx --tsconfig tsconfig.json scripts/verify-jira.ts
+// Usage: npm run verify:jira
 
 process.env.CREDENTIALS_SECRET ??= "verify-jira-secret";
 
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken } from "../src/lib/tracker/jira";
-import { connectJira } from "../src/lib/tracker/jira-connect";
+import { chooseJiraProject, connectJira, jiraChoices } from "../src/lib/tracker/jira-connect";
+import { saveLinearGrant } from "../src/lib/tracker/linear-connect";
 import { trackerFor } from "../src/lib/tracker/factory";
 import { LinearTracker } from "../src/lib/tracker/linear";
 import { decryptSecret, encryptSecret } from "../src/lib/crypto";
@@ -41,6 +49,8 @@ function fakeAtlassian() {
     noBug: false,
     unauthorized: false,
     projects: [{ key: "SEC", name: "Securify" }, { key: "OPS", name: "Ops" }],
+    sites: [{ id: "cloud-1", url: "https://securify.atlassian.net/", name: "securify", scopes: ["read:jira-work", "write:jira-work"] }],
+    projectsBySite: {} as Record<string, { key: string; name: string }[]>,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -55,11 +65,10 @@ function fakeAtlassian() {
       return json(200, { access_token: `at-${state.tokenCount}`, refresh_token: `rt-${state.tokenCount}`, expires_in: 3600 });
     }
     if (state.unauthorized) return json(401, { message: "Unauthorized" });
-    if (url === "https://api.atlassian.com/oauth/token/accessible-resources") {
-      return json(200, [{ id: "cloud-1", url: "https://securify.atlassian.net/", name: "securify", scopes: ["read:jira-work", "write:jira-work"] }]);
-    }
+    if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(200, state.sites);
+    const projectSearch = url.match(/^https:\/\/api\.atlassian\.com\/ex\/jira\/([^/]+)\/rest\/api\/3\/project\/search/);
+    if (projectSearch) return json(200, { values: state.projectsBySite[projectSearch[1]] ?? state.projects });
     const api = "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3";
-    if (url.startsWith(`${api}/project/search`)) return json(200, { values: state.projects });
     if (url === `${api}/issue` && method === "POST") {
       if (state.noBug && body.fields.issuetype.name === "Bug") return json(400, { errors: { issuetype: "Specify a valid issue type" } });
       const key = `SEC-${state.issues.size + 1}`;
@@ -181,6 +190,60 @@ async function main() {
     );
     check("factory: a linear integration stays Linear", linear instanceof LinearTracker);
     eq("factory: no project or team → nowhere to file", await trackerFor(db, { ...jiraRow, teamId: null }, { linear: {}, jira: {} }, atl.fetchImpl), null);
+
+    // 6. An app on Linear with links in every state.
+    await db.app.create({ data: { id: "a3", teamId: "t1", ownerId: "u1", appSlug: "three.test", targetUrl: "https://three.test", targetKind: "website" } });
+    await db.trackerIntegration.create({ data: { appId: "a3", type: "linear", accessTokenEnc: encryptSecret("lin"), teamId: "lin-team-uuid", externalOrg: "Eng" } });
+    const seed = async (key: string, status: string) =>
+      db.issueLink.create({ data: { appId: "a3", dedupKey: `k-${key}`, externalIssueId: key, status } });
+    await seed("JOB-1", "open");
+    await seed("JOB-2", "fixed");
+    await seed("JOB-3", "suppressed");
+    await seed("JOB-4", "resolved");
+    const links = async () => (await db.issueLink.findMany({ where: { appId: "a3" }, orderBy: { externalIssueId: "asc" } })).map((l) => `${l.externalIssueId}:${l.status}`);
+    const superseded = async () =>
+      (await db.settledSignature.findMany({ where: { appSlug: "three.test", outcome: "superseded" }, orderBy: { externalIssueId: "asc" } })).map((s) => s.externalIssueId);
+
+    const sw = fakeAtlassian();
+    eq("switch: Linear → Jira connects", await connectJira(db, { appId: "a3", code: "c", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, sw.fetchImpl), "jira_connected");
+    eq("switch: Linear's open and fixed links are retired; suppressed and resolved stay", await links(), ["JOB-3:suppressed", "JOB-4:resolved"]);
+    eq("switch: the retired keys are kept in the ledger as superseded", await superseded(), ["JOB-1", "JOB-2"]);
+
+    await db.issueLink.create({ data: { appId: "a3", dedupKey: "k-SEC-9", externalIssueId: "SEC-9", status: "open" } });
+    await connectJira(db, { appId: "a3", code: "c2", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, sw.fetchImpl);
+    check("switch: a reconnect to the same Jira site keeps its links", (await links()).includes("SEC-9:open"));
+
+    // 7. Two sites, the second with its own projects.
+    sw.state.sites = [...sw.state.sites, { id: "cloud-2", url: "https://other.atlassian.net", name: "other", scopes: ["read:jira-work", "write:jira-work"] }];
+    sw.state.projectsBySite["cloud-2"] = [{ key: "WEB", name: "Website" }];
+    const a3 = (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))!;
+    await db.trackerIntegration.update({ where: { appId: "a3" }, data: { tokenExpiresAt: new Date(Date.now() + 3600_000) } });
+    const choices = await jiraChoices(db, { ...a3, tokenExpiresAt: new Date(Date.now() + 3600_000) }, { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl);
+    eq("picker: every project on every site, the site named when there are two", choices.map((c) => c.value), ["cloud-1/SEC", "cloud-1/OPS", "cloud-2/WEB"]);
+    check("picker: labels say which site", choices.every((c) => c.label.includes("atlassian.net")), choices.map((c) => c.label).join(" | "));
+
+    eq("picker: a value the grant does not reach is refused", await chooseJiraProject(db, "a3", "cloud-9/NOPE", { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl), "unknown_choice");
+    eq("picker: …and changes nothing", (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))?.teamId, "SEC");
+    eq("picker: another project on the same site", await chooseJiraProject(db, "a3", "cloud-1/OPS", { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl), "chosen");
+    check("picker: the same site keeps its links", (await links()).includes("SEC-9:open"));
+    eq("picker: another site", await chooseJiraProject(db, "a3", "cloud-2/WEB", { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl), "chosen");
+    const moved = await db.trackerIntegration.findUnique({ where: { appId: "a3" } });
+    eq("picker: the row points at the new site and project", [moved?.externalOrg, moved?.teamId, moved?.externalUrl], ["cloud-2", "WEB", "https://other.atlassian.net"]);
+    check("picker: another site retires the old site's links", !(await links()).includes("SEC-9:open"));
+    eq("picker: not a Jira row → refused", await chooseJiraProject(db, "a1x", "cloud-1/SEC", { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl), "not_jira");
+
+    // 6, back: Jira → Linear.
+    await db.issueLink.create({ data: { appId: "a3", dedupKey: "k-WEB-1", externalIssueId: "WEB-1", status: "open" } });
+    const appRow = { id: "a3", teamId: "t1", ownerId: "u1", appSlug: "three.test" };
+    let firstTeamCalls = 0;
+    await saveLinearGrant(db, appRow, { access_token: "lin-2", expires_in: 86400 }, async () => (firstTeamCalls++, { id: "lin-first", name: "First" }));
+    const back = await db.trackerIntegration.findUnique({ where: { appId: "a3" } });
+    eq("switch back: the row is Linear again, with a Linear team, not the Jira project key", [back?.type, back?.teamId, back?.externalOrg, back?.externalUrl], ["linear", "lin-first", "First", null]);
+    check("switch back: the Linear token is the one stored", decryptSecret(back!.accessTokenEnc) === "lin-2");
+    check("switch back: Jira's links are retired", !(await links()).includes("WEB-1:open") && (await superseded()).includes("WEB-1"));
+    await db.trackerIntegration.update({ where: { appId: "a3" }, data: { teamId: "lin-chosen", externalOrg: "Chosen" } });
+    await saveLinearGrant(db, appRow, { access_token: "lin-3" }, async () => (firstTeamCalls++, { id: "lin-first", name: "First" }));
+    eq("reconnect: a Linear reconnect keeps the team the owner chose", [(await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))?.teamId, firstTeamCalls], ["lin-chosen", 1]);
   } finally {
     await real.dispose();
   }
