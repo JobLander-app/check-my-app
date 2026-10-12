@@ -138,12 +138,23 @@ async function main() {
   const hanging = ((_u: unknown, init?: RequestInit) =>
     new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as unknown as typeof fetch;
   const t0 = Date.now();
-  // AbortSignal.timeout's timer does not keep Node alive: without this the
-  // process would exit mid-await, silently, with code 0.
+  // AbortSignal.timeout's timer does not keep Node alive: without the interval
+  // the process would exit mid-await, silently, with code 0. The watchdog
+  // fails the check if the deadline never fires, instead of hanging forever.
   const keepAlive = setInterval(() => {}, 1_000);
-  const timedOut = await checkOpenRouterKey(full, hanging, 30);
-  clearInterval(keepAlive);
-  assert.equal(timedOut.ok, false, "an OpenRouter that never answers → nothing saved");
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let timedOut: Awaited<ReturnType<typeof checkOpenRouterKey>> | "watchdog";
+  try {
+    timedOut = await Promise.race([
+      checkOpenRouterKey(full, hanging, 30),
+      new Promise<"watchdog">((resolve) => { watchdog = setTimeout(() => resolve("watchdog"), 2_000); }),
+    ]);
+  } finally {
+    clearInterval(keepAlive);
+    clearTimeout(watchdog);
+  }
+  assert.notEqual(timedOut, "watchdog", "the deadline cut the request off before the 2 s watchdog");
+  assert.equal((timedOut as { ok: boolean }).ok, false, "an OpenRouter that never answers → nothing saved");
   assert.ok(Date.now() - t0 < 2_000, `…cut off at the deadline, not waited out (${Date.now() - t0} ms)`);
   assert.equal(CHECK_TIMEOUT_MS, 10_000, "the deadline in use is 10 s");
   assert.equal((await checkOpenRouterKey(full, answer(401))).ok, false, "401 → refused");
@@ -164,12 +175,15 @@ async function main() {
   assert.equal(arg0(removeCalls, "requireActionScope"), '"billing.manage"', "removing a key is billing.manage");
   assert.ok(can("admin", "billing.manage") && !can("member", "billing.manage") && !can("reader", "billing.manage"), "billing.manage is admin only");
   const save = setCalls.find((c) => c.callee === "saveTeamKey");
-  assert.ok(save && /encrypt: encryptSecret/.test(save.args[3] ?? ""), "the action stores through saveTeamKey, encrypted");
-  assert.deepEqual(
-    setCalls.filter((c) => /\.(update|updateMany|upsert|create|executeRaw|\$executeRaw)$/.test(c.callee)).map((c) => c.callee),
-    [],
-    "…and writes nothing itself: no store can bypass the check",
-  );
+  const deps = save?.node.arguments[3];
+  const encrypt =
+    deps && ts.isObjectLiteralExpression(deps)
+      ? deps.properties.find((p): p is ts.PropertyAssignment => ts.isPropertyAssignment(p) && p.name.getText() === "encrypt")
+      : undefined;
+  assert.ok(encrypt && ts.isIdentifier(encrypt.initializer) && encrypt.initializer.text === "encryptSecret", "the action stores through saveTeamKey, encrypted with encryptSecret");
+  const WRITES = new Set(["update", "updateMany", "upsert", "create", "createMany", "delete", "deleteMany", "$executeRaw", "$executeRawUnsafe"]);
+  const bypass = setCalls.filter((c) => ts.isPropertyAccessExpression(c.node.expression) && WRITES.has(c.node.expression.name.text));
+  assert.deepEqual(bypass.map((c) => c.callee), [], "…and writes nothing itself: no store can bypass the check");
   assert.ok(setCalls.some((c) => c.callee === "teamHasFeature" && c.args[2] === '"shopify"'), "setting a key is behind the shopify feature");
 
   // saveTeamKey, called: the key is stored only when the check says ok.
@@ -226,7 +240,7 @@ function read(rel: string): string {
   return readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
 }
 
-type Call = { callee: string; args: string[] };
+type Call = { callee: string; args: string[]; node: ts.CallExpression };
 
 function source(rel: string): ts.SourceFile {
   return ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, rel.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
@@ -237,7 +251,7 @@ function callsIn(rel: string, fn: string): Call[] {
   const sf = source(rel);
   const out: Call[] = [];
   const walk = (n: ts.Node) => {
-    if (ts.isCallExpression(n)) out.push({ callee: n.expression.getText(sf), args: n.arguments.map((a) => a.getText(sf)) });
+    if (ts.isCallExpression(n)) out.push({ callee: n.expression.getText(sf), args: n.arguments.map((a) => a.getText(sf)), node: n });
     n.forEachChild(walk);
   };
   sf.forEachChild((n) => {
