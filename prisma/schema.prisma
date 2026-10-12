@@ -1480,6 +1480,10 @@ model Feedback {
   // the mail is still owed, and the next tick sends it.
   answer          String?
   answeredAt      DateTime?
+  // When a tick last looked at the row for its outcome or its owed mail: each
+  // tick takes the rows looked at longest ago, so rows that never settle (an
+  // open ticket, a bounced address) cannot hold back a newer one.
+  checkedAt       DateTime?
   createdAt       DateTime @default(now())
 
   @@index([teamId, appId])

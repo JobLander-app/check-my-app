@@ -132,6 +132,33 @@ async function main() {
     await tick();
     eq("and never again", mails.length, 3);
 
+    // 7. Rows that never settle do not hide a newer one (CodeRabbit on #316).
+    for (let i = 0; i < 25; i++) {
+      await db.feedback.create({ data: { id: `old${i}`, teamId: "ta", appId: "a1", runId: "r1", kind: "run", reason: "wrong", text: `old ${i}`, authorId: "ua", status: "filed", issueIdentifier: `CHE-8${String(i).padStart(2, "0")}`, createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)) } });
+      outcomes[`CHE-8${String(i).padStart(2, "0")}`] = "open";
+    }
+    await report("late", "CHE-950");
+    outcomes["CHE-950"] = "done";
+    const before = mails.length;
+    for (let t = 0; t < 3 && (await status("late")) !== "fixed"; t++) {
+      await answerFeedback(env, { board, send, now: new Date(Date.UTC(2026, 9, 12, 15, t)) });
+    }
+    eq("twenty-five tickets still open do not hide a newer one that is Done", [await status("late"), mails.length - before], ["fixed", 1]);
+
+    // …and neither do mails that keep failing.
+    for (let i = 0; i < 25; i++) {
+      await db.feedback.create({ data: { id: `bounce${i}`, teamId: "ta", appId: "a1", runId: "r1", kind: "run", reason: "wrong", text: `bounce ${i}`, authorId: "ua", status: "fixed", issueIdentifier: `CHE-7${String(i).padStart(2, "0")}`, createdAt: new Date(Date.UTC(2026, 0, 2, 0, i)) } });
+    }
+    await db.feedback.create({ data: { id: "good", teamId: "ta", appId: "a1", runId: "r1", kind: "run", reason: "wrong", text: "good one", authorId: "ua", status: "fixed", issueIdentifier: "CHE-960" } });
+    const bouncing: AnswerSend = async (m) => {
+      if (m.theirWords.startsWith("bounce")) throw new Error("Resend send failed: 422");
+      mails.push({ to: m.to, outcome: m.outcome, answer: m.answer, key: m.idempotencyKey, url: m.url });
+    };
+    for (let t = 0; t < 3 && !(await db.feedback.findUnique({ where: { id: "good" } }))?.answeredAt; t++) {
+      await answerFeedback(env, { board, send: bouncing, now: new Date(Date.UTC(2026, 9, 12, 16, t)) });
+    }
+    check("twenty-five mails that keep failing do not hold back one that can go", Boolean((await db.feedback.findUnique({ where: { id: "good" } }))?.answeredAt));
+
     // No board: nothing moves, nothing lost.
     await report("f4", "CHE-904");
     outcomes["CHE-904"] = "done";

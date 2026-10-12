@@ -38,13 +38,22 @@ export async function answerFeedback(
   const now = opts.now ?? new Date();
   const send = opts.send ?? sendFeedbackAnswer;
 
+  // Every row a tick takes is stamped first, and a tick takes the rows looked
+  // at longest ago (never-looked-at first): rows that never settle — a ticket
+  // still open, a canceled one with no answer, an address that bounces —
+  // rotate to the back instead of filling every tick (CodeRabbit on #316).
+  const oldestLooked = [{ checkedAt: { sort: "asc", nulls: "first" } }, { createdAt: "asc" }] as const;
+  const stamp = (ids: string[]) =>
+    ids.length ? env.db.feedback.updateMany({ where: { id: { in: ids } }, data: { checkedAt: now } }) : Promise.resolve();
+
   // 1. Settle: filed rows whose ticket has an outcome.
   const filed = await env.db.feedback.findMany({
     where: { ...systemWide("scheduler"), status: "filed", issueIdentifier: { not: null } },
-    orderBy: { createdAt: "asc" },
+    orderBy: [...oldestLooked],
     take: PER_TICK,
     select: { id: true, issueIdentifier: true },
   });
+  await stamp(filed.map((r) => r.id));
   if (filed.length) {
     const board = opts.board !== undefined ? opts.board : await ourBoard(env);
     if (!board) {
@@ -83,10 +92,13 @@ export async function answerFeedback(
   // 2. Tell: settled rows whose author has not heard yet.
   const owed = await env.db.feedback.findMany({
     where: { ...systemWide("scheduler"), status: { in: ["fixed", "wont_fix"] }, answeredAt: null },
-    orderBy: { createdAt: "asc" },
+    orderBy: [...oldestLooked],
     take: PER_TICK,
     select: { id: true, status: true, text: true, answer: true, authorId: true, appId: true, runId: true },
   });
+  // Stamped by the settle step above when it moved them this tick; a later
+  // stamp is what makes a mail that keeps failing step aside.
+  await stamp(owed.filter((r) => !out.settled.includes(r.id)).map((r) => r.id));
   const base = (env.bindings.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "");
   for (const row of owed) {
     const [author, app, run] = await Promise.all([
