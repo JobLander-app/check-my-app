@@ -97,6 +97,9 @@ async function setState(issueId, name) {
 
 // ─── Picking the work ────────────────────────────────────────────────────────
 
+/** Outside an epic, or in one whose lead labelled the epic too. Picking AND releasing obey it (Codex, #333). */
+export const givenToMender = (i) => !i.parent || i.parent.labels.nodes.some((l) => l.name === LABEL);
+
 // Open = still in flight, triage included (the tracker contract, src/lib/tracker/types.ts).
 export const OPEN = ["triage", "backlog", "unstarted", "started"];
 
@@ -111,7 +114,7 @@ export function chooseTicket(issues) {
   return [...issues]
     .filter((i) => ["backlog", "unstarted"].includes(i.state.type))
     .filter((i) => i.comments.nodes.filter((c) => c.body.includes(ATTEMPT_MARK)).length < MAX_ATTEMPTS)
-    .filter((i) => !i.parent || i.parent.labels.nodes.some((l) => l.name === LABEL))
+    .filter(givenToMender)
     .filter((i) => !(i.children?.nodes ?? []).some((c) => OPEN.includes(c.state.type)))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
 }
@@ -124,10 +127,15 @@ export const uiPaths = (paths) => paths.filter((p) => UI.some((re) => re.test(p)
 export const isFeedback = (title) => String(title).startsWith("[Pilot feedback]");
 export const answerOf = (text) => String(text).match(/^Answer: .+$/m)?.[0] ?? null;
 
+// What only Mender's own answer can leak: the model, its cost, its tokens
+// (CLAUDE.md §10; Codex, #333). A verdict never names these, so the shared
+// guard does not look for them.
+export const OUR_MACHINERY = /\$\s?\d|\btokens?\b|\b(claude|sonnet|opus|haiku|gpt|openai|anthropic|openrouter|opencode|mender|llm|ai model|language model)\b/i;
+
 /** The rules CHE-441 applies before mailing an answer, from main's own file (no npm ci here). */
 export async function usableAnswer(answer) {
   const { hasHomework, hasEnvironmentLeak } = await import("../../src/lib/verdict-language.ts");
-  return !hasHomework(answer) && !hasEnvironmentLeak(answer);
+  return !hasHomework(answer) && !hasEnvironmentLeak(answer) && !OUR_MACHINERY.test(answer);
 }
 
 /**
@@ -192,7 +200,7 @@ async function findWork({ release = true } = {}) {
 
 /** Labelled tickets Mender claimed (In Progress) that have no open Mender PR. */
 export function stranded(issues, openTickets) {
-  return issues.filter((i) => i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
+  return issues.filter((i) => givenToMender(i) && i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
 }
 
 // ─── Running the agent ───────────────────────────────────────────────────────

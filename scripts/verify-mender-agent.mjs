@@ -44,6 +44,8 @@ check("a part still in triage counts as open (the tracker contract)",
 check("an answer with homework or our machinery is not used; a plain one is",
   !(await usableAnswer("Answer: please verify this in a real browser yourself.")) &&
     !(await usableAnswer("Answer: our test browser could not click it.")) &&
+    !(await usableAnswer("Answer: Claude Sonnet concluded the label is right.")) &&
+    !(await usableAnswer("Answer: the check cost $4.20 and used 10,000 tokens.")) &&
     (await usableAnswer("Answer: the store has no published products, so there is nothing to scan.")));
 check("a change to screens or emails is marked ui; other code is not",
   uiPaths(["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/verdict-view.tsx", "src/lib/email.ts", "src/lib/step-cause.ts", "scripts/verify-x.ts", "src/app/api/x/route.ts"]).length === 3);
@@ -90,6 +92,8 @@ check("a patch touching the workflows or Mender itself is refused",
 const started = (identifier) => ({ ...issue(identifier, "2026-10-01"), state: { type: "started", name: "In Progress" } });
 check("a claimed ticket with no open PR is released; one with a PR is not",
   stranded([started("CHE-1"), started("CHE-2"), issue("CHE-3", "2026-10-01")], new Set(["CHE-2"])).map((i) => i.identifier).join() === "CHE-1");
+check("…nor one another session works on inside an epic not given to Mender",
+  stranded([{ ...started("CHE-4"), parent: { identifier: "CHE-100", labels: { nodes: [] } } }], new Set()).length === 0);
 check("…an ordinary change is not", forbiddenPaths(["src/lib/a.ts", "scripts/verify-x.ts", "prisma/schema.prisma"]).length === 0);
 check("the model's environment holds no GitHub token",
   Object.keys(agentEnv({ GH_TOKEN: "x", GITHUB_TOKEN: "y", MENDER_GH_TOKEN: "z", LINEAR_API_KEY: "k" })).join() === "LINEAR_API_KEY");
