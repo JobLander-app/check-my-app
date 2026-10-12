@@ -35,27 +35,67 @@ check("no journey of its own, only carried ones, is not this rule's", !sessionWa
 check("no step at all is not this rule's", !sessionWalkReachedNothing([journey([])]));
 check("the internal reason is internal and names the ticket", SESSION_OUTAGE_MESSAGE.startsWith("internal:") && SESSION_OUTAGE_MESSAGE.includes("CHE-453"));
 
-// 2. Wiring.
-const wf = source("src/agent/workflow.ts");
-const asked = calls(wf).find((c) => c.callee === "sessionWalkReachedNothing");
-let guarded = false;
-let throwsOurs = false;
-for (let n: ts.Node | undefined = asked?.node; n; n = n.parent) {
-  if (ts.isIfStatement(n) && n.expression.getText(wf) === "isSession") guarded = true;
+// 2. Wiring, read as syntax — every call site, and the fail branch's actions.
+// Returns what is wrong; run on the real workflow, then on mutants of it, so
+// each answer is seen failing too.
+function wiringFaults(wf: ts.SourceFile): string[] {
+  const faults: string[] = [];
+  const writing = calls(wf).find((c) => c.callee === "step.do" && c.args[0] === '"writing"');
+  const transitionWriting = writing && calls(wf, writing.node).find((c) => c.callee === "transition" && c.args[2] === '"writing"');
+  const asked = calls(wf).filter((c) => c.callee === "sessionWalkReachedNothing");
+  if (asked.length === 0) faults.push("never asked");
+  for (const a of asked) {
+    const at = `line ${wf.getLineAndCharacterOfPosition(a.node.getStart(wf)).line + 1}`;
+    const ifs: ts.IfStatement[] = [];
+    for (let n: ts.Node | undefined = a.node; n; n = n.parent) if (ts.isIfStatement(n)) ifs.push(n);
+    if (!ifs.slice(1).some((s) => s.expression.getText(wf) === "isSession")) faults.push(`${at}: not only for a session run`);
+    const own = ifs[0];
+    const thrown = own && own.expression === a.node && ts.isThrowStatement(own.thenStatement) ? own.thenStatement.expression : undefined;
+    const isOurs =
+      thrown && ts.isNewExpression(thrown) && thrown.expression.getText(wf) === "NonRetryableError" &&
+      thrown.arguments?.map((x) => x.getText(wf)).join(",") === 'SESSION_OUTAGE_MESSAGE,"SessionOutageError"';
+    if (!isOurs) faults.push(`${at}: does not throw the non-retryable outage`);
+    const start = a.node.getStart(wf);
+    if (!writing || !transitionWriting || start < writing.node.getStart(wf) || start > transitionWriting.node.getStart(wf)) {
+      faults.push(`${at}: not inside the writing step before its transition`);
+    }
+  }
+  // The fail branch: `if (… || sessionOutage)` must write the feed line and move the watch.
+  const branches: ts.IfStatement[] = [];
+  const visit = (n: ts.Node) => {
+    if (ts.isIfStatement(n) && /\bsessionOutage\b/.test(n.expression.getText(wf))) branches.push(n);
+    n.forEachChild(visit);
+  };
+  visit(wf);
+  if (branches.length !== 1) faults.push(`${branches.length} fail branches on sessionOutage`);
+  for (const b of branches) {
+    const inside = calls(wf, b.thenStatement);
+    if (!inside.some((c) => c.callee === "appendEvent")) faults.push("the fail branch writes no feed line");
+    const retry = inside.find((c) => /\.watch\s*\.update$/.test(c.callee.replace(/\s+/g, "")));
+    if (!retry || !/nextRunAt/.test(retry.args[0] ?? "")) faults.push("the fail branch does not move the watch's next run");
+  }
+  return faults;
 }
-if (asked) {
-  const ifStmt = asked.node.parent;
-  throwsOurs = /new NonRetryableError\(SESSION_OUTAGE_MESSAGE, "SessionOutageError"\)/.test(ifStmt.getText(wf).replace(/\s+/g, " "));
-}
-check("the workflow asks it only for a session run", guarded);
-check("…and throws a non-retryable outage when it holds", throwsOurs);
-const writing = calls(wf).find((c) => c.callee === "step.do" && c.args[0] === '"writing"');
-const transitionWriting = calls(wf, writing?.node).find((c) => c.callee === "transition" && c.args[2] === '"writing"');
-check(
-  "…before the verdict is written (before the writing transition, inside the writing step)",
-  Boolean(asked && writing && transitionWriting) && asked!.node.getStart(wf) > writing!.node.getStart(wf) && asked!.node.getStart(wf) < transitionWriting!.node.getStart(wf),
-);
-check("the fail path treats it as our outage: the feed line and the watch retry", /sessionOutage\s*=/.test(wf.getText()) && /if \(budget \|\| sessionOutage\)/.test(wf.getText()));
+
+const WORKFLOW = "src/agent/workflow.ts";
+const real = source(WORKFLOW);
+const faults = wiringFaults(real);
+check("the workflow asks it inside the writing step, only for a session run, and throws our outage; the fail path writes the feed line and retries the watch", faults.length === 0, faults.join("; "));
+
+// The same reading must fail on each way the wiring could go wrong.
+const mutant = (from: string, to: string) => {
+  const text = real.getText();
+  if (!text.includes(from)) throw new Error(`mutant source not found: ${from}`);
+  return ts.createSourceFile(WORKFLOW, text.replace(from, to), ts.ScriptTarget.Latest, true);
+};
+const askedLine = "if (sessionWalkReachedNothing(walked)) throw new NonRetryableError(SESSION_OUTAGE_MESSAGE, \"SessionOutageError\");";
+const mutants: [string, ts.SourceFile][] = [
+  ["a second call outside the session guard", mutant("async function transition(", `function stray(w: never) { if (sessionWalkReachedNothing(w)) throw new NonRetryableError(SESSION_OUTAGE_MESSAGE, "SessionOutageError"); }\nasync function transition(`)],
+  ["the call no longer throws", mutant(askedLine, "if (sessionWalkReachedNothing(walked)) console.warn(SESSION_OUTAGE_MESSAGE);")],
+  ["the fail branch loses its feed line", mutant("await appendEvent(env, runId, \"connecting\", {\n            icon: \"warn\",", "await Promise.resolve({\n            icon: \"warn\",")],
+  ["the fail branch stops retrying the watch", mutant("data: { nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000) },\n              })\n              .catch(() => {});\n          }\n        }\n        return { phase: before?.status ?? null", "data: {},\n              })\n              .catch(() => {});\n          }\n        }\n        return { phase: before?.status ?? null")],
+];
+for (const [name, sf] of mutants) check(`…and fails when ${name}`, wiringFaults(sf).length > 0, wiringFaults(sf).join("; ") || "still green");
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
