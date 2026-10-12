@@ -417,6 +417,9 @@ export async function journeyMetric(
 ): Promise<JourneyMetric | null> {
   if (!raw) return null;
   const previous = appJourneyId ? await storedMetric(env, appJourneyId) : null;
+  // A scripted journey's numbers are an opening value, never a judgement of
+  // today's walk: with one stored, they must not restate it as "unchanged".
+  if (raw.seedOnly && previous) return null;
   // CHE-282: what this journey's past walks recorded, so the price has
   // something observed to be answerable to. Null for a journey never walked.
   const walkedSteps = appJourneyId ? await typicalSteps(env, appJourneyId) : null;
