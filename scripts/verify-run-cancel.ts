@@ -1,0 +1,159 @@
+// CHE-454 verification: a started check can be stopped, and stays stopped.
+//
+//   1. on a real D1 (Miniflare): a member stops a running check — canceled,
+//      $0, the bought balance a price took goes back, the feed says who, the
+//      Workflow is terminated; a reader, another team, a finished check and a
+//      second stop are refused and leave the row as it was;
+//   2. every write in the workflow that ends a run or moves it on is fenced on
+//      "not canceled" (read as syntax): a step that finishes after the stop
+//      cannot write a verdict, a phase or a failure over it;
+//   3. a stopped Shopify check gives the session host back on the next tick —
+//      only runs stopped within one lease, only session runs;
+//   4. both doors reach the same cancelRun with a real terminate: MCP
+//      cancel_check (every team) and the Stop button, which the page shows to
+//      exactly who the server would let stop it.
+//
+// Usage: npx tsx --tsconfig tsconfig.json scripts/verify-run-cancel.ts
+
+import "./fixtures/wasm-module-loader.mjs";
+import ts from "typescript";
+import { realD1 } from "./fixtures/real-d1";
+import { calls, jsx, properties, source } from "./fixtures/ts-source";
+import { cancelRun, stoppedLine } from "../src/lib/run-cancel";
+import { releaseCanceledLeases } from "../src/agent/canceled-leases";
+import { SESSION_LEASE_SECONDS } from "../src/agent/session-browser";
+import type { AgentEnv } from "../src/agent/env";
+
+let failures = 0;
+function check(name: string, ok: boolean, detail = "") {
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  →  ${detail}` : ""}`);
+}
+const eq = (name: string, got: unknown, want: unknown) => check(name, JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+
+async function main() {
+  const now = new Date("2026-10-12T16:00:00Z");
+  const real = await realD1();
+  const { db } = real;
+  try {
+    await db.user.create({ data: { id: "ann", clerkUserId: "ck_ann", email: "ann@a.test" } });
+    await db.team.create({ data: { id: "ta", name: "A", plan: "business", topupUsd: 10 } });
+    await db.team.create({ data: { id: "tb", name: "B", plan: "business" } });
+    const run = (id: string, n: number, teamId: string, status: string, extra: Record<string, unknown> = {}) =>
+      db.run.create({ data: { id, publicId: `p_${id}`, runNumber: n, ownerId: "ann", teamId, targetUrl: "https://a.test/", appSlug: "a.test", status, ...extra } as never });
+    await run("r1", 1, "ta", "walking", { events: JSON.stringify([{ at: now.toISOString(), phase: "walking", icon: "info", text: "Walking" }]) });
+    await run("r2", 2, "ta", "completed");
+    await run("r3", 3, "tb", "walking");
+    // Priced already, part of it from the bought balance (a step priced it, then the stop came).
+    await run("r4", 4, "ta", "writing", { priceUsd: 1.2, priceFromTopupUsd: 1.2 });
+    await db.team.update({ where: { id: "ta" }, data: { topupUsd: 8.8 } });
+
+    const terminated: string[] = [];
+    const terminate = async (id: string) => void terminated.push(id);
+    const member = { userId: "ann", teamId: "ta", scope: "member" as const, name: "Ann" };
+
+    // 1. The row.
+    const reader = await cancelRun(db, { ...member, scope: "reader" }, "p_r1", terminate, now);
+    eq("a reader is refused", [reader.ok, !reader.ok && reader.code], [false, "forbidden"]);
+    eq("…and the check runs on, nothing terminated", [(await db.run.findUnique({ where: { id: "r1" } }))?.status, terminated], ["walking", []]);
+
+    const stopped = await cancelRun(db, member, "p_r1", terminate, now);
+    const r1 = await db.run.findUnique({ where: { id: "r1" } });
+    eq("a member stops a running check", [stopped.ok, r1?.status, r1?.completedAt?.toISOString()], [true, "canceled", now.toISOString()]);
+    eq("…it costs $0", r1?.priceUsd, 0);
+    const feed = JSON.parse(r1?.events ?? "[]") as { text: string }[];
+    eq("…the feed keeps what was there and says who stopped it", [feed.length, feed.at(-1)?.text], [2, stoppedLine("Ann")]);
+    eq("…and the Workflow is terminated, under the run's own id", terminated, ["r1"]);
+
+    const again = await cancelRun(db, member, "p_r1", terminate, now);
+    eq("a second stop is refused, nothing terminated twice", [again.ok, terminated.length], [false, 1]);
+    const finished = await cancelRun(db, member, "p_r2", terminate, now);
+    eq("a finished check cannot be stopped", [finished.ok, (await db.run.findUnique({ where: { id: "r2" } }))?.status], [false, "completed"]);
+    const other = await cancelRun(db, member, "p_r3", terminate, now);
+    eq("another team's check is not found", [other.ok, !other.ok && other.code, (await db.run.findUnique({ where: { id: "r3" } }))?.status], [false, "not_found", "walking"]);
+
+    await cancelRun(db, member, "p_r4", terminate, now);
+    const r4 = await db.run.findUnique({ where: { id: "r4" } });
+    eq("a check priced before the stop is zeroed", [r4?.status, r4?.priceUsd, r4?.priceFromTopupUsd], ["canceled", 0, 0]);
+    eq("…and the bought balance it took goes back", (await db.team.findUnique({ where: { id: "ta" } }))?.topupUsd, 10);
+
+    // 3. The session host.
+    const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
+    await run("s1", 11, "ta", "canceled", { targetKind: "session", completedAt: minutesAgo(5) });
+    await run("s2", 12, "ta", "canceled", { targetKind: "session", completedAt: minutesAgo(SESSION_LEASE_SECONDS / 60 + 5) });
+    await run("s3", 13, "ta", "canceled", { targetKind: "url", completedAt: minutesAgo(5) });
+    await run("s4", 14, "ta", "walking", { targetKind: "session" });
+    await run("s5", 15, "ta", "failed", { targetKind: "session", completedAt: minutesAgo(5) });
+    const asked: string[] = [];
+    const env = {
+      db,
+      bindings: { SESSION_HOST_URL: "https://host.test", SESSION_ACCESS_CLIENT_ID: "id", SESSION_ACCESS_CLIENT_SECRET: "secret", SESSION_SERVER_TOKEN: "token" },
+    } as unknown as AgentEnv;
+    const released = await releaseCanceledLeases(env, now, async (host, id) => {
+      asked.push(`${host.url}:${id}`);
+      return true;
+    });
+    eq("a session check stopped within one lease is released — and nothing else", [released, asked], [["s1"], ["https://host.test:s1"]]);
+    eq("nothing stopped, nothing asked — and no host needed", await releaseCanceledLeases({ db: { run: { findMany: async () => [] } }, bindings: {} } as unknown as AgentEnv, now), []);
+  } finally {
+    await real.dispose();
+  }
+
+  // 2. The fence, every write that ends a run or moves it on.
+  const wf = source("src/agent/workflow.ts");
+  const writes = calls(wf).filter((c) => /\.run\.(update|updateMany)$/.test(c.callee));
+  const ending = writes.filter((c) => {
+    const data = prop(c.node.arguments[0], "data", wf);
+    return ["status", "verdict"].some((k) => data && objectHas(data, k, wf));
+  });
+  const unfenced = ending.filter((c) => {
+    const where = prop(c.node.arguments[0], "where", wf);
+    return c.callee.endsWith(".updateMany") === false || !where || prop(where, "status", wf)?.getText(wf).replace(/\s+/g, " ") !== '{ not: "canceled" }';
+  });
+  check(
+    `every status or verdict write in the workflow is fenced on "not canceled" (${ending.length} writes)`,
+    ending.length >= 4 && unfenced.length === 0,
+    unfenced.map((c) => `line ${wf.getLineAndCharacterOfPosition(c.node.getStart(wf)).line + 1}`).join(", "),
+  );
+  const fail = calls(wf).find((c) => c.callee === "step.do" && c.args[0] === '"fail"');
+  check(
+    "a failure noticed after the stop records nothing over it",
+    Boolean(fail) && calls(wf, fail!.node).some((c) => c.callee === "env.db.run.findUnique") && fail!.node.getText(wf).includes('before?.status === "canceled"'),
+  );
+
+  // 4. The doors.
+  const scheduler = source("src/agent/scheduler.ts");
+  check("the scheduler tick releases stopped session checks", calls(scheduler).some((c) => c.callee === "releaseCanceledLeases" && c.args.join(",") === "env,now"));
+  const tools = source("src/lib/mcp/tools.ts");
+  check("MCP cancel_check goes through cancelRun with the route's terminate", calls(tools).some((c) => c.callee === "cancelRun" && c.args[3]?.includes("terminate")));
+  const route = source("src/app/api/mcp/route.ts");
+  eq("…which the route wires to the Workflow's terminate", properties(route, "terminate"), ["terminateRun"]);
+  const actions = source("src/app/run/actions.ts");
+  check("the Stop button goes through cancelRun with the Workflow's terminate", calls(actions).some((c) => c.callee === "cancelRun" && c.args[3] === "terminateRun"));
+  const page = source("src/app/run/[id]/page.tsx");
+  const live = jsx(page).find((e) => e.tag === "RunLive");
+  check("the live page is told who may stop", Boolean(live?.props.mayStop?.includes("mayStopRun")));
+  check("…by the same permission the server asks for", calls(page).some((c) => c.callee === "can" && c.args[1] === '"run.start"'));
+  const runLive = source("src/components/run-live.tsx");
+  eq("…and shows Stop only then", jsx(runLive).filter((e) => e.tag === "StopRun").map((e) => e.guard), ["mayStop"]);
+
+  console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+// `{ key: value }` → value, when the node is that object literal.
+function prop(node: ts.Node | undefined, key: string, sf: ts.SourceFile): ts.Expression | undefined {
+  if (!node || !ts.isObjectLiteralExpression(node)) return undefined;
+  for (const p of node.properties) if (ts.isPropertyAssignment(p) && p.name.getText(sf) === key) return p.initializer;
+  return undefined;
+}
+// Does the object literal (spreads included, as written) set `key`?
+function objectHas(node: ts.Node, key: string, sf: ts.SourceFile): boolean {
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  return node.properties.some((p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && p.name.getText(sf) === key);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

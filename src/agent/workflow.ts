@@ -444,8 +444,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // this to "unverified". The guard is right about LLM runs and wrong here —
         // coverage came from the baseline, and the bottom line says so out loud.
         await step.do("replay-complete", async () => {
-          await env.db.run.update({
-            where: { id: runId },
+          // CHE-454: fenced like every write that ends a run.
+          const done = await env.db.run.updateMany({
+            where: { id: runId, status: { not: "canceled" } },
             data: {
               status: "completed",
               verdict: smoke.verdict,
@@ -465,6 +466,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               completedAt: new Date(),
             },
           });
+          if (done.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         });
         // CHE-327: a quick check costs its real, tiny price — priced on the
         // balance like every other check (src/lib/plans.ts priceRun).
@@ -1207,8 +1209,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         })();
 
         const costUsd = (discovery?.costUsd ?? 0) + walkCost + synth.costUsd;
-        await env.db.run.update({
-          where: { id: runId },
+        // CHE-454: fenced — a run stopped while the verdict was being written
+        // keeps "canceled"; the verdict is not written over it.
+        const written = await env.db.run.updateMany({
+          where: { id: runId, status: { not: "canceled" } },
           data: {
             // CHE-331: a run with journeys still to list stays in "writing"
             // until they land (the step below). A terminal status is what
@@ -1226,6 +1230,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             currentAction: null,
           },
         });
+        if (written.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         return checked.verdict;
       });
 
@@ -1253,10 +1258,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               (listed.length > 6 ? ` and ${listed.length - 6} more` : ""),
           });
           // Last, so nothing reads the run as finished before its list is.
-          await env.db.run.update({
-            where: { id: runId },
+          // CHE-454: fenced like every terminal write.
+          const done = await env.db.run.updateMany({
+            where: { id: runId, status: { not: "canceled" } },
             data: { status: "completed", completedAt: new Date() },
           });
+          if (done.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         });
       }
 
@@ -1479,6 +1486,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       await releaseSessionHost("release-session");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // CHE-454: stopped by its team. The cancel already wrote the row, the
+      // price and the feed; nothing here may write over it, and nothing is ours
+      // to file. Only the session host is ours to give back.
+      if (err instanceof Error && (err.name === "RunCanceled" || msg === RUN_CANCELED)) {
+        await releaseSessionHost("release-session-canceled");
+        return;
+      }
       // CHE-76: our own LLM budget dying is an internal outage, not a fact
       // about the customer's app. Mark the run failed with an internal
       // reason (no verdict/findings/email were published — the throw
@@ -1495,8 +1509,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       const ourBudget = budget && !teamKeyDry;
       // Returns the phase the run died in (Run.status until this write), for
       // the ticket below.
-      const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean }> => {
+      const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean; canceled?: boolean }> => {
         const before = await env.db.run.findUnique({ where: { id: runId }, select: { status: true } });
+        // CHE-454: stopped by its team before this failure was noticed. The
+        // cancel wrote the ending; there is nothing ours to record over it.
+        if (before?.status === "canceled") return { phase: "canceled", afterVerdict: false, canceled: true };
         // Privacy, same rule as the "cleanup" step: a one-off run keeps the
         // test password only while it runs. That step sits on the success
         // path, so a run that failed kept the encrypted password forever —
@@ -1527,8 +1544,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await countOpenIssues(env, run);
           return { phase: `${before.status}, after the verdict was written`, afterVerdict: true };
         }
-        await env.db.run.update({
-          where: { id: runId },
+        // CHE-454: a run stopped while this step was getting here stays
+        // stopped — the fence, not the read above, decides.
+        await env.db.run.updateMany({
+          where: { id: runId, status: { not: "canceled" } },
           data: {
             status: "failed",
             ...cleared,
@@ -1595,6 +1614,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
         return { phase: before?.status ?? null, afterVerdict: false };
       });
+      if (ended.canceled) {
+        await releaseSessionHost("release-session-canceled");
+        return;
+      }
       // CHE-329: on our own board within the same minute, not discovered by
       // the owner a day later on the customer's page. Its own step, so a
       // retried "fail" cannot count one failure twice; never throws.
@@ -2017,8 +2040,13 @@ async function transition(
 ) {
   const events = await readEvents(env, runId);
   events.push({ at: new Date().toISOString(), phase, ...event });
-  await env.db.run.update({ where: { id: runId }, data: { status: phase, events: JSON.stringify(events) } });
+  // CHE-454: a canceled run is never moved on — its next phase stops it here.
+  const moved = await env.db.run.updateMany({ where: { id: runId, status: { not: "canceled" } }, data: { status: phase, events: JSON.stringify(events) } });
+  if (moved.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
 }
+
+// CHE-454: what a fenced write throws when the run was stopped meanwhile.
+const RUN_CANCELED = "the check was stopped by its team; nothing more is written";
 
 async function appendEvent(
   env: AgentEnv,

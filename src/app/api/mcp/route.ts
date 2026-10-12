@@ -3,7 +3,7 @@ import { captureServer } from "@/lib/analytics-server";
 import { handleMcpRequest } from "@/lib/mcp/handler";
 import { isSelfCheckRequest, selfCheckReadOnlyResponse } from "@/lib/self-check";
 import { effectiveEphemeralTtlDays, effectiveSiteCap } from "@/lib/site-cap";
-import { triggerRun } from "@/lib/trigger";
+import { terminateRun, triggerRun } from "@/lib/trigger";
 
 // POST /mcp (rewritten here by next.config.mjs) — the remote MCP server
 // (CHE-315). Everything is in src/lib/mcp/handler.ts; this file only supplies
@@ -20,6 +20,7 @@ export async function POST(req: Request) {
     // stack as well as on checkmyapp.dev (the review route does the same).
     origin: new URL(req.url).origin,
     trigger: triggerRun,
+    terminate: terminateRun,
     siteCap: effectiveSiteCap,
     ephemeralTtlDays: effectiveEphemeralTtlDays,
     capture: captureServer,

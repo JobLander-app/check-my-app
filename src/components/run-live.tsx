@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { PHASE_LABELS, PHASE_ORDER, type RunEvent, type RunPhase } from "@/lib/types";
 import { RunFailed } from "@/components/run-failed";
 import { AppName } from "@/components/shopify-mark";
+import { StopRun } from "@/components/stop-run";
 
 interface Snapshot {
   status: string;
@@ -43,6 +44,7 @@ export function RunLive({
   notifyEmail,
   isExtension = false,
   isShopify = false,
+  mayStop = false,
 }: {
   publicId: string;
   appSlug: string;
@@ -52,6 +54,8 @@ export function RunLive({
   isExtension?: boolean;
   // CHE-457: an app inside the Shopify admin carries the Shopify mark.
   isShopify?: boolean;
+  // CHE-454: a member or admin of the run's team sees Stop.
+  mayStop?: boolean;
 }) {
   const router = useRouter();
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -107,6 +111,7 @@ export function RunLive({
           <p className="font-mono text-sm text-fg-muted">{pct}%</p>
         </div>
       </div>
+      {mayStop && <StopRun publicId={publicId} />}
 
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-800">
         <div

@@ -5,11 +5,24 @@ import { RunFailed } from "@/components/run-failed";
 import { isTerminal } from "@/lib/status";
 import { appLabel, isShopifyApp } from "@/lib/app-label";
 import { failedRunWasFree } from "@/lib/failed-run";
-import { canMutateOwned } from "@/lib/auth";
+import { canMutateOwned, getOptionalUser } from "@/lib/auth";
+import { can, type TeamScope } from "@/lib/scopes";
 import { paidRetryOwed } from "@/lib/recheck";
 import { publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
+
+const STOPPED_CARD = "It was stopped before it finished. Nothing was published, and it costs nothing.";
+
+// CHE-454: Stop is offered to whoever the server would let stop it — a member
+// or an admin of the run's own team.
+async function mayStopRun(db: Awaited<ReturnType<typeof getDbFromContext>>, teamId: string | null): Promise<boolean> {
+  if (!teamId) return false;
+  const user = await getOptionalUser(db);
+  if (!user) return false;
+  const member = await db.membership.findFirst({ where: { teamId, userId: user.id }, select: { scope: true } });
+  return Boolean(member) && can(member!.scope as TeamScope, "run.start");
+}
 
 // Screen 2 — In-progress · /run/{id}
 export default async function RunPage({
@@ -43,6 +56,18 @@ export default async function RunPage({
     },
   });
   if (!run) notFound();
+
+  // CHE-454: a stopped check has no verdict to jump to — it says so here.
+  if (run.status === "canceled") {
+    return (
+      <main className="mx-auto max-w-5xl px-4 py-10">
+        <section className="card p-6">
+          <h1 className="text-lg font-medium">This check was stopped</h1>
+          <p className="mt-2 text-sm text-fg-muted">{STOPPED_CARD}</p>
+        </section>
+      </main>
+    );
+  }
 
   // If it already finished, jump straight to the verdict.
   if (isTerminal(run.status) && run.status !== "failed") {
@@ -84,6 +109,7 @@ export default async function RunPage({
         runNumber={run.runNumber}
         startedAt={run.startedAt.toISOString()}
         notifyEmail={run.notifyEmail}
+        mayStop={await mayStopRun(prisma, run.teamId)}
       />
     </main>
   );

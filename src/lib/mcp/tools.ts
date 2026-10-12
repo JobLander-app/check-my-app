@@ -44,6 +44,7 @@ import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-event
 import { teamOwned } from "@/lib/tenant-db";
 import { recountOpenIssuesOfRun } from "@/lib/open-issues";
 import { FINDING_MARKS } from "@/lib/validation";
+import { cancelRun } from "@/lib/run-cancel";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
@@ -100,6 +101,8 @@ export interface McpDeps {
   // The origin links are built against — the one the request came to.
   origin: string;
   trigger: (runId: string) => Promise<void>;
+  // CHE-454: stops a run's Workflow instance (cancel_check).
+  terminate?: (runId: string) => Promise<void>;
   siteCap: () => number;
   ephemeralTtlDays: () => number;
   capture?: typeof captureServer;
@@ -263,6 +266,8 @@ export const toolSchemas = {
   },
   remove_scenario: { scenario_id: z.string().min(1).describe("A team scenario's id; it is retired, its history kept") },
   get_check_status: { run_id: runId },
+  // CHE-454: stop a check that should not run on.
+  cancel_check: { run_id: runId },
   wait_for_run: { run_id: runId },
   wait_for_review: { run_id: runId },
   get_verdict: {
@@ -937,6 +942,18 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       });
     },
 
+    async cancel_check(args: { run_id: string }): Promise<ToolResult> {
+      const result = await cancelRun(
+        db,
+        { userId: caller.user.id, teamId: team.id, scope: caller.scope, name: caller.user.name?.trim() || caller.user.email },
+        args.run_id,
+        deps.terminate ?? (async () => {}),
+        new Date(deps.now()),
+      );
+      if (!result.ok) return fail(result.code, result.error, result.code === "not_found" ? HINTS.not_found : undefined);
+      return text({ ok: true, run_id: args.run_id, status: "canceled", was: result.was, price_usd: 0, note: "Stopped: nothing was published and it costs nothing." });
+    },
+
     async get_check_status(args: { run_id: string }): Promise<ToolResult> {
       const denied = deny("read");
       if (denied) return denied;
@@ -1323,7 +1340,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "quota_free carry buy_url and upgrade_url for the user.",
   get_check_status:
     "Status of a run: phase (queued/connecting/surface_scan/discovery/walking/anatomy/writing), terminal state " +
-    "(completed/partial/failed), verdict when done, and the latest progress events.",
+    "(completed/partial/failed/canceled), verdict when done, and the latest progress events.",
+  cancel_check:
+    "Stop a check that is still running — started by mistake, on the wrong store or app, or no longer needed. It stops " +
+    "at once, publishes nothing and costs nothing; its status becomes canceled. A check that has finished cannot be " +
+    "stopped. Needs a key that can start checks (member or admin).",
   wait_for_run:
     "Wait for a run to finish, then return its verdict (bottom line, findings by severity, verdict URL) and its " +
     "price with the work it paid for (price_usd, journeys_walked, steps_walked, price_explanation). Each call " +
@@ -1402,6 +1423,9 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
   );
   server.registerTool("start_check", { description: DESCRIPTIONS.start_check, inputSchema: toolSchemas.start_check }, (a) =>
     tools.start_check(a),
+  );
+  server.registerTool("cancel_check", { description: DESCRIPTIONS.cancel_check, inputSchema: toolSchemas.cancel_check }, (a) =>
+    tools.cancel_check(a),
   );
   server.registerTool(
     "get_check_status",

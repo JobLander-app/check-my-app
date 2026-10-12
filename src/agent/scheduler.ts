@@ -13,6 +13,7 @@ import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib
 import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
+import { releaseCanceledLeases } from "./canceled-leases";
 import { dispatchMender } from "./mender-dispatch";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
@@ -113,6 +114,15 @@ export async function runDueWatches(
     if (resumed.length) console.log(`[byok] key can pay again: ${resumed.join(", ")}`);
   } catch (err) {
     console.warn(`[byok] re-check of paused keys failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // CHE-454: a stopped Shopify check frees the signed-in browser before the
+  // due watches are read, so one waiting for it can start in this tick.
+  try {
+    const released = await releaseCanceledLeases(env, now);
+    if (released.length) console.log(`[session] released ${released.length} stopped check(s)`);
+  } catch (err) {
+    console.warn(`[session] release of stopped checks failed: ${err instanceof Error ? err.message : err}`);
   }
 
   // CHE-423: a run whose hand-off to the workflow threw is still `queued` with
