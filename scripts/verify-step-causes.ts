@@ -53,6 +53,9 @@ import { SELF_CHECK_REFUSED_OBSERVED, hasEnvironmentLeak, hasHomework, hasNarrat
 import { signedOutObserved } from "@/agent/signed-out";
 import { STORE_LOCKED_OBSERVED, STORE_MISSING_OBSERVED } from "@/agent/tools";
 import ts from "typescript";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { NeedsAttention } from "@/components/needs-attention";
 import { calls, elementAccesses, initializerOf, jsx, jsxTextAt, properties, source, type Call } from "./fixtures/ts-source";
 
 let failures = 0;
@@ -434,9 +437,10 @@ async function main() {
   );
 
   const page = source("src/app/(app)/health/apps/[appId]/page.tsx");
-  const attention = initializerOf(page, "attention");
-  const gate = attention && ts.isConditionalExpression(attention) ? attention.condition : undefined;
-  const card = jsx(page).find((e) => e.tag === "NeedsAttention");
+  // The gate is `forAdmin` (CHE-434 shares it with the members' reports), and
+  // the card is rendered behind it.
+  const gate = initializerOf(page, "forAdmin");
+  const card = jsx(page).find((e) => e.tag === "NeedsAttention" && e.guard === "forAdmin");
   const aside = jsx(page).find((e) => e.tag === "aside");
   const cost = jsxTextAt(page, "This app costs")[0];
   check(
@@ -454,6 +458,35 @@ async function main() {
     "…and only what is the team's to act on (not our incapacity)",
     calls(page).some((c) => c.callee === "causeRoute" && c.args[0] === "g.cause" && /=== "admin"$/.test(c.node.parent.getText(page))),
   );
+  // CHE-434 place 9: the members' reports sit on the same card, for the same admin.
+  const reportsInit = initializerOf(page, "attentionReports");
+  check(
+    "the card also lists the team's reports about the check, for the same admin",
+    Boolean(reportsInit) &&
+      ts.isConditionalExpression(reportsInit!) &&
+      reportsInit.condition.getText(page) === "forAdmin" &&
+      calls(page, reportsInit.whenTrue).some((c) => c.callee === "listFeedback" && c.args[0] === "db" && c.args[1] === "team.id") &&
+      card?.props.reports === "attentionReports",
+  );
+  const rendered = renderToStaticMarkup(
+    createElement(NeedsAttention, {
+      appId: "a1",
+      runNumber: null,
+      groups: [],
+      reports: [
+        {
+          id: "f1", kind: "finding", reason: "wrong", text: "The list is empty only for us", author: "Ann", at: "2026-10-12T10:00:00.000Z",
+          status: "fixed", findingNumber: 3, journeyId: null, stepId: null, stepLabel: null, runPublicId: "pubA", scenarioId: null,
+        },
+      ],
+    }),
+  );
+  check(
+    "…each with what it was about, who said it and where it stands",
+    /finding #003/.test(rendered) && /Ann/.test(rendered) && rendered.includes(">fixed") && rendered.includes('href="/verdict/pubA"'),
+    rendered.slice(0, 300),
+  );
+  check("a card with no cause and no report is not shown", renderToStaticMarkup(createElement(NeedsAttention, { appId: "a1", runNumber: 1, groups: [], reports: [] })) === "");
   const cardSf = source("src/components/needs-attention.tsx");
   check("the card has no button and no form: the cause is text, with a link to where it is fixed", !jsx(cardSf).some((e) => e.tag === "button" || e.tag === "form"));
   // "Add the store password" goes to the accounts section, so the password must
