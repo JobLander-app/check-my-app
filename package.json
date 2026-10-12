@@ -55,6 +55,7 @@
     "verify:started-via": "tsx --tsconfig tsconfig.json scripts/verify-started-via.ts",
     "verify:run-teammates-app": "tsx --tsconfig tsconfig.json scripts/verify-run-teammates-app.ts",
     "verify:pilot-digest": "tsx --tsconfig tsconfig.json scripts/verify-pilot-digest.ts",
+    "verify:latest-feedback": "tsx --tsconfig tsconfig.json scripts/verify-latest-feedback.ts",
     "verify:one-check": "tsx --tsconfig tsconfig.json scripts/verify-one-check.ts",
     "verify:analytics": "tsx --tsconfig tsconfig.json scripts/verify-analytics.ts",
     "verify:step-language": "tsx --tsconfig tsconfig.json scripts/verify-step-language.ts",
