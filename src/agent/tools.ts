@@ -640,7 +640,7 @@ export const BROWSER_TOOLS: Anthropic.Tool[] = [
   {
     name: "fill",
     description:
-      "Fill an input. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are never acted in.",
+      "Fill an input, or choose an option of a dropdown (<select>) by the text it shows. Use placeholders {{TEST_EMAIL}} and {{TEST_PASSWORD}} for the provided test credentials, or {{TEST_EMAIL:<label>}} / {{TEST_PASSWORD:<label>}} for a named test account — never ask for or invent real credentials. The page is searched first, then each embedded frame of the target app in order; pass frame to fill inside one FRAME section of read_page. Frames outside the target app are never acted in.",
     input_schema: {
       type: "object",
       properties: {
@@ -1889,6 +1889,12 @@ async function fill(env: ToolEnv, input: Record<string, unknown>): Promise<strin
     return failed ? recordUndriven(env, "fill", named, new Error(failed)) : landed();
   }
 
+  // A <select> is not something fill() takes — Playwright refuses it with "not
+  // an <input>", which then looked like a control no hand could drive, though a
+  // person drives it with two clicks. The onboarding form's cadence menu on
+  // checkmyapp.dev was the one the walk met.
+  if (await isSelectControl(field)) return selectInto(env, field, value, named, landed);
+
   try {
     await field.fill(value, { timeout: 8_000 });
   } catch (err) {
@@ -1974,6 +1980,55 @@ async function isTextControl(field: Locator): Promise<boolean | null> {
       { timeout: 3_000 },
     )
     .catch(() => null);
+}
+
+// true for a native <select>; false for anything else, and when it could not be
+// asked (a stub in a script).
+async function isSelectControl(field: Locator): Promise<boolean> {
+  if (typeof field?.evaluate !== "function") return false;
+  return field
+    .evaluate((el) => el instanceof HTMLSelectElement, undefined, { timeout: 3_000 })
+    .then((yes) => yes === true)
+    .catch(() => false);
+}
+
+// Choose an option the way a person does: by what the menu shows, or by the
+// value behind it. A value that names no option is the model's mistake and is
+// answered with the menu's own options — not a control we could not drive.
+async function selectInto(env: ToolEnv, field: Locator, value: string, named: string, landed: () => string): Promise<string> {
+  const options = await field
+    .evaluate(
+      (el) =>
+        Array.from((el as unknown as HTMLSelectElement).options).map((o) => ({
+          value: o.value,
+          label: (o.label || o.textContent || "").trim(),
+          disabled: o.disabled,
+        })),
+      undefined,
+      { timeout: 3_000 },
+    )
+    .catch(() => null);
+  if (!options) return recordUndriven(env, "fill", named, new Error(`the options of ${named} could not be read`));
+  const want = value.trim().toLowerCase();
+  const usable = options.filter((o) => !o.disabled);
+  const exact = (pick: (o: (typeof usable)[number]) => string) => usable.find((o) => pick(o).trim().toLowerCase() === want);
+  const partial = want ? usable.filter((o) => o.label.toLowerCase().includes(want)) : [];
+  const chosen = exact((o) => o.label) ?? exact((o) => o.value) ?? (partial.length === 1 ? partial[0] : undefined);
+  if (!chosen) {
+    const menu = usable.map((o) => JSON.stringify(o.label || o.value)).slice(0, 30).join(", ");
+    return `No option of ${named} is ${JSON.stringify(value)}. Its options: ${menu || "none that can be chosen"}. Nothing was selected.`;
+  }
+  try {
+    await field.selectOption({ value: chosen.value }, { timeout: 5_000 });
+  } catch (err) {
+    if (!isUndrivable(err)) throw err;
+    return recordUndriven(env, "fill", named, err);
+  }
+  const held = await field.inputValue().catch(() => null);
+  if (held !== null && held !== chosen.value) {
+    return recordUndriven(env, "fill", named, new Error(`the choice did not stick in ${named}`));
+  }
+  return landed();
 }
 
 // The input inside, when what was named is a component whose shadow root is open.
