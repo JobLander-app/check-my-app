@@ -6,6 +6,7 @@
 import { makeAgentEnv, type AgentBindings } from "./env";
 import { fileOpenFeedback } from "./feedback-filing";
 import { answerFeedback } from "./feedback-answers";
+import { sendPilotDigest } from "./pilot-digest";
 import { runDueWatches } from "./scheduler";
 import type { CheckRunParams } from "./workflow";
 import { CheckRunWorkflow } from "./workflow";
@@ -66,5 +67,9 @@ export default {
     } catch (err) {
       console.warn(`[feedback-answer] failed: ${err instanceof Error ? err.message : err}`);
     }
+    // CHE-441: the pilot's daily digest — acts only on the 07:00 UTC ticks,
+    // and sends once a day (its send id is the date).
+    const digest = await sendPilotDigest({ db: makeAgentEnv(env).db, bindings: env });
+    if (digest !== "not_now") console.log(`[pilot-digest] ${digest}`);
   },
 };
