@@ -30,7 +30,7 @@ import { assertCanStartRun, watchTrialState } from "@/lib/plans";
 import { releaseActionHint, teamRunsTheAction } from "@/lib/release-action";
 import { loadReview } from "@/lib/review";
 import { loadRunStatus, loadVerdict, type RunStatusPayload } from "@/lib/run-read";
-import { can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
+import { TEAM_SCOPES, can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
 import { startCheck } from "@/lib/start-check";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { appSlugFromUrl } from "@/lib/utils";
@@ -347,6 +347,15 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
 };
 
+// What a key of each scope can still do, said with every refusal (CHE-444).
+const MEMBER_TOOLS_SENTENCE: Record<TeamScope, string> = {
+  reader: "It reads everything: list_apps, latest_results, get_review, get_verdict, list_scenarios, list_check_mistakes.",
+  member:
+    "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check and marks findings; " +
+    "storing a login and connecting a Shopify store (connect_shopify_app) take an admin key.",
+  admin: "",
+};
+
 export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   const { db, origin } = deps;
   const team = caller.team;
@@ -388,9 +397,27 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   // CHE-325: what the plan allows and what is left, next to the apps it bounds.
   const planStatus = () => loadPlanStatus(db, { id: team.id, plan }, origin, new Date(deps.now()));
 
+  // CHE-444: a refusal says which key this is, which key would do, and what
+  // this one still can — an agent told only "an admin can do that" cannot tell
+  // whether start_check or add_scenario will be refused next (Securify's agent,
+  // 2026-10-12, on connect_shopify_app).
   function deny(action: TeamAction): ToolResult | null {
     if (can(caller.scope, action)) return null;
-    return fail("forbidden", refusal(caller.scope, action) ?? "Not allowed", HINTS.forbidden);
+    const needs = TEAM_SCOPES.find((s) => can(s, action)) ?? "admin";
+    const canStill = MEMBER_TOOLS_SENTENCE[caller.scope];
+    return text(
+      {
+        ok: false,
+        code: "forbidden",
+        error: refusal(caller.scope, action) ?? "Not allowed",
+        key_scope: caller.scope,
+        needs_scope: needs,
+        hint:
+          `This is a ${caller.scope} key; this call needs ${needs === "admin" ? "an admin" : `a ${needs}`} key. ` +
+          `${canStill} An admin of the team mints keys at ${origin}/settings/api-keys.`,
+      },
+      true,
+    );
   }
 
   // The team's run, or nothing. Reads below go through the shared loaders,

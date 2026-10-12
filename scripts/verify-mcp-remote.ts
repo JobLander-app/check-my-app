@@ -637,6 +637,16 @@ async function main() {
     check("member: start_check with the member's key starts a check of the team's app", started.out.ok === true || "run_id" in started.out, JSON.stringify(started.out).slice(0, 200));
     const login = await call(a, "update_app", { app_id: "app_a", test_password: "x-new-secret" });
     check("member: storing a login stays an admin's — refused with a sentence", login.isError && login.out.code === "forbidden", JSON.stringify(login.out));
+    // Securify's agent, 2026-10-12: "an admin can do that" did not say whether
+    // start_check or add_scenario would be refused next.
+    const store = await call(a, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
+    const hint = String(store.out.hint ?? "");
+    check(
+      "member: a refusal names this key's scope, the scope that would do, and what this key still can",
+      store.out.code === "forbidden" && store.out.key_scope === "member" && store.out.needs_scope === "admin" &&
+        hint.includes("start_check") && hint.includes("/settings/api-keys"),
+      JSON.stringify(store.out),
+    );
     const text = a.getInstructions() ?? "";
     check("member: a pilot team's agent is told what to report and with which call",
       text.includes(PILOT_PARAGRAPH) && !(b.getInstructions() ?? "").includes("report_check_mistake"), text.slice(-600));
