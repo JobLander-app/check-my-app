@@ -46,6 +46,8 @@ import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins"
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
 import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
+import { appOnStore, scenariosToCarry, shopifyAppOf, storesOf } from "@/lib/shopify-stores";
+import { shopifyAdminUrl } from "@/lib/session-view";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
 import { FEEDBACK_REASONS, FEEDBACK_TEXT_MAX, STATUS_LABEL, giveFeedback, listFeedback, type FeedbackTarget } from "@/lib/feedback";
@@ -230,6 +232,9 @@ export const toolSchemas = {
       .max(20)
       .optional()
       .describe("With app_id: team scenario ids (from list_scenarios) to check this time, besides the daily ones"),
+    // CHE-451: a Shopify app on one of its stores, instead of app_id.
+    shopify_app: z.string().min(1).optional().describe("Or: a connected Shopify app's handle (list_apps shopify_app), with store"),
+    store: z.string().min(1).optional().describe("With shopify_app: which store to check it on, e.g. 'my-staging-store'"),
   },
   // CHE-435: the app's scenarios, edited by id.
   list_scenarios: { app_id: appId },
@@ -244,6 +249,7 @@ export const toolSchemas = {
     daily: z.boolean().optional().describe("true (default): checked by every check of the app. false: only when a check names it"),
     replaces: z.string().min(1).optional().describe("scenario_id of a scenario the check found that is really this one; it is retired"),
     run_now: z.boolean().optional().describe("Also start a check of the app now that covers it (spends the team's balance)"),
+    all_stores: z.boolean().optional().describe("For a Shopify app on several stores: add it on every store of that app, not only this one"),
   },
   update_scenario: {
     scenario_id: z.string().min(1).describe("From list_scenarios or get_review"),
@@ -265,6 +271,15 @@ export const toolSchemas = {
     frequency: frequency.default("daily").describe("daily, every_6h or manual"),
   },
   disable_watch: { app_id: appId },
+  // CHE-451: another dev store of a Shopify app the team already checks.
+  add_store: {
+    shopify_app: z.string().min(1).describe("The app's handle, as list_apps shows it in shopify_app"),
+    store: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9][a-z0-9-]*$/)
+      .describe("The store's name as in admin.shopify.com/store/<name>, e.g. 'my-staging-store'"),
+  },
   // CHE-434: scenario_id or run_id names where the check got it wrong.
   report_check_mistake: {
     run_id: z.string().min(1).optional().describe("The check (run id)"),
@@ -461,6 +476,17 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           }),
         ),
       );
+      const byHandle = new Map<string, { appId: string; store: string }[]>();
+      for (const a of apps) {
+        const of = shopifyAppOf(a);
+        if (of) byHandle.set(of.handle, [...(byHandle.get(of.handle) ?? []), { appId: a.id, store: of.store }]);
+      }
+      const shopifyFields = (id: string, slug: string, targetUrl: string) => {
+        const of = shopifyAppOf({ appSlug: slug, targetUrl });
+        if (!of) return {};
+        const others = (byHandle.get(of.handle) ?? []).filter((s) => s.appId !== id).map((s) => ({ store: s.store, app_id: s.appId }));
+        return { shopify_app: of.handle, store: of.store, other_stores: others };
+      };
       return text({
         ok: true,
         team: team.name,
@@ -490,6 +516,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             ],
             // CHE-372: whether a store password is stored — never the password.
             has_store_password: Boolean(a.storePasswordEnc),
+            // CHE-451: a Shopify app on several stores — which app and store
+            // this is, and the same app's other stores in the team.
+            ...shopifyFields(a.id, a.appSlug, a.targetUrl),
             // What a check of this app usually costs; null until it has a
             // history (plan.typical_check_price_usd covers it until then).
             usual_price_usd: money?.range ? { low: money.range.low, high: money.range.high } : null,
@@ -531,6 +560,10 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       if (result.connected) {
         return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: MCP_CONNECT_COPY.alreadyConnected });
       }
+      // CHE-451: the same Shopify app on another store of the team — say so,
+      // and how many of its scenarios this store gets once the app is picked.
+      const siblings = (await storesOf(db, team.id, result.handle)).filter((s) => s.appId !== result.appId);
+      const carry = siblings.length ? await scenariosToCarry(db, team.id, result.appId, result.handle) : 0;
       return text({
         ok: true,
         app_id: result.appId,
@@ -538,7 +571,32 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         app: result.handle,
         sign_in_url: `${deps.origin}${appPath.signIn(result.appId)}`,
         hint: MCP_CONNECT_COPY.signIn,
+        ...(siblings.length
+          ? {
+              other_stores: siblings.map((s) => ({ store: s.store, app_id: s.appId })),
+              scenarios_coming: carry,
+              same_app_note: `${result.handle} is already connected on ${siblings.map((s) => s.store).join(", ")}; once the app is picked on this store, its ${carry} team scenario${carry === 1 ? "" : "s"} come${carry === 1 ? "s" : ""} with it.`,
+            }
+          : {}),
       });
+    },
+
+    // CHE-451: the same Shopify app on one more dev store. Named for what the
+    // agent is doing — adding a store — not "connect an app", which it is not.
+    async add_store(args: { shopify_app: string; store: string }): Promise<ToolResult> {
+      const denied = deny("app.credentials.write");
+      if (denied) return denied;
+      const known = await storesOf(db, team.id, args.shopify_app);
+      if (known.length === 0) {
+        return fail(
+          "not_found",
+          `No Shopify app ${args.shopify_app} is connected in this team. connect_shopify_app with the link to the app in a store's admin connects it first.`,
+          HINTS.not_found,
+        );
+      }
+      const already = known.find((s) => s.store === args.store);
+      if (already) return text({ ok: true, app_id: already.appId, store: args.store, app: args.shopify_app, already_connected: true, other_stores: known.filter((s) => s.store !== args.store).map((s) => ({ store: s.store, app_id: s.appId })) });
+      return this.connect_shopify_app({ app_url: shopifyAdminUrl(args.store, args.shopify_app) });
     },
 
     async create_app(args: {
@@ -675,9 +733,31 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       deploy_env?: string;
       ephemeral?: boolean;
       scenarios?: string[];
+      shopify_app?: string;
+      store?: string;
     }): Promise<ToolResult> {
       const denied = deny("run.start");
       if (denied) return denied;
+      // CHE-451: `shopify_app` + `store` names the same saved app as its app_id.
+      if (args.shopify_app || args.store) {
+        if (args.app_id || args.url) return fail("invalid_input", "Name the app one way: app_id, or shopify_app with store, or url.");
+        if (!args.shopify_app || !args.store) {
+          const stores = args.shopify_app ? (await storesOf(db, team.id, args.shopify_app)).map((s) => s.store) : [];
+          return fail("invalid_input", `shopify_app goes with store${stores.length ? `: ${args.shopify_app} is connected on ${stores.join(", ")}` : ""}.`);
+        }
+        const appId = await appOnStore(db, team.id, args.shopify_app, args.store);
+        if (!appId) {
+          const stores = (await storesOf(db, team.id, args.shopify_app)).map((s) => s.store);
+          return fail(
+            "not_found",
+            stores.length
+              ? `${args.shopify_app} is not connected on ${args.store}; it is on ${stores.join(", ")}. add_store adds ${args.store}.`
+              : `No Shopify app ${args.shopify_app} is connected in this team. connect_shopify_app adds one.`,
+            HINTS.not_found,
+          );
+        }
+        args = { ...args, app_id: appId, shopify_app: undefined, store: undefined };
+      }
       if (Boolean(args.app_id) === Boolean(args.url)) {
         return fail("invalid_input", "Pass app_id (a saved app) or url (a one-off check), not both and not neither.");
       }
@@ -1010,7 +1090,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       });
     },
 
-    async add_scenario(args: { app_id: string; title: string; description?: string; daily?: boolean; replaces?: string; run_now?: boolean }): Promise<ToolResult> {
+    async add_scenario(args: { app_id: string; title: string; description?: string; daily?: boolean; replaces?: string; run_now?: boolean; all_stores?: boolean }): Promise<ToolResult> {
       if (args.run_now) {
         const denied = deny("run.start");
         if (denied) return denied;
@@ -1023,7 +1103,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         ? await replaceScenario(db, actor(), args.replaces, input)
         : await addScenario(db, actor(), { appId: args.app_id, ...input });
       if (!added.ok) return fail(added.code, added.error, added.code === "not_found" ? HINTS.not_found : undefined);
-      if (!args.run_now) return text({ ok: true, scenario_id: added.id, daily: args.daily ?? true });
+      // CHE-451: the same scenario on the app's other stores, once per store.
+      const alsoOn: { store: string; scenario_id: string }[] = [];
+      if (args.all_stores) {
+        const own = await db.app.findFirst({ where: { ...teamOwned(team.id), id: args.app_id }, select: { appSlug: true, targetUrl: true } });
+        const of = own ? shopifyAppOf(own) : null;
+        if (of) {
+          for (const s of (await storesOf(db, team.id, of.handle)).filter((x) => x.appId !== args.app_id)) {
+            const has = ((await listScenarios(db, team.id, s.appId)) ?? []).some((x) => x.title.trim().toLowerCase() === args.title.trim().toLowerCase());
+            if (has) continue;
+            const copy = await addScenario(db, actor(), { appId: s.appId, ...input });
+            if (copy.ok) alsoOn.push({ store: s.store, scenario_id: copy.id });
+          }
+        }
+      }
+      const stores = alsoOn.length ? { also_on: alsoOn } : {};
+      if (!args.run_now) return text({ ok: true, scenario_id: added.id, daily: args.daily ?? true, ...stores });
       const started = await startSavedApp(
         db,
         { id: caller.user.id, teamId: team.id, plan },
@@ -1096,7 +1191,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "signs in as (label and email — never a password), whether a store password is stored (has_store_password), " +
     "recurring-check state, what a check of it usually costs " +
     "(usual_price_usd) and whether one can run now, and the last run; plus `plan`: the team's balance, what a check " +
-    "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. Start here.",
+    "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. A Shopify app also carries shopify_app (its " +
+    "handle), store, and other_stores: the same app connected on the team's other stores. Start here.",
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
@@ -1111,6 +1207,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   connect_shopify_app: MCP_CONNECT_COPY.description,
+  add_store:
+    "Add one more dev store to a Shopify app the team already checks — staging, production, a store with the data a " +
+    "feature needs. Pass shopify_app (list_apps) and the store's name. The person opens the returned page and confirms " +
+    "the app on that store (signing in only if the account cannot open it); the app's team scenarios come with it. " +
+    "Then start_check with shopify_app and store checks the app there.",
   update_app:
     "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
@@ -1119,7 +1220,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   start_check:
     "Start a check. With app_id: checks a saved app using its stored test logins, scenarios and limits — the usual " +
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +
-    "shipped). With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
+    "shipped). A Shopify app on several stores can be named by shopify_app and store instead of app_id. " +
+    "With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
     "20–40 minutes and spends the team's balance (its price is on wait_for_run / get_review when it finishes); " +
     "follow it with wait_for_run or get_check_status. Refusals carry a stable code (quota_balance, quota_free, " +
     "quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal; quota_balance and " +
@@ -1170,7 +1272,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "Add a scenario to an app, in the team's words: a title and what a user does and what should happen. daily: true " +
     "(default) puts it in every check of the app; daily: false keeps it for the checks that name it (start_check " +
     "scenarios). run_now also starts a check now that covers it. If a scenario the check found is really a different " +
-    "one, pass its scenario_id as replaces.",
+    "one, pass its scenario_id as replaces. For a Shopify app on several stores, all_stores: true adds it on every " +
+    "store of that app (a store connected later gets the app's scenarios too).",
   update_scenario:
     "Change a scenario by id: a team scenario's title and description; any scenario's description and whether it is " +
     "checked every time (daily).",
@@ -1193,6 +1296,7 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       { description: DESCRIPTIONS.connect_shopify_app, inputSchema: toolSchemas.connect_shopify_app },
       (a) => tools.connect_shopify_app(a),
     );
+    server.registerTool("add_store", { description: DESCRIPTIONS.add_store, inputSchema: toolSchemas.add_store }, (a) => tools.add_store(a));
   }
   server.registerTool("update_app", { description: DESCRIPTIONS.update_app, inputSchema: toolSchemas.update_app }, (a) =>
     tools.update_app(a),

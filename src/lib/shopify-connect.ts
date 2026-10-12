@@ -24,6 +24,7 @@ import { enableWatchForApp } from "@/lib/watch-enable";
 import { CONNECT_ERRORS } from "@/lib/sign-in-copy";
 import { teamHasFeature } from "@/lib/team-features";
 import { appHandleOfAdminUrl, isPendingShopifyApp, parseAppLink, shopifyAdminUrl, shopifySlug, storeOfAdminUrl, type Pick } from "@/lib/session-view";
+import { carryScenarios } from "@/lib/shopify-stores";
 
 export const SHOPIFY_ADMIN_ORIGIN = "https://admin.shopify.com";
 
@@ -63,7 +64,7 @@ export async function connectApp(
 }
 
 export type ChooseResult =
-  | { ok: true; appId: string; appSlug: string; watchRefused?: string }
+  | { ok: true; appId: string; appSlug: string; carried: number; watchRefused?: string }
   | { error: string; code: "invalid_input" | "not_found" | "duplicate"; appId?: string };
 
 // Saves the app the person picked on the sign-in page. `pick` is what the host
@@ -99,6 +100,9 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
   // stamped from today, not from when the store was first typed in. Refused,
   // the app is still connected; its first check still runs, and the reason is
   // said.
+  // CHE-451: the same Shopify app on another store of the team — its scenarios
+  // come with it, before the first check, so that check covers them.
+  const carried = await carryScenarios(db, actor.teamId, app.id, pick.handle);
   const watch = await enableWatchForApp(db, { id: actor.userId, teamId: actor.teamId, plan: actor.plan }, app.id, { frequency: "daily" });
-  return { ok: true, appId: app.id, appSlug, ...(watch.kind === "gated" ? { watchRefused: watch.reason } : {}) };
+  return { ok: true, appId: app.id, appSlug, carried, ...(watch.kind === "gated" ? { watchRefused: watch.reason } : {}) };
 }

@@ -144,7 +144,10 @@ export async function createApiKey(
   const { user, db, team, scope } = await requireActionScope("apikey.manage");
   // CHE-263: a key carries a scope, and never one above its minter's — a member
   // who could mint an admin key would make the scope table a suggestion.
-  const wanted = (TEAM_SCOPES as string[]).includes(keyScope) ? (keyScope as TeamScope) : "member";
+  // CHE-451: "self" is the minter's own scope — the key a person gives their
+  // own coding agent, which acts as them. Before this, an admin's agent got a
+  // member key and could not do what its admin can (Securify, 2026-10-12).
+  const wanted = keyScope === "self" ? scope : (TEAM_SCOPES as string[]).includes(keyScope) ? (keyScope as TeamScope) : "member";
   const refusal = mintRefusal(scope, wanted);
   if (refusal) throw new Error(refusal);
 
