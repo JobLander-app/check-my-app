@@ -36,6 +36,9 @@ export interface AgentBindings {
   // 24h access tokens with these. Absent = tokens die a day after connect.
   LINEAR_CLIENT_ID?: string;
   LINEAR_CLIENT_SECRET?: string;
+  // CHE-438: our Atlassian OAuth app, to refresh a team's Jira grant.
+  JIRA_CLIENT_ID?: string;
+  JIRA_CLIENT_SECRET?: string;
   // Verdict-ready notifications (Resend). All optional — absent = log-only.
   EMAIL_API_KEY?: string;
   EMAIL_FROM?: string;

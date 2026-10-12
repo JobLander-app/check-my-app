@@ -32,6 +32,8 @@ import { WatchSettings } from "@/components/watch-settings";
 import { AnalyticsProject } from "@/components/analytics-project";
 import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
+import { JiraProjectSelect } from "@/components/jira-project-select";
+import { jiraChoices, jiraProjectBlockers } from "@/lib/tracker/jira-connect";
 import { DeleteAppSection } from "@/components/delete-app";
 import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
@@ -428,8 +430,12 @@ type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; track
 // per integration, each with its state and its own action.
 async function Integrations({ app, teamId, plan, scope, githubError, save }: { app: AppWithIntegrations; teamId: string; plan: UserPlan; scope: TeamScope; githubError: string | undefined; save: Save }) {
   const { db } = await requireUser();
-  const tracker = app.tracker;
+  // CHE-438: an app files into one tracker — Linear or Jira. Each card reads
+  // only its own kind; connecting one replaces the other.
+  const jira = app.tracker?.type === "jira" ? app.tracker : null;
+  const tracker = app.tracker && app.tracker.type !== "jira" ? app.tracker : null;
   const health = trackerHealth(tracker, new Date());
+  const jiraHealth = trackerHealth(jira, new Date());
   const env = getCloudflareContext().env as Record<string, string | undefined>;
   // Which of the workspace's teams the tickets land in. Best-effort — a
   // transient Linear error hides the picker and shows the stored name.
@@ -437,6 +443,17 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
     ? await freshLinearToken(db, tracker, { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET })
         .then(fetchTeams)
         .catch(() => [] as { id: string; name: string }[])
+    : [];
+  // CHE-438: every project on every site the Jira grant reaches. Best-effort,
+  // like the Linear teams: an Atlassian error hides the picker.
+  const jiraProjects = jira
+    ? await jiraChoices(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(
+        () => [] as { value: string; label: string }[],
+      )
+    : [];
+  // Required fields of the chosen project that a ticket of ours cannot fill.
+  const jiraBlockers = jira
+    ? await jiraProjectBlockers(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(() => [] as string[])
     : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
@@ -518,6 +535,52 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
             </Button>
           </form>
         )}
+      </div>
+
+      {/* Jira — the same job as Linear, for a team whose tracker is Jira (CHE-438). */}
+      <div className="card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-fg">
+              Jira <span className="text-xs font-normal text-fg-faint">· issue tracker</span>
+            </p>
+            {jira && jiraHealth ? (
+              <p className={`text-xs ${jiraHealth.tone === "ok" ? "text-status-ok" : jiraHealth.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
+                {jiraHealth.tone === "ok" ? "✓" : "⚠"} {jiraHealth.text}
+                {jiraProjects.length === 0 && jira.teamId && ` · project ${jira.teamId}`}
+                {jiraProjects.length === 0 && jira.externalUrl && ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}`}
+              </p>
+            ) : (
+              <p className="text-xs text-fg-faint">
+                Not connected.{tracker ? " Connecting Jira moves this app's tickets from Linear to Jira." : ""}
+              </p>
+            )}
+            {jira && !jira.teamId && (
+              <p className="text-xs text-status-confusing">⚠ No project chosen yet — nothing is filed until one is.</p>
+            )}
+            {jira?.teamId && jiraBlockers.length > 0 && (
+              <p className="text-xs text-status-broken">
+                ⚠ Tickets can&apos;t be filed in {jira.teamId}: it requires {jiraBlockers.join(", ")}, which CheckMyApp can&apos;t fill. Choose another project.
+              </p>
+            )}
+            {jira && jiraProjects.length > 0 && (
+              <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+                Tickets go to project
+                <JiraProjectSelect
+                  appId={app.id}
+                  choices={jiraProjects}
+                  current={jira.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
+                />
+              </p>
+            )}
+          </div>
+          <a
+            href={`/api/integrations/jira/start?appId=${app.id}`}
+            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
+          >
+            {jira ? "Reconnect →" : "Connect →"}
+          </a>
+        </div>
       </div>
 
       {/* PostHog — which project holds this app's data (CHE-237). */}

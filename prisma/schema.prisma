@@ -1140,7 +1140,10 @@ model TrackerIntegration {
   refreshTokenEnc String?
   tokenExpiresAt  DateTime?
   teamId          String?   // tracker team/project the tickets land in
-  externalOrg     String?   // workspace/org identifier
+  externalOrg     String?   // workspace/org identifier (Jira: the site's cloudId)
+  // CHE-438: the Jira site, https://<name>.atlassian.net — where an issue's
+  // link points. Null for Linear.
+  externalUrl     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

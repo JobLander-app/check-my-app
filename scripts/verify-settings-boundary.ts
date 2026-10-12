@@ -111,6 +111,7 @@ const PER_APP_MARKERS = [
   "writeMode",
   "posthogProjectId",
   "setTrackerTeam",
+  "setJiraProject",
   "updateAppSettings",
   // CHE-369: the app's GitHub repository is the app's own setting.
   "setAppGitHubRepo",
