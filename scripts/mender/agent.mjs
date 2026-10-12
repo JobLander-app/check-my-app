@@ -29,6 +29,7 @@ import { join } from "node:path";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
 const LABEL = "mender";
+const LABEL_ID = "f623d304-3b3e-4c10-8af6-9a20b8b2d054";
 const MODEL = process.env.MENDER_MODEL ?? "anthropic/claude-sonnet-5.5";
 const BUDGET = Number(process.env.MENDER_BUDGET ?? 5);
 const MAX_TURNS = Number(process.env.MENDER_MAX_TURNS ?? 8);
@@ -120,7 +121,8 @@ export function chooseTicket(issues) {
 }
 
 /** Paths whose change a user sees: screens and emails. The owner sees them before merge. */
-export const UI = [/^src\/(app|components)\/.*\.(tsx|css)$/, /^src\/lib\/email[^/]*\.tsx?$/, /^public\//];
+// Customer sentences live outside JSX too (`*-copy.ts`, `*-mail.ts`; Codex, #333).
+export const UI = [/^src\/(app|components)\/.*\.(tsx|css)$/, /^src\/lib\/[^/]*(email|mail|copy)[^/]*\.tsx?$/, /^public\//];
 export const uiPaths = (paths) => paths.filter((p) => UI.some((re) => re.test(p)));
 
 /** A "[Pilot feedback]" ticket the check got right is answered, not fixed (CHE-441's contract). */
@@ -392,8 +394,13 @@ async function publish() {
   // waits in Todo while they are open, and this is not a failed attempt —
   // unless no open part exists on Linear, whatever the model said (Codex, #333).
   if (r.status === "split") {
-    const d = await linear(`query($i:String!){issue(id:$i){children{nodes{state{type}}}}}`, { i: issue.id });
-    if (d.issue.children.nodes.some((c) => OPEN.includes(c.state.type))) {
+    const d = await linear(`query($i:String!){issue(id:$i){children{nodes{id state{type} labels{nodes{name}}}}}}`, { i: issue.id });
+    const parts = d.issue.children.nodes.filter((c) => OPEN.includes(c.state.type));
+    // Every open part enters the queue, whether or not the model labelled it.
+    for (const c of parts.filter((c) => !c.labels.nodes.some((l) => l.name === LABEL))) {
+      await linear("mutation($i:String!,$l:String!){issueAddLabel(id:$i,labelId:$l){success}}", { i: c.id, l: LABEL_ID });
+    }
+    if (parts.length) {
       await comment(issue.id, `**Mender split this ticket** into the sub-issues below; each is taken on its own.\n\n${clean(r.text)}${footer(r)}`);
       return setState(issue.id, "Todo");
     }

@@ -48,7 +48,10 @@ check("an answer with homework or our machinery is not used; a plain one is",
     !(await usableAnswer("Answer: the check cost $4.20 and used 10,000 tokens.")) &&
     (await usableAnswer("Answer: the store has no published products, so there is nothing to scan.")));
 check("a change to screens or emails is marked ui; other code is not",
-  uiPaths(["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/verdict-view.tsx", "src/lib/email.ts", "src/lib/step-cause.ts", "scripts/verify-x.ts", "src/app/api/x/route.ts"]).length === 3);
+  uiPaths(["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/verdict-view.tsx", "src/lib/email.ts", "src/lib/home-copy.ts", "src/lib/invite-mail.ts",
+    "src/lib/step-cause.ts", "scripts/verify-x.ts", "src/app/api/x/route.ts"]).length === 5);
+check("every open part of a split is put in Mender's queue",
+  /issueAddLabel\(id:\$i,labelId:\$l\)/.test(read("scripts/mender/agent.mjs")) && /if \(parts\.length\) \{/.test(read("scripts/mender/agent.mjs")));
 check("only a [Pilot feedback] ticket is answered, and only with an Answer: line",
   isFeedback("[Pilot feedback] app · step: x") && !isFeedback("[Checker gap] x") &&
     answerOf("report\nAnswer: the store has no products.\nMENDER_ANSWERED") === "Answer: the store has no products." && answerOf("no answer") === null);
@@ -124,7 +127,7 @@ check("an answer closes the ticket as Canceled only on a feedback ticket with no
     publishSrc.indexOf('setState(issue.id, "Canceled")') > publishSrc.indexOf("if (answer && (await usableAnswer(answer)))"));
 check("the answer comment is the answer alone (the author reads all of it)", /await comment\(issue\.id, answer\);/.test(publishSrc));
 check("a split is believed only when Linear shows an open part",
-  /if \(d\.issue\.children\.nodes\.some\(\(c\) => OPEN\.includes\(c\.state\.type\)\)\)/.test(publishSrc));
+  /const parts = d\.issue\.children\.nodes\.filter\(\(c\) => OPEN\.includes\(c\.state\.type\)\);/.test(publishSrc));
 check("publishing runs on Node 22, which imports the language rules",
   /actions\/setup-node@v4\s*\n\s*with:\s*\n\s*node-version: 22/.test(read(".github/workflows/mender-agent.yml").split(/\n  publish:\n/)[1] ?? ""));
 check("every pilot feedback report is filed for Mender",
