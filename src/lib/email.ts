@@ -494,7 +494,7 @@ export async function sendFeedbackAnswer(args: FeedbackAnswerArgs): Promise<void
       html: htmlDocument(
         copy.subject,
         `<p>${escapeHtml(copy.lead)}</p>` +
-          `<blockquote style="margin:12px 0;padding-left:12px;border-left:3px solid #ddd;color:#444">${escapeHtml(quote)}</blockquote>` +
+          `<blockquote style="margin:12px 0;padding-left:12px">${escapeHtml(quote)}</blockquote>` +
           (copy.detail ? `<p>${escapeHtml(copy.detail)}</p>` : "") +
           `<p><a href="${escapeHtml(args.url)}">Open it on CheckMyApp</a></p><p>— CheckMyApp</p>`,
         escapeHtml(why),
