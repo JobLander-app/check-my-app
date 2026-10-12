@@ -46,7 +46,7 @@ import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins"
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
 import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
-import { appOnStore, scenariosToCarry, shopifyAppOf, storesOf } from "@/lib/shopify-stores";
+import { appOnStore, connectedShopifyAppOf, scenariosToCarry, shopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { shopifyAdminUrl } from "@/lib/session-view";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
@@ -478,7 +478,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       );
       const byHandle = new Map<string, { appId: string; store: string }[]>();
       for (const a of apps) {
-        const of = shopifyAppOf(a);
+        // Only a connected store is another store of the app (a pending one has
+        // not had its app confirmed yet).
+        const of = connectedShopifyAppOf(a);
         if (of) byHandle.set(of.handle, [...(byHandle.get(of.handle) ?? []), { appId: a.id, store: of.store }]);
       }
       const shopifyFields = (id: string, slug: string, targetUrl: string) => {
@@ -1127,7 +1129,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         { scenarios: [added.id] },
       );
       if ("error" in started) {
-        return text({ ok: true, scenario_id: added.id, check: { started: false, error: started.error, code: started.code ?? null } });
+        return text({ ok: true, scenario_id: added.id, ...stores, check: { started: false, error: started.error, code: started.code ?? null } });
       }
       // A check that was already running was planned before this scenario
       // existed: it is that run, and it does not cover the new one.
@@ -1135,11 +1137,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return text({
           ok: true,
           scenario_id: added.id,
+          ...stores,
           check: { started: false, run_id: started.publicId, already_running: true, covers_this_scenario: false, ...urls(started.publicId) },
           hint: `A check of this app was already running and does not cover this scenario. When it ends, call start_check with app_id and scenarios: ["${added.id}"].`,
         });
       }
-      return text({ ok: true, scenario_id: added.id, check: { started: true, run_id: started.publicId, covers_this_scenario: true, ...urls(started.publicId) } });
+      return text({ ok: true, scenario_id: added.id, ...stores, check: { started: true, run_id: started.publicId, covers_this_scenario: true, ...urls(started.publicId) } });
     },
 
     async update_scenario(args: { scenario_id: string; title?: string; description?: string; daily?: boolean }): Promise<ToolResult> {

@@ -90,6 +90,14 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
   const other = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug, NOT: { id: app.id } }, select: { id: true } });
   if (other) return { error: CONNECT_ERRORS.alreadyConnected(pick.name), code: "duplicate", appId: other.id };
   const targetUrl = shopifyAdminUrl(store, pick.handle);
+  // CHE-451: the same Shopify app on another store of the team — its scenarios
+  // come with it, before the first check, so that check covers them. Copied
+  // BEFORE the app is marked chosen (CodeRabbit on #324): a copy that throws
+  // leaves the store still pending, so the person picks again and the copy
+  // resumes — once per title, so a scenario copied the first time is not copied
+  // twice. The other order left a chosen app whose missing scenarios nothing
+  // would ever bring.
+  const carried = await carryScenarios(db, actor.teamId, app.id, pick.handle);
   await db.app.update({
     ...alreadyScoped("the App was just scoped to this team"),
     where: { id: app.id },
@@ -100,9 +108,6 @@ export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string
   // stamped from today, not from when the store was first typed in. Refused,
   // the app is still connected; its first check still runs, and the reason is
   // said.
-  // CHE-451: the same Shopify app on another store of the team — its scenarios
-  // come with it, before the first check, so that check covers them.
-  const carried = await carryScenarios(db, actor.teamId, app.id, pick.handle);
   const watch = await enableWatchForApp(db, { id: actor.userId, teamId: actor.teamId, plan: actor.plan }, app.id, { frequency: "daily" });
   return { ok: true, appId: app.id, appSlug, carried, ...(watch.kind === "gated" ? { watchRefused: watch.reason } : {}) };
 }

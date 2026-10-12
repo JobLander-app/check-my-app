@@ -20,9 +20,14 @@
 process.env.CREDENTIALS_SECRET ??= "verify-shopify-stores-secret";
 
 import "./fixtures/wasm-module-loader.mjs";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
 import { realD1 } from "./fixtures/real-d1";
 import { calls, source } from "./fixtures/ts-source";
 import { shopifyAppOf, storesOf } from "../src/lib/shopify-stores";
+import { isPendingShopifyApp } from "../src/lib/session-view";
+import { keyScopeFor } from "../src/lib/scopes";
 import { chooseApp } from "../src/lib/shopify-connect";
 import { createRemoteTools } from "../src/lib/mcp/tools";
 
@@ -79,9 +84,37 @@ async function main() {
     check("add_store: it says the app is on prod-release-1 and two team scenarios come with it",
       added.other_stores?.[0]?.store === "prod-release-1" && added.scenarios_coming === 2 && /prod-release-1/.test(added.same_app_note ?? ""), JSON.stringify(added));
 
+    // A store waiting for its app to be picked is not yet a store of the app.
+    eq("a store still waiting for its pick is not listed as one of the app's stores", (await storesOf(db, "ts", HANDLE)).map((s) => s.store), ["prod-release-1"]);
+    const listedPending = parse(await as("member").list_apps());
+    eq("…nor among the app's other stores in list_apps", listedPending.apps.find((a: { app_id: string }) => a.app_id === "prod").other_stores, []);
+
     // 4.
-    const picked = await chooseApp(db, { userId: "u", teamId: "ts", plan: "business" }, added.app_id, { slot: "main", store: "vladislav-dog-photos", handle: HANDLE, name: "Easy Block", origin: "https://easy-block.example" });
-    eq("picking the app on the new store carries the team's two scenarios", picked.ok && picked.carried, 2);
+    const pick = { slot: "main", store: "vladislav-dog-photos", handle: HANDLE, name: "Easy Block", origin: "https://easy-block.example" };
+    const actor = { userId: "u", teamId: "ts", plan: "business" as const };
+    // The copy fails half-way (the second scenario's write throws)…
+    let writes = 0;
+    const flaky = new Proxy(db, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== "appJourney") return typeof value === "function" ? value.bind(target) : value;
+        return new Proxy(value as object, {
+          get(delegate, method) {
+            const fn = Reflect.get(delegate, method);
+            if (method === "create") {
+              return (...a: unknown[]) => (++writes === 2 ? Promise.reject(new Error("D1 went away")) : (fn as (...x: unknown[]) => unknown).apply(delegate, a));
+            }
+            return typeof fn === "function" ? fn.bind(delegate) : fn;
+          },
+        });
+      },
+    });
+    const broken = await chooseApp(flaky as typeof db, actor, added.app_id, pick).then(() => "returned", (e: Error) => e.message);
+    const half = await db.app.findUnique({ where: { id: added.app_id }, select: { appSlug: true, targetKind: true } });
+    eq("a copy that fails half-way leaves the store waiting for its pick, so it can be picked again", [broken, isPendingShopifyApp(half!)], ["D1 went away", true]);
+    // …and picking again finishes it, without a second copy of the first.
+    const picked = await chooseApp(db, actor, added.app_id, pick);
+    eq("picking again carries what is still missing", picked.ok && picked.carried, 1);
     const titles = (await db.appJourney.findMany({ where: { appId: added.app_id }, select: { title: true, daily: true, source: true } })).map((s) => [s.title, s.daily, s.source]);
     eq("…as team scenarios, daily as they were, not the one the check found", titles.sort(), [["Block a country", true, "team"], ["Protection Dashboard loads", false, "team"]]);
     eq("both stores now listed together", (await storesOf(db, "ts", HANDLE)).map((s) => s.store), ["prod-release-1", "vladislav-dog-photos"]);
@@ -99,19 +132,49 @@ async function main() {
     eq("add_scenario: a scenario for one store stays on it", [onlyHere.ok, onlyHere.also_on ?? null, await db.appJourney.count({ where: { title: "Pricing v3 plans are shown" } })], [true, null, 1]);
     const everywhere = parse(await as("member").add_scenario({ app_id: "prod", title: "Block an IP", all_stores: true }));
     eq("add_scenario all_stores: written on every store of the app, once", [everywhere.also_on?.map((s: { store: string }) => s.store), await db.appJourney.count({ where: { title: "Block an IP" } })], [["vladislav-dog-photos"], 2]);
+    const andRun = parse(await as("member").add_scenario({ app_id: "prod", title: "Unblock an IP", all_stores: true, run_now: true }));
+    eq("…and with run_now, the answer still says where the copies went", [andRun.also_on?.map((s: { store: string }) => s.store), "check" in andRun], [["vladislav-dog-photos"], true]);
   } finally {
     await real.dispose();
   }
 
-  // 7.
-  check(
-    "the agent panel's key carries its minter's scope",
-    calls(source("src/components/connect-agent.tsx")).some((c) => c.callee === "createApiKey" && c.args[1] === '"self"') &&
-      /keyScope === "self" \? scope/.test(source("src/app/dashboard/actions.ts").getText()),
+  // 7. The key's scope: the rule, where it is applied, and every place a key is made.
+  eq("a key for 'self' is its minter's scope", (["admin", "member", "reader"] as const).map((m) => keyScopeFor(m, "self")), ["admin", "member", "reader"]);
+  eq("a named scope is taken as named; anything else is a member key", [keyScopeFor("admin", "reader"), keyScopeFor("admin", "admin"), keyScopeFor("admin", "owner"), keyScopeFor("admin", "")], ["reader", "admin", "member", "member"]);
+  const actionsSf = source("src/app/dashboard/actions.ts");
+  const inCreate = calls(actionsSf).filter((c) => enclosingFunction(c.node) === "createApiKey");
+  check("createApiKey decides the scope by that rule, from its minter and what was asked", inCreate.some((c) => c.callee === "keyScopeFor" && c.args.join(",") === "scope,keyScope"));
+  const sites = callSites("src", "createApiKey").filter((s) => s.file !== "src/app/dashboard/actions.ts");
+  eq(
+    "every place that makes a key, and the scope it asks for: the agent panel its minter's own, the API keys block a member key",
+    sites.map((s) => [s.file, s.args[1] ?? "(default member)"]).sort(),
+    [["src/components/api-keys.tsx", "(default member)"], ["src/components/connect-agent.tsx", '"self"']],
   );
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
+}
+
+// The name of the function declaration a node sits in.
+function enclosingFunction(node: ts.Node): string | null {
+  for (let n: ts.Node | undefined = node; n; n = n.parent) if (ts.isFunctionDeclaration(n)) return n.name?.text ?? null;
+  return null;
+}
+// Every call of `callee` in the .ts/.tsx files under `dir`, as parsed syntax.
+function callSites(dir: string, callee: string): { file: string; args: string[] }[] {
+  const out: { file: string; args: string[] }[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== "generated") walk(p);
+      } else if (/\.tsx?$/.test(e.name)) {
+        for (const c of calls(source(p))) if (c.callee === callee) out.push({ file: p, args: c.args });
+      }
+    }
+  };
+  walk(dir);
+  return out;
 }
 
 main().catch((e) => {

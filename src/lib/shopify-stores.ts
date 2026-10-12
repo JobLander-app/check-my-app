@@ -15,7 +15,7 @@
 
 import type { PrismaClient } from "@/generated/prisma/client";
 import { journeyKey } from "@/lib/journey-key";
-import { appHandleOfAdminUrl, storeOfAdminUrl } from "@/lib/session-view";
+import { appHandleOfAdminUrl, isPendingShopifyApp, storeOfAdminUrl } from "@/lib/session-view";
 import { teamOwned } from "@/lib/tenant-db";
 
 const SLUG = /^shopify:([^/]+)\/(.+)$/;
@@ -29,6 +29,16 @@ export function shopifyAppOf(app: { appSlug: string; targetUrl: string }): { sto
   return m ? { store: m[1], handle: m[2] } : null;
 }
 
+/**
+ * The same, only once the app is connected — the person picked it after signing
+ * in. A store still waiting for that pick is not "where the app is": its address
+ * may already name the handle (add_store writes it), but nothing has confirmed
+ * the app is installed there (CodeRabbit on #324).
+ */
+export function connectedShopifyAppOf(app: { appSlug: string; targetUrl: string; targetKind: string }): { store: string; handle: string } | null {
+  return isPendingShopifyApp(app) ? null : shopifyAppOf(app);
+}
+
 export type StoreOfApp = { appId: string; store: string };
 
 /** Every store of the team where this Shopify app is connected, by store name. */
@@ -38,10 +48,10 @@ export async function storesOf(db: PrismaClient, teamId: string, handle: string)
       ...teamOwned(teamId),
       OR: [{ targetUrl: { startsWith: "https://admin.shopify.com/store/" } }, { appSlug: { startsWith: "shopify:" } }],
     },
-    select: { id: true, appSlug: true, targetUrl: true },
+    select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
   });
   return rows
-    .map((r) => ({ appId: r.id, of: shopifyAppOf(r) }))
+    .map((r) => ({ appId: r.id, of: connectedShopifyAppOf(r) }))
     .filter((r): r is { appId: string; of: { store: string; handle: string } } => r.of?.handle === handle)
     .map((r) => ({ appId: r.appId, store: r.of.store }))
     .sort((a, b) => a.store.localeCompare(b.store));

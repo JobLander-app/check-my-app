@@ -15,7 +15,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
 import { settingsActionFor, updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
-import { TEAM_SCOPES, can, mintRefusal, refusal, type TeamScope } from "@/lib/scopes";
+import { can, keyScopeFor, mintRefusal, refusal } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
@@ -144,10 +144,8 @@ export async function createApiKey(
   const { user, db, team, scope } = await requireActionScope("apikey.manage");
   // CHE-263: a key carries a scope, and never one above its minter's — a member
   // who could mint an admin key would make the scope table a suggestion.
-  // CHE-451: "self" is the minter's own scope — the key a person gives their
-  // own coding agent, which acts as them. Before this, an admin's agent got a
-  // member key and could not do what its admin can (Securify, 2026-10-12).
-  const wanted = keyScope === "self" ? scope : (TEAM_SCOPES as string[]).includes(keyScope) ? (keyScope as TeamScope) : "member";
+  // CHE-451: "self" is the minter's own (keyScopeFor).
+  const wanted = keyScopeFor(scope, keyScope);
   const refusal = mintRefusal(scope, wanted);
   if (refusal) throw new Error(refusal);
 
