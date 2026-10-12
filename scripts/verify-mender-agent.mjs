@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, pendingReview, stagedPaths, stranded, uiPaths, validBranch } from "./mender/agent.mjs";
+import { CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, pendingReview, stagedPaths, stranded, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -39,6 +39,12 @@ const split = (identifier, createdAt, types) => ({ ...issue(identifier, createdA
 check("a ticket Mender split waits while a part is open, and comes back when all are closed",
   chooseTicket([split("CHE-1", "2026-10-01", ["completed", "unstarted"]), issue("CHE-2", "2026-10-02")])?.identifier === "CHE-2" &&
     chooseTicket([split("CHE-1", "2026-10-01", ["completed", "canceled"])])?.identifier === "CHE-1");
+check("a part still in triage counts as open (the tracker contract)",
+  chooseTicket([split("CHE-1", "2026-10-01", ["triage"])]) === null);
+check("an answer with homework or our machinery is not used; a plain one is",
+  !(await usableAnswer("Answer: please verify this in a real browser yourself.")) &&
+    !(await usableAnswer("Answer: our test browser could not click it.")) &&
+    (await usableAnswer("Answer: the store has no published products, so there is nothing to scan.")));
 check("a change to screens or emails is marked ui; other code is not",
   uiPaths(["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/verdict-view.tsx", "src/lib/email.ts", "src/lib/step-cause.ts", "scripts/verify-x.ts", "src/app/api/x/route.ts"]).length === 3);
 check("only a [Pilot feedback] ticket is answered, and only with an Answer: line",
@@ -109,9 +115,14 @@ check("AGENTS.md's sequence runs before the patch is taken: prisma generate, bot
 check("review is asked of CodeRabbit, never Codex", /@coderabbitai review/.test(agent) && !/@codex/.test(agent));
 check("a PR that touches screens or emails is labelled ui, opened or reviewed",
   (publishSrc.match(/markUi\((url|pr\.url), paths\)/g) ?? []).length === 2);
-check("an answer closes the ticket as Canceled only on a feedback ticket with no change",
+check("an answer closes the ticket as Canceled only on a feedback ticket with no change, once the language rules pass",
   /r\.status === "answered" && !job\.changed && isFeedback\(issue\.title\) \? answerOf\(r\.text\) : null/.test(publishSrc) &&
-    publishSrc.indexOf('setState(issue.id, "Canceled")') > publishSrc.indexOf("if (answer)"));
+    publishSrc.indexOf('setState(issue.id, "Canceled")') > publishSrc.indexOf("if (answer && (await usableAnswer(answer)))"));
+check("the answer comment is the answer alone (the author reads all of it)", /await comment\(issue\.id, answer\);/.test(publishSrc));
+check("a split is believed only when Linear shows an open part",
+  /if \(d\.issue\.children\.nodes\.some\(\(c\) => OPEN\.includes\(c\.state\.type\)\)\)/.test(publishSrc));
+check("publishing runs on Node 22, which imports the language rules",
+  /actions\/setup-node@v4\s*\n\s*with:\s*\n\s*node-version: 22/.test(read(".github/workflows/mender-agent.yml").split(/\n  publish:\n/)[1] ?? ""));
 check("every pilot feedback report is filed for Mender",
   /labelNames: \["pilot-feedback", "mender"\]/.test(read("src/agent/feedback-filing.ts")));
 

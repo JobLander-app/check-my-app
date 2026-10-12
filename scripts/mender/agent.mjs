@@ -97,7 +97,8 @@ async function setState(issueId, name) {
 
 // ─── Picking the work ────────────────────────────────────────────────────────
 
-const OPEN = ["backlog", "unstarted", "started"];
+// Open = still in flight, triage included (the tracker contract, src/lib/tracker/types.ts).
+export const OPEN = ["triage", "backlog", "unstarted", "started"];
 
 /**
  * Oldest first; a ticket already tried MAX_ATTEMPTS times without a PR steps
@@ -122,6 +123,12 @@ export const uiPaths = (paths) => paths.filter((p) => UI.some((re) => re.test(p)
 /** A "[Pilot feedback]" ticket the check got right is answered, not fixed (CHE-441's contract). */
 export const isFeedback = (title) => String(title).startsWith("[Pilot feedback]");
 export const answerOf = (text) => String(text).match(/^Answer: .+$/m)?.[0] ?? null;
+
+/** The rules CHE-441 applies before mailing an answer, from main's own file (no npm ci here). */
+export async function usableAnswer(answer) {
+  const { hasHomework, hasEnvironmentLeak } = await import("../../src/lib/verdict-language.ts");
+  return !hasHomework(answer) && !hasEnvironmentLeak(answer);
+}
 
 /**
  * Review comments newer than the last thing Mender did on the PR — its last
@@ -374,19 +381,29 @@ async function publish() {
   }
   const { issue } = target;
   // Split into parts (created by the model with the Linear tools): the ticket
-  // waits in Todo while they are open, and this is not a failed attempt.
+  // waits in Todo while they are open, and this is not a failed attempt —
+  // unless no open part exists on Linear, whatever the model said (Codex, #333).
   if (r.status === "split") {
-    await comment(issue.id, `**Mender split this ticket** into the sub-issues below; each is taken on its own.\n\n${clean(r.text)}${footer(r)}`);
-    return setState(issue.id, "Todo");
+    const d = await linear(`query($i:String!){issue(id:$i){children{nodes{state{type}}}}}`, { i: issue.id });
+    if (d.issue.children.nodes.some((c) => OPEN.includes(c.state.type))) {
+      await comment(issue.id, `**Mender split this ticket** into the sub-issues below; each is taken on its own.\n\n${clean(r.text)}${footer(r)}`);
+      return setState(issue.id, "Todo");
+    }
+    r.status = "split without sub-issues";
   }
   // A "[Pilot feedback]" report the check got right: Canceled with a comment
   // that starts "Answer: …", which CHE-441 mails to its author. The model only
-  // writes the answer; the state is set here, and only on a feedback ticket.
+  // writes the answer; the state is set here, only on a feedback ticket, only
+  // for an answer the customer-language rules pass (the mail would refuse it
+  // and the report would wait forever), and the answer comment carries nothing
+  // else — the author reads all of it (Codex, #333).
   const answer = r.status === "answered" && !job.changed && isFeedback(issue.title) ? answerOf(r.text) : null;
-  if (answer) {
-    await comment(issue.id, `${answer}${footer(r)}`);
+  if (answer && (await usableAnswer(answer))) {
+    await comment(issue.id, `**Mender: the check was right.**${footer(r)}`);
+    await comment(issue.id, answer);
     return setState(issue.id, "Canceled");
   }
+  if (answer) r.status = "answer refused by the customer-language rules";
   if (!job.changed) {
     await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${clean(r.text) || "(no report)"}${footer(r)}`);
     return setState(issue.id, "Todo");
