@@ -3,7 +3,7 @@
 // person's tab and the person's context alone.
 //
 // Real on every side that can be: the real session server
-// (spikes/shopify-session/session-server.mjs), a real Chrome with a persistent
+// (session-runner/session-server.mjs), a real Chrome with a persistent
 // profile holding a person's signed-in tab, and the Worker's own SessionBrowser
 // and browser.ts helpers. The one thing replaced is the transport: in the
 // Worker `connect` is @cloudflare/playwright's (it needs the Workers runtime);
@@ -252,8 +252,8 @@ async function main() {
   // nothing but node and ws), an ES module with a top-level await — hence the
   // dynamic import.
   // @ts-expect-error — no type declarations for the host's .mjs
-  const { startSessionServer } = await import("../spikes/shopify-session/session-server.mjs");
-  const server = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, probeLog: join(profile, "no-probe.jsonl"), onGate: () => {} });
+  const { startSessionServer } = await import("../session-runner/session-server.mjs");
+  const server = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, onGate: () => {} });
   // The bearer is held here; in the Worker the team's Durable Object adds its own.
   const host: SessionHost = { url: `http://127.0.0.1:${server.port}`, token: TOKEN, fetch: (input, init) => fetch(input, init) };
 

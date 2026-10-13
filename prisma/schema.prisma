@@ -1493,7 +1493,7 @@ model SessionProbe {
   appId       String?
   at          DateTime
   // ok | login_page | captcha | 2fa | error | proxy
-  // (spikes/shopify-session/classify.mjs).
+  // (session-runner/classify.mjs).
   state       String
   urlHost     String?
   urlPath     String?

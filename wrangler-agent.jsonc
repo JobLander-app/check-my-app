@@ -49,12 +49,12 @@
     "max_instances": 3
   }, {
     // CHE-464: one team's Shopify session browser (src/agent/session-runner.ts,
-    // spikes/shopify-session/runner.mjs). standard-3 (2 vCPU, 8 GiB): the VM
-    // it replaces had two cores, and one core is what broke the extension
+    // session-runner/runner.mjs). standard-3 (2 vCPU, 8 GiB): the VM it
+    // replaced had two cores, and one core is what broke the extension
     // runner's clicks (above). Billing stops while a team's browser sleeps.
     "class_name": "SessionRunner",
-    "image": "./spikes/shopify-session/Dockerfile",
-    "image_build_context": "./spikes/shopify-session",
+    "image": "./session-runner/Dockerfile",
+    "image_build_context": "./session-runner",
     "instance_type": "standard-3",
     "max_instances": 20
   }],

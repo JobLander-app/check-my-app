@@ -2,7 +2,7 @@
 # one the CHE-461 spike ran Chrome on without a challenge (and the extension
 # runner's): Ubuntu noble with Xvfb, fonts and an unprivileged user under which
 # Chrome's sandbox works. Chrome itself is google-chrome-stable from Google's
-# repository, as on the session host — never the base's Chromium for Testing.
+# repository, as on the VM this replaced — never the base's Chromium for Testing.
 FROM mcr.microsoft.com/playwright:v1.58.2-noble
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg xvfb fonts-liberation fonts-noto-color-emoji \

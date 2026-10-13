@@ -1,5 +1,5 @@
 // CHE-419: a person signs in to their store on our page through a live view of
-// one tab of the session browser (spikes/shopify-session/viewer.mjs).
+// one tab of the session browser (session-runner/viewer.mjs).
 //
 // Two parts:
 //   1. the rules, pure: the view token, the closed list of things a viewer may
@@ -22,7 +22,7 @@ import { PICK_ERRORS, SIGN_IN_COPY, allSignInSentences, signInError } from "../s
 import WebSocket from "ws";
 import { chromium } from "playwright";
 // @ts-ignore — the host's own modules are plain JavaScript.
-import { appNameFromTitle, signViewToken, verifyViewToken, signedInStore, startViewer, storeAdminUrl, translate } from "../spikes/shopify-session/viewer.mjs";
+import { appNameFromTitle, signViewToken, verifyViewToken, signedInStore, startViewer, storeAdminUrl, translate } from "../session-runner/viewer.mjs";
 import { mintViewToken, parseAppLink, shopifySlug, storeOfAdminUrl, verifyPick } from "../src/lib/session-view";
 
 async function main() {
@@ -81,7 +81,7 @@ await check("the sign-in page's every sentence is about the person's store, and 
     assert.equal(hasHomework(sentence), false, `homework: ${sentence}`);
     assert.doesNotMatch(sentence, /\b(browser|tab|screencast|VNC|DevTools|session host)\b/i, `names our machinery: ${sentence}`);
   }
-  const source = readFileSync(join(process.cwd(), "spikes/shopify-session/viewer.mjs"), "utf8");
+  const source = readFileSync(join(process.cwd(), "session-runner/viewer.mjs"), "utf8");
   const codes = [...source.matchAll(/t: "error", code: "([a-z]+)"/g)].map((m) => m[1]);
   assert.ok(codes.length >= 4, `codes found: ${codes}`);
   for (const code of codes) assert.notEqual(signInError(code), SIGN_IN_COPY.connectionEnded, `no sentence for "${code}"`);

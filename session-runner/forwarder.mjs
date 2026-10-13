@@ -1,7 +1,7 @@
 // CHE-464: tinyproxy's job inside a team's session container. Chrome cannot
 // carry proxy credentials in --proxy-server, so it is pointed at this
 // credential-free forwarder on loopback, which sends everything on to the
-// residential upstream (IPRoyal, the `session-host-proxy` URL) with the
+// residential upstream (IPRoyal, the agent worker's SESSION_PROXY_URL) with the
 // credentials added. Nothing is forwarded anywhere else: there is no local
 // exception, so a page cannot reach this container's own ports through it.
 //

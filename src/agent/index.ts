@@ -31,8 +31,8 @@ export default {
     // A person on a Shopify app's sign-in page, to their team's browser.
     if (url.pathname === "/session/view") return routeLiveView(req, env);
     if (url.hostname === LIVE_HOST) return new Response(null, { status: 404 });
-    // Ours: moving a live sign-in into a team's browser, reading its state.
-    if (url.pathname === "/session/jar" || url.pathname === "/session/state") return routeSessionAdmin(req, env);
+    // Ours: a team's browser's state.
+    if (url.pathname === "/session/state") return routeSessionAdmin(req, env);
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true, worker: "agent" });

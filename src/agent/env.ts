@@ -99,12 +99,10 @@ export interface AgentBindings {
   SESSION_ADMIN_TOKEN?: string;
   // CHE-389: when a session check meets an ended sign-in, the person who
   // signs in is told — once per ended sign-in (signed-out.ts) — in the owner's
-  // chat (CHE-375): the bot's token and the chat, both secrets, and the address
-  // to sign in at (a var) for a run with no saved app. Without the token or the
-  // chat nothing is sent; the run still ends Not verified and says why.
+  // chat (CHE-375): the bot's token and the chat, both secrets. Without them
+  // nothing is sent; the run still ends Not verified and says why.
   TELEGRAM_BOT_TOKEN?: string;
   OWNER_TELEGRAM_CHAT_ID?: string;
-  SESSION_SIGN_IN_URL?: string;
   // CHE-369: the GitHub App, for the answer on the commit when a run it
   // started ends (src/lib/github-app.ts). Absent = no answer, the run is
   // unaffected.

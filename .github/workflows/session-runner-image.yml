@@ -1,7 +1,7 @@
 name: Session runner image
 
 # CHE-464: the image every team's Shopify session browser runs
-# (spikes/shopify-session/Dockerfile, runner.mjs). The deploy builds it too,
+# (session-runner/Dockerfile, runner.mjs). The deploy builds it too,
 # but a broken image found there is found on main. Here it is built and booted
 # on the pull request that changes it: Chrome comes up, the session server
 # answers, a jar goes in and comes back out, a check gets its lease, and the
@@ -10,7 +10,7 @@ name: Session runner image
 on:
   pull_request:
     paths:
-      - "spikes/shopify-session/**"
+      - "session-runner/**"
       - ".github/workflows/session-runner-image.yml"
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t session-runner spikes/shopify-session
+      - run: docker build -t session-runner session-runner
       - name: Boot it, give it a jar, lease it, probe through it
         run: |
           set -euo pipefail

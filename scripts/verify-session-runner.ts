@@ -1,7 +1,7 @@
 // CHE-464: a team's Shopify session browser in a Cloudflare Container.
 //
 // What can be run outside the Workers runtime is run here, for real:
-//   - the jar's rules (spikes/shopify-session/jar-rules.mjs) and its seal
+//   - the jar's rules (session-runner/jar-rules.mjs) and its seal
 //     (src/agent/session-jar.ts): Shopify's cookies only, a value never said,
 //     a jar that opens for its own team only;
 //   - a team's own residential session and its own view key: one team's token
@@ -84,7 +84,7 @@ const sessionCookie = (value = VALUE) => ({
 
 async function jarRules() {
   // @ts-expect-error — plain JavaScript, shared with the container
-  const { jarOf, holdsSignIn, describeJar } = await import("../spikes/shopify-session/jar-rules.mjs");
+  const { jarOf, holdsSignIn, describeJar } = await import("../session-runner/jar-rules.mjs");
   const jar = jarOf([
     sessionCookie(),
     { name: "_merchant_analytics", value: "x", domain: "admin.shopify.com", path: "/", session: true, expires: -1, size: 10 },
@@ -182,7 +182,7 @@ async function viewKeys() {
   check("view token: an expired one does not", (await verifyViewToken(keyA, await mintViewToken(keyA, { slot: TEAM_A, store: "s", now: Date.now() - 31 * 60_000 }))) === null);
   // viewer.mjs signs a pick with the key it was started with — the team's.
   // @ts-expect-error — plain JavaScript, shared with the container
-  const { signPick } = await import("../spikes/shopify-session/viewer.mjs");
+  const { signPick } = await import("../session-runner/viewer.mjs");
   const pick = signPick(keyA, { slot: TEAM_A, store: "prod-release-1", handle: "securify", name: "Securify", origin: "https://app.test" });
   check("pick: verifies with its team's key, not another team's", (await verifyPick(keyA, pick))?.handle === "securify" && (await verifyPick(keyB, pick)) === null);
   check("pick: is not a view token", (await verifyViewToken(keyA, pick)) === null);
@@ -196,10 +196,6 @@ async function doors() {
       fetch: async (request: Request) => {
         seen.push({ name, url: request.url, team: request.headers.get("X-Session-Team"), origin: request.headers.get("Origin"), upgrade: request.headers.get("Upgrade"), auth: request.headers.get("Authorization") });
         return new Response("to the container", { status: 200 });
-      },
-      importJar: async (team: string, cookies: unknown) => {
-        rpc.push(`import:${name}:${team}:${Array.isArray(cookies) ? cookies.length : "none"}`);
-        return { saved: 1, loaded: false };
       },
       describe: async (team: string) => {
         rpc.push(`describe:${name}:${team}`);
@@ -229,11 +225,10 @@ async function doors() {
   const admin = (path: string, init: RequestInit = {}) => routeSessionAdmin(new Request(`https://checkmyapp-agent.test${path}`, init), bindings);
   check("admin: no bearer, a wrong one — refused", (await admin("/session/state?teamId=team_aaaa")).status === 401 && (await admin("/session/state?teamId=team_aaaa", { headers: { Authorization: `Bearer ${"b".repeat(48)}` } })).status === 401 && rpc.length === 0);
   check("admin: a token shorter than 32 characters configured is no token", (await routeSessionAdmin(new Request("https://x.test/session/state?teamId=team_aaaa", { headers: { Authorization: "Bearer short" } }), { ...bindings, SESSION_ADMIN_TOKEN: "short" })).status === 401);
-  const imported = await admin("/session/jar", { method: "POST", headers: { Authorization: `Bearer ${ADMIN}`, "Content-Type": "application/json" }, body: JSON.stringify({ teamId: TEAM_A, cookies: [sessionCookie()] }) });
   const described = await admin(`/session/state?teamId=${TEAM_A}`, { headers: { Authorization: `Bearer ${ADMIN}` } });
-  check("admin: with our bearer a jar goes to the team's own browser, and its state is read there", imported.status === 200 && described.status === 200 && rpc.join(" ") === `import:${TEAM_A}:${TEAM_A}:1 describe:${TEAM_A}:${TEAM_A}`, rpc.join(" "));
-  const imported2 = await (await admin("/session/jar", { method: "POST", headers: { Authorization: `Bearer ${ADMIN}` }, body: "{}" })).json() as { error?: string };
-  check("admin: no team, no import", imported2.error === "teamId required");
+  check("admin: with our bearer a team's state is read in its own browser", described.status === 200 && rpc.join(" ") === `describe:${TEAM_A}:${TEAM_A}`, rpc.join(" "));
+  const imported = await admin("/session/jar", { method: "POST", headers: { Authorization: `Bearer ${ADMIN}`, "Content-Type": "application/json" }, body: JSON.stringify({ teamId: TEAM_A, cookies: [sessionCookie()] }) });
+  check("admin: no way to put a jar in from outside (the one-time move off the VM is gone)", imported.status === 404 && rpc.length === 1);
 }
 
 async function serverWithJar() {
@@ -248,9 +243,9 @@ async function serverWithJar() {
   const realError = console.error;
   const capture = (...args: unknown[]) => said.push(args.map(String).join(" "));
   // @ts-expect-error — plain JavaScript, shared with the container
-  const { startSessionServer } = await import("../spikes/shopify-session/session-server.mjs");
+  const { startSessionServer } = await import("../session-runner/session-server.mjs");
   // @ts-expect-error — plain JavaScript, shared with the container
-  const { loadJar, readJar } = await import("../spikes/shopify-session/jar.mjs");
+  const { loadJar, readJar } = await import("../session-runner/jar.mjs");
   const TOKEN = "t".repeat(48);
   let server: { port: number; close(): Promise<void> } | null = null;
   try {
@@ -261,7 +256,6 @@ async function serverWithJar() {
       token: TOKEN,
       cdp,
       port: 0,
-      probeLog: join(profile, "none.jsonl"),
       jar: { load: (cookies: unknown[]) => loadJar(cdp, cookies), read: () => readJar(cdp) },
       probe: async (url: string) => ({ at: new Date().toISOString(), state: "ok", url_host: new URL(url).hostname, url_path: "/", ms: 1 }),
     });
@@ -306,7 +300,7 @@ async function serverWithJar() {
 
 async function forwarder() {
   // @ts-expect-error — plain JavaScript, shared with the container
-  const { startForwarder } = await import("../spikes/shopify-session/forwarder.mjs");
+  const { startForwarder } = await import("../session-runner/forwarder.mjs");
   const expectedAuth = `Basic ${Buffer.from("user1234:pass_session-abc").toString("base64")}`;
   const seen: string[] = [];
   let refuseTunnels = 0;
@@ -374,22 +368,31 @@ async function forwarder() {
 }
 
 async function image() {
-  const dockerfile = await readFile("spikes/shopify-session/Dockerfile", "utf8");
+  const dockerfile = await readFile("session-runner/Dockerfile", "utf8");
   const copied = /^COPY (.+) \.\/$/m.exec(dockerfile.split("\n").filter((l) => l.startsWith("COPY") && !l.includes("package")).join("\n"))?.[1].split(/\s+/) ?? [];
   check("image: Chrome is google-chrome-stable from Google, not the base's Chromium", /apt-get install[^\n]*google-chrome-stable/.test(dockerfile) && /dl\.google\.com\/linux\/chrome\/deb/.test(dockerfile));
-  const sources = await Promise.all(copied.map(async (f) => [f, await readFile(join("spikes/shopify-session", f), "utf8")] as const));
+  const sources = await Promise.all(copied.map(async (f) => [f, await readFile(join("session-runner", f), "utf8")] as const));
   const launches = sources.filter(([, text]) => /\.launch(PersistentContext|Server)?\s*\(/.test(text)).map(([f]) => f);
   check("image: nothing in it launches a browser through Playwright — it only attaches", copied.length >= 8 && launches.length === 0, `${copied.join(" ")} | launches: ${launches.join(" ")}`);
   const runner = sources.find(([f]) => f === "runner.mjs")?.[1] ?? "";
   const spawnChrome = /spawn\("\/usr\/bin\/google-chrome-stable"[\s\S]*?\}\),\n\);/.exec(runner)?.[0] ?? "";
   check("image: Chrome starts as a plain process with an environment of its own — no secret in it", spawnChrome.includes("env: { DISPLAY") && !/process\.env/.test(spawnChrome) && !/TOKEN|SECRET|PROXY_URL/.test(spawnChrome), spawnChrome.slice(0, 120));
   check("image: the secrets are taken out of the environment before anything starts", /const take = \(name\) => \{[\s\S]*?delete process\.env\[name\]/.test(runner) && runner.indexOf('take("SESSION_SERVER_TOKEN")') < runner.indexOf('spawn("Xvfb"'));
-  const ignore = await readFile("spikes/shopify-session/.dockerignore", "utf8");
+  const ignore = await readFile("session-runner/.dockerignore", "utf8");
   check("image: every file it copies is let into the build, and nothing else", copied.every((f) => ignore.includes(`!${f}`)) && ignore.startsWith("*\n"));
+}
+
+// Which tab a person on the sign-in page is given (door.mjs): its own cases,
+// run here so they run in CI.
+async function doorRule() {
+  const { spawnSync } = await import("node:child_process");
+  const run = spawnSync(process.execPath, ["session-runner/door.mjs", "--self-test"], { encoding: "utf8" });
+  check("door: which tab a person is given — the rule's own cases", run.status === 0, (run.stdout ?? "").trim().split("\n").pop());
 }
 
 async function main() {
   await jarRules();
+  await doorRule();
   await seal();
   await proxy();
   await messages();

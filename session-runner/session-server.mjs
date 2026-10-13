@@ -1,10 +1,8 @@
 // CHE-389: lets one check at a time work inside the Chrome a person signed in
-// to on this host. Runs on checkmyapp-session-host as session-server.service,
-// bound to loopback; the only way in from outside is the Cloudflare tunnel's
-// second hostname, behind an Access service token, and then this server's own
-// bearer token — two secrets held by the agent Worker and nobody else.
+// to. Since CHE-464 it runs in a team's container (runner.mjs), and the only
+// way in is the team's Durable Object, with the bearer it makes for each start.
 //
-//   GET    /state                         who holds the lease, is Chrome up, the last probe line
+//   GET    /state                         who holds the lease, is a check connected, Chrome's version
 //   POST   /lease   {ownerRunId, maxDurationSeconds}   take or renew → {sessionId, expiresAt, browser}
 //   DELETE /lease   {ownerRunId}          give it back; the check's tabs are closed
 //   WS     /v1/devtools/browser/<sessionId>   DevTools, filtered (lease.mjs)
@@ -21,28 +19,19 @@
 // waitForDebuggerOnStart, and while such a connection stays open every new tab
 // sits paused at about:blank (README.md, the 2026-10-01 note).
 //
-// In a team's container (CHE-464, runner.mjs) there is no profile on disk: the
-// team's sign-in is its cookie jar, kept by the team's Durable Object. Four
-// more routes, for that Durable Object only (the same bearer):
+// There is no profile on disk: the team's sign-in is its cookie jar, kept by
+// the team's Durable Object. Four more routes, for that Durable Object only
+// (the same bearer):
 //
 //   GET    /ready                         { jarLoaded, lease, connected, person }
 //   PUT    /jar     {cookies}             the team's jar into the browser; until it is in, no lease
 //   GET    /jar                           the team's jar out of the browser (values — never logged)
 //   POST   /probe   {url}                 the hourly look at the admin (probe.mjs) → its line
-//
-// Environment:
-//   SESSION_SERVER_TOKEN   bearer token, at least 32 characters (required)
-//   SESSION_SERVER_PORT    default 9090
-//   SESSION_SERVER_CDP     default http://127.0.0.1:9222
-//   PROBE_LOG              default /var/lib/session-host/probe.jsonl
 
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { Gate, LeaseBook, acknowledged, refusal, sessionIdFromPath } from "./lease.mjs";
-import { parseLog } from "./classify.mjs";
 
 const MAX_MESSAGE = 64 * 1024 * 1024;
 
@@ -51,7 +40,6 @@ export async function startSessionServer({
   cdp = "http://127.0.0.1:9222",
   port = 9090,
   host = "127.0.0.1",
-  probeLog = "/var/lib/session-host/probe.jsonl",
   now = Date.now,
   heartbeatMs = 20_000,
   sweepMs = 5_000,
@@ -65,7 +53,8 @@ export async function startSessionServer({
   // asks again later, as it does when another check holds the lease.
   personPresent = () => false,
   // CHE-464: { load(cookies) → count, read() → cookies } in a team's
-  // container; null on the session host, whose profile is on disk.
+  // container. Null for a browser whose sign-in is already in it (the guards'
+  // persistent profiles): nothing to wait for.
   jar = null,
   // CHE-464: (url) → the probe's line, in a team's container.
   probe = null,
@@ -74,7 +63,7 @@ export async function startSessionServer({
   const book = new LeaseBook(now);
   // A browser with a jar to receive is not given to a check until it has it:
   // a check that navigated first would meet the sign-in page and call it the
-  // product. On the session host there is nothing to wait for.
+  // product.
   let jarLoaded = jar === null;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE });
   let connection = null; // at most one: { sessionId, end() }
@@ -91,12 +80,6 @@ export async function startSessionServer({
     if (!response.ok) throw new Error(`DevTools answered HTTP ${response.status}`);
     const version = await response.json();
     return { browser: version.Browser ?? null, ws: version.webSocketDebuggerUrl };
-  }
-
-  async function lastProbe() {
-    const lines = parseLog(await readFile(probeLog, "utf8").catch(() => ""));
-    const last = lines[lines.length - 1];
-    return last ? { at: last.at, state: last.state } : null;
   }
 
   const view = (lease) => ({ sessionId: lease.sessionId, ownerRunId: lease.ownerRunId, expiresAt: new Date(lease.expiresAt).toISOString() });
@@ -153,7 +136,7 @@ export async function startSessionServer({
       } else if (req.method === "GET" && path === "/state") {
         const lease = book.current();
         const browser = await chrome().then((c) => c.browser, () => null);
-        send(200, { lease: lease ? view(lease) : null, connected: Boolean(connection), browser, probe: await lastProbe() });
+        send(200, { lease: lease ? view(lease) : null, connected: Boolean(connection), browser });
       } else if (req.method === "POST" && path === "/lease") {
         const input = await body(req);
         // Before the lease, not after: a lease on a browser that is not there
@@ -162,7 +145,7 @@ export async function startSessionServer({
         try {
           browser = (await chrome()).browser;
         } catch {
-          send(503, { error: "The browser on the session host is not running" });
+          send(503, { error: "The session browser is not running" });
           return;
         }
         if (!jarLoaded) {
@@ -358,38 +341,4 @@ export async function startSessionServer({
       await new Promise((resolve) => server.close(resolve));
     },
   };
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const token = process.env.SESSION_SERVER_TOKEN;
-  const viewSecret = process.env.SESSION_VIEW_SECRET;
-  delete process.env.SESSION_SERVER_TOKEN;
-  delete process.env.SESSION_VIEW_SECRET;
-  // Never the secrets themselves — only whether they arrived.
-  console.log(`[session-server] boot node=${process.version} token=${typeof token === "string" ? token.length : 0}ch view=${typeof viewSecret === "string" ? viewSecret.length : 0}ch`);
-  const cdp = process.env.SESSION_SERVER_CDP ?? "http://127.0.0.1:9222";
-  // CHE-419: the live view a person signs in through, on its own port and
-  // hostname (viewer.mjs). Off until the secret is set.
-  let viewer = null;
-  const started = await startSessionServer({
-    token,
-    port: Number(process.env.SESSION_SERVER_PORT ?? 9090),
-    cdp,
-    probeLog: process.env.PROBE_LOG ?? "/var/lib/session-host/probe.jsonl",
-    personPresent: () => viewer?.present() ?? false,
-  });
-  console.log(`[session-server] listening on 127.0.0.1:${started.port}`);
-  if (viewSecret) {
-    const { startViewer } = await import("./viewer.mjs");
-    viewer = await startViewer({
-      secret: viewSecret,
-      origins: (process.env.VIEW_ORIGINS ?? "https://checkmyapp.dev").split(",").map((o) => o.trim()).filter(Boolean),
-      cdp,
-      port: Number(process.env.SESSION_VIEW_PORT ?? 9091),
-      slot: process.env.SESSION_SLOT ?? "main",
-      leaseHeld: async () => started.book.current() !== null,
-    });
-    console.log(`[session-server] viewer on 127.0.0.1:${viewer.port}`);
-  }
-  process.on("SIGTERM", () => void Promise.all([started.close(), viewer?.close()]).finally(() => process.exit(0)));
 }

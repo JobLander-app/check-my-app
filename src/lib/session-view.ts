@@ -1,7 +1,7 @@
-// CHE-419: the token a person's page presents to the session host's live view
-// (spikes/shopify-session/viewer.mjs) — HMAC-SHA256 over {v, slot, store, exp}
-// with SESSION_VIEW_SECRET, the same bytes viewer.mjs verifies. WebCrypto, so
-// it runs in the web worker and in Node alike.
+// CHE-419: the token a person's page presents to the live view of the team's
+// session browser (session-runner/viewer.mjs) — HMAC-SHA256 over
+// {v, slot, store, exp} with the team's view key, the same bytes viewer.mjs
+// verifies. WebCrypto, so it runs in the web worker and in Node alike.
 //
 // Minted only for a signed-in member of the team that owns the app, only for
 // an app checked inside a signed-in session, and short-lived: the page asks

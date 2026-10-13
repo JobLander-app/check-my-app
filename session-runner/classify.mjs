@@ -1,9 +1,8 @@
 // What a page in the Shopify admin says about the session that opened it, and
-// whether the owner needs to hear about it. Shared by probe.mjs (on the session
-// host, against the human's Chrome) and portability.mjs (from our side, against
-// a fresh Cloudflare browser holding the host's cookies), so both name the same
-// state the same way. No Playwright import: scripts/verify-shopify-session.mjs
-// checks the rules without a browser.
+// whether the owner needs to hear about it. probe.mjs looks (in a team's
+// container); the team's Durable Object keeps the lines and asks
+// shouldNotify (src/agent/session-jar.ts recordProbe). No Playwright import:
+// scripts/verify-shopify-session.mjs checks the rules without a browser.
 
 export const TARGET_URL =
   "https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country";
@@ -17,28 +16,6 @@ export const STATES = ["ok", "login_page", "captcha", "2fa", "error", "proxy"];
 /** Pure: the proxy's own answer to a plain request → "proxy" when it is the cause, else null. */
 export function proxyState(status) {
   return status === 402 || status === 407 ? "proxy" : null;
-}
-
-/**
- * Pure: what the owner is told for each proxy answer. Not a sign-in either way
- * — the session may be fine. 402 is traffic to buy; 407 is the proxy refusing
- * our login, which no top-up fixes (Codex on #330: one text for both sent the
- * owner to pay when the credentials were the problem).
- */
-export function proxyMessage(status, at) {
-  const tail = "Входить в Shopify заново не нужно. Пока прокси стоит, проверки Shopify-аппов падают как наш сбой и ничего не публикуют.";
-  if (status === 407) {
-    return (
-      `Резидентный прокси session host (IPRoyal) отклоняет наш логин (${at}): ответ 407.\n` +
-      `Деньги ни при чём: учётные данные в секрете session-host-proxy (Secret Manager) не совпадают с IPRoyal — их нужно обновить и перезапустить session-proxy.\n` +
-      tail
-    );
-  }
-  return (
-    `Резидентный прокси session host (IPRoyal) не пропускает трафик (${at}): ответ 402 — кончился оплаченный трафик.\n` +
-    `Нужно пополнить IPRoyal: https://dashboard.iproyal.com/\n` +
-    tail
-  );
 }
 
 // Whatever the page settles on first: the embedded app's frame (signed in), a
@@ -139,19 +116,6 @@ export function shouldNotify(history, state) {
   if (sinceOk.some((line) => line.notified && line.state !== "proxy")) return false;
   if (state === "error") return sinceOk.length > 0 && sinceOk[sinceOk.length - 1].state === "error";
   return true;
-}
-
-export function parseLog(text) {
-  const lines = [];
-  for (const raw of text.split("\n")) {
-    if (!raw.trim()) continue;
-    try {
-      lines.push(JSON.parse(raw));
-    } catch {
-      // A torn last line from a killed run is not a reason to stop measuring.
-    }
-  }
-  return lines;
 }
 
 /**

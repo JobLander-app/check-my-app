@@ -23,20 +23,15 @@ export async function routeLiveView(request: Request, bindings: Pick<AgentBindin
   return sessionRunnerFor(bindings, team).fetch(new Request(`http://session/v1/view?token=${encodeURIComponent(token)}`, { headers }));
 }
 
-// Ours, behind SESSION_ADMIN_TOKEN: moving a live sign-in into a team's
-// browser (POST /session/jar {teamId, cookies}) and reading its state
-// (GET /session/state?teamId=…). An answer never carries a cookie value.
+// Ours, behind SESSION_ADMIN_TOKEN: a team's browser's state
+// (GET /session/state?teamId=…) — running, when its jar was kept and why, the
+// next probe. An answer never carries a cookie value.
 export async function routeSessionAdmin(request: Request, bindings: Pick<AgentBindings, "SESSION_RUNNER" | "SESSION_ADMIN_TOKEN">): Promise<Response> {
   const expected = bindings.SESSION_ADMIN_TOKEN?.trim();
   const given = request.headers.get("Authorization") ?? "";
   if (!expected || expected.length < 32 || !(await sameText(given, `Bearer ${expected}`))) return new Response(null, { status: 401 });
   const url = new URL(request.url);
   try {
-    if (request.method === "POST" && url.pathname === "/session/jar") {
-      const input = (await request.json().catch(() => null)) as { teamId?: string; cookies?: unknown } | null;
-      if (!input?.teamId) return Response.json({ error: "teamId required" }, { status: 400 });
-      return Response.json(await sessionRunnerFor(bindings, input.teamId).importJar(input.teamId, input.cookies));
-    }
     if (request.method === "GET" && url.pathname === "/session/state") {
       const teamId = url.searchParams.get("teamId") ?? "";
       return Response.json(await sessionRunnerFor(bindings, teamId).describe(teamId));

@@ -1,12 +1,12 @@
-// CHE-378: the session-host probe names what it sees correctly, and messages
-// the owner only when he is needed — once per drop from ok, never for the
-// state the host starts in, never twice for the same drop.
+// CHE-378: the Shopify session probe names what it sees correctly, and
+// messages the owner only when he is needed — once per drop from ok, never for
+// the state a browser starts in, never twice for the same drop. (The messages
+// themselves, and the rule over a real D1, are verify-session-runner's.)
 //
-// Pure rules from spikes/shopify-session; no browser, no network, no env.
+// Pure rules from session-runner/classify.mjs; no browser, no network, no env.
 
 import assert from "node:assert/strict";
-import { STATES, classify, parseLog, proxyMessage, proxyState, shouldNotify } from "../spikes/shopify-session/classify.mjs";
-import { cookiesForAdmin, tunnelledWsEndpoint } from "../spikes/shopify-session/portability.mjs";
+import { STATES, classify, proxyState, shouldNotify } from "../session-runner/classify.mjs";
 
 let failures = 0;
 function check(name, fn) {
@@ -100,42 +100,6 @@ check("a sign-in drop after the proxy was told is still its own message", () => 
   assert.equal(shouldNotify([L("ok"), L("proxy", { notified: true }), L("login_page", { notified: true })], "login_page"), false);
 });
 check("the proxy is a state the log names", () => assert.ok(STATES.includes("proxy")));
-check("402 tells the owner to top up; 407 says the credentials are refused, and not to pay", () => {
-  const paid = proxyMessage(402, "t");
-  const login = proxyMessage(407, "t");
-  assert.match(paid, /402/);
-  assert.match(paid, /пополнить IPRoyal/);
-  assert.match(login, /407/);
-  assert.match(login, /session-host-proxy/);
-  assert.doesNotMatch(login, /пополнить|кончился оплаченный трафик/);
-});
-
-check("a torn last line does not stop the log from being read", () => {
-  const lines = parseLog('{"state":"ok"}\n{"state":"login_page","notified":true}\n{"state":"cap');
-  assert.deepEqual(lines.map((l) => l.state), ["ok", "login_page"]);
-});
-
-// --- portability ----------------------------------------------------------
-
-check("only cookies admin.shopify.com would be sent are carried over", () => {
-  const cdp = [
-    { name: "a", value: "1", domain: ".shopify.com", path: "/", expires: 1900000000, session: false, httpOnly: true, secure: true, sameSite: "Lax" },
-    { name: "b", value: "2", domain: "admin.shopify.com", path: "/", expires: -1, session: true, httpOnly: true, secure: true },
-    { name: "c", value: "3", domain: "accounts.shopify.com", path: "/", expires: -1, session: true, httpOnly: true, secure: true },
-    { name: "d", value: "4", domain: ".example.com", path: "/", expires: -1, session: true, httpOnly: false, secure: false },
-    { name: "e", value: "5", domain: ".admin.shopify.com", path: "/", expires: 0, session: false, httpOnly: false, secure: true, sameSite: "Bogus" },
-  ];
-  const out = cookiesForAdmin(cdp);
-  assert.deepEqual(out.map((c) => c.name), ["a", "b", "e"]);
-  assert.equal(out[0].sameSite, "Lax");
-  assert.equal(out[1].expires, -1);
-  assert.equal(out[2].expires, -1);
-  assert.equal("sameSite" in out[2], false);
-});
-check("the DevTools socket is addressed through the local end of the tunnel", () => {
-  const ws = tunnelledWsEndpoint({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc" }, 19222);
-  assert.equal(ws, "ws://127.0.0.1:19222/devtools/browser/abc");
-});
 
 if (failures) {
   console.log(`\nverify-shopify-session: ${failures} failed`);

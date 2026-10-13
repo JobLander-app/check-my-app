@@ -1,13 +1,9 @@
-// CHE-419: what a person sees when they open session.checkmyapp.dev is one
+// CHE-419: what a person sees when they open their app's sign-in page is one
 // live tab — never a login form that died an hour ago, never a pile of tabs.
-//
-// Run by session-door.service, which session-door.path starts each time
-// x11vnc accepts a viewer (-afteraccept writes /var/lib/session-door/connected
-// — its own directory: x11vnc runs as session-browser, which may not enter
-// /var/lib/session-host). The 2026-10-05 sign-in cost the owner forty minutes, the first
-// of them on "The page you're looking for could not be found": the tab had
-// sat on accounts.shopify.com/lookup?rid=… for an hour and Shopify had
-// expired the rid.
+// The live view (viewer.mjs) opens this door each time a person connects. The
+// 2026-10-05 sign-in cost the owner forty minutes, the first of them on "The
+// page you're looking for could not be found": the tab had sat on
+// accounts.shopify.com/lookup?rid=… for an hour and Shopify had expired the rid.
 //
 // What it does (while a check holds the browser — the session server's lease
 // is set — it only keeps or opens, and closes nothing):
@@ -29,21 +25,13 @@
 // It never types, presses or reads anything inside a page beyond its address
 // and how long ago it loaded.
 //
-// Environment:
-//   SESSION_SERVER_TOKEN   bearer for the session server's /state (server.env)
-//   DOOR_STORE_URL         default https://admin.shopify.com/store/prod-release-1
-//   DOOR_CDP               default http://127.0.0.1:9222
-//   DOOR_LOG               default /var/lib/session-host/door.jsonl
-//   argv --plan            print the decision, change nothing
+//   node door.mjs --self-test   the rule against its cases
 
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
-const CDP = process.env.DOOR_CDP ?? "http://127.0.0.1:9222";
-const STORE_URL = process.env.DOOR_STORE_URL ?? "https://admin.shopify.com/store/prod-release-1";
-const LOG = process.env.DOOR_LOG ?? "/var/lib/session-host/door.jsonl";
-const SERVER = "http://127.0.0.1:9090";
+const CDP = "http://127.0.0.1:9222";
 export const STALE_MINUTES = 20;
 export const MIN_CLOSE_MINUTES = 2;
 
@@ -74,9 +62,8 @@ const isStoreAdmin = (t, storeUrl) => {
 // `signInIsOurs(tab)`: whether a sign-in tab belongs to this store. Shopify's
 // sign-in address names no store, so only the caller can know — the live view
 // remembers which store it opened each tab for (Codex on #287: a viewer for
-// store A was handed store B's half-finished sign-in). The VNC door serves one
-// configured store and passes nothing: every sign-in tab is its store's.
-export function plan(tabs, storeUrl = STORE_URL, { signInIsOurs = () => true } = {}) {
+// store A was handed store B's half-finished sign-in).
+export function plan(tabs, storeUrl, { signInIsOurs = () => true } = {}) {
   const pages = tabs.filter((t) => t.type === "page" && !isChromeUi(t));
   // The person's admin tab is the one that has been open longest — a probe's
   // or a check's is minutes old at most.
@@ -125,22 +112,12 @@ function ageMinutes(target) {
   });
 }
 
-async function leaseHeldOverHttp() {
-  const token = process.env.SESSION_SERVER_TOKEN;
-  if (!token) throw new Error("SESSION_SERVER_TOKEN is not set");
-  const response = await fetch(`${SERVER}/state`, { headers: { authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`/state: HTTP ${response.status}`);
-  const state = await response.json();
-  return state.lease !== null;
-}
-
-// The door itself, shared by the VNC trigger (main) and the live view
-// (viewer.mjs, which runs inside the session server and asks its lease book
-// directly). Returns the log line; `keep` — the tab the person is given — is
-// on it, unlogged, whenever one was kept or opened. While a check holds the
-// browser it does nothing at all: the live view refuses the person before it
-// gets here, and the VNC door leaves the screen as it is.
-export async function openDoor({ dry = false, cdp = CDP, leaseHeld = leaseHeldOverHttp, storeUrl = STORE_URL, log = LOG, signInIsOurs, opened = () => {} } = {}) {
+// The door itself, opened by the live view (viewer.mjs, which runs beside the
+// session server and asks its lease book directly). Returns the log line;
+// `keep` — the tab the person is given — is on it, unlogged, whenever one was
+// kept or opened. While a check holds the browser it does nothing at all: the
+// live view refuses the person before it gets here.
+export async function openDoor({ dry = false, cdp = CDP, leaseHeld, storeUrl, log = null, signInIsOurs, opened = () => {} }) {
   const at = new Date().toISOString();
   const line = { at };
   try {
@@ -182,15 +159,6 @@ export async function openDoor({ dry = false, cdp = CDP, leaseHeld = leaseHeldOv
   return line;
 }
 
-async function main() {
-  const line = await openDoor({ dry: process.argv.includes("--plan") });
-  console.log(JSON.stringify(line));
-  // A failure is a failed run, so session-door.service tries again (Restart=
-  // on-failure, a few times) instead of spending the viewer's connect on it
-  // (Codex on #283). "A check holds the browser" is not a failure.
-  if (line.error) process.exitCode = 1;
-}
-
 // Self-test of the rule: node door.mjs --self-test
 function selfTest() {
   const t = (id, url, ageMinutes = null) => ({ id, type: "page", url, ageMinutes });
@@ -228,7 +196,4 @@ function selfTest() {
   process.exit(failed ? 1 : 0);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.includes("--self-test")) selfTest();
-  else main();
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes("--self-test")) selfTest();
