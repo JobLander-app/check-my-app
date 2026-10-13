@@ -16,7 +16,6 @@ import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { outcome } from "@/lib/checks-page";
 import {
   JIRA_NO_PROJECT,
-  SETTINGS_SECTIONS,
   jiraAccountLine,
   jiraBlockedLine,
   sectionsFor,
@@ -51,6 +50,8 @@ import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
 import { hasFeature, teamFeatures } from "@/lib/team-features";
 import { APP_NAME_MAX } from "@/lib/app-label";
+import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
+import { STORES_COPY } from "@/lib/sign-in-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -86,7 +87,9 @@ export default async function AppSettingsSection({
   // A section this app does not have (an extension has no schedule).
   if (!sectionsFor(app).some((s) => s.key === section)) redirect(appPath.section(app.id, "scope"));
   const isExtension = app.targetKind === "extension";
-  const meta = SETTINGS_SECTIONS.find((s) => s.key === section)!;
+  // This app's own name for the section: a Shopify app's accounts are its test
+  // stores (CHE-468).
+  const meta = sectionsFor(app).find((s) => s.key === section)!;
   const save = updateAppSettings.bind(null, app.id, section);
   // CHE-435: the scenario list, behind `shopify` like the rest of the pilot.
   const features = await teamFeatures(db, team.id);
@@ -153,6 +156,16 @@ export default async function AppSettingsSection({
             </label>
           </div>
 
+          {/* CHE-468 (Codex on #342): a Shopify app has no test login to create
+              records as, so its checks read the store and never write to it;
+              offering the choice would only be overruled at run time (the
+              workflow's hasTestAccount gate). CHE-442 is the per-app opt-in. */}
+          {app.targetKind === "session" ? (
+            <div className="card space-y-1 p-5">
+              <p className="text-sm font-medium text-fg">{STORES_COPY.readOnlyTitle}</p>
+              <p className="text-xs text-fg-faint">{STORES_COPY.readOnly}</p>
+            </div>
+          ) : (
           <div className="card space-y-3 p-5">
             <div>
               <p className="text-sm font-medium text-fg">May we create test records?</p>
@@ -177,6 +190,7 @@ export default async function AppSettingsSection({
               <span>Yes — create and clean up test records as my test account</span>
             </label>
           </div>
+          )}
 
           <div className="card space-y-3 p-5">
             <div>
@@ -193,7 +207,10 @@ export default async function AppSettingsSection({
       {/* A login is an admin's to set (app.credentials.write, src/lib/scopes.ts;
           CHE-417). A member is told so instead of being shown a form that
           would refuse them on save. */}
-      {section === "accounts" &&
+      {section === "accounts" && app.targetKind === "session" && (
+        <ShopifyStores app={app} teamId={team.id} mayWrite={can(scope, "app.credentials.write")} hasStorePassword={Boolean(app.storePasswordEnc)} save={save} />
+      )}
+      {section === "accounts" && app.targetKind !== "session" &&
         (can(scope, "app.credentials.write") ? (
           <Accounts appId={app.id} teamId={team.id} testEmail={app.testEmail} hasStorePassword={Boolean(app.storePasswordEnc)} isExtension={isExtension} save={save} />
         ) : (
@@ -222,6 +239,102 @@ function SaveRow({ label }: { label: string }) {
       <Button type="submit" className="px-4 py-2.5 text-sm">
         {label}
       </Button>
+    </div>
+  );
+}
+
+// CHE-468: a Shopify app's "test accounts" are the dev stores it is checked
+// on — the team's rows of the same app handle (CHE-451) — each with its own
+// page and its own sign-in. A check signs in through the team's signed-in
+// browser, never with a stored login, so no login form is shown; the one
+// credential a store can have is the password of its storefront's password
+// page (CHE-372), kept here. The form carries that field alone, and the save
+// leaves every field it does not carry as it was.
+async function ShopifyStores({
+  app,
+  teamId,
+  mayWrite,
+  hasStorePassword,
+  save,
+}: {
+  app: { id: string; appSlug: string; targetUrl: string; targetKind: string };
+  teamId: string;
+  mayWrite: boolean;
+  hasStorePassword: boolean;
+  save: Save;
+}) {
+  const { db } = await requireUser();
+  const shopify = connectedShopifyAppOf(app);
+  const stores = shopify ? await storesOf(db, teamId, shopify.handle) : [];
+  // Every sentence is STORES_COPY's (src/lib/sign-in-copy.ts), under the
+  // language guards in scripts/verify-live-view.ts.
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="card space-y-3 p-5">
+        <p className="text-sm font-medium text-fg">{STORES_COPY.heading}</p>
+        {stores.length === 0 ? (
+          // Codex on #342: a store still waiting for its app to be chosen is
+          // chosen on its own sign-in page — linked, not only named.
+          <p className="text-sm text-fg-muted">
+            {STORES_COPY.none}{" "}
+            <Link href={appPath.signIn(app.id)} className="text-accent hover:underline">
+              {STORES_COPY.signIn}
+            </Link>
+          </p>
+        ) : (
+          <ul className="flex flex-col divide-y divide-ink-800">
+            {stores.map((s) => (
+              <li key={s.appId} className="flex items-center justify-between gap-4 py-2 text-sm">
+                {s.appId === app.id ? (
+                  <span className="font-mono">
+                    {s.store} <span className="font-sans text-xs text-fg-faint">· {STORES_COPY.thisPage}</span>
+                  </span>
+                ) : (
+                  <Link href={appPath.page(s.appId)} className="font-mono text-accent hover:underline">
+                    {s.store}
+                  </Link>
+                )}
+                <Link href={appPath.signIn(s.appId)} className="text-xs text-fg-muted hover:text-accent">
+                  {STORES_COPY.signIn}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-fg-faint">
+          {STORES_COPY.addBefore}{" "}
+          <Link href="/connect/shopify" className="text-accent hover:underline">
+            {STORES_COPY.addLink}
+          </Link>
+          {STORES_COPY.addAfter}
+        </p>
+      </div>
+
+      {mayWrite ? (
+        <form action={save} className="flex flex-col gap-4">
+          <div className="card space-y-3 p-5">
+            <div>
+              <p className="text-sm font-medium text-fg">{STORES_COPY.passwordTitle}</p>
+              <p className="text-xs text-fg-faint">
+                {STORES_COPY.passwordWhat} {hasStorePassword ? `${STORES_COPY.passwordSet} ` : ""}
+                {STORES_COPY.passwordRule}
+              </p>
+            </div>
+            <Input name="storePassword" type="password" placeholder="••••••••" aria-label={STORES_COPY.passwordTitle} autoComplete="new-password" />
+            {hasStorePassword && (
+              <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+                <input type="checkbox" name="storePasswordRemove" value="1" className="h-4 w-4 rounded border-ink-600 bg-ink-900" />
+                {STORES_COPY.passwordRemove}
+              </label>
+            )}
+          </div>
+          <SaveRow label={STORES_COPY.passwordSave} />
+        </form>
+      ) : (
+        <p className="card p-5 text-sm text-fg-muted">
+          {hasStorePassword ? STORES_COPY.passwordIsSet : STORES_COPY.passwordNone} {STORES_COPY.passwordByAdmin}
+        </p>
+      )}
     </div>
   );
 }

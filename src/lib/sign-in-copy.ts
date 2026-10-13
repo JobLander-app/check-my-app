@@ -109,6 +109,32 @@ export function signInError(code: unknown): string {
   return typeof code === "string" && code in SIGN_IN_ERRORS ? SIGN_IN_ERRORS[code as SignInErrorCode] : SIGN_IN_COPY.connectionEnded;
 }
 
+// CHE-468: a Shopify app's "Test stores" settings section — its stores, how to
+// add one, the store password — and what the "What we check" section says in
+// place of the record-creation choice: a check of an app in a store's admin
+// reads the store and changes nothing in it (CHE-442 is where a team would opt
+// a test store in).
+export const STORES_COPY = {
+  heading: "Stores",
+  none: "No store yet: choose the app on the store's sign-in page first.",
+  thisPage: "this page",
+  signIn: "Sign in",
+  addBefore: "Another store: open the app in that store's admin and paste its address on",
+  addLink: "Check a Shopify app",
+  addAfter: ". Its scenarios come with it.",
+  passwordTitle: "Store password",
+  passwordWhat: "For a store that shows a password page before anything else.",
+  passwordSet: "One is set.",
+  passwordRule: "Encrypted at rest, never logged; a blank box keeps the current one.",
+  passwordRemove: "Remove the store password",
+  passwordSave: "Save store password",
+  passwordIsSet: "A store password is set.",
+  passwordNone: "No store password.",
+  passwordByAdmin: "It is set by an admin of the team.",
+  readOnlyTitle: "Test records",
+  readOnly: "A check of an app in your store's admin only reads: it never creates, changes or deletes anything in the store.",
+} as const;
+
 // Every sentence above, for the guard.
 export function allSignInSentences(store = "my-store"): string[] {
   return [
@@ -141,5 +167,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     CHOOSE_COPY.daily,
     CHOOSE_COPY.appPage,
     ...Object.values(PICK_ERRORS),
+    ...Object.values(STORES_COPY),
+    `${STORES_COPY.addBefore} ${STORES_COPY.addLink}${STORES_COPY.addAfter}`,
   ];
 }
