@@ -42,6 +42,7 @@ import { chooseLinearTeam } from "../src/lib/tracker/linear-connect";
 import { trackerFor } from "../src/lib/tracker/factory";
 import { freshLinearToken } from "../src/lib/tracker/token";
 import { JiraTracker } from "../src/lib/tracker/jira";
+import { trackerAnswers } from "../src/lib/tracker/answers";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -215,6 +216,24 @@ async function main() {
     eq("reconnect: apps whose project the grant still reaches keep it", [(await byApp("sec")).teamId, (await byApp("otp")).teamId, (await byApp("fresh")).teamId], ["SEC", "OTPPLUS", "SEC"]);
     eq("reconnect: a project it does not reach files nowhere until chosen; its site and links stay", [(await byApp("ops")).teamId, (await byApp("ops")).externalOrg, (await db.issueLink.count({ where: { appId: "ops", status: "open" } }))], [null, "cloud-1", 1]);
     eq("reconnect: a site it does not reach is let go, with its links", [(await byApp("web")).teamId, (await byApp("web")).externalOrg, (await db.issueLink.count({ where: { appId: "web", status: "open" } }))], [null, null, 0]);
+
+    // Codex on #347: a grant revoked on the provider's side still looks ok by
+    // its stored token; the team's page asks the tracker itself.
+    const live = (await teamConnection(db, "tA", "jira"))!;
+    await putConnection(db, "tA", "jira", { accessTokenEnc: live.accessTokenEnc, refreshTokenEnc: live.refreshTokenEnc, tokenExpiresAt: new Date(Date.now() + 3600_000) });
+    const answering = fakeAtlassian();
+    const revoked = fakeAtlassian();
+    revoked.state.sites = [];
+    const creds = { linear: {}, jira: JIRA_CREDS };
+    const jiraNow = (await teamConnection(db, "tA", "jira"))!;
+    eq("answers: a grant the tracker answers is alive; one it gives nothing for, or that fails, is not",
+      [await trackerAnswers(db, "jira", jiraNow, creds, answering.fetchImpl), await trackerAnswers(db, "jira", jiraNow, creds, revoked.fetchImpl),
+        await trackerAnswers(db, "jira", jiraNow, creds, (async () => { throw new Error("network"); }) as typeof fetch)],
+      [true, false, false]);
+    const teamPage = read("src/app/(app)/settings/integrations/page.tsx");
+    check("answers: the team's page asks it, and offers Reconnect when the tracker gave nothing",
+      /trackerAnswers\(db, kind, connection, creds\)/.test(teamPage) && /!answers && stored\?\.tone === "ok" \? trackerUnanswered\(trackerName\(kind\)\)/.test(teamPage) &&
+        /reconnect: health\?\.tone !== "ok" && apps\[0\]/.test(teamPage) && /\{t\.reconnect && \(/.test(read("src/components/team-trackers.tsx")));
 
     // ── 6. disconnect is the team's ─────────────────────────────────────────
     const gone = await disconnectTeamTracker(db, "tA", "jira");

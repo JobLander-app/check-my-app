@@ -12,7 +12,7 @@ import type { TrackerHealth } from "@/lib/app-settings-sections";
 import { TEAM_TRACKER_DISCONNECT, TEAM_TRACKERS_NONE, teamTrackerApps, teamTrackerWaiting } from "@/lib/tracker-copy";
 
 export interface TeamTrackersProps {
-  trackers: { kind: "linear" | "jira"; name: string; health: TrackerHealth | null; apps: string[]; waiting: string[] }[];
+  trackers: { kind: "linear" | "jira"; name: string; health: TrackerHealth | null; reconnect: string | null; apps: string[]; waiting: string[] }[];
   canDisconnect: boolean;
 }
 
@@ -39,11 +39,19 @@ export function TeamTrackers({ trackers, canDisconnect }: TeamTrackersProps) {
                 {canDisconnect && <p className="text-xs text-fg-faint">{TEAM_TRACKER_DISCONNECT}</p>}
               </div>
               {canDisconnect && (
-                <form action={disconnectTracker.bind(null, t.kind)}>
-                  <Button type="submit" variant="outline" className="px-3 py-1.5 text-xs">
-                    Disconnect {t.name}
-                  </Button>
-                </form>
+                <div className="flex shrink-0 items-center gap-3">
+                  {/* Only when the grant no longer works: a new consent replaces it for every app. */}
+                  {t.reconnect && (
+                    <a href={t.reconnect} className="text-xs text-accent hover:underline">
+                      Reconnect →
+                    </a>
+                  )}
+                  <form action={disconnectTracker.bind(null, t.kind)}>
+                    <Button type="submit" variant="outline" className="px-3 py-1.5 text-xs">
+                      Disconnect {t.name}
+                    </Button>
+                  </form>
+                </div>
               )}
             </li>
           ))}

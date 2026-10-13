@@ -8,7 +8,9 @@ import { AnalyticsConnection } from "@/components/analytics-connection";
 import { TeamTrackers, type TeamTrackersProps } from "@/components/team-trackers";
 import { TRACKER_KINDS, connectionApps, teamConnections } from "@/lib/tracker/connection";
 import { trackerName } from "@/lib/tracker/name";
-import { trackerHealth } from "@/lib/app-settings-sections";
+import { trackerHealth, trackerUnanswered } from "@/lib/app-settings-sections";
+import { trackerAnswers } from "@/lib/tracker/answers";
+import { trackerCreds } from "@/lib/tracker/factory";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
 import { appKind, appLabel } from "@/lib/app-label";
@@ -56,29 +58,38 @@ async function analyticsConnection(
 
 /**
  * The team's issue trackers as the screen needs them (CHE-469): which are
- * connected, whether the token still renews, and which apps file into each.
- * Tokens never leave this function.
+ * connected, whether the tracker still answers the grant, and which apps file
+ * into each. Tokens never leave this function.
  */
 async function teamTrackers(db: Awaited<ReturnType<typeof requireUser>>["db"], teamId: string): Promise<TeamTrackersProps["trackers"]> {
   const connections = await teamConnections(db, teamId);
+  const creds = trackerCreds(getCloudflareContext().env as unknown as Record<string, unknown>);
   const now = new Date();
-  const out: TeamTrackersProps["trackers"] = [];
-  for (const kind of TRACKER_KINDS) {
-    const connection = connections[kind];
-    if (!connection) continue;
-    const apps = await connectionApps(db, teamId, kind);
-    // Only an app with somewhere to file files into it (Codex on #347); one
-    // still waiting for its project or team is named as waiting.
-    const routed = (a: (typeof apps)[number]) => Boolean(a.teamId && (kind !== "jira" || a.externalOrg));
-    out.push({
-      kind,
-      name: trackerName(kind),
-      health: trackerHealth(connection, now),
-      apps: apps.filter(routed).map(({ app }) => appLabel(app)),
-      waiting: apps.filter((a) => !routed(a)).map(({ app }) => appLabel(app)),
-    });
-  }
-  return out;
+  const loaded = await Promise.all(
+    TRACKER_KINDS.map(async (kind) => {
+      const connection = connections[kind];
+      if (!connection) return null;
+      const [apps, answers] = await Promise.all([connectionApps(db, teamId, kind), trackerAnswers(db, kind, connection, creds)]);
+      // The stored health, unless the tracker gave nothing for the grant: one
+      // revoked on its side still has a refresh token here (Codex on #347).
+      const stored = trackerHealth(connection, now);
+      const health = !answers && stored?.tone === "ok" ? trackerUnanswered(trackerName(kind)) : stored;
+      // Only an app with somewhere to file files into it (Codex on #347); one
+      // still waiting for its project or team is named as waiting.
+      const routed = (a: (typeof apps)[number]) => Boolean(a.teamId && (kind !== "jira" || a.externalOrg));
+      return {
+        kind,
+        name: trackerName(kind),
+        health,
+        // A new consent replaces the team's grant; it starts from one of the
+        // apps that use it, which the connect flow needs to come back to.
+        reconnect: health?.tone !== "ok" && apps[0] ? `/api/integrations/${kind}/start?appId=${apps[0].appId}` : null,
+        apps: apps.filter(routed).map(({ app }) => appLabel(app)),
+        waiting: apps.filter((a) => !routed(a)).map(({ app }) => appLabel(app)),
+      };
+    }),
+  );
+  return loaded.filter((t) => t !== null);
 }
 
 // Integrations (CHE-351 shell, CHE-356): the connections the whole team
