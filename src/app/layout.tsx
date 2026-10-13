@@ -8,6 +8,7 @@ import { HOME_PATH, OG_IMAGE, SITE, TAGLINE } from "@/lib/site-metadata";
 import { htmlTheme, parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { AnalyticsProvider } from "@/components/analytics-provider";
 import { SiteHeaderGate } from "@/components/site-header-gate";
+import { Wordmark, WordmarkY } from "@/components/wordmark";
 
 const sans = Bricolage_Grotesque({
   subsets: ["latin"],
@@ -75,13 +76,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   then the line in the body face at rest weight. From lg only —
                   below that the nav needs the room. */}
               <div className="flex items-center gap-3.5">
-                <Link href="/" aria-label="CheckMyApp home" className="group flex items-center gap-2.5">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 font-mono text-[13px] font-semibold text-accent transition-colors group-hover:bg-accent/25">
-                    ✓
-                  </span>
-                  <span className="hidden font-mono text-sm font-medium tracking-tight text-fg min-[480px]:inline">
-                    checkmyapp
-                  </span>
+                <Link href="/" aria-label="CheckMyApp home" className="flex items-center">
+                  <WordmarkY className="text-2xl min-[480px]:hidden" />
+                  <Wordmark className="hidden text-xl min-[480px]:inline" />
                 </Link>
                 <Show when="signed-out">
                   <span aria-hidden className="hidden h-3.5 w-px bg-ink-600 lg:block" />
@@ -95,7 +92,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   idea where they are or what else is here. Two different headers
                   for two different people. */}
               {/* With Guides (CHE-318) the signed-out links ran 15px past a
-                  375px screen. On phones the wordmark gives way (the ✓ mark
+                  375px screen. On phones the wordmark gives way (its blue y
                   stays and still goes home) and the gap tightens a step. */}
               <div className="flex items-center gap-3 whitespace-nowrap sm:gap-4">
                 <Show when="signed-out">
