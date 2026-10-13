@@ -2,9 +2,9 @@
 // tabs and nothing else, and never carries the session's cookies away.
 //
 // Three parts:
-//   1. the rules (spikes/shopify-session/lease.mjs), pure;
+//   1. the rules (session-runner/lease.mjs), pure;
 //   2. the server against a real Chrome with a persistent profile — the same
-//      arrangement as the session host: a person's tab holding a signed-in
+//      arrangement as a team's browser: a person's tab holding a signed-in
 //      HttpOnly cookie, and a check arriving through the server, both with
 //      Playwright's own connectOverCDP and as a raw DevTools client saying the
 //      things Playwright never would;
@@ -12,19 +12,19 @@
 //      silent one, a lease that ran out) — each must leave the profile with the
 //      person's tab and none of ours.
 //
-// `ws` is the copy the repo already installs for wrangler; on the host the
-// server gets its own from spikes/shopify-session/package.json.
+// `ws` is the copy the repo already installs for wrangler; in the container
+// the server gets its own from session-runner/package.json.
 
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { chromium } from "playwright";
-import { Gate, LeaseBook, PRIVATE_ID_BASE, REDACTED, leaseSeconds, sessionIdFromPath, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS } from "../spikes/shopify-session/lease.mjs";
-import { startSessionServer } from "../spikes/shopify-session/session-server.mjs";
+import { Gate, LeaseBook, PRIVATE_ID_BASE, REDACTED, leaseSeconds, sessionIdFromPath, LEASE_MAX_SECONDS, LEASE_MIN_SECONDS } from "../session-runner/lease.mjs";
+import { startSessionServer } from "../session-runner/session-server.mjs";
 
 let failures = 0;
 async function check(name, fn) {
@@ -373,41 +373,16 @@ await check("only /v1/devtools/browser/<id> names a session", () => {
   assert.equal(sessionIdFromPath("/devtools/browser/abc"), null);
 });
 
-// What keeps a page in the host's Chrome off the host's own ports (DevTools'
-// /json/close, the passwordless VNC, the metadata server) is on the host: the
-// browser's own user and firewall.nft. Whether it works is observed there —
-// provision.sh fails if the browser's user can reach any of them, and cannot
-// reach the public web. What can be held here is the wiring that test rests on:
-// who runs as the browser's user, and that Chrome cannot start without the rules.
-await check("on the host, the browser has a user of its own and does not start without the firewall", async () => {
-  const dir = new URL("../spikes/shopify-session/", import.meta.url);
-  const unit = async (name) => readFile(new URL(`systemd/${name}`, dir), "utf8");
-  const userOf = (text) => /^User=(.+)$/m.exec(text)?.[1] ?? null;
-  const names = (await readdir(new URL("systemd/", dir))).filter((n) => n.endsWith(".service"));
-  const asBrowser = [];
-  for (const name of names) if (userOf(await unit(name)) === "session-browser") asBrowser.push(name);
-  // The display, the browser, and the VNC server that only listens. Anything
-  // that CONNECTS to a loopback port must not be here — it would be refused.
-  assert.deepEqual(asBrowser.sort(), ["session-chrome.service", "session-x11vnc.service", "session-xvfb.service"]);
-  const chrome = await unit("session-chrome.service");
-  assert.match(chrome, /^Requires=.*\bsession-firewall\.service\b/m);
-  assert.match(chrome, /^After=.*\bsession-firewall\.service\b/m);
-  assert.match(chrome, /--remote-debugging-address=127\.0\.0\.1/);
-  const rules = await readFile(new URL("firewall.nft", dir), "utf8");
-  assert.match(rules, /meta skuid != "session-browser" accept/);
-  // Without this line the browser's own listening ports answer nobody (seen on
-  // the host, 2026-10-02): replies leave through the same hook.
-  assert.match(rules, /ct state established,related accept/);
-  for (const range of ["127.0.0.0/8", "::1", "169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]) {
-    assert.ok(rules.split("\n").some((line) => line.includes(range) && line.includes("reject")), `${range} is not refused`);
-  }
-  const provision = await readFile(new URL("provision.sh", dir), "utf8");
-  assert.match(provision, /exit "\$fail"/, "the provision no longer fails when the isolation does not hold");
-  // Chrome requires the firewall unit, so restarting that unit restarts Chrome
-  // and ends the person's session. The rules are reloaded with nft itself.
-  assert.doesNotMatch(provision, /systemctl (try-)?restart[^\n]*session-firewall/, "a provision would restart Chrome every time");
-  assert.match(provision, /^nft -f \/etc\/session-host\/firewall\.nft$/m);
-  assert.match(rules, /fib daddr type local reject/);
+// What keeps a page in a team's Chrome off the container's own ports (CHE-464;
+// on the VM it was a firewall): DevTools listens on loopback only, and the two
+// ports that listen wider — this server and the live view — answer nobody
+// without the Durable Object's bearer or a view token (refused below and in
+// verify-live-view). There is no VNC, no metadata server, and no other team in
+// the container.
+await check("in the container, Chrome's DevTools listens on loopback only", async () => {
+  const runner = await readFile(new URL("../session-runner/runner.mjs", import.meta.url), "utf8");
+  assert.match(runner, /"--remote-debugging-address=127\.0\.0\.1"/);
+  assert.doesNotMatch(runner, /--remote-debugging-address=0\.0\.0\.0/);
 });
 
 await check("the server refuses to start without a real token", async () => {
@@ -478,7 +453,6 @@ const started = await startSessionServer({
   token: TOKEN,
   cdp: `http://127.0.0.1:${debugPort}`,
   port: 0,
-  probeLog: join(profile, "no-probe.jsonl"),
   now: () => clock,
   heartbeatMs: 300,
   sweepMs: 100,
@@ -504,7 +478,7 @@ const lease = async (run = RUN_A, seconds = 300) => (await call("POST", "/lease"
 await check("while a person is signing in, a check is refused the lease (409) and given it once they leave", async () => {
   let present = true;
   const guarded = await startSessionServer({
-    token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, probeLog: join(profile, "no-probe.jsonl"),
+    token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0,
     personPresent: () => present, onGate: () => {},
   });
   try {
@@ -607,7 +581,7 @@ try {
 
   await check("a lease names the browser; a second run is told when to come back; no lease, no DevTools", async () => {
     const before = await call("GET", "/state");
-    assert.deepEqual({ lease: before.json.lease, connected: before.json.connected, probe: before.json.probe }, { lease: null, connected: false, probe: null });
+    assert.deepEqual({ lease: before.json.lease, connected: before.json.connected }, { lease: null, connected: false });
     assert.match(before.json.browser, /Chrome\//);
 
     const taken = await call("POST", "/lease", { ownerRunId: RUN_A, maxDurationSeconds: 300 });
@@ -922,7 +896,7 @@ try {
   });
 
   await check("no browser, no lease: 503 and the session stays free", async () => {
-    const dead = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${await freePort()}`, port: 0, probeLog: join(profile, "no-probe.jsonl") });
+    const dead = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${await freePort()}`, port: 0 });
     try {
       const response = await fetch(`http://127.0.0.1:${dead.port}/lease`, { method: "POST", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify({ ownerRunId: RUN_A }) });
       assert.equal(response.status, 503);

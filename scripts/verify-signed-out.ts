@@ -180,7 +180,7 @@ async function main() {
       now: () => new Date("2026-10-02T06:00:00Z"),
     };
     const stub = createStubDb({ app: [{ id: "app_admin", sessionReachedAt: null }, { id: "app_other", sessionReachedAt: null }] });
-    const env = { db: stub.db, bindings: { OWNER_TELEGRAM_CHAT_ID: CHAT, SESSION_SIGN_IN_URL: "https://session.checkmyapp.dev" } } as unknown as AgentEnv;
+    const env = { db: stub.db, bindings: { OWNER_TELEGRAM_CHAT_ID: CHAT } } as unknown as AgentEnv;
     const tell = (id: string) => tellOwnerSignedOut(env, { id, appId: "app_admin", appSlug: "admin.shopify.com" }, HOST, deps);
     const rows = () => table.all() as { direction: string; status: string; text: string; sendId: string; chatId: string }[];
 
@@ -188,16 +188,15 @@ async function main() {
     check("told: the first run that meets the sign-in page sends one message, recorded as sent",
       first.told === "sent" && sends === 1 && rows().length === 1 && rows()[0].status === "sent" && rows()[0].direction === "out" && rows()[0].chatId === CHAT,
       JSON.stringify(first));
-    // CHE-419: the link is the app's own sign-in page on checkmyapp.dev, never
-    // the VNC console the binding still names.
+    // CHE-419: the link is the app's own sign-in page on checkmyapp.dev.
     const PAGE = "https://checkmyapp.dev/health/apps/app_admin/sign-in";
     check("told: the message says what stopped, where the address leads, where to sign in (the app's own page) — and asks for no reply",
       rows()[0].text === signedOutMessage("admin.shopify.com", HOST, PAGE) &&
         rows()[0].text.includes("admin.shopify.com") && rows()[0].text.includes(HOST) && rows()[0].text.includes(PAGE) &&
-        !rows()[0].text.includes("session.checkmyapp.dev") && /Отвечать не нужно/.test(rows()[0].text),
+        /Отвечать не нужно/.test(rows()[0].text),
       rows()[0].text);
-    check("told: a run with no saved app keeps the configured address",
-      signInUrlFor({ SESSION_SIGN_IN_URL: "https://session.checkmyapp.dev" }, null) === "https://session.checkmyapp.dev" &&
+    check("told: a run with no saved app has no page to link (CHE-464: the VM's console is gone)",
+      signInUrlFor({}, null) === null &&
         signInUrlFor({ APP_URL: "https://staging.checkmyapp.dev/" }, "a1") === "https://staging.checkmyapp.dev/health/apps/a1/sign-in");
     check("told: the id is the sign-in that ended — the app, and when a check last reached it (never yet)",
       "sendId" in first && first.sendId === signedOutSendId("app_admin", null) && first.sendId === "session-signed-out:app_admin:never");

@@ -7,7 +7,7 @@ import { chooseShopifyApp } from "@/app/(app)/health/apps/[appId]/sign-in/action
 
 // CHE-419: the live view a person signs in through. Frames of one tab come in
 // as JPEG; mouse, keys and pasted text go out as a closed list of messages the
-// session host turns into input (spikes/shopify-session/viewer.mjs).
+// team's session browser turns into input (session-runner/viewer.mjs).
 //
 // Paste is ours, not the remote browser's: a hidden field here keeps the
 // focus, the browser hands it the clipboard on Cmd+V / Ctrl+V, and its text is

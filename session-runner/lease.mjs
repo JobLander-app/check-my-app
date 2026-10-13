@@ -2,7 +2,7 @@
 // classes — no socket, no clock of their own. session-server.mjs is the wiring;
 // scripts/verify-session-server.mjs drives both.
 //
-// The browser on this host is the one a person signed in to. A check is a
+// The browser here is the one a person signed in to. A check is a
 // visitor in it: it opens its own tabs, works in them, and leaves. Three things
 // follow, and each is enforced here rather than trusted to the caller:
 //
@@ -15,7 +15,7 @@
 //      sign itself out by walking to the logout address. That last one is not
 //      this layer's to stop: it is the tool-level guard's rule for a run of
 //      this kind.
-//   3. The session's cookies never leave the host as values. A check that can
+//   3. The session's cookies never reach a check as values. A check that can
 //      open the admin sees what the admin shows; it does not get the HttpOnly
 //      cookie that would let anyone else open it too — not by asking for it,
 //      and not in the request headers DevTools reports.

@@ -1,0 +1,10 @@
+{
+  "name": "shopify-session-probe",
+  "private": true,
+  "type": "module",
+  "description": "CHE-464: one team's Shopify session browser in a Cloudflare Container — the session server a check works through, the live view a person signs in through, and the hourly probe. Built by Dockerfile.",
+  "dependencies": {
+    "playwright-core": "1.60.0",
+    "ws": "8.20.1"
+  }
+}

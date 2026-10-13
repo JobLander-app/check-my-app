@@ -1,11 +1,11 @@
 // CHE-464: one team's Shopify session browser, in a Cloudflare Container.
 //
-// Until now every Shopify check ran in one Chrome on one GCP VM, signed in by
-// a person (spikes/shopify-session). CHE-461 measured the way out: the
-// sign-in is three `.shopify.com` cookies, and those open the admin in a
-// fresh Chrome on any machine and any address. So each team gets a Durable
-// Object (named by its id) holding the team's cookie jar, and a container
-// running the session host's stack (spikes/shopify-session/runner.mjs): the
+// Until 2026-10-13 every Shopify check ran in one Chrome on one GCP VM,
+// signed in by a person. CHE-461 measured the way out: the sign-in is three
+// `.shopify.com` cookies, and those open the admin in a fresh Chrome on any
+// machine and any address. So each team gets a Durable Object (named by its
+// id) holding the team's cookie jar, and a container running that VM's stack
+// (session-runner/runner.mjs): the
 // same session server and gate (lease.mjs), the same live view (viewer.mjs),
 // the same probe (probe.mjs). The account's container limits are the only
 // ceiling on how many teams check at once.
@@ -22,11 +22,11 @@
 //
 // What it lets through from the Worker (`fetch`): the session server's /state,
 // /lease and DevTools socket, for the agent (session-browser.ts), and the live
-// view's socket, for a person on the sign-in page (routeLiveView below). The
-// jar, the readiness and the probe routes are its own.
+// view's socket, for a person on the sign-in page (session-routes.ts
+// routeLiveView). The jar, the readiness and the probe routes are its own.
 //
 // Cookie values never leave this object and the container, and are never
-// logged: what is said about a jar is jar-rules.mjs describeJar.
+// logged.
 
 import { Container } from "@cloudflare/containers";
 import type { StopParams } from "@cloudflare/containers";
@@ -34,7 +34,7 @@ import type { AgentBindings } from "./env";
 import { sendDeps } from "./signed-out";
 import { AlreadySentError, sendRecorded } from "@/lib/telegram-send";
 import { viewKeyFor } from "@/lib/session-view";
-import { describeJar, holdsSignIn, jarOf } from "../../spikes/shopify-session/jar-rules.mjs";
+import { holdsSignIn, jarOf } from "../../session-runner/jar-rules.mjs";
 import { SESSION_TEAM_HEADER, SESSION_TEAM_ID } from "./session-address";
 import { hex, openJar, probeMessage, proxyForTeam, recordProbe, sealJar, viewOrigin, type Cookie, type ProbeLine } from "./session-jar";
 
@@ -96,24 +96,6 @@ export class SessionRunner extends Container<AgentBindings> {
     // A person is in: their sign-in is saved while they are, and once after.
     if (view && response.status === 101) this.ctx.waitUntil(this.watchSignIn());
     return response;
-  }
-
-  // The team's jar from elsewhere (the VM's Chrome, moving the live sign-in —
-  // scripts/session-jar-import.mjs). Only a jar that holds a sign-in.
-  async importJar(team: string, cookies: unknown): Promise<{ saved: number; loaded: boolean }> {
-    if (!(await this.claim(team))) throw new Error("Not this team's browser");
-    const jar = jarOf(cookies) as Cookie[];
-    if (!holdsSignIn(jar)) throw new Error("The jar holds no sign-in");
-    await this.keepJar(team, jar, "import");
-    let loaded = false;
-    const token = await this.ctx.storage.get<string>("token");
-    if (token && this.ctx.container?.running) {
-      await this.server(token, "PUT", "/jar", { cookies: jar });
-      loaded = true;
-    }
-    await this.scheduleProbe(30);
-    console.log(`[session-runner] jar imported: ${JSON.stringify(describeJar(jar))}`);
-    return { saved: jar.length, loaded };
   }
 
   // Ours to read (the agent worker's /session/state): never a value.

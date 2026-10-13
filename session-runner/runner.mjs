@@ -1,7 +1,7 @@
-// CHE-464: one team's Shopify session browser, in a Cloudflare Container. The
-// session host's stack (README.md) without the host: a display, the
-// residential forwarder, Chrome started as a plain process with the host's
-// flags, and the same session server and live view in front of it. One
+// CHE-464: one team's Shopify session browser, in a Cloudflare Container — the
+// stack of the session host it replaced (a GCP VM, retired 2026-10-13): a
+// display, the residential forwarder, Chrome started as a plain process with
+// the host's flags, and the session server and live view in front of it. One
 // container per team, started and fed by the team's Durable Object
 // (src/agent/session-runner.ts), which is the only thing that can reach it.
 //
@@ -12,8 +12,8 @@
 //
 // What differs from the host: no profile is kept (the team's sign-in is its
 // cookie jar — jar.mjs — put in by the Durable Object before anything is let
-// through), no VNC, no tunnel, no firewall (DevTools stays on loopback and
-// every way in asks for the Durable Object's bearer or a view token).
+// through), no VNC, no tunnel, no firewall: DevTools stays on loopback, and
+// every way in asks for the Durable Object's bearer or a view token.
 //
 // Environment, read once and removed before Chrome starts (Chrome gets an
 // environment of its own with none of it):
@@ -77,7 +77,7 @@ if (proxyUrl) {
   console.log(`[runner] forwarder on 127.0.0.1:${forwarder.port}`);
 }
 
-// The session host's flags (systemd/session-chrome.service), a profile that
+// The flags the VM ran Chrome with (CHE-461 round 2: no challenge), a profile that
 // lives as long as this container, and a blank first tab: nothing navigates
 // before the team's jar is in. --disable-dev-shm-usage: a container's /dev/shm
 // is small and an admin tab outgrows it; nothing a page can observe.
@@ -125,7 +125,7 @@ function probe(url) {
     execFile(
       process.execPath,
       [PROBE],
-      { env: { PATH: process.env.PATH, PROBE_LOG: "-", PROBE_URL: address.toString(), PROBE_CDP: CDP }, timeout: 180_000, maxBuffer: 1024 * 1024 },
+      { env: { PATH: process.env.PATH, PROBE_URL: address.toString(), PROBE_CDP: CDP }, timeout: 180_000, maxBuffer: 1024 * 1024 },
       (error, stdout) => {
         const last = String(stdout ?? "").trim().split("\n").pop();
         try {
@@ -144,7 +144,6 @@ const server = await startSessionServer({
   cdp: CDP,
   port: 9090,
   host: "0.0.0.0",
-  probeLog: "/dev/null",
   personPresent: () => viewer?.present() ?? false,
   jar: { load: (cookies) => loadJar(CDP, cookies), read: () => readJar(CDP) },
   probe,

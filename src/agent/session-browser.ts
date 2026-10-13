@@ -4,10 +4,9 @@
 // has a captcha, which we never solve. A person signs in once; a run of an app
 // whose kind is "session" then works in that browser — in its own tab, through
 // the session server, which gives a check its own tabs and nothing else
-// (spikes/shopify-session/lease.mjs). Since CHE-464 that browser is the run's
-// team's own, in a Cloudflare Container behind the team's Durable Object
-// (session-runner.ts); the address shape and every rule are the session
-// host's.
+// (session-runner/lease.mjs). Since CHE-464 that browser is the run's team's
+// own, in a Cloudflare Container behind the team's Durable Object
+// (session-runner.ts).
 //
 // This is the Worker's half: take the lease, connect, open tabs of our own,
 // leave. The server speaks the address shape the extension runner speaks, so

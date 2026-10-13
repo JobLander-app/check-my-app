@@ -2,8 +2,8 @@
 // container runtime here, so scripts/verify-session-runner.ts runs these exact
 // functions in Node.
 
-import { jarOf } from "../../spikes/shopify-session/jar-rules.mjs";
-import { shouldNotify } from "../../spikes/shopify-session/classify.mjs";
+import { jarOf } from "../../session-runner/jar-rules.mjs";
+import { shouldNotify } from "../../session-runner/classify.mjs";
 
 export type Cookie = Record<string, unknown>;
 

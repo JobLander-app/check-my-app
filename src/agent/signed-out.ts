@@ -210,15 +210,14 @@ export type OwnerTold =
   // Not sent, or possibly sent — said in `detail`, never retried here.
   | { told: "failed" | "unknown"; sendId: string; detail: string };
 
-type TellBindings = Pick<AgentBindings, "DB" | "TELEGRAM_BOT_TOKEN" | "OWNER_TELEGRAM_CHAT_ID" | "SESSION_SIGN_IN_URL" | "APP_URL">;
+type TellBindings = Pick<AgentBindings, "DB" | "TELEGRAM_BOT_TOKEN" | "OWNER_TELEGRAM_CHAT_ID" | "APP_URL">;
 
 // CHE-419: where the person signs in again — the app's own sign-in page on
-// checkmyapp.dev (a live view of the session browser, paste that works), not
-// the VNC console. A run with no saved app has no such page; it keeps the
-// configured address.
-export function signInUrlFor(bindings: Pick<TellBindings, "SESSION_SIGN_IN_URL" | "APP_URL">, appId: string | null): string | null {
+// checkmyapp.dev (a live view of the team's session browser, paste that
+// works). A run with no saved app has no such page, and the message says so.
+export function signInUrlFor(bindings: Pick<TellBindings, "APP_URL">, appId: string | null): string | null {
   if (appId) return `${(bindings.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/health/apps/${appId}/sign-in`;
-  return bindings.SESSION_SIGN_IN_URL?.trim() || null;
+  return null;
 }
 
 // Exported for the other messages to the owner's chat (CHE-441's digest).

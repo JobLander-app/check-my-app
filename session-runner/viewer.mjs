@@ -16,11 +16,13 @@
 // the page they see reach anything else of ours.
 //
 // Who may connect: whoever holds a view token — HMAC-SHA256 over
-// {v, slot, store, exp} with SESSION_VIEW_SECRET, minted by checkmyapp.dev for a
-// signed-in person allowed to connect that store — and whose page is one of
-// VIEW_ORIGINS. Served on its own port (not the session server's), published
-// through the tunnel as its own hostname without Cloudflare Access: the token
-// is the gate. One viewer at a time; a new one replaces the old.
+// {v, slot, store, exp} with the team's view key (src/lib/session-view.ts
+// viewKeyFor), minted by checkmyapp.dev for a signed-in member of the team
+// allowed to connect that store — and whose page is one of VIEW_ORIGINS.
+// Served on its own port (not the session server's), reached through
+// wss://live.checkmyapp.dev/session/view and the team's Durable Object, which
+// check the token too (CHE-464). One viewer at a time; a new one replaces the
+// old.
 //
 // The passkey prompt: Shopify's sign-in asks the browser for a passkey, and
 // Chrome answers with its own window, which no screencast shows (the owner was
@@ -191,7 +193,7 @@ export async function startViewer({
   // the real admin address.
   adminUrlFor = storeAdminUrl,
   leaseHeld = async () => false,
-  doorLog = "/var/lib/session-host/door.jsonl",
+  doorLog = null,
   now = Date.now,
   idleMs = 10 * 60_000,
   // Whether an address is the token's store signed in; the guard names its
