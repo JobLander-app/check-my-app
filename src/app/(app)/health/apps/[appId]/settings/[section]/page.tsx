@@ -515,7 +515,9 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           rows share one frame and the contract sits under both (CHE-438). */}
       <div className="card space-y-4 p-5">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-fg">Issue tracker</p>
+          <p className="text-sm font-medium text-fg">
+            Issue tracker <span className="text-xs font-normal text-fg-faint">· Linear or Jira, one at a time</span>
+          </p>
           <p className="text-xs text-fg-faint">
             {app.tracker?.teamId
               ? `Problems found on this app become tickets in ${trackerName(app.tracker.type)}.`
