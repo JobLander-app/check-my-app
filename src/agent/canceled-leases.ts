@@ -1,4 +1,4 @@
-// CHE-454: a stopped check gives the session host back.
+// CHE-454: a stopped check gives the session browser back.
 //
 // Stopping a check terminates its Workflow at once, so nothing inside the run
 // reaches its own `releaseSession` — the catch block that frees the host never
@@ -26,13 +26,18 @@ export async function releaseCanceledLeases(
       targetKind: SESSION_KIND,
       completedAt: { gte: new Date(now.getTime() - SESSION_LEASE_SECONDS * 1000) },
     },
-    select: { id: true },
+    select: { id: true, teamId: true },
   });
   if (stopped.length === 0) return [];
-  const host = sessionHost(env.bindings);
   const released: string[] = [];
+  // CHE-464: each run's lease is in its own team's browser.
   for (const run of stopped) {
-    if (await release(host, run.id)) released.push(run.id);
+    if (!run.teamId) continue;
+    try {
+      if (await release(sessionHost(env.bindings, run.teamId), run.id)) released.push(run.id);
+    } catch (error) {
+      console.warn(`[cancel] could not release ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   return released;
 }

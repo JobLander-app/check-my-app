@@ -7,7 +7,7 @@ import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { OtherTeamApp } from "@/components/other-team-app";
 import { LiveSignIn } from "@/components/live-sign-in";
-import { VIEW_HOST, appHandleOfAdminUrl, mintViewToken, shopifySlug, storeOfAdminUrl } from "@/lib/session-view";
+import { VIEW_HOST, appHandleOfAdminUrl, mintViewToken, shopifySlug, storeOfAdminUrl, viewKeyFor } from "@/lib/session-view";
 import { SIGN_IN_COPY } from "@/lib/sign-in-copy";
 
 // CHE-419: a person signs in to the Shopify store their app lives in, here,
@@ -37,7 +37,8 @@ export default async function SignInPage({ params }: { params: Promise<{ appId: 
 
   const { env } = getCloudflareContext();
   const secret = (env as unknown as { SESSION_VIEW_SECRET?: string }).SESSION_VIEW_SECRET;
-  const token = secret ? await mintViewToken(secret, { slot: "main", store }) : null;
+  // CHE-464: the team's own container, with the team's own key.
+  const token = secret ? await mintViewToken(await viewKeyFor(secret, team.id), { slot: team.id, store }) : null;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">

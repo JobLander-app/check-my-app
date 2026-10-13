@@ -9,13 +9,60 @@
 
 export const VIEW_TOKEN_VERSION = 1;
 export const VIEW_TOKEN_SECONDS = 30 * 60;
-export const VIEW_HOST = "wss://view.checkmyapp.dev/v1/view";
+// CHE-464: the live view is a team's own container, reached through the agent
+// worker (src/agent/session-runner.ts routeLiveView) — no longer the VM.
+export const VIEW_HOST = "wss://live.checkmyapp.dev/session/view";
 
 const base64url = (bytes: Uint8Array) => {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
+
+const hmac = async (secret: string, text: string): Promise<Uint8Array> => {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+};
+
+// CHE-464: a team's view key. Every team's container holds a key of its own,
+// derived from SESSION_VIEW_SECRET and the team's id, never the secret itself:
+// a container can mint a view token, and sign an app pick, for its own team
+// only. Tokens for a team are minted, and its picks verified, with this key;
+// the token's slot is the team's id.
+export async function viewKeyFor(secret: string, teamId: string): Promise<string> {
+  return [...(await hmac(secret, `session-view:${teamId}`))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// The team a token names, read before it is verified — to know which team's
+// key verifies it. Never trusted on its own.
+export function viewTokenSlot(token: string): string | null {
+  if (typeof token !== "string" || token.length > 2048) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64url(token.split(".")[0] ?? "")));
+    return typeof payload?.slot === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(payload.slot) ? payload.slot : null;
+  } catch {
+    return null;
+  }
+}
+
+// viewer.mjs verifyViewToken, in WebCrypto: the payload, or null for anything
+// not signed with this key, expired, or of another version.
+export async function verifyViewToken(key: string, token: string, now = Date.now()): Promise<{ slot: string; store: string; exp: number } | null> {
+  if (typeof token !== "string" || token.length > 2048) return null;
+  const [body, mac, extra] = token.split(".");
+  if (!body || !mac || extra !== undefined) return null;
+  try {
+    const signing = await crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    if (!(await crypto.subtle.verify("HMAC", signing, fromBase64url(mac), new TextEncoder().encode(body)))) return null;
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64url(body)));
+    if (payload?.v !== VIEW_TOKEN_VERSION || payload.kind !== undefined) return null;
+    if (typeof payload.exp !== "number" || payload.exp * 1000 <= now) return null;
+    if (typeof payload.slot !== "string" || typeof payload.store !== "string") return null;
+    return { slot: payload.slot, store: payload.store, exp: payload.exp };
+  } catch {
+    return null;
+  }
+}
 
 export async function mintViewToken(
   secret: string,

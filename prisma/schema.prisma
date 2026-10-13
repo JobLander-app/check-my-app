@@ -1481,6 +1481,34 @@ model TelegramMessage {
   @@index([chatId, createdAt])
 }
 
+// ─── Shopify session probes (CHE-464) ────────────────────────────────────────
+// One line per hourly look at a team's Shopify admin from the team's session
+// browser (src/agent/session-runner.ts): is the team's sign-in still alive.
+// The session host's probe.jsonl, per team. Written by the Durable Object with
+// raw statements; operator data, never read for a customer.
+model SessionProbe {
+  id          String   @id
+  teamId      String
+  // The team's app the probe opened.
+  appId       String?
+  at          DateTime
+  // ok | login_page | captcha | 2fa | error | proxy
+  // (spikes/shopify-session/classify.mjs).
+  state       String
+  urlHost     String?
+  urlPath     String?
+  ms          Int
+  challenge   String?
+  detail      String?
+  // The residential proxy's own answer when it was the cause (402 / 407).
+  proxyStatus Int?
+  // Whether the owner was told on this line; null = nothing to tell.
+  notified    Boolean?
+  notifyError String?
+
+  @@index([teamId, at])
+}
+
 // ─── Feedback (CHE-434) ──────────────────────────────────────────────────────
 // Where CheckMyApp got a check wrong, reported by the team it checked: on a
 // run, a finding, a step or a scenario (AppJourney). A signal about OUR

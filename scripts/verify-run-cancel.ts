@@ -147,16 +147,23 @@ async function main() {
     await run("s3", 13, "ta", "canceled", { targetKind: "url", completedAt: minutesAgo(5) });
     await run("s4", 14, "ta", "walking", { targetKind: "session" });
     await run("s5", 15, "ta", "failed", { targetKind: "session", completedAt: minutesAgo(5) });
+    // CHE-464: each run's lease is in its own team's browser.
     const asked: string[] = [];
-    const env = {
-      db,
-      bindings: { SESSION_HOST_URL: "https://host.test", SESSION_ACCESS_CLIENT_ID: "id", SESSION_ACCESS_CLIENT_SECRET: "secret", SESSION_SERVER_TOKEN: "token" },
-    } as unknown as AgentEnv;
+    const namespace = {
+      getByName: (name: string) => ({
+        fetch: async (request: Request) => {
+          asked.push(`${name}|${request.headers.get("X-Session-Team")}`);
+          return Response.json({ released: true });
+        },
+      }),
+    };
+    const env = { db, bindings: { SESSION_RUNNER: namespace } } as unknown as AgentEnv;
     const released = await releaseCanceledLeases(env, now, async (host, id) => {
-      asked.push(`${host.url}:${id}`);
+      await host.fetch(`${host.url}/lease`, { method: "DELETE" });
+      asked.push(id);
       return true;
     });
-    eq("a session check stopped within one lease is released — and nothing else", [released, asked], [["s1"], ["https://host.test:s1"]]);
+    eq("a session check stopped within one lease is released, in its own team's browser — and nothing else", [released, asked], [["s1"], ["ta|ta", "s1"]]);
     eq("nothing stopped, nothing asked — and no host needed", await releaseCanceledLeases({ db: { run: { findMany: async () => [] } }, bindings: {} } as unknown as AgentEnv, now), []);
   } finally {
     await real.dispose();

@@ -155,12 +155,13 @@ export function parseLog(text) {
 }
 
 /**
- * Open TARGET_URL in `page`, wait for it to settle, return
+ * Open `url` (TARGET_URL unless told) in `page`, wait for it to settle, return
  * { state, url_host, url_path[, challenge] }. Never returns the query string
- * (it can carry tokens) or any page text.
+ * (it can carry tokens) or any page text. A team's container (CHE-464) is told
+ * the address of the team's own app.
  */
-export async function observe(page, { timeoutMs = 45_000 } = {}) {
-  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+export async function observe(page, { timeoutMs = 45_000, url = TARGET_URL } = {}) {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForSelector(SETTLED, { state: "attached", timeout: timeoutMs }).catch(() => {});
   // The admin redirects to accounts.shopify.com with script, and the sign-in
   // form swaps its first step for the next; let one of those finish.
