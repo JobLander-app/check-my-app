@@ -147,9 +147,20 @@ export class SessionRunner extends Container<AgentBindings> {
   async probe(): Promise<void> {
     const team = await this.ctx.storage.get<string>("team");
     if (!team || !(await this.ctx.storage.get("jar"))) return;
+    let rearm = true;
     try {
       const app = await this.probeTarget(team);
-      if (!app) return;
+      if (!app) {
+        // The team has no Shopify app left: nothing to watch, nothing wakes
+        // this object again (the scheduler visits teams that have one), and
+        // the sign-in kept for checking it goes too (Codex on #338). A new
+        // app is signed in to afresh, which keeps a jar and arms the probe.
+        rearm = false;
+        await this.ctx.storage.delete("jar");
+        if (this.ctx.container?.running) await this.destroy();
+        console.log("[session-runner] no Shopify app left: the probe stops and the jar is dropped");
+        return;
+      }
       const wasRunning = this.ctx.container?.running ?? false;
       let line: ProbeLine;
       try {
@@ -169,7 +180,7 @@ export class SessionRunner extends Container<AgentBindings> {
     } catch (error) {
       console.error(`[session-runner] probe failed: ${message(error)}`);
     } finally {
-      await this.scheduleProbe(PROBE_EVERY_SECONDS);
+      if (rearm) await this.scheduleProbe(PROBE_EVERY_SECONDS);
     }
   }
 
