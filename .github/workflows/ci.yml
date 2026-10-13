@@ -90,25 +90,42 @@ jobs:
       # migrations, because those touch production too.
       - if: steps.creds.outputs.ready == 'true'
         run: npx tsx --tsconfig tsconfig.json scripts/deploy-gate-extension.ts
+      # Ask again after the wait (CHE-471): the gate can hold this job for 25
+      # minutes, and a commit merged meanwhile is queued right behind it. It
+      # deploys next either way; deploying this one first would only restart
+      # every run in flight a second time for nothing.
+      - name: Check this commit is still main's tip after the wait
+        id: still
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main moved on to ${tip:0:7} during the wait; its own deploy ships this commit too, so this one does not deploy."
+          fi
       # Apply D1 migrations to the remote database before deploying.
-      - if: steps.creds.outputs.ready == 'true'
+      - if: steps.still.outputs.yes == 'true'
         run: npx wrangler d1 migrations apply checkmyapp --remote
       # Deploy the agent worker first (it defines the CheckRunWorkflow the web
       # worker binds to cross-worker).
-      - if: steps.creds.outputs.ready == 'true'
+      - if: steps.still.outputs.yes == 'true'
         run: npx wrangler deploy --config wrangler-agent.jsonc
       # Build + deploy the web worker (OpenNext). The build must run with the
       # same .env as a local deploy: Next.js bakes NEXT_PUBLIC_* AND server env
       # (Clerk keys etc.) into the workerd bundle at build time — without them
       # every SSR page 500s with "Missing publishableKey" (incident 2026-08-16).
       # WEB_BUILD_DOTENV is the owner's .env stored as a single GitHub secret.
-      - if: steps.creds.outputs.ready == 'true'
+      - if: steps.still.outputs.yes == 'true'
         run: printf '%s\n' "$WEB_BUILD_DOTENV" > .env
         env:
           WEB_BUILD_DOTENV: ${{ secrets.WEB_BUILD_DOTENV }}
-      - if: steps.creds.outputs.ready == 'true'
+      - if: steps.still.outputs.yes == 'true'
         run: npx opennextjs-cloudflare build
-      - if: steps.creds.outputs.ready == 'true'
+      - if: steps.still.outputs.yes == 'true'
         run: npx opennextjs-cloudflare deploy
       # CHE-326: rewrite the owner's plans & limits page in Notion from the code
       # that just shipped (src/lib/plans.ts + src/lib/plan-catalog.ts). After
@@ -116,7 +133,7 @@ jobs:
       # must never fail a deploy that already succeeded: the step is
       # continue-on-error, and a failure is logged as a warning on the run.
       - name: Sync plans page to Notion
-        if: steps.creds.outputs.ready == 'true'
+        if: steps.still.outputs.yes == 'true'
         continue-on-error: true
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
