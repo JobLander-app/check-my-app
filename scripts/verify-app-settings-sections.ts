@@ -16,9 +16,21 @@ import { realD1 } from "./fixtures/real-d1";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SETTINGS_SECTIONS, sectionsFor, settingsSection, trackerHealth } from "../src/lib/app-settings-sections";
+import {
+  JIRA_NO_PROJECT,
+  SETTINGS_SECTIONS,
+  jiraAccountLine,
+  jiraBlockedLine,
+  sectionsFor,
+  settingsSection,
+  trackerHealth,
+  trackerIdleLine,
+  trackerSummary,
+  type TrackerHealth,
+} from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
 import { appPath } from "../src/lib/app-shell";
+import { MACHINERY_TERMS, hasEnvironmentLeak } from "../src/lib/verdict-language";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -132,6 +144,52 @@ check("…the named accounts' rows too", ["label", "email", "password", "remove"
 check("…the frequency, pause and cancel are the schedule's own controls", /<WatchSettings\s+slug=\{watch\.appSlug\}/.test(page) && /frequency: watch\.frequency/.test(page));
 check("…and the pieces with their own actions: tracker team, analytics project, extension options, removal",
   /<TeamSelect appId=\{app\.id\}/.test(page) && /<AnalyticsProject/.test(page) && /<ExtensionSettings/.test(page) && /<DeleteAppSection/.test(page) && /\/api\/integrations\/linear\/start\?appId=\$\{app\.id\}/.test(page));
+// CHE-438: Linear and Jira are the same job, so they are drawn the same way.
+// The owner, 2026-10-13: "why should Jira be different?" — Jira had grown its
+// own card without the contract, and Linear's card said problems stay on the
+// check's page even while Jira was filing them.
+const linearRow = page.search(/<TrackerRow\s+name="Linear"/);
+const jiraRow = page.search(/<TrackerRow\s+name="Jira"/);
+check("Linear and Jira are rows of one frame, and no tracker has a card of its own",
+  linearRow !== -1 && jiraRow !== -1 && /function TrackerRow\(/.test(page) && !/· issue tracker/.test(page));
+const contract = page.indexOf('name="pickupLabels"');
+const lastRowEnd = page.lastIndexOf("</TrackerRow>");
+check("the ticket contract sits under both trackers, in neither row",
+  contract > jiraRow && contract > linearRow && lastRowEnd !== -1 && lastRowEnd < contract && /<form action=\{save\}/.test(page.slice(lastRowEnd, contract)));
+// The card's sentences come from one pure module, so every variant can be
+// checked — Codex P1 on #337: sentences assembled in JSX escaped the gate.
+check("the card's sentences are the module's: the page types none of them",
+  /trackerSummary\(app\.tracker, jira \? jiraHealth : health, jiraBlockers\)/.test(page) &&
+    /idle=\{trackerIdleLine\("Linear", /.test(page) && /idle=\{trackerIdleLine\("Jira", /.test(page) &&
+    /\{jiraAccountLine\(jira !== null\)\}/.test(page) && /\{JIRA_NO_PROJECT\}/.test(page) && /jiraBlockedLine\(jira\.teamId, jiraBlockers\)/.test(page) &&
+    !/Problems stay on the check|become tickets in|Not connected\.|uses the Atlassian account|No project chosen|can&apos;t be filed/.test(page));
+// What the first line says, case by case — never a promise the rows below
+// contradict (Codex P2 on #337: an expired token or a blocked project).
+const ok: TrackerHealth = { tone: "ok", text: "" }, bad: TrackerHealth = { tone: "bad", text: "" };
+eq("summary: nothing connected", trackerSummary(null, null, []), "Not connected — problems stay on the check's page instead of becoming tickets.");
+eq("summary: Jira filing", trackerSummary({ type: "jira", teamId: "SEC" }, ok, []), "Problems found on this app become tickets in Jira.");
+eq("summary: Linear filing", trackerSummary({ type: "linear", teamId: "t" }, ok, []), "Problems found on this app become tickets in Linear.");
+eq("summary: Jira without a project", trackerSummary({ type: "jira", teamId: null }, ok, []), "Problems stay on the check's page until a project is chosen below.");
+eq("summary: an expired token files nothing", trackerSummary({ type: "linear", teamId: "t" }, bad, []), "Problems stay on the check's page until Linear is reconnected.");
+eq("summary: a project that refuses our tickets files nothing", trackerSummary({ type: "jira", teamId: "SEC" }, ok, ["Team"]), "Problems stay on the check's page until another project is chosen below.");
+eq("idle: the other tracker is named", trackerIdleLine("Linear", "Jira"), "Not connected. Connecting Linear moves this app's tickets from Jira to Linear.");
+// Codex P2 on #337: Reconnect starts the same consent as Connect.
+check("the Atlassian account is named before Reconnect too", /^Reconnect uses the Atlassian account/.test(jiraAccountLine(true)) && /^Connect uses/.test(jiraAccountLine(false)));
+// Every sentence the card can show describes the customer's tools only
+// (CLAUDE.md §1). Codex P1 on #337: the first wording said "this browser".
+const healths = [null, ok, { tone: "warn", text: "" } as TrackerHealth, bad];
+const trackers = [null, ...["linear", "jira"].flatMap((type) => [{ type, teamId: null }, { type, teamId: "SEC" }])];
+const everySentence = [
+  ...trackers.flatMap((t) => healths.flatMap((h) => [[], ["Team", "Sprint"]].map((b) => trackerSummary(t, h, b)))),
+  ...["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerIdleLine(name, other))),
+  jiraAccountLine(false), jiraAccountLine(true), JIRA_NO_PROJECT, jiraBlockedLine("SEC", ["Team", "Sprint"]),
+  "Linear or Jira, one at a time",
+];
+const leaky = [...new Set(everySentence)].filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
+check(`every sentence the tracker card can show names none of our machinery (${new Set(everySentence).size} sentences)`, leaky.length === 0, leaky.join(" | "));
+check("…the fixed one is on the page as written", page.includes("Linear or Jira, one at a time"));
+check("…and the gate catches the wording it replaced", MACHINERY_TERMS.test("Connect uses the Atlassian account this browser is signed in to"));
+// Everywhere else a tracker is offered: scripts/verify-tracker-copy.ts.
 check("no field reaches into another form", !/\bform="/.test(page));
 // A <form> opened while another is open.
 let depth = 0;

@@ -7,6 +7,8 @@
 // its owner — customer text that passed the verdict-language gate when it was
 // written (CLAUDE.md §1), shortened, never rephrased.
 
+import { trackerName } from "./tracker/name";
+
 /**
  * The first sentence of a check's bottom line, for one row of the timeline.
  * A sentence ends at ". ", "! " or "? " followed by a capital or a quote, or at
@@ -43,10 +45,13 @@ export function accountsLabel(hasDefault: boolean, named: number): string {
   return n === 0 ? "None" : `${n} account${n === 1 ? "" : "s"}`;
 }
 
-/** What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413). */
-export function integrationsLabel(i: { tracker: boolean; analyticsProject: string | null; github: boolean; webhook: boolean; slack: boolean }): string {
+/**
+ * What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413).
+ * `tracker` is the TrackerIntegration's type: the tracker is named as it is, Linear or Jira (CHE-438).
+ */
+export function integrationsLabel(i: { tracker: string | null; analyticsProject: string | null; github: boolean; webhook: boolean; slack: boolean }): string {
   const names = [
-    i.tracker ? "Linear" : null,
+    i.tracker !== null ? trackerName(i.tracker) : null,
     i.analyticsProject !== null ? "PostHog" : null,
     i.github ? "GitHub" : null,
     i.slack ? "Slack" : null,

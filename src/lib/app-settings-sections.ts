@@ -3,6 +3,8 @@
 // set of addresses that exist, and — for the three that have a form of fields —
 // the sections the settings action accepts (src/app/dashboard/actions.ts).
 
+import { trackerName } from "./tracker/name";
+
 export type SettingsSection = "scope" | "accounts" | "schedule" | "notifications" | "integrations" | "remove";
 
 export const SETTINGS_SECTIONS: { key: SettingsSection; label: string; what: string }[] = [
@@ -40,4 +42,39 @@ export function trackerHealth(tracker: { refreshTokenEnc: string | null; tokenEx
     return { tone: "warn", text: `token expires on ${on} — reconnect so it renews by itself` };
   }
   return { tone: "warn", text: "reconnect so the token renews by itself" };
+}
+
+// The Issue tracker card's sentences (CHE-438). Linear and Jira share the
+// card, so they share its words; pure, so scripts/verify-app-settings-sections.ts
+// can run every one of them through the customer-language gate.
+
+/** The card's first line: where this app's problems go right now — never a promise the rows below contradict. */
+export function trackerSummary(tracker: { type: string; teamId: string | null } | null, health: TrackerHealth | null, blockers: string[]): string {
+  if (!tracker) return "Not connected — problems stay on the check's page instead of becoming tickets.";
+  const name = trackerName(tracker.type);
+  const where = tracker.type === "jira" ? "project" : "team";
+  if (!tracker.teamId) return `Problems stay on the check's page until a ${where} is chosen below.`;
+  if (health?.tone === "bad") return `Problems stay on the check's page until ${name} is reconnected.`;
+  if (blockers.length > 0) return `Problems stay on the check's page until another ${where} is chosen below.`;
+  return `Problems found on this app become tickets in ${name}.`;
+}
+
+/** A tracker's row when it is not the connected one; `connected` names the one that is. */
+export function trackerIdleLine(name: string, connected: string | null): string {
+  return connected ? `Not connected. Connecting ${name} moves this app's tickets from ${connected} to ${name}.` : "Not connected.";
+}
+
+// Atlassian consents as whoever is signed in to it already, without asking,
+// and an account with no Jira site ends on Atlassian's own "Access denied"
+// page, which never comes back here (the owner, 2026-10-13). Reconnect starts
+// the same consent, so the line stands before both.
+export function jiraAccountLine(connected: boolean): string {
+  return `${connected ? "Reconnect" : "Connect"} uses the Atlassian account you're signed in to — it has to be one with your team's Jira.`;
+}
+
+export const JIRA_NO_PROJECT = "⚠ No project chosen yet — nothing is filed until one is.";
+
+/** Required fields of the chosen project that a ticket of ours cannot fill. */
+export function jiraBlockedLine(project: string, blockers: string[]): string {
+  return `⚠ Tickets can't be filed in ${project}: it requires ${blockers.join(", ")}, which CheckMyApp can't fill. Choose another project.`;
 }

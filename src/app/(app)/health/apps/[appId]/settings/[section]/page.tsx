@@ -14,7 +14,18 @@ import { AppGitHubRepo } from "@/components/app-github-repo";
 import type { UserPlan } from "@/lib/enums";
 import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { outcome } from "@/lib/checks-page";
-import { SETTINGS_SECTIONS, sectionsFor, settingsSection, trackerHealth } from "@/lib/app-settings-sections";
+import {
+  JIRA_NO_PROJECT,
+  SETTINGS_SECTIONS,
+  jiraAccountLine,
+  jiraBlockedLine,
+  sectionsFor,
+  settingsSection,
+  trackerHealth,
+  trackerIdleLine,
+  trackerSummary,
+  type TrackerHealth,
+} from "@/lib/app-settings-sections";
 import { listTestAccounts } from "@/lib/app-settings";
 import { MAX_EXTRA_ACCOUNTS } from "@/lib/test-accounts";
 import { readExtensionOptions } from "@/lib/extension-target";
@@ -34,6 +45,7 @@ import { GitHubCard } from "@/components/github-card";
 import { TeamSelect } from "@/components/team-select";
 import { JiraProjectSelect } from "@/components/jira-project-select";
 import { jiraChoices, jiraProjectBlockers } from "@/lib/tracker/jira-connect";
+import { trackerName } from "@/lib/tracker/name";
 import { DeleteAppSection } from "@/components/delete-app";
 import { ScenarioList } from "@/components/scenario-list";
 import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
@@ -426,6 +438,34 @@ async function Notifications({ appId, teamId, userId }: { appId: string; teamId:
 
 type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; tracker: true } }>;
 
+// One tracker's row in the Issue tracker card: its name, its state, what it
+// files into, and its own Connect. Linear and Jira share the frame, so neither
+// can quietly grow a different card again.
+function TrackerRow({ name, href, health, detail, idle, children }: { name: string; href: string; health: TrackerHealth | null; detail: string; idle: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-t border-ink-700 pt-4">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-fg">{name}</p>
+        {health ? (
+          <p className={`text-xs ${health.tone === "ok" ? "text-status-ok" : health.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
+            {health.tone === "ok" ? "✓" : "⚠"} {health.text}
+            {detail}
+          </p>
+        ) : (
+          <p className="text-xs text-fg-faint">{idle}</p>
+        )}
+        {children}
+      </div>
+      <a
+        href={href}
+        className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
+      >
+        {health ? "Reconnect →" : "Connect →"}
+      </a>
+    </div>
+  );
+}
+
 // Where problems go besides this page, and where checks come from: one card
 // per integration, each with its state and its own action.
 async function Integrations({ app, teamId, plan, scope, githubError, save }: { app: AppWithIntegrations; teamId: string; plan: UserPlan; scope: TeamScope; githubError: string | undefined; save: Save }) {
@@ -480,35 +520,61 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Linear + its ticket contract (they are one concern). */}
+      {/* The issue tracker and its ticket contract — one concern, one card. An
+          app files into Linear or Jira, one at a time, and both file with the
+          same contract (src/lib/tracker/file.ts draftForFinding), so the two
+          rows share one frame and the contract sits under both (CHE-438). */}
       <div className="card space-y-4 p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-fg">
-              Linear <span className="text-xs font-normal text-fg-faint">· issue tracker</span>
-            </p>
-            {health ? (
-              <p className={`text-xs ${health.tone === "ok" ? "text-status-ok" : health.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
-                {health.tone === "ok" ? "✓" : "⚠"} {health.text}
-                {linearTeams.length === 0 && tracker?.externalOrg && ` · team: ${tracker.externalOrg}`}
-              </p>
-            ) : (
-              <p className="text-xs text-fg-faint">Not connected — problems stay on the check&apos;s page instead of becoming tickets.</p>
-            )}
-            {tracker && linearTeams.length > 0 && (
-              <p className="flex items-center gap-2 text-xs text-fg-muted">
-                Tickets go to team
-                <TeamSelect appId={app.id} teams={linearTeams} current={tracker.teamId} />
-              </p>
-            )}
-          </div>
-          <a
-            href={`/api/integrations/linear/start?appId=${app.id}`}
-            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
-          >
-            {tracker ? "Reconnect →" : "Connect →"}
-          </a>
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-fg">
+            Issue tracker <span className="text-xs font-normal text-fg-faint">· Linear or Jira, one at a time</span>
+          </p>
+          {/* The words are src/lib/app-settings-sections.ts's, every one of
+              them checked against the customer-language gate. */}
+          <p className="text-xs text-fg-faint">{trackerSummary(app.tracker, jira ? jiraHealth : health, jiraBlockers)}</p>
         </div>
+
+        <TrackerRow
+          name="Linear"
+          href={`/api/integrations/linear/start?appId=${app.id}`}
+          health={health}
+          detail={linearTeams.length === 0 && tracker?.externalOrg ? ` · team: ${tracker.externalOrg}` : ""}
+          idle={trackerIdleLine("Linear", jira ? "Jira" : null)}
+        >
+          {tracker && linearTeams.length > 0 && (
+            <p className="flex items-center gap-2 text-xs text-fg-muted">
+              Tickets go to team
+              <TeamSelect appId={app.id} teams={linearTeams} current={tracker.teamId} />
+            </p>
+          )}
+        </TrackerRow>
+
+        <TrackerRow
+          name="Jira"
+          href={`/api/integrations/jira/start?appId=${app.id}`}
+          health={jiraHealth}
+          detail={
+            jira && jiraProjects.length === 0
+              ? `${jira.teamId ? ` · project ${jira.teamId}` : ""}${jira.externalUrl ? ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}` : ""}`
+              : ""
+          }
+          idle={trackerIdleLine("Jira", tracker ? trackerName(tracker.type) : null)}
+        >
+          {/* Before Connect and Reconnect alike: both start the same consent. */}
+          <p className="text-xs text-fg-faint">{jiraAccountLine(jira !== null)}</p>
+          {jira && !jira.teamId && <p className="text-xs text-status-confusing">{JIRA_NO_PROJECT}</p>}
+          {jira?.teamId && jiraBlockers.length > 0 && <p className="text-xs text-status-broken">{jiraBlockedLine(jira.teamId, jiraBlockers)}</p>}
+          {jira && jiraProjects.length > 0 && (
+            <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+              Tickets go to project
+              <JiraProjectSelect
+                appId={app.id}
+                choices={jiraProjects}
+                current={jira.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
+              />
+            </p>
+          )}
+        </TrackerRow>
 
         {app.policy && (
           <form action={save} className="space-y-3 border-t border-ink-700 pt-4">
@@ -523,11 +589,13 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
               </label>
               <label className="block space-y-1">
                 <span className="text-xs text-fg-muted">Repo label</span>
-                <Input name="repoLabel" placeholder="repo: your-app" defaultValue={app.policy.repoLabel ?? ""} />
+                {/* A Jira label holds no spaces (src/lib/tracker/jira.ts jiraLabel). */}
+                <Input name="repoLabel" placeholder={jira ? "repo-your-app" : "repo: your-app"} defaultValue={app.policy.repoLabel ?? ""} />
               </label>
             </div>
             <label className="block space-y-1">
-              <span className="text-xs text-fg-muted">Critical journeys → ticket priority Urgent (comma-separated)</span>
+              {/* Priority 1 on the draft: Linear calls it Urgent, Jira Highest. */}
+              <span className="text-xs text-fg-muted">Critical journeys → ticket priority {jira ? "Highest" : "Urgent"} (comma-separated)</span>
               <Input name="urgentJourneys" placeholder="login, dashboard, checkout" defaultValue={urgentJourneys} />
             </label>
             <Button type="submit" variant="outline" className="px-3 py-1.5 text-xs">
@@ -535,52 +603,6 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
             </Button>
           </form>
         )}
-      </div>
-
-      {/* Jira — the same job as Linear, for a team whose tracker is Jira (CHE-438). */}
-      <div className="card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-fg">
-              Jira <span className="text-xs font-normal text-fg-faint">· issue tracker</span>
-            </p>
-            {jira && jiraHealth ? (
-              <p className={`text-xs ${jiraHealth.tone === "ok" ? "text-status-ok" : jiraHealth.tone === "warn" ? "text-status-confusing" : "text-status-broken"}`}>
-                {jiraHealth.tone === "ok" ? "✓" : "⚠"} {jiraHealth.text}
-                {jiraProjects.length === 0 && jira.teamId && ` · project ${jira.teamId}`}
-                {jiraProjects.length === 0 && jira.externalUrl && ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}`}
-              </p>
-            ) : (
-              <p className="text-xs text-fg-faint">
-                Not connected.{tracker ? " Connecting Jira moves this app's tickets from Linear to Jira." : ""}
-              </p>
-            )}
-            {jira && !jira.teamId && (
-              <p className="text-xs text-status-confusing">⚠ No project chosen yet — nothing is filed until one is.</p>
-            )}
-            {jira?.teamId && jiraBlockers.length > 0 && (
-              <p className="text-xs text-status-broken">
-                ⚠ Tickets can&apos;t be filed in {jira.teamId}: it requires {jiraBlockers.join(", ")}, which CheckMyApp can&apos;t fill. Choose another project.
-              </p>
-            )}
-            {jira && jiraProjects.length > 0 && (
-              <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
-                Tickets go to project
-                <JiraProjectSelect
-                  appId={app.id}
-                  choices={jiraProjects}
-                  current={jira.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
-                />
-              </p>
-            )}
-          </div>
-          <a
-            href={`/api/integrations/jira/start?appId=${app.id}`}
-            className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
-          >
-            {jira ? "Reconnect →" : "Connect →"}
-          </a>
-        </div>
       </div>
 
       {/* PostHog — which project holds this app's data (CHE-237). */}
