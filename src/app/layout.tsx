@@ -76,7 +76,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   then the line in the body face at rest weight. From lg only —
                   below that the nav needs the room. */}
               <div className="flex items-center gap-3.5">
-                <Link href="/" aria-label="CheckMyApp home" className="flex items-center">
+                <Link href="/" aria-label="CheckMyApp home" className="flex min-h-6 min-w-6 items-center">
+                  {/* The y alone is ~13px wide; the box keeps the tap target
+                      at 24px, as the ✓ square it replaced had. */}
                   <WordmarkY className="text-2xl min-[480px]:hidden" />
                   <Wordmark className="hidden text-xl min-[480px]:inline" />
                 </Link>
