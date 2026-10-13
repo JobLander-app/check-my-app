@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { SETTINGS_SECTIONS, sectionsFor, settingsSection, trackerHealth } from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
 import { appPath } from "../src/lib/app-shell";
+import { MACHINERY_TERMS, hasEnvironmentLeak } from "../src/lib/verdict-language";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -147,7 +148,22 @@ check("the ticket contract sits under both trackers, in neither row",
 check("the card says where problems go by the connected tracker's name",
   /become tickets in \$\{trackerName\(app\.tracker\.type\)\}/.test(page) && /problems stay on the check's page instead of becoming tickets/.test(page));
 check("the Jira row names the Atlassian account before Connect: a wrong one ends on Atlassian's page, never back here",
-  /Connect uses the Atlassian account this browser is signed in to/.test(page));
+  /Connect uses the Atlassian account you&apos;re signed in to/.test(page));
+// The card's new sentences describe the customer's tools only (CLAUDE.md §1):
+// each is on the page as written and passes the customer-language gate. Codex
+// P1 on #337: the first wording said "this browser".
+const asRead = (src: string) => src.replace(/&apos;/g, "'");
+const TRACKER_COPY: [string, string][] = [
+  [page, "Connect uses the Atlassian account you're signed in to — it has to be one with your team's Jira."],
+  [page, "Problems found on this app become tickets in "],
+  [page, "Not connected. Connecting Linear moves this app's tickets from Jira to Linear."],
+  [page, "Not connected. Connecting Jira moves this app's tickets from Linear to Jira."],
+  [page, "Linear or Jira, one at a time"],
+  [read("src/app/(app)/health/apps/[appId]/page.tsx"), "Connect Linear or Jira and each problem becomes one ticket. Close it, and the next check confirms the fix."],
+];
+const leaky = TRACKER_COPY.filter(([src, s]) => !asRead(src).includes(s) || MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s)).map(([, s]) => s);
+check("the tracker copy is on the page as written and names none of our machinery", leaky.length === 0, leaky.join(" | "));
+check("…and the gate catches the wording it replaced", MACHINERY_TERMS.test("Connect uses the Atlassian account this browser is signed in to"));
 // Wherever a tracker is offered, both are named: the copy outlived the days
 // when Linear was the only one.
 const OFFERS = ["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/onboarding-wizard.tsx", "src/lib/plan-catalog.ts"];

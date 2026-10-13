@@ -553,13 +553,13 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           }
           idle={tracker ? "Not connected. Connecting Jira moves this app's tickets from Linear to Jira." : "Not connected."}
         >
-          {/* Atlassian consents as whoever this browser is signed in to it as,
-              without asking, and an account with no Jira site ends on
-              Atlassian's own "Access denied" page, which never comes back here
-              (the owner, 2026-10-13) — so the account is named before. */}
+          {/* Atlassian consents as whoever is signed in to it already, without
+              asking, and an account with no Jira site ends on Atlassian's own
+              "Access denied" page, which never comes back here (the owner,
+              2026-10-13) — so the account is named before. */}
           {!jira && (
             <p className="text-xs text-fg-faint">
-              Connect uses the Atlassian account this browser is signed in to — it has to be one with your team&apos;s Jira.
+              Connect uses the Atlassian account you&apos;re signed in to — it has to be one with your team&apos;s Jira.
             </p>
           )}
           {jira && !jira.teamId && (
