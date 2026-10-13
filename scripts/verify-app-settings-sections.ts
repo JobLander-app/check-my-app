@@ -132,6 +132,28 @@ check("…the named accounts' rows too", ["label", "email", "password", "remove"
 check("…the frequency, pause and cancel are the schedule's own controls", /<WatchSettings\s+slug=\{watch\.appSlug\}/.test(page) && /frequency: watch\.frequency/.test(page));
 check("…and the pieces with their own actions: tracker team, analytics project, extension options, removal",
   /<TeamSelect appId=\{app\.id\}/.test(page) && /<AnalyticsProject/.test(page) && /<ExtensionSettings/.test(page) && /<DeleteAppSection/.test(page) && /\/api\/integrations\/linear\/start\?appId=\$\{app\.id\}/.test(page));
+// CHE-438: Linear and Jira are the same job, so they are drawn the same way.
+// The owner, 2026-10-13: "why should Jira be different?" — Jira had grown its
+// own card without the contract, and Linear's card said problems stay on the
+// check's page even while Jira was filing them.
+const linearRow = page.search(/<TrackerRow\s+name="Linear"/);
+const jiraRow = page.search(/<TrackerRow\s+name="Jira"/);
+check("Linear and Jira are rows of one frame, and no tracker has a card of its own",
+  linearRow !== -1 && jiraRow !== -1 && /function TrackerRow\(/.test(page) && !/· issue tracker/.test(page));
+const contract = page.indexOf('name="pickupLabels"');
+const lastRowEnd = page.lastIndexOf("</TrackerRow>");
+check("the ticket contract sits under both trackers, in neither row",
+  contract > jiraRow && contract > linearRow && lastRowEnd !== -1 && lastRowEnd < contract && /<form action=\{save\}/.test(page.slice(lastRowEnd, contract)));
+check("the card says where problems go by the connected tracker's name",
+  /become tickets in \$\{trackerName\(app\.tracker\.type\)\}/.test(page) && /problems stay on the check's page instead of becoming tickets/.test(page));
+check("the Jira row names the Atlassian account before Connect: a wrong one ends on Atlassian's page, never back here",
+  /Connect uses the Atlassian account this browser is signed in to/.test(page));
+// Wherever a tracker is offered, both are named: the copy outlived the days
+// when Linear was the only one.
+const OFFERS = ["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/onboarding-wizard.tsx", "src/lib/plan-catalog.ts"];
+const uncommented = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
+const linearAlone = OFFERS.filter((f) => /Linear(?! or Jira)/.test(uncommented(read(f))));
+check("where a tracker is offered, Linear and Jira are both named", linearAlone.length === 0, linearAlone.join(", "));
 check("no field reaches into another form", !/\bform="/.test(page));
 // A <form> opened while another is open.
 let depth = 0;

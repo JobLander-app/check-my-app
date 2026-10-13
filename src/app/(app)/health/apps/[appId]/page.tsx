@@ -50,7 +50,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     select: {
       id: true, ownerId: true, name: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
       posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
-      tracker: { select: { id: true } },
+      tracker: { select: { type: true } },
       watch: { select: { active: true, frequency: true, trialEndsAt: true } },
     },
   });
@@ -123,7 +123,8 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // CHE-417); a reader sees the review link alone.
   const mayRun = can(scope, "run.start");
   // The same for the tracker offer: exactly what /api/integrations/linear/start
-  // asks for — the scope and a plan that carries tracker integrations. Anyone
+  // and /api/integrations/jira/start ask for — the scope and a plan that
+  // carries tracker integrations. Anyone
   // else would follow it into a refusal.
   const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
   // CHE-443: what the team's admin has to act on — the unchecked steps whose
@@ -267,7 +268,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             href={appPath.section(app.id, "integrations")}
             label="Integrations"
             value={integrationsLabel({
-              tracker: app.tracker !== null,
+              tracker: app.tracker?.type ?? null,
               analyticsProject: app.posthogProjectName,
               github: fromAction,
               webhook: Boolean(app.webhookUrl),
@@ -280,13 +281,15 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           <section className="card flex flex-col gap-2 p-[18px]">
             <div className="text-[15px] font-semibold">Send problems to your tracker</div>
             <div className="text-[13px] text-fg-muted">
-              Connect Linear and each problem becomes one ticket that closes itself when a later check sees the fix.
+              {/* A ticket is closed by the team; the check then confirms the fix
+                  from outside (src/agent/reconcile.ts verifyFixedLinks). */}
+              Connect Linear or Jira and each problem becomes one ticket. Close it, and the next check confirms the fix.
             </div>
             <Link
               href={appPath.section(app.id, "integrations")}
               className="inline-flex h-9 items-center self-start rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
             >
-              Connect Linear
+              Connect a tracker
             </Link>
           </section>
         )}

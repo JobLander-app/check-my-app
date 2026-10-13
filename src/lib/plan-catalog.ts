@@ -46,7 +46,7 @@ export type CatalogPlan = {
 // The line every plan with a tracker carries, word for word, so a check can
 // find it.
 export const TRACKER_LINE =
-  "Findings auto-filed to your tracker — Linear now, GitHub next — with dedup & escalation";
+  "Findings auto-filed to your tracker — Linear or Jira — with dedup & escalation";
 
 // What the plan puts on the balance, as the card says it.
 export function balanceLine(plan: CatalogPlanId): string {

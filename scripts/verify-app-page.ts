@@ -73,8 +73,10 @@ check("a bottom line that is only the coverage sentence leaves nothing said", on
 eq("accounts: none", accountsLabel(false, 0), "None");
 eq("accounts: the default login is one", accountsLabel(true, 0), "1 account");
 eq("accounts: default and two named", accountsLabel(true, 2), "3 accounts");
-eq("integrations: none", integrationsLabel({ tracker: false, analyticsProject: null, repo: false, webhook: false, slack: false }), "None");
-eq("integrations: by name", integrationsLabel({ tracker: true, analyticsProject: "JobLander", repo: false, webhook: true, slack: false }), "Linear · PostHog · Webhook");
+eq("integrations: none", integrationsLabel({ tracker: null, analyticsProject: null, github: false, webhook: false, slack: false }), "None");
+eq("integrations: by name", integrationsLabel({ tracker: "linear", analyticsProject: "JobLander", github: false, webhook: true, slack: false }), "Linear · PostHog · Webhook");
+// CHE-438: a Jira tracker is named Jira — the label once said "Linear" for any tracker.
+eq("integrations: a Jira tracker is named Jira", integrationsLabel({ tracker: "jira", analyticsProject: null, github: true, webhook: false, slack: false }), "Jira · GitHub");
 eq("journeys: none mapped", journeysLabel(0), "Not mapped yet");
 eq("journeys: one", journeysLabel(1), "1 journey");
 eq("journeys: several", journeysLabel(12), "12 journeys");
@@ -106,10 +108,15 @@ check("the timeline shows only finished checks with a verdict and a price — th
 check("the tracker offer is shown only to someone the connect flow will accept",
   /const mayConnectTracker = can\(scope, "integration\.connect"\) && PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration;/.test(page) &&
     /app\.tracker === null && mayConnectTracker &&/.test(page));
-const start = read("src/app/api/integrations/linear/start/route.ts");
-check("…and those are the start route's own conditions: the scope, the plan, the team's app",
-  /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) &&
-    /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(start) && !/ownerId: user\.id/.test(start));
+// CHE-438: the offer leads to both trackers, so both start routes ask the same.
+for (const tracker of ["linear", "jira"]) {
+  const start = read(`src/app/api/integrations/${tracker}/start/route.ts`);
+  check(`…and those are the ${tracker} start route's own conditions: the scope, the plan, the team's app`,
+    /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) &&
+      /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(start) && !/ownerId: user\.id/.test(start));
+}
+check("the offer names both trackers and opens the section where both are", /Connect Linear or Jira/.test(page) && /Connect a tracker/.test(page));
+check("the Integrations row reads the tracker's type, so it can name it", /tracker: \{ select: \{ type: true \} \}/.test(page) && /tracker: app\.tracker\?\.type \?\? null/.test(page));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
 // Codex P1 on #241: a button a reader may not press is not shown. Since CHE-395
 // and CHE-417 a teammate's app starts like one's own, so the scope alone decides.

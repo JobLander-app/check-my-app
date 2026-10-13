@@ -81,7 +81,7 @@ export default async function IntegrationsPage({
       orderBy: { createdAt: "desc" },
       select: {
         id: true, name: true, appSlug: true, targetKind: true, targetUrl: true, posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
-        tracker: { select: { externalOrg: true } },
+        tracker: { select: { type: true } },
       },
     }),
     teamRunsTheAction(db, team.id),
@@ -132,7 +132,7 @@ export default async function IntegrationsPage({
                   {/* The app page's own words for the same facts (src/lib/app-page.ts). */}
                   <span className="text-xs text-fg-muted">
                     {integrationsLabel({
-                      tracker: app.tracker !== null,
+                      tracker: app.tracker?.type ?? null,
                       analyticsProject: app.posthogProjectName,
                       github: actionApps.has(app.id),
                       webhook: Boolean(app.webhookUrl),

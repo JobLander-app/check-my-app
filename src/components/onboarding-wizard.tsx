@@ -106,12 +106,12 @@ export function OnboardingWizard({
         </>)}
       </section>
 
-      {/* 3 — Tracker (Linear) */}
+      {/* 3 — Tracker (Linear or Jira, CHE-438) */}
       <section className="card space-y-3 p-5">
         <p className="text-sm font-medium text-fg">3 · Connect your tracker</p>
         <p className="text-xs text-fg-faint">
-          After you save, connect Linear from your dashboard (one-click OAuth) — we&apos;ll file
-          tickets into the team you authorize. The ticket parameters below take effect once that
+          After you save, connect Linear or Jira in the app&apos;s Integrations settings — we&apos;ll file
+          tickets into the team or project you choose. The ticket parameters below take effect once that
           connection is live; set them now so your self-healing automation picks the tickets up.
         </p>
       </section>
