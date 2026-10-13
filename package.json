@@ -143,6 +143,7 @@
     "verify:gap-journey-not-coverage": "tsx --tsconfig tsconfig.json scripts/verify-gap-journey-not-coverage.ts",
     "verify:unconfirmed-step": "tsx --tsconfig tsconfig.json scripts/verify-unconfirmed-step.ts",
     "verify:session-browser": "tsx --tsconfig tsconfig.json scripts/verify-session-browser.ts",
+    "verify:session-runner": "tsx --tsconfig tsconfig.json scripts/verify-session-runner.ts",
     "verify:signed-out": "tsx --tsconfig tsconfig.json scripts/verify-signed-out.ts",
     "verify:finding-signature": "tsx --tsconfig tsconfig.json scripts/verify-finding-signature.ts",
     "verify:human-check": "tsx --tsconfig tsconfig.json scripts/verify-human-check.ts",

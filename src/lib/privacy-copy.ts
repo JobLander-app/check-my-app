@@ -14,7 +14,7 @@
 // machinery (CLAUDE.md §1). The customer's own tools are named, because they
 // are the customer's.
 
-export const PRIVACY_UPDATED = "12 October 2026";
+export const PRIVACY_UPDATED = "13 October 2026";
 
 export const PRIVACY_DESCRIPTION =
   "What CheckMyApp keeps about you and the apps you ask it to check, who processes it, and how to have it deleted.";
@@ -90,6 +90,15 @@ export const PROCESSORS: Processor[] = [
     hosts: ["www.youtube.com"],
   },
   { role: "a chat service that carries notices about checks", evidence: /api\.telegram\.org\/bot/, packages: [], hosts: ["api.telegram.org"] },
+  // CHE-464: a check of an app inside a store's admin reaches the store
+  // through a residential network (SESSION_PROXY_URL, session-runner.ts); the
+  // host is its dashboard, linked in our own notice about it.
+  {
+    role: "a network that carries the encrypted connections of checks of apps inside a store's admin, and sees which sites they reach but not what is on them",
+    evidence: /SESSION_PROXY_URL/,
+    packages: [],
+    hosts: ["dashboard.iproyal.com"],
+  },
 ];
 
 export function processorsSentence(processors: Processor[] = PROCESSORS): string {

@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireActionScope } from "@/lib/team-auth";
 import { refuseSelfCheck } from "@/lib/self-check-action";
 import { appPath } from "@/lib/app-shell";
-import { verifyPick } from "@/lib/session-view";
+import { verifyPick, viewKeyFor } from "@/lib/session-view";
 import { PICK_ERRORS } from "@/lib/sign-in-copy";
 import { chooseApp } from "@/lib/shopify-connect";
 import { startSavedApp } from "@/lib/start-saved-app";
@@ -25,8 +25,10 @@ export async function chooseShopifyApp(
   const { user, db, team } = await requireActionScope("app.credentials.write");
   const { env } = getCloudflareContext();
   const secret = (env as unknown as { SESSION_VIEW_SECRET?: string }).SESSION_VIEW_SECRET;
-  const pick = secret ? await verifyPick(secret, pickToken) : null;
-  if (!pick) return { error: PICK_ERRORS.expired };
+  // CHE-464: signed by this team's container with this team's key — a pick
+  // read in another team's browser does not verify here.
+  const pick = secret ? await verifyPick(await viewKeyFor(secret, team.id), pickToken) : null;
+  if (!pick || pick.slot !== team.id) return { error: PICK_ERRORS.expired };
   const actor = { userId: user.id, teamId: team.id, plan: team.plan as UserPlan };
   const chosen = await chooseApp(db, actor, appId, pick);
   if (!("ok" in chosen)) return { error: chosen.error, ...(chosen.appId ? { href: appPath.page(chosen.appId) } : {}) };

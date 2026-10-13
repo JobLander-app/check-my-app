@@ -98,27 +98,38 @@ async function launchProfile(profile: string, debugPort: number): Promise<Browse
 }
 
 async function main() {
-  // ── the configuration: all four values or the kind cannot run ──
-  const full = { SESSION_HOST_URL: " https://session-api.example.test/ ", SESSION_ACCESS_CLIENT_ID: "id.access", SESSION_ACCESS_CLIENT_SECRET: "secret", SESSION_SERVER_TOKEN: "token" };
-  const parsed = sessionHost(full);
-  check("configuration: read, trimmed, no trailing slash", parsed.url === "https://session-api.example.test" && parsed.accessClientId === "id.access" && parsed.token === "token");
-  for (const missing of Object.keys(full) as (keyof typeof full)[]) {
-    let threw = "";
-    try {
-      sessionHost({ ...full, [missing]: "" });
-    } catch (error) {
-      threw = (error as Error).message;
-    }
-    check(`configuration: without ${missing} the kind cannot run — an internal error, nothing a customer reads`, threw.startsWith("internal:"), threw);
-  }
+  // ── the configuration (CHE-464): the run's team's browser, or the kind cannot run ──
   {
-    let threw = "";
-    try {
-      sessionHost({ ...full, SESSION_HOST_URL: "http://session-api.example.test" });
-    } catch (error) {
-      threw = (error as Error).message;
+    const asked: { name: string; team: string | null; path: string }[] = [];
+    const namespace = {
+      getByName: (name: string) => ({
+        fetch: async (request: Request) => {
+          asked.push({ name, team: request.headers.get("X-Session-Team"), path: new URL(request.url).pathname });
+          return Response.json({ sessionId: "s-1" });
+        },
+      }),
+    };
+    const bindings = { SESSION_RUNNER: namespace } as unknown as Parameters<typeof sessionHost>[0];
+    const host = sessionHost(bindings, "team_abc");
+    await askForSession(host, RUN_A);
+    check(
+      "configuration: a run's requests go to its own team's browser, named by the team and saying which team",
+      asked.length === 1 && asked[0].name === "team_abc" && asked[0].team === "team_abc" && asked[0].path === "/lease",
+      JSON.stringify(asked),
+    );
+    for (const [what, make] of [
+      ["no team", () => sessionHost(bindings, null)],
+      ["a team id that is not one", () => sessionHost(bindings, "team abc/../x")],
+      ["no binding", () => sessionHost({} as typeof bindings, "team_abc")],
+    ] as const) {
+      let threw = "";
+      try {
+        make();
+      } catch (error) {
+        threw = (error as Error).message;
+      }
+      check(`configuration: with ${what} the kind cannot run — an internal error, nothing a customer reads`, threw.startsWith("internal:"), threw);
     }
-    check("configuration: the host is reached over https or not at all", threw.startsWith("internal:"), threw);
   }
   check("kind: only \"session\" is a session target", isSessionTarget({ targetKind: "session" }) && !isSessionTarget({ targetKind: "website" }) && !isSessionTarget({ targetKind: "extension" }) && !isSessionTarget({}));
 
@@ -243,7 +254,8 @@ async function main() {
   // @ts-expect-error — no type declarations for the host's .mjs
   const { startSessionServer } = await import("../spikes/shopify-session/session-server.mjs");
   const server = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, probeLog: join(profile, "no-probe.jsonl"), onGate: () => {} });
-  const host: SessionHost = { url: `http://127.0.0.1:${server.port}`, accessClientId: "client-id.access", accessClientSecret: "client-secret", token: TOKEN };
+  // The bearer is held here; in the Worker the team's Durable Object adds its own.
+  const host: SessionHost = { url: `http://127.0.0.1:${server.port}`, token: TOKEN, fetch: (input, init) => fetch(input, init) };
 
   // What SessionBrowser asked for when it connected: the Worker's client calls
   // endpoint.fetch with an Upgrade request to a placeholder host. Recorded
@@ -288,11 +300,8 @@ async function main() {
     const request = asked[asked.length - 1];
     check("open: the DevTools request goes to the session host, at the lease's address",
       request.url === `${host.url}/v1/devtools/browser/${lease?.sessionId}?persistent=true`, request.url);
-    check("open: it carries the Access service token and the server's bearer — and the client's own headers",
-      request.headers["cf-access-client-id"] === "client-id.access" &&
-        request.headers["cf-access-client-secret"] === "client-secret" &&
-        request.headers.authorization === `Bearer ${TOKEN}` &&
-        request.headers.upgrade === "websocket",
+    check("open: it carries the server's bearer — and the client's own headers",
+      request.headers.authorization === `Bearer ${TOKEN}` && request.headers.upgrade === "websocket",
       JSON.stringify(Object.keys(request.headers)));
     check("the registry knows the browser", sessionBrowserFor(session.browser) === session);
     check("the person's tab is not among the run's pages", session.context().pages().length === 0, String(session.context().pages().length));

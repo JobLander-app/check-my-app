@@ -260,7 +260,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings), run.id);
+          return await releaseSession(sessionHost(env.bindings, run.teamId), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -278,7 +278,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.teamId), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
