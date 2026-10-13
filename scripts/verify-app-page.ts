@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "../src/lib/app-page";
+import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "../src/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "../src/lib/check-price";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +77,11 @@ eq("integrations: none", integrationsLabel({ tracker: null, analyticsProject: nu
 eq("integrations: by name", integrationsLabel({ tracker: "linear", analyticsProject: "JobLander", github: false, webhook: true, slack: false }), "Linear · PostHog · Webhook");
 // CHE-438: a Jira tracker is named Jira — the label once said "Linear" for any tracker.
 eq("integrations: a Jira tracker is named Jira", integrationsLabel({ tracker: "jira", analyticsProject: null, github: true, webhook: false, slack: false }), "Jira · GitHub");
+// CHE-468: a Shopify app's row is its test stores, by name while they fit.
+eq("stores: one", storesLabel(["prod-release-1"]), "prod-release-1");
+eq("stores: two", storesLabel(["prod-release-1", "staging"]), "prod-release-1, staging");
+eq("stores: many", storesLabel(["a", "b", "c"]), "3 stores");
+eq("stores: none yet", storesLabel([]), "None");
 eq("journeys: none mapped", journeysLabel(0), "Not mapped yet");
 eq("journeys: one", journeysLabel(1), "1 journey");
 eq("journeys: several", journeysLabel(12), "12 journeys");
@@ -130,6 +135,10 @@ check("the header's Settings button leads to the app's settings and is not gated
   /<Link href=\{settings\} className=\{buttonClass\("primary"/.test(page) && /const settings = appPath\.settings\(app\.id\);/.test(page) &&
     !/\{\w+ && <Link href=\{settings\}/.test(page));
 check("…and \"Open latest review\" is not on the page", !/>\s*Open latest review\s*</.test(page));
+check("a Shopify app's row is Test stores — its stores by CHE-451's rule — and every other app's stays Test accounts (CHE-468)",
+  /isShopify \? \(\s*<Row href=\{appPath\.section\(app\.id, "accounts"\)\} label="Test stores" value=\{storesLabel\(stores\.map/.test(page) &&
+    /shopify \? storesOf\(db, team\.id, shopify\.handle\)/.test(page) &&
+    /label="Test accounts" value=\{accountsLabel\(/.test(page));
 check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
   /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",

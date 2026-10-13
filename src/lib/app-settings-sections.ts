@@ -20,12 +20,23 @@ export function settingsSection(raw: string): SettingsSection | null {
   return SETTINGS_SECTIONS.find((s) => s.key === raw)?.key ?? null;
 }
 
+// CHE-468 (owner, 2026-10-13): "for shopify apps test accounts are test
+// stores". A Shopify app is checked inside a signed-in admin, so it has no test
+// login; what it has is the dev stores it is checked on.
+const SHOPIFY_ACCOUNTS = {
+  key: "accounts" as const,
+  label: "Test stores",
+  what: "The stores this app is checked on, and the password of a store that shows a password page.",
+};
+
 /**
  * The sections an app has. An extension is checked on request only, so it has
- * no schedule to set.
+ * no schedule to set; a Shopify app's accounts are its test stores.
  */
 export function sectionsFor(app: { targetKind: string }): typeof SETTINGS_SECTIONS {
-  return app.targetKind === "extension" ? SETTINGS_SECTIONS.filter((s) => s.key !== "schedule") : SETTINGS_SECTIONS;
+  if (app.targetKind === "extension") return SETTINGS_SECTIONS.filter((s) => s.key !== "schedule");
+  if (app.targetKind === "session") return SETTINGS_SECTIONS.map((s) => (s.key === "accounts" ? SHOPIFY_ACCOUNTS : s));
+  return SETTINGS_SECTIONS;
 }
 
 // The tracker's token, as the Integrations row says it (CHE-68/72): a

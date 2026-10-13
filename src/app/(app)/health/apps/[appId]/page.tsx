@@ -12,7 +12,8 @@ import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
+import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
+import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { trackerOffer } from "@/lib/tracker-copy";
 import { CheckPrice } from "@/components/check-price";
@@ -73,7 +74,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // the ones made before it was saved (no appId). Otherwise the header could
   // name a check the timeline does not have.
   const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
-  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction] = await Promise.all([
+  // CHE-468: a Shopify app's stores are the team's rows of the same app handle
+  // (CHE-451); one still waiting for its app to be picked has none yet.
+  const isShopify = app.targetKind === "session";
+  const shopify = isShopify ? connectedShopifyAppOf(app) : null;
+  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction, stores] = await Promise.all([
     // This app's entries alone: the page's work follows one app's history,
     // not the team's whole portfolio.
     appHealth(db, team.id, { only: app.id }),
@@ -110,6 +115,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     // GitHub in the Integrations row means a release check has arrived from
     // the app's CI — the same fact its Integrations card states (CHE-413).
     appRunsTheAction(db, team.id, app.id),
+    shopify ? storesOf(db, team.id, shopify.handle) : Promise.resolve([]),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
@@ -252,7 +258,12 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
 
         <section className="card px-[18px] py-1.5">
           <Row href={appPath.section(app.id, "scope")} label="What we check" value={journeysLabel(journeys)} />
-          <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          {/* CHE-468: a Shopify app's test accounts are its test stores. */}
+          {isShopify ? (
+            <Row href={appPath.section(app.id, "accounts")} label="Test stores" value={storesLabel(stores.map((s) => s.store))} />
+          ) : (
+            <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          )}
           {isExtension ? (
             // An extension is checked on request only: there is no schedule to open.
             <div className="flex items-center justify-between gap-4 border-b border-ink-800 py-3 text-sm">

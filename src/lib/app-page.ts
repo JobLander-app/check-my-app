@@ -46,6 +46,15 @@ export function accountsLabel(hasDefault: boolean, named: number): string {
 }
 
 /**
+ * CHE-468: a Shopify app's test stores, by name — "prod-release-1",
+ * "prod-release-1, staging" — and a count once there are more than two.
+ */
+export function storesLabel(stores: string[]): string {
+  if (stores.length === 0) return "None";
+  return stores.length <= 2 ? stores.join(", ") : `${stores.length} stores`;
+}
+
+/**
  * What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413).
  * `tracker` is the TrackerIntegration's type: the tracker is named as it is, Linear or Jira (CHE-438).
  */

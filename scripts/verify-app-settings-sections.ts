@@ -46,6 +46,21 @@ const eq = (name: string, got: unknown, want: unknown) => check(name, got === wa
 eq("six sections, in the order of the sub-navigation", SETTINGS_SECTIONS.map((s) => s.key).join(","), "scope,accounts,schedule,notifications,integrations,remove");
 eq("an extension has no schedule", sectionsFor({ targetKind: "extension" }).map((s) => s.key).join(","), "scope,accounts,notifications,integrations,remove");
 eq("a website has all six", sectionsFor({ targetKind: "website" }).length, 6);
+// CHE-468 (owner, 2026-10-13): "for shopify apps test accounts are test stores".
+eq("a Shopify app's accounts section is its test stores", sectionsFor({ targetKind: "session" }).find((s) => s.key === "accounts")?.label, "Test stores");
+eq("…at the same address, in the same place", sectionsFor({ targetKind: "session" }).map((s) => s.key).join(","), SETTINGS_SECTIONS.map((s) => s.key).join(","));
+eq("…while a website's stays Test accounts", sectionsFor({ targetKind: "website" }).find((s) => s.key === "accounts")?.label, "Test accounts");
+{
+  const sectionPage = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
+  check("the section's heading is the app's own name for it (sectionsFor), not the generic list's",
+    /const meta = sectionsFor\(app\)\.find\(\(s\) => s\.key === section\)!;/.test(sectionPage));
+  check("a Shopify app's accounts section lists its stores and shows no login form",
+    /section === "accounts" && app\.targetKind === "session" && \(\s*<ShopifyStores/.test(sectionPage) &&
+      /section === "accounts" && app\.targetKind !== "session" &&/.test(sectionPage) &&
+      !/<ShopifyStores[\s\S]*?name="testEmail"[\s\S]*?\n}\n/.test(sectionPage.slice(sectionPage.indexOf("async function ShopifyStores"), sectionPage.indexOf("async function Accounts"))));
+  check("…and saving its form leaves the test login it does not carry as it was",
+    /testEmail: formData\.has\("testEmail"\) \? text\("testEmail"\) : undefined,/.test(read("src/app/dashboard/actions.ts")));
+}
 eq("an address that is not a section is none", settingsSection("billing"), null);
 eq("…nor one that only starts like one", settingsSection("scope/../remove"), null);
 eq("the address of a section", appPath.section("app1", "integrations"), "/health/apps/app1/settings/integrations");
@@ -199,8 +214,11 @@ for (const m of page.matchAll(/<form\b|<\/form>/g)) {
   if (depth > 1) nested = true;
 }
 check("no form is nested in another", !nested && depth === 0 && (page.match(/<form\b/g) ?? []).length >= 5, `${(page.match(/<form\b/g) ?? []).length} forms`);
-check("each section's form is saved by the action bound to that section (three sections write a field of the app; who hears about it and webhooks have their own actions)",
-  /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 3 && /<form action=\{setAppNotifiers\.bind\(null, appId\)\}/.test(page));
+// Four forms for three sections: the accounts section is one form for a
+// website or an extension and another for a Shopify app (CHE-468: its store
+// password alone), never both on one page.
+check("each section's form is saved by the action bound to that section (three sections write a field of the app — accounts in one of two forms by the app's kind; who hears about it and webhooks have their own actions)",
+  /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 4 && /<form action=\{setAppNotifiers\.bind\(null, appId\)\}/.test(page));
 check("a section the app does not have opens the first one; an address that is no section is not found",
   /if \(!sectionsFor\(app\)\.some\(\(s\) => s\.key === section\)\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(page) && /if \(!section\) notFound\(\)/.test(page));
 // CHE-412: the other-team state is an ordinary page of the app (breadcrumb,
