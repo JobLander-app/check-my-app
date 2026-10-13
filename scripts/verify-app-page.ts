@@ -14,8 +14,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "../src/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "../src/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "../src/lib/check-price";
+import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
+import { VERDICT_META } from "../src/lib/status";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -145,9 +147,15 @@ check("a Shopify app's row is Test stores — its stores by CHE-451's rule — a
   const row = page.slice(page.indexOf('aria-label="Checks, newest first"'), page.indexOf("</section>", page.indexOf('aria-label="Checks, newest first"')));
   check("a check's row opens the check from anywhere on it: one link, stretched over the row, named by its number, day and verdict",
     /className="group relative grid/.test(row) &&
-      /href=\{appPath\.check\(app\.id, run\.runNumber\)\}\s*aria-label=\{`Check #\$\{run\.runNumber\}/.test(row) &&
+      /href=\{appPath\.check\(app\.id, run\.runNumber\)\}\s*aria-label=\{checkRowLabel\(run\.runNumber, when, /.test(row) &&
       /after:absolute after:inset-0/.test(row) &&
       (row.match(/<Link\b/g) ?? []).length === 1);
+  // Codex on #343 (R18): the name is a sentence a screen-reader user hears —
+  // built in app-page.ts and held to the language guards for every verdict.
+  eq("…named \"Check #n, day: verdict\"", checkRowLabel(373, "12 Oct", "Not verified"), "Check #373, 12 Oct: Not verified");
+  eq("…without a day when the check has none", checkRowLabel(5, null, "All good"), "Check #5: All good");
+  const names = Object.values(VERDICT_META).map((m) => checkRowLabel(1, "1 Jan", m.label));
+  check("…and no name the row can have leaks our machinery or hands the reader homework", names.every((n) => !hasEnvironmentLeak(n) && !hasHomework(n)), names.join(" | "));
   check("…the #id is part of that row, not a link of its own", /<span className="font-mono text-xs text-accent group-hover:underline">#\{run\.runNumber\}<\/span>/.test(row));
   check("…and the price stays above the row's link, with its own explanation", /<div className="relative z-10 py-3\.5 text-right text-sm">\s*\{run\.priceUsd !== null && \(\s*<CheckPrice/.test(row));
 }

@@ -12,7 +12,7 @@ import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
 import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { trackerOffer } from "@/lib/tracker-copy";
@@ -209,7 +209,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                   <div className="flex min-w-0 flex-col gap-0.5 py-3.5">
                     <Link
                       href={appPath.check(app.id, run.runNumber)}
-                      aria-label={`Check #${run.runNumber}${when ? `, ${when}` : ""}: ${v?.label ?? run.verdict}`}
+                      aria-label={checkRowLabel(run.runNumber, when, v?.label ?? run.verdict ?? "")}
                       className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"} after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent`}
                     >
                       {v?.label ?? run.verdict}
