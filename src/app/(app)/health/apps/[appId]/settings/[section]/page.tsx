@@ -51,6 +51,7 @@ import { listScenarios, mayEditScenarios } from "@/lib/scenarios";
 import { hasFeature, teamFeatures } from "@/lib/team-features";
 import { APP_NAME_MAX } from "@/lib/app-label";
 import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
+import { STORES_COPY } from "@/lib/sign-in-copy";
 
 export const dynamic = "force-dynamic";
 
@@ -155,6 +156,16 @@ export default async function AppSettingsSection({
             </label>
           </div>
 
+          {/* CHE-468 (Codex on #342): a Shopify app has no test login to create
+              records as, so its checks read the store and never write to it;
+              offering the choice would only be overruled at run time (the
+              workflow's hasTestAccount gate). CHE-442 is the per-app opt-in. */}
+          {app.targetKind === "session" ? (
+            <div className="card space-y-1 p-5">
+              <p className="text-sm font-medium text-fg">{STORES_COPY.readOnlyTitle}</p>
+              <p className="text-xs text-fg-faint">{STORES_COPY.readOnly}</p>
+            </div>
+          ) : (
           <div className="card space-y-3 p-5">
             <div>
               <p className="text-sm font-medium text-fg">May we create test records?</p>
@@ -179,6 +190,7 @@ export default async function AppSettingsSection({
               <span>Yes — create and clean up test records as my test account</span>
             </label>
           </div>
+          )}
 
           <div className="card space-y-3 p-5">
             <div>
@@ -254,19 +266,21 @@ async function ShopifyStores({
   const { db } = await requireUser();
   const shopify = connectedShopifyAppOf(app);
   const stores = shopify ? await storesOf(db, teamId, shopify.handle) : [];
+  // Every sentence is STORES_COPY's (src/lib/sign-in-copy.ts), under the
+  // language guards in scripts/verify-live-view.ts.
   return (
     <div className="flex flex-col gap-4">
       <div className="card space-y-3 p-5">
-        <p className="text-sm font-medium text-fg">Stores</p>
+        <p className="text-sm font-medium text-fg">{STORES_COPY.heading}</p>
         {stores.length === 0 ? (
-          <p className="text-sm text-fg-muted">No store yet: choose the app on the store&apos;s sign-in page first.</p>
+          <p className="text-sm text-fg-muted">{STORES_COPY.none}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-ink-800">
             {stores.map((s) => (
               <li key={s.appId} className="flex items-center justify-between gap-4 py-2 text-sm">
                 {s.appId === app.id ? (
                   <span className="font-mono">
-                    {s.store} <span className="font-sans text-xs text-fg-faint">· this page</span>
+                    {s.store} <span className="font-sans text-xs text-fg-faint">· {STORES_COPY.thisPage}</span>
                   </span>
                 ) : (
                   <Link href={appPath.page(s.appId)} className="font-mono text-accent hover:underline">
@@ -274,18 +288,18 @@ async function ShopifyStores({
                   </Link>
                 )}
                 <Link href={appPath.signIn(s.appId)} className="text-xs text-fg-muted hover:text-accent">
-                  Sign in
+                  {STORES_COPY.signIn}
                 </Link>
               </li>
             ))}
           </ul>
         )}
         <p className="text-xs text-fg-faint">
-          Another store: open the app in that store&apos;s admin and paste its address on{" "}
+          {STORES_COPY.addBefore}{" "}
           <Link href="/connect/shopify" className="text-accent hover:underline">
-            Check a Shopify app
+            {STORES_COPY.addLink}
           </Link>
-          . Its scenarios come with it.
+          {STORES_COPY.addAfter}
         </p>
       </div>
 
@@ -293,25 +307,25 @@ async function ShopifyStores({
         <form action={save} className="flex flex-col gap-4">
           <div className="card space-y-3 p-5">
             <div>
-              <p className="text-sm font-medium text-fg">Store password</p>
+              <p className="text-sm font-medium text-fg">{STORES_COPY.passwordTitle}</p>
               <p className="text-xs text-fg-faint">
-                For a store that shows a password page before anything else. {hasStorePassword ? "One is set. " : ""}
-                Encrypted at rest, never logged; a blank box keeps the current one.
+                {STORES_COPY.passwordWhat} {hasStorePassword ? `${STORES_COPY.passwordSet} ` : ""}
+                {STORES_COPY.passwordRule}
               </p>
             </div>
-            <Input name="storePassword" type="password" placeholder="••••••••" aria-label="Store password" autoComplete="new-password" />
+            <Input name="storePassword" type="password" placeholder="••••••••" aria-label={STORES_COPY.passwordTitle} autoComplete="new-password" />
             {hasStorePassword && (
               <label className="flex items-center gap-1.5 text-xs text-fg-muted">
                 <input type="checkbox" name="storePasswordRemove" value="1" className="h-4 w-4 rounded border-ink-600 bg-ink-900" />
-                Remove the store password
+                {STORES_COPY.passwordRemove}
               </label>
             )}
           </div>
-          <SaveRow label="Save store password" />
+          <SaveRow label={STORES_COPY.passwordSave} />
         </form>
       ) : (
         <p className="card p-5 text-sm text-fg-muted">
-          {hasStorePassword ? "A store password is set. " : "No store password. "}It is set by an admin of the team.
+          {hasStorePassword ? STORES_COPY.passwordIsSet : STORES_COPY.passwordNone} {STORES_COPY.passwordByAdmin}
         </p>
       )}
     </div>
