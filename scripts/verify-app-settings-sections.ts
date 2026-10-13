@@ -30,7 +30,7 @@ import {
 } from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
 import { appPath } from "../src/lib/app-shell";
-import { MACHINERY_TERMS, hasEnvironmentLeak } from "../src/lib/verdict-language";
+import { MACHINERY_TERMS, hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -71,7 +71,10 @@ eq("…while a website's stays Test accounts", sectionsFor({ targetKind: "websit
     /app\.targetKind === "session" \? \(\s*<div className="card space-y-1 p-5">\s*<p className="text-sm font-medium text-fg">\{STORES_COPY\.readOnlyTitle\}<\/p>\s*<p className="text-xs text-fg-faint">\{STORES_COPY\.readOnly\}<\/p>/.test(sectionPage));
   const shopifySection = sectionsFor({ targetKind: "session" }).find((s) => s.key === "accounts");
   const sectionWords = [shopifySection?.label ?? "", shopifySection?.what ?? ""];
-  check("the Test stores section's own label and line pass the language guards", sectionWords.every((s) => s && !MACHINERY_TERMS.test(s) && !hasEnvironmentLeak(s)), sectionWords.join(" | "));
+  check("the Test stores section's own label and line pass the language guards", sectionWords.every((s) => s && !MACHINERY_TERMS.test(s) && !hasEnvironmentLeak(s) && !hasHomework(s)), sectionWords.join(" | "));
+  // Codex on #342: the promise above is kept by the run, not only by the page.
+  check("…and a check of a Shopify app never writes, whatever the app's row says (the workflow's own gate)",
+    /const writeAllowed = writeMode === "create_cleanup" && hasTestAccount && !isSession;/.test(read("src/agent/workflow.ts")));
 }
 eq("an address that is not a section is none", settingsSection("billing"), null);
 eq("…nor one that only starts like one", settingsSection("scope/../remove"), null);

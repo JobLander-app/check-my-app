@@ -570,8 +570,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // else's data, not a sandbox we can clean up — so the permission is void
       // however the app is configured. Deterministic, not a prompt promise.
       const hasTestAccount = Boolean(run.testEmail && run.testPasswordEnc);
-      const writeAllowed = writeMode === "create_cleanup" && hasTestAccount;
-      if (writeMode === "create_cleanup" && !hasTestAccount) {
+      // CHE-468 (Codex on #342): a check inside a store's admin only reads,
+      // whatever the app's row says — a person's signed-in store is nobody's
+      // sandbox, and the settings page promises it. CHE-442 is the opt-in.
+      const writeAllowed = writeMode === "create_cleanup" && hasTestAccount && !isSession;
+      if (writeMode === "create_cleanup" && !hasTestAccount && !isSession) {
         await appendEvent(env, runId, "connecting", {
           icon: "warn",
           text:
