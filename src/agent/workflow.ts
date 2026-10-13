@@ -27,7 +27,7 @@ import { NonRetryableError } from "cloudflare:workflows";
 import type { AppAnatomy } from "@/lib/types";
 import type { Verdict } from "@/lib/enums";
 import { normalizeAnatomy } from "@/lib/anatomy";
-import { coverageSentence, pagePaths, unreachedPages } from "@/lib/coverage";
+import { coverageSentence, pagePaths, unreachedAsked, unreachedPages } from "@/lib/coverage";
 import { parseJson } from "@/lib/json";
 import { readExtensionOptions } from "@/lib/extension-target";
 import type { RunEvent, RunPhase } from "@/lib/types";
@@ -1197,14 +1197,18 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         const bottomLine = await (async () => {
           if (structured) return carriedAware;
           const pages = (anatomy.pages ?? []).filter(Boolean);
-          if (pages.length === 0) return carriedAware;
+          // CHE-476: the notes' own addresses are counted even when discovery
+          // mapped no pages — what was asked for is not optional coverage.
+          if (pages.length === 0 && !run.userNotes) return carriedAware;
           const steps = await env.db.step.findMany({
             where: { journey: { runId } },
             select: { networkLog: true, observed: true },
           });
+          const evidence = steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""]);
           const note = coverageSentence(
-            unreachedPages(pages, steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""])),
+            unreachedPages(pages, evidence),
             pages.length,
+            unreachedAsked(run.userNotes, evidence),
           );
           return note ? [carriedAware, note].filter(Boolean).join(" ") : carriedAware;
         })();

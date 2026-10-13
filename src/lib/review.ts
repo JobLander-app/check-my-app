@@ -25,7 +25,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { normalizeAnatomy } from "@/lib/anatomy";
-import { unreachedPages } from "@/lib/coverage";
+import { unreachedAsked, unreachedPages } from "@/lib/coverage";
 import type { Priority } from "@/lib/issue-priority";
 import { historyAsOf, priorityFromHistory, priorityOfCheckAlone } from "@/lib/finding-priority";
 import { parseJson } from "@/lib/json";
@@ -172,6 +172,9 @@ export interface ReviewSource {
   verdict: string | null;
   bottomLine: string | null;
   anatomy: string | null;
+  // CHE-476: read and not shown — the addresses the owner's notes name are
+  // counted in coverage. Absent on a source that predates the column.
+  userNotes?: string | null;
   deploySha: string | null;
   deployEnv: string | null;
   startedAt: Date;
@@ -197,6 +200,7 @@ export const REVIEW_SELECT = {
   verdict: true,
   bottomLine: true,
   anatomy: true,
+  userNotes: true,
   deploySha: true,
   deployEnv: true,
   startedAt: true,
@@ -248,7 +252,7 @@ export async function loadReview(
   origin: string,
 ): Promise<Review | null> {
   const run = await prisma.run.findUnique({ ...publicRow(), where: { publicId }, select: REVIEW_SELECT });
-  if (run && !extensionReportPublished(run)) return buildReview({ ...run, verdict: null, bottomLine: null, anatomy: null, journeys: [], findings: [] }, origin);
+  if (run && !extensionReportPublished(run)) return buildReview({ ...run, verdict: null, bottomLine: null, anatomy: null, userNotes: null, journeys: [], findings: [] }, origin);
   if (!run) return null;
   return buildReview(run, origin, await reviewPriorities(prisma, run));
 }
@@ -391,10 +395,14 @@ export function buildReview(run: ReviewSource, origin: string, priorities: Map<n
   const pages = (normalizeAnatomy(parseJson<unknown>(run.anatomy))?.pages ?? []).filter(Boolean);
   const walkedHere = run.journeys.filter((j) => !j.carriedFromRunId);
   const steps = walkedHere.flatMap((j) => j.steps);
-  const pages_not_opened = unreachedPages(
-    pages,
-    steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""]),
-  ).map((p) => p.path);
+  const evidence = steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""]);
+  // CHE-476: what the notes asked for comes first — it is the part of the
+  // product the owner wanted spoken to, not just a page discovery happened on.
+  const asked = unreachedAsked(run.userNotes, evidence).map((p) => p.path);
+  const pages_not_opened = [
+    ...asked,
+    ...unreachedPages(pages, evidence).map((p) => p.path).filter((p) => !asked.includes(p)),
+  ];
 
   const unverified: ReviewUnverified[] = walkedHere.flatMap((j) =>
     j.steps
