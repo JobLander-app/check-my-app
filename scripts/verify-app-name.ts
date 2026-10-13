@@ -1,5 +1,5 @@
-// CHE-457 verification: an app has a name of its own, and a Shopify app is
-// marked as one wherever it is shown.
+// CHE-457 verification: an app has a name of its own, and every app is marked
+// with what it is (a Shopify app, a website, an extension) wherever it is shown.
 //
 //   1. the rules: a name is trimmed, collapsed, at most 60 characters, "" clears
 //      it; the label is the name, else an extension's name, else the address;
@@ -22,7 +22,7 @@ import { join } from "node:path";
 import ts from "typescript";
 import { realD1 } from "./fixtures/real-d1";
 import { calls, jsx, source } from "./fixtures/ts-source";
-import { APP_NAME_MAX, appLabel, checkAppName, isShopifyApp } from "../src/lib/app-label";
+import { APP_NAME_MAX, appKind, appLabel, checkAppName } from "../src/lib/app-label";
 import { updateAppForTeam } from "../src/lib/app-settings";
 import { loadShellData } from "../src/lib/shell-data";
 import { createRemoteTools } from "../src/lib/mcp/tools";
@@ -44,7 +44,8 @@ async function main() {
   eq("the label is the name when there is one", appLabel({ name: "Securify", appSlug: "admin.shopify.com", targetKind: "session", targetUrl: EASY_BLOCK }), "Securify");
   eq("…the address when there is none, or only blanks", [null, "  "].map((n) => appLabel({ name: n, appSlug: "admin.shopify.com", targetKind: "session", targetUrl: EASY_BLOCK })), ["admin.shopify.com", "admin.shopify.com"]);
   eq("…an extension's own name when it has none", appLabel({ name: null, appSlug: "extension:abc", targetKind: "extension", targetUrl: "https://chromewebstore.google.com/detail/my-tool/abcdefghijklmnopabcdefghijklmnop" }), "my tool");
-  eq("a Shopify app is one checked inside the Shopify admin; a website and an extension are not", ["session", "website", "extension"].map((k) => isShopifyApp({ targetKind: k })), [true, false, false]);
+  eq("each app's mark says what it is: inside the Shopify admin is a Shopify app, an extension is one, the rest are websites",
+    ["session", "website", "extension"].map((k) => appKind({ targetKind: k })), ["shopify", "web", "extension"]);
 
   // 2. The rows.
   const real = await realD1();
@@ -66,8 +67,8 @@ async function main() {
     eq("an edit that does not name it keeps the name", (await db.app.findUnique({ where: { id: "eb" }, select: { name: true } }))?.name, "Securify");
 
     const shell = await loadShellData(db, "ts");
-    eq("the sidebar names the app by its name and marks the Shopify app; the website as before",
-      shell.apps.map((a) => [a.label, a.shopify]).sort(), [["Securify", true], ["securification.ai", false]]);
+    eq("the sidebar names the app by its name and marks each app with what it is",
+      shell.apps.map((a) => [a.label, a.kind]).sort(), [["Securify", "shopify"], ["securification.ai", "web"]]);
 
     const deps = { db, origin: "https://checkmyapp.dev", trigger: async () => {}, siteCap: () => 1000, ephemeralTtlDays: () => 7, sleep: async () => {}, now: () => Date.now() };
     const tools = createRemoteTools({ user: { id: "u", email: "vladislav@securify.test", name: null }, team: { id: "ts", name: "Securify", plan: "business", features: ["shopify"] }, scope: "admin", door: "mcp" } as never, deps as never);
@@ -85,12 +86,27 @@ async function main() {
   const files = walk("src").filter((f) => /\.tsx?$/.test(f) && !f.startsWith("src/generated/"));
   const ownLabel = files.filter((f) => f !== "src/lib/app-label.ts" && calls(source(f)).some((c) => c.callee === "extensionDisplayName"));
   eq("no page or component works an app's label out by itself — every one asks appLabel", ownLabel, []);
-  const marked = (file: string, expr: RegExp) => jsx(source(file)).some((e) => e.tag === "AppName" && expr.test(e.props.shopify ?? ""));
-  check("the sidebar marks a Shopify app", marked("src/components/shell/sidebar.tsx", /^app\.shopify$/));
-  check("All apps marks it, in the list and in the cards", jsx(source("src/app/(app)/health/apps/page.tsx")).filter((e) => e.tag === "AppName" && e.props.shopify === "app.shopify").length === 2);
-  check("the live check and the verdict mark it", marked("src/components/run-live.tsx", /^isShopify$/) && marked("src/components/verdict-view.tsx", /isShopifyApp\(run\)/));
-  const appPage = source("src/app/(app)/health/apps/[appId]/page.tsx");
-  check("the app's own page marks it in its title", jsx(appPage).some((e) => e.tag === "ShopifyMark" && e.guard === "isShopifyApp(app)"));
+  // Every app carries a mark, not only a Shopify one: a list where some names
+  // had a mark and the rest none read as misaligned (owner, 2026-10-13). So
+  // each mark is drawn for every app — never behind a condition — with the kind
+  // appKind gives (directly, or the `kind` the shell data took from it).
+  const marks = files.flatMap((f) => jsx(source(f)).filter((e) => (e.tag === "AppName" || e.tag === "AppMark") && "kind" in e.props).map((e) => ({ file: f, ...e })));
+  const MARKED = [
+    "src/components/shell/sidebar.tsx",
+    "src/app/(app)/health/apps/page.tsx",
+    "src/app/(app)/health/apps/[appId]/page.tsx",
+    "src/app/(app)/health/apps/[appId]/settings/layout.tsx",
+    "src/app/(app)/health/apps/[appId]/checks/[runNumber]/page.tsx",
+    "src/app/(app)/settings/account/page.tsx",
+    "src/app/(app)/settings/integrations/page.tsx",
+    "src/components/run-live.tsx",
+    "src/components/verdict-view.tsx",
+  ];
+  eq("every place that marks an app still marks it", MARKED.filter((f) => !marks.some((m) => m.file === f)), []);
+  eq("All apps marks it in the list and in the cards", marks.filter((m) => m.file === "src/app/(app)/health/apps/page.tsx").length, 2);
+  eq("no mark is drawn for some apps only", marks.filter((m) => m.guard !== null).map((m) => `${m.file} ${m.guard}`), []);
+  eq("every mark's kind is appKind's", marks.filter((m) => !/^(appKind\(\w+\)|app\.kind|kind)$/.test(m.props.kind)).map((m) => `${m.file} kind=${m.props.kind}`), []);
+  check("the live check gets its kind from appKind", calls(source("src/app/run/[id]/page.tsx")).some((c) => c.callee === "appKind"));
 
   // Every place a page or component prints an app's address — a JSX child or a
   // template string that reads `.appSlug` — enumerated, not sampled

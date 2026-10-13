@@ -2,8 +2,8 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { ShopifyMark } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppMark } from "@/components/app-mark";
 import { sectionsFor } from "@/lib/app-settings-sections";
 import { SettingsNav } from "@/components/app-settings/settings-nav";
 import { RunSavedApp } from "@/components/run-saved-app";
@@ -35,7 +35,7 @@ export default async function AppSettingsLayout({ children, params }: { children
           </Link>
           <p className="section-label mt-3">{isExtension ? "extension settings" : "app settings"}</p>
           <h1 className="flex items-center gap-2.5 text-3xl font-semibold tracking-tight">
-            {isShopifyApp(app) && <ShopifyMark className="h-7 w-7" />}
+            <AppMark kind={appKind(app)} className="h-7 w-7" />
             {name}
           </h1>
           <p className="break-all text-sm text-fg-muted">{app.targetUrl}</p>

@@ -3,8 +3,8 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { memberOfRows, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { AppName } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppName } from "@/components/app-mark";
 import { recurrencesAsOf } from "@/lib/recurring";
 import { checkDelta, deltaLine } from "@/lib/check-delta";
 import { VerdictView } from "@/components/verdict-view";
@@ -104,7 +104,7 @@ export default async function CheckPage({
             </Link>
             <span aria-hidden className="text-fg-faint">/</span>
             <Link href={appPath.page(app.id)} className="max-w-[16rem] font-mono hover:text-fg">
-              <AppName name={name} shopify={isShopifyApp(app)} />
+              <AppName name={name} kind={appKind(app)} />
             </Link>
             <span aria-hidden className="text-fg-faint">/</span>
             <span aria-current="page" className="text-fg">
