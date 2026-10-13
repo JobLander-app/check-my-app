@@ -150,6 +150,21 @@ export interface ToolEnv {
   // will not risk entering it again (our capability). Written by the tools,
   // drained by report_step (coerceStoreLocked).
   storeLocked?: "refused" | "missing" | "undriven";
+  // Requests the page itself made to the product's own hosts that never got an
+  // answer (a reset, a TLS failure, a refused connection), keyed by exact URL.
+  // Written by attachLogCapture from the browser's own `requestfailed`, never by
+  // the model; kept for the whole walk (not drained per step) because a widget
+  // that fails to load fails on every page, and the step that mentions it is
+  // reported later than the page load. `probe` is the server-side answer for
+  // that exact URL, filled by coerceOwnRequestFailure the first time a step
+  // needs it. Optional so a bare ToolEnv still builds.
+  ownRequestFailures?: Map<string, OwnRequestFailure>;
+}
+
+export interface OwnRequestFailure {
+  // The browser's own reason, kept for the log; never shown to a customer.
+  browserReason: string;
+  probe?: { failing: boolean; says: string };
 }
 
 // CHE-373: may this run navigate to, and type a test login on, this origin?
@@ -911,6 +926,9 @@ async function executeToolUnscrubbed(
         // CHE-190 after both: a risky step is never judged (CHE-169) and never
         // classified above, so a link we could not reach had no gate at all.
         coerceUnreachable(step, env);
+        // A widget of the product's own that never loaded is the product's
+        // defect once a second vantage agrees; before the sign-in read below.
+        await coerceOwnRequestFailure(step, env);
         // CHE-393: where the walk stands, read now — never the model's word.
         step.signedIn = await signedInNow(env);
         // CHE-180: the step leaves here with the model's words intact — the
@@ -2633,6 +2651,115 @@ export function coerceUndrivenControl(
     : UNVERIFIABLE_FALLBACK;
 }
 
+// A request the page makes to one of the product's own hosts and gets no answer
+// to. Our browser failing alone proves nothing about the product (rule 8), so
+// this only records it; coerceOwnRequestFailure asks the same URL again from
+// the worker before anything is concluded. Cancelled requests (a navigation
+// leaving the page) are the browser's own housekeeping, not failures.
+const MAX_OWN_FAILURES = 30;
+export function noteOwnRequestFailure(
+  env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins" | "ownRequestFailures">,
+  rawUrl: string,
+  browserReason: string,
+): void {
+  if (/ERR_ABORTED|ERR_BLOCKED_BY/i.test(browserReason)) return;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return;
+  if (!isTargetHost(url.hostname, env.targetOrigin, env.allowedOrigins ?? [])) return;
+  url.hash = "";
+  const map = (env.ownRequestFailures ??= new Map());
+  if (map.has(url.href) || map.size >= MAX_OWN_FAILURES) return;
+  map.set(url.href, { browserReason });
+}
+
+// What a step has to say to be about this request: the host it names, or a word
+// that only this URL carries — "chat" and "sdk" for chat.joblander.app/packs/
+// js/sdk.js. Run #6ynou: five steps in four journeys were about that script and
+// called it a gap of ours, one of them after probing chatwoot.com, a host the
+// page never loaded from.
+const GENERIC_URL_WORDS = new Set([
+  "www", "packs", "static", "assets", "asset", "cdn", "api", "app", "dist", "min", "bundle", "main", "index",
+  "public", "mjs", "cjs", "map", "html", "json", "css", "js", "com", "org", "net", "dev", "io",
+]);
+function urlWords(url: URL, targetOrigin: string): string[] {
+  const own = bareHost(new URL(targetOrigin).hostname).split(".");
+  const labels = bareHost(url.hostname).split(".");
+  while (labels.length && own.length && labels[labels.length - 1] === own[own.length - 1]) {
+    labels.pop();
+    own.pop();
+  }
+  const words = [...labels, ...url.pathname.split(/[/._-]+/)]
+    .map((w) => w.toLowerCase())
+    .filter((w) => /^[a-z0-9]{3,}$/.test(w) && !/^\d+$/.test(w) && !GENERIC_URL_WORDS.has(w));
+  return [...new Set(words)];
+}
+
+function stepIsAbout(text: string, url: URL, targetOrigin: string): boolean {
+  const lower = text.toLowerCase();
+  if (lower.includes(url.hostname.toLowerCase())) return true;
+  return urlWords(url, targetOrigin).some((w) => new RegExp(`\\b${w}\\b`, "i").test(text));
+}
+
+// The exact URL the page asked for, asked again from here. Failing means no
+// answer at all or the product's own error status; 401/403/429 are a gate or
+// our volume (rule 3), not the product being down.
+async function probeOwnRequest(url: string): Promise<{ failing: boolean; says: string }> {
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: AbortSignal.timeout(10_000),
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; CheckMyApp link check)" },
+    });
+    if (res.status === 404 || res.status === 410 || res.status >= 500) return { failing: true, says: `it answers HTTP ${res.status}` };
+    return { failing: false, says: `HTTP ${res.status}` };
+  } catch (err) {
+    const timedOut = unreachableReason(err) === "timed out";
+    return { failing: true, says: timedOut ? "it does not answer" : "the connection cannot be completed" };
+  }
+}
+
+// A step written "skipped / our capability" about something of the product's
+// own that never loaded for the page AND does not answer a second request from
+// here is a defect a visitor meets, not a gap of ours. Rule 3 asks for positive
+// evidence; this is two independent failures of the same URL. Where the second
+// request is answered, nothing changes — then it was our browser, and the step
+// stays what it was. Steps that already carry a machine-decided class (an
+// undriven control, a challenge) are never touched.
+export async function coerceOwnRequestFailure(
+  step: ReportedStep,
+  env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins" | "ownRequestFailures">,
+): Promise<void> {
+  if (step.status !== "skipped" || step.unverifiedReason !== "our_capability" || step.gapClass) return;
+  const failures = env.ownRequestFailures;
+  if (!failures?.size) return;
+  const text = `${step.label ?? ""} ${step.attempted ?? ""} ${step.observed ?? ""}`;
+  let confirmed: { url: string; says: string } | null = null;
+  let asked = 0;
+  for (const [href, failure] of failures) {
+    if (!stepIsAbout(text, new URL(href), env.targetOrigin)) continue;
+    if (!failure.probe) {
+      if (asked >= 3) continue;
+      asked++;
+      failure.probe = await probeOwnRequest(href);
+    }
+    if (failure.probe.failing) {
+      confirmed = { url: href, says: failure.probe.says };
+      break;
+    }
+  }
+  if (!confirmed) return;
+  console.warn(`[report_step] "${step.label}": skipped/our_capability, but ${confirmed.url} fails for the page and from here → broken`);
+  step.status = "broken";
+  step.unverifiedReason = undefined;
+  step.observed = `The page requests ${confirmed.url} and that request fails: ${confirmed.says}. Whatever depends on it does not load.`;
+}
+
 export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
   if (step.status !== "risky" && step.status !== "confusing" && step.status !== "broken") return;
   const text = `${step.observed ?? ""} ${step.attempted ?? ""}`;
@@ -2965,9 +3092,11 @@ function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
 function drainLogs(env: ToolEnv): string {
   const net = env.networkLog.splice(0).slice(-60);
   const cons = env.consoleLog.splice(0).slice(-30);
+  const failed = [...(env.ownRequestFailures?.entries() ?? [])].map(([url, f]) => `${url} → no answer (${f.browserReason})`);
   return [
     "NETWORK (recent):",
     net.length ? net.join("\n") : "(none)",
+    ...(failed.length ? ["", "REQUESTS TO THE PRODUCT'S OWN HOSTS THAT GOT NO ANSWER (whole walk):", ...failed] : []),
     "",
     "CONSOLE (recent):",
     cons.length ? cons.join("\n") : "(none)",
@@ -3359,6 +3488,9 @@ export function attachLogCapture(env: ToolEnv): void {
   env.page.on("response", (res) => {
     env.networkLog.push(`${res.request().method()} ${res.url()} → ${res.status()}`);
     if (env.networkLog.length > 200) env.networkLog.splice(0, 100);
+  });
+  env.page.on("requestfailed", (req) => {
+    noteOwnRequestFailure(env, req.url(), req.failure()?.errorText ?? "request failed");
   });
   env.page.on("console", (msg) => {
     env.consoleLog.push(`[${msg.type()}] ${msg.text().slice(0, 300)}`);
