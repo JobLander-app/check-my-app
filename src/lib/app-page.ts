@@ -39,6 +39,15 @@ export function splitBottomLine(text: string | null | undefined): { coverage: st
   return m ? { coverage: m[1], said: clean.slice(m[0].length) } : { coverage: null, said: clean };
 }
 
+/**
+ * CHE-467: what a check's row says to a screen reader — the one link the row
+ * is: "Check #373, 12 Oct: Not verified". The day is left out when the check
+ * has none.
+ */
+export function checkRowLabel(runNumber: number, day: string | null, verdict: string): string {
+  return `Check #${runNumber}${day ? `, ${day}` : ""}: ${verdict}`;
+}
+
 /** "None", "1 account", "3 accounts": the default login counts as one. */
 export function accountsLabel(hasDefault: boolean, named: number): string {
   const n = (hasDefault ? 1 : 0) + named;

@@ -12,7 +12,7 @@ import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
 import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { trackerOffer } from "@/lib/tracker-copy";
@@ -190,13 +190,16 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                 run.quickPagesOpened !== null
                   ? { coverage: null, said: `${quickCheckWork(run.quickPagesOpened)}.` }
                   : splitBottomLine(run.bottomLine);
+              const when = run.completedAt ? dayMonth(run.completedAt) : null;
+              // CHE-467 (owner, 2026-10-13): the whole row opens the check, not
+              // the small #id alone. One link per row — the verdict, stretched
+              // over the row — so a keyboard meets each check once; the price
+              // sits above it and keeps its own explanation.
               return (
-                <div key={run.publicId} className="grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5">
+                <div key={run.publicId} className="group relative grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5 rounded-lg hover:bg-ink-850">
                   <div className="py-3.5">
-                    <div className="text-[13px]">{run.completedAt ? dayMonth(run.completedAt) : "—"}</div>
-                    <Link href={appPath.check(app.id, run.runNumber)} className="font-mono text-xs text-accent hover:underline">
-                      #{run.runNumber}
-                    </Link>
+                    <div className="text-[13px]">{when ?? "—"}</div>
+                    <span className="font-mono text-xs text-accent group-hover:underline">#{run.runNumber}</span>
                   </div>
                   <div aria-hidden className="flex flex-col items-center self-stretch">
                     <span className={`h-[18px] w-0.5 ${i === 0 ? "bg-transparent" : "bg-ink-700"}`} />
@@ -204,11 +207,17 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                     <span className={`w-0.5 flex-1 ${i === runs.length - 1 ? "bg-transparent" : "bg-ink-700"}`} />
                   </div>
                   <div className="flex min-w-0 flex-col gap-0.5 py-3.5">
-                    <span className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"}`}>{v?.label ?? run.verdict}</span>
+                    <Link
+                      href={appPath.check(app.id, run.runNumber)}
+                      aria-label={checkRowLabel(run.runNumber, when, v?.label ?? run.verdict ?? "")}
+                      className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"} after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent`}
+                    >
+                      {v?.label ?? run.verdict}
+                    </Link>
                     {said && <span className="text-sm">{firstSentence(said)}</span>}
                     {coverage && <span className="text-xs text-fg-faint">{coverage}</span>}
                   </div>
-                  <div className="py-3.5 text-right text-sm">
+                  <div className="relative z-10 py-3.5 text-right text-sm">
                     {run.priceUsd !== null && (
                       <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={appPath.check(app.id, run.runNumber)} label={null} title={`${name}, check #${run.runNumber}`} />
                     )}
