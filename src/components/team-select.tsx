@@ -25,7 +25,7 @@ export function TeamSelect({
         const team = teams.find((t) => t.id === e.target.value);
         if (!team) return;
         setValue(team.id);
-        startTransition(() => setTrackerTeam(appId, team.id, team.name));
+        startTransition(() => setTrackerTeam(appId, team.id));
       }}
       className="rounded border border-ink-700 bg-transparent px-1.5 py-0.5 font-mono text-[11px] text-fg-muted outline-none"
     >

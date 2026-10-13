@@ -145,9 +145,16 @@ async function main() {
     check("second app: the tracker it files with is Jira, on the team's token", filer instanceof JiraTracker && (filer as unknown as { accessToken: string }).accessToken === "J1");
     eq("second app: a project the team's grant does not reach is refused", await chooseJiraProject(db, "fresh", "cloud-9/NOPE", JIRA_CREDS, atl.fetchImpl), "unknown_choice");
     eq("second app: an app of a team with no Jira is told so", await chooseJiraProject(db, "lone", "cloud-1/SEC", JIRA_CREDS, atl.fetchImpl), "not_jira");
-    eq("second app: the same for Linear: a team with Linear lets any app choose its team", await chooseLinearTeam(db, "web", { id: "lin-web", name: "Web" }), "chosen");
+    await putConnection(db, "tA", "linear", { accessTokenEnc: enc("L1"), refreshTokenEnc: enc("r-L1"), tokenExpiresAt: new Date(Date.now() + 3600_000) });
+    const asked: string[] = [];
+    const workspace = async (token: string) => (asked.push(token), [{ id: "lin-web", name: "Web (as Linear names it)" }, { id: "lin-cma", name: "Check My App" }]);
+    const linearCreds = { clientId: "lid", clientSecret: "lsec" };
+    eq("second app: a team the grant does not reach is refused (a picker from before a reconnect)",
+      [(await chooseLinearTeam(db, "web", "lin-gone", linearCreds, workspace)).outcome, await db.trackerIntegration.count({ where: { appId: "web" } })], ["unknown_choice", 0]);
+    eq("second app: the same for Linear: a team with Linear lets any app choose its team", (await chooseLinearTeam(db, "web", "lin-web", linearCreds, workspace)).outcome, "chosen");
     const web = (await db.trackerIntegration.findUnique({ where: { appId: "web" } }))!;
-    eq("second app: …and it files with the team's Linear grant", [web.type, web.connectionId === mine.linear!.id, decryptSecret(web.accessTokenEnc)], ["linear", true, "L1"]);
+    eq("second app: …and it files with the team's Linear grant, under the name Linear gives",
+      [web.type, web.connectionId === mine.linear!.id, decryptSecret(web.accessTokenEnc), web.externalOrg, asked.every((t) => t === "L1")], ["linear", true, "L1", "Web (as Linear names it)", true]);
     await db.trackerIntegration.delete({ where: { appId: "web" } });
 
     // ── 3. one grant, one refresh ───────────────────────────────────────────

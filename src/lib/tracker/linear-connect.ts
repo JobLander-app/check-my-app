@@ -9,7 +9,9 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { encryptSecret } from "@/lib/crypto";
 import { alreadyScoped } from "@/lib/tenant-db";
 import { retireTrackerLinks } from "./provider-switch";
-import { connectionApps, putConnection, routeApp, teamConnection } from "./connection";
+import { connectionApps, connectionGrant, putConnection, routeApp, teamConnection } from "./connection";
+import { fetchTeams } from "./linear-oauth";
+import { freshLinearToken, type LinearOAuthCreds } from "./token";
 
 type LinearTeam = { id: string; name: string };
 
@@ -59,25 +61,36 @@ export async function saveLinearGrant(
   }
 }
 
-export type LinearChoiceOutcome = "chosen" | "not_linear";
+export type LinearChoiceOutcome = { outcome: "chosen"; team: LinearTeam } | { outcome: "not_linear" | "unknown_choice" };
 
 /**
  * Point the app's tickets at a team in the team's Linear (CHE-31 team picker).
  * The app need not have filed into Linear before (CHE-469): the team's grant
- * is the app's as soon as a Linear team is chosen. Moving from Jira retires
- * the Jira links (provider-switch.ts).
+ * is the app's as soon as a Linear team is chosen. Only the id travels from
+ * the client, and it is checked against the teams the grant reaches now — a
+ * picker rendered before someone reconnected to another workspace must not
+ * bind the app to a team nothing can file into (Codex on #347). The name is
+ * Linear's. Moving from Jira retires the Jira links (provider-switch.ts).
  */
-export async function chooseLinearTeam(db: PrismaClient, appId: string, linearTeam: LinearTeam): Promise<LinearChoiceOutcome> {
+export async function chooseLinearTeam(
+  db: PrismaClient,
+  appId: string,
+  linearTeamId: string,
+  creds: LinearOAuthCreds,
+  listTeams: (accessToken: string) => Promise<LinearTeam[]> = fetchTeams,
+): Promise<LinearChoiceOutcome> {
   const app = await db.app.findUnique({
     ...alreadyScoped("the caller resolved this app"),
     where: { id: appId },
     select: { id: true, teamId: true, ownerId: true, appSlug: true },
   });
-  if (!app?.teamId) return "not_linear";
+  if (!app?.teamId) return { outcome: "not_linear" };
   const connection = await teamConnection(db, app.teamId, "linear");
-  if (!connection) return "not_linear";
+  if (!connection) return { outcome: "not_linear" };
+  const team = (await listTeams(await freshLinearToken(db, connectionGrant(connection), creds))).find((t) => t.id === linearTeamId);
+  if (!team) return { outcome: "unknown_choice" };
   const row = await db.trackerIntegration.findUnique({ where: { appId } });
   if (row && row.type !== "linear") await retireTrackerLinks(db, app);
-  await routeApp(db, appId, connection, { teamId: linearTeam.id, externalOrg: linearTeam.name, externalUrl: null });
-  return "chosen";
+  await routeApp(db, appId, connection, { teamId: team.id, externalOrg: team.name, externalUrl: null });
+  return { outcome: "chosen", team };
 }

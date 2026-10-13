@@ -617,22 +617,38 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
   const teamTrackers = await teamConnections(db, teamId);
   const env = getCloudflareContext().env as Record<string, string | undefined>;
   const jiraCreds = { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET };
+  // Every read below is independent of the others and starts at once (Codex on
+  // #347); only the two Jira reads share one grant, so they go in turn.
   // Which of the workspace's teams the tickets land in. Best-effort — a
   // transient Linear error hides the picker and shows the stored name.
-  const linearTeams = teamTrackers.linear
-    ? await freshLinearToken(db, connectionGrant(teamTrackers.linear), { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET })
+  const linearLoad = teamTrackers.linear
+    ? freshLinearToken(db, connectionGrant(teamTrackers.linear), { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET })
         .then(fetchTeams)
         .catch(() => [] as { id: string; name: string }[])
-    : [];
-  // CHE-438: every project on every site the Jira grant reaches. Best-effort,
-  // like the Linear teams: an Atlassian error hides the picker.
-  const jiraProjects = teamTrackers.jira
-    ? await jiraChoices(db, connectionGrant(teamTrackers.jira), jiraCreds).catch(() => [] as { value: string; label: string }[])
-    : [];
-  // Required fields of the chosen project that a ticket of ours cannot fill.
-  const jiraBlockers = jira && teamTrackers.jira
-    ? await jiraProjectBlockers(db, connectionGrant(teamTrackers.jira), jira, jiraCreds).catch(() => [] as string[])
-    : [];
+    : Promise.resolve([] as { id: string; name: string }[]);
+  const jiraLoad = (async () => {
+    if (!teamTrackers.jira) return { projects: [] as { value: string; label: string }[], blockers: [] as string[] };
+    // CHE-438: every project on every site the Jira grant reaches. Best-effort,
+    // like the Linear teams: an Atlassian error hides the picker.
+    const projects = await jiraChoices(db, connectionGrant(teamTrackers.jira), jiraCreds).catch(() => [] as { value: string; label: string }[]);
+    // Required fields of the chosen project that a ticket of ours cannot fill.
+    const blockers = jira ? await jiraProjectBlockers(db, connectionGrant(teamTrackers.jira), jira, jiraCreds).catch(() => [] as string[]) : [];
+    return { projects, blockers };
+  })();
+  // CHE-237: the projects this team's PostHog connection can see, ranked for
+  // this app. Costs nothing when no connection exists.
+  const [linearTeams, { projects: jiraProjects, blockers: jiraBlockers }, projectChoices, fromAction, github] = await Promise.all([
+    linearLoad,
+    jiraLoad,
+    projectChoicesFor(db, {
+      teamId,
+      appUrl: app.targetUrl,
+      clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
+    }),
+    appRunsTheAction(db, teamId, app.id),
+    // A deploy is checked as a website; an extension has no repository here.
+    app.targetKind === "website" ? appGitHub(db, { id: teamId, plan }, app.id) : Promise.resolve(null),
+  ]);
   // The stored health, unless the tracker just gave nothing for the grant: a
   // grant revoked on its side still has a refresh token here (Codex on #347).
   // A Linear workspace always has a team, and a Jira grant with no project
@@ -644,18 +660,6 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
   const jiraHealth = teamTrackers.jira && jiraProjects.length === 0 && trackerHealth(teamTrackers.jira, now)?.tone === "ok"
     ? trackerUnanswered("Jira")
     : trackerHealth(teamTrackers.jira, now);
-  // CHE-237: the projects this team's PostHog connection can see, ranked for
-  // this app. Costs nothing when no connection exists.
-  const [projectChoices, fromAction, github] = await Promise.all([
-    projectChoicesFor(db, {
-      teamId,
-      appUrl: app.targetUrl,
-      clientId: `${(env.APP_URL ?? "https://checkmyapp.dev").replace(/\/+$/, "")}/.well-known/posthog-client.json`,
-    }),
-    appRunsTheAction(db, teamId, app.id),
-    // A deploy is checked as a website; an extension has no repository here.
-    app.targetKind === "website" ? appGitHub(db, { id: teamId, plan }, app.id) : Promise.resolve(null),
-  ]);
   const githubErrorText = mappingErrorText(githubError);
 
   const pickupLabels = (JSON.parse(app.policy?.pickupLabels ?? "[]") as string[]).join(", ");

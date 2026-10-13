@@ -30,7 +30,7 @@ import { trackerName } from "@/lib/tracker/name";
 // at connect time is the first team; JobLander must target the JobLander team,
 // not whatever happens to be first. CHE-469: an app of a team with Linear
 // connected picks its team here without connecting again.
-export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
+export async function setTrackerTeam(appId: string, teamId: string) {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
   // CHE-417: the app is the team's, whoever added it — the scope table above
@@ -40,14 +40,17 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
     select: { id: true, appSlug: true },
   });
   if (!app) throw new Error("app not found");
-  const outcome = await chooseLinearTeam(db, app.id, { id: teamId, name: teamName });
-  if (outcome !== "chosen") throw new Error(`tracker team not set: ${outcome}`);
+  // Only the id travels from the client; chooseLinearTeam checks it against
+  // what the team's grant reaches now and takes the name from Linear.
+  const env = getCloudflareContext().env as Record<string, string | undefined>;
+  const chosen = await chooseLinearTeam(db, app.id, teamId, { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET });
+  if (chosen.outcome !== "chosen") throw new Error(`tracker team not set: ${chosen.outcome}`);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
     action: "integration.connected",
     subject: app.appSlug,
-    summary: `pointed ${app.appSlug}'s tickets at ${teamName}`,
+    summary: `pointed ${app.appSlug}'s tickets at ${chosen.team.name}`,
   });
   revalidatePath(appPath.section(app.id, "integrations"));
 }
