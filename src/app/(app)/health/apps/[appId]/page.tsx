@@ -14,6 +14,7 @@ import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
 import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
+import { trackerOffer } from "@/lib/tracker-copy";
 import { CheckPrice } from "@/components/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
 import { releaseLensFor } from "@/lib/viewer-flags";
@@ -281,9 +282,8 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           <section className="card flex flex-col gap-2 p-[18px]">
             <div className="text-[15px] font-semibold">Send problems to your tracker</div>
             <div className="text-[13px] text-fg-muted">
-              {/* A ticket is closed by the team; the check then confirms the fix
-                  from outside (src/agent/reconcile.ts verifyFixedLinks). */}
-              Connect Linear or Jira and each problem becomes one ticket. Close it, and the next check confirms the fix.
+              {/* Only a scheduled check files and re-verifies by itself (src/lib/tracker-copy.ts). */}
+              {trackerOffer(Boolean(watch?.active && !watch.trialEnded))}
             </div>
             <Link
               href={appPath.section(app.id, "integrations")}

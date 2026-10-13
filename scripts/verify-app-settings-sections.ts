@@ -184,19 +184,12 @@ const everySentence = [
   ...["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerIdleLine(name, other))),
   jiraAccountLine(false), jiraAccountLine(true), JIRA_NO_PROJECT, jiraBlockedLine("SEC", ["Team", "Sprint"]),
   "Linear or Jira, one at a time",
-  "Connect Linear or Jira and each problem becomes one ticket. Close it, and the next check confirms the fix.",
 ];
 const leaky = [...new Set(everySentence)].filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
 check(`every sentence the tracker card can show names none of our machinery (${new Set(everySentence).size} sentences)`, leaky.length === 0, leaky.join(" | "));
-check("…the two fixed ones are on their pages as written",
-  page.includes("Linear or Jira, one at a time") && read("src/app/(app)/health/apps/[appId]/page.tsx").includes("Connect Linear or Jira and each problem becomes one ticket. Close it, and the next check confirms the fix."));
+check("…the fixed one is on the page as written", page.includes("Linear or Jira, one at a time"));
 check("…and the gate catches the wording it replaced", MACHINERY_TERMS.test("Connect uses the Atlassian account this browser is signed in to"));
-// Wherever a tracker is offered, both are named: the copy outlived the days
-// when Linear was the only one.
-const OFFERS = ["src/app/(app)/health/apps/[appId]/page.tsx", "src/components/onboarding-wizard.tsx", "src/lib/plan-catalog.ts"];
-const uncommented = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
-const linearAlone = OFFERS.filter((f) => /Linear(?! or Jira)/.test(uncommented(read(f))));
-check("where a tracker is offered, Linear and Jira are both named", linearAlone.length === 0, linearAlone.join(", "));
+// Everywhere else a tracker is offered: scripts/verify-tracker-copy.ts.
 check("no field reaches into another form", !/\bform="/.test(page));
 // A <form> opened while another is open.
 let depth = 0;

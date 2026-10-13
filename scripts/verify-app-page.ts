@@ -115,7 +115,8 @@ for (const tracker of ["linear", "jira"]) {
     /can\(scope, "integration\.connect"\)/.test(start) && /PLAN_LIMITS\[team\.plan as UserPlan\]\.trackerIntegration/.test(start) &&
       /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(start) && !/ownerId: user\.id/.test(start));
 }
-check("the offer names both trackers and opens the section where both are", /Connect Linear or Jira/.test(page) && /Connect a tracker/.test(page));
+// Its words: src/lib/tracker-copy.ts, held by scripts/verify-tracker-copy.ts.
+check("the offer names both trackers and opens the section where both are", /\{trackerOffer\(/.test(page) && /Connect a tracker/.test(page));
 check("the Integrations row reads the tracker's type, so it can name it", /tracker: \{ select: \{ type: true \} \}/.test(page) && /tracker: app\.tracker\?\.type \?\? null/.test(page));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
 // Codex P1 on #241: a button a reader may not press is not shown. Since CHE-395
