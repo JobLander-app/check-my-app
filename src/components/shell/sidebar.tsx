@@ -1,6 +1,6 @@
 import { switchTeamAction } from "@/app/team/switch-actions";
 import { NavLink } from "@/components/shell/nav-link";
-import { AppName } from "@/components/shopify-mark";
+import { AppName } from "@/components/app-mark";
 import { VERDICT_META } from "@/lib/status";
 import { usd } from "@/lib/plans";
 import type { ShellData } from "@/lib/shell-data";
@@ -111,7 +111,7 @@ export function Sidebar({
               aria-hidden
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${app.verdict ? (VERDICT_META[app.verdict]?.dotClassName ?? "bg-ink-600") : "bg-ink-600"}`}
             />
-            <AppName name={app.label} shopify={app.shopify} className="font-mono text-xs" />
+            <AppName name={app.label} kind={app.kind} className="font-mono text-xs" />
           </NavLink>
         ))}
         <NavLink href="/health/issues">

@@ -23,14 +23,14 @@
 
 import { cache } from "react";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { appKind, appLabel, type AppKind } from "@/lib/app-label";
 import { utcDayStart } from "@/lib/plans";
 import { OUR_LEFTOVERS_WHERE } from "@/lib/finding-signature";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 // `latestRunNumber`: the check the dot's colour and the open count come from.
-// `label` is what the app is called (src/lib/app-label.ts); `shopify` marks it.
-export type ShellApp = { id: string; appSlug: string; label: string; shopify: boolean; verdict: string | null; latestRunNumber: number | null };
+// `label` is what the app is called (src/lib/app-label.ts); `kind` is its mark.
+export type ShellApp = { id: string; appSlug: string; label: string; kind: AppKind; verdict: string | null; latestRunNumber: number | null };
 
 export type ShellData = {
   apps: ShellApp[];
@@ -152,7 +152,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
       id: a.id,
       appSlug: a.appSlug,
       label: appLabel(a),
-      shopify: isShopifyApp(a),
+      kind: appKind(a),
       verdict: verdictOf.get(a.id) ?? null,
       latestRunNumber: latestRunOf.get(a.id) ?? null,
     })),

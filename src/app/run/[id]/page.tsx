@@ -3,7 +3,7 @@ import { getDbFromContext } from "@/lib/db";
 import { RunLive } from "@/components/run-live";
 import { RunFailed } from "@/components/run-failed";
 import { isTerminal } from "@/lib/status";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
+import { appKind, appLabel } from "@/lib/app-label";
 import { failedRunWasFree } from "@/lib/failed-run";
 import { canMutateOwned, getOptionalUser } from "@/lib/auth";
 import { can, type TeamScope } from "@/lib/scopes";
@@ -110,7 +110,7 @@ export default async function RunPage({
         publicId={run.publicId}
         appSlug={appLabel({ ...run, name: run.app?.name }, run.extensionEvidence)}
         isExtension={run.targetKind === "extension"}
-        isShopify={isShopifyApp(run)}
+        kind={appKind(run)}
         runNumber={run.runNumber}
         startedAt={run.startedAt.toISOString()}
         notifyEmail={run.notifyEmail}

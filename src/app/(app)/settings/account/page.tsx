@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { AppName } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppName } from "@/components/app-mark";
 import { teamsOf } from "@/lib/teams";
 import { TeamSwitcher } from "@/components/team-switcher";
 import { Button } from "@/components/ui/button";
@@ -64,7 +64,7 @@ export default async function AccountSettingsPage() {
           <ul className="mt-4 space-y-2">
             {apps.map((app) => (
               <li key={app.id} className="flex items-center justify-between gap-3">
-                <AppName name={appLabel(app)} shopify={isShopifyApp(app)} className="text-sm" />
+                <AppName name={appLabel(app)} kind={appKind(app)} className="text-sm" />
                 <form action={toggleOwnNotifications.bind(null, app.id)}>
                   <Button type="submit" variant="outline" className="py-1.5">
                     {app.notifiers.length > 0 ? "Stop emailing me" : "Email me"}

@@ -6,8 +6,8 @@ import { VERDICT_META } from "@/lib/status";
 import { can } from "@/lib/scopes";
 import { PLAN_LIMITS, shouldSkipWatch, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { ShopifyMark } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppMark } from "@/components/app-mark";
 import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
@@ -144,7 +144,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
         <header className="flex flex-col gap-2.5">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="flex min-w-0 items-center gap-2.5 break-all font-mono text-[26px] font-medium leading-tight">
-              {isShopifyApp(app) && <ShopifyMark className="h-6 w-6" />}
+              <AppMark kind={appKind(app)} className="h-6 w-6" />
               {name}
             </h1>
             {meta && (

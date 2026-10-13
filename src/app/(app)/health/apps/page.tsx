@@ -28,7 +28,8 @@ import { FOLD, TABLE_CLASS } from "@/lib/table-fold";
 import { AppsViewToggle } from "@/components/apps-view-toggle";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { CheckPrice } from "@/components/check-price";
-import { AppName } from "@/components/shopify-mark";
+import { AppName } from "@/components/app-mark";
+import type { AppKind } from "@/lib/app-label";
 
 // `newestVerdict` is the strip's last bar. `latest` can be one check behind it:
 // a check is shown with its price, and the price is written a step after the
@@ -38,7 +39,7 @@ import { AppName } from "@/components/shopify-mark";
 // `recurring` is how many problems of the app were seen in two or more checks in
 // a row and are still there (CHE-354, src/lib/recurring.ts) — the owner's
 // "what keeps coming back because nobody fixes it".
-type Row = AppHealth & { name: string; shopify: boolean; watch: WatchState; newestVerdict: string | null; recurring: number };
+type Row = AppHealth & { name: string; kind: AppKind; watch: WatchState; newestVerdict: string | null; recurring: number };
 
 // The latest check: its verdict, and "#294 · 2 days ago" as one piece — the
 // number is the way to the check, the age is written beside it, never under
@@ -77,7 +78,7 @@ function Card({ app, days }: { app: Row; days: number }) {
     <article className="card grid grid-cols-2 gap-x-6 gap-y-4 px-5 py-[18px] sm:grid-cols-4 lg:grid-cols-[220px_minmax(0,1fr)_110px_190px_120px_auto] lg:items-center">
       <div className="col-span-2 flex min-w-0 flex-col gap-1.5 sm:col-span-4 lg:col-span-1">
         <Link href={appPath.page(app.appId)} className="min-w-0 font-mono text-[15px] text-fg hover:underline">
-          <AppName name={app.name} shopify={app.shopify} />
+          <AppName name={app.name} kind={app.kind} />
         </Link>
         <Latest app={app} wrap />
       </div>
@@ -138,7 +139,7 @@ function List({ apps, days }: { apps: Row[]; days: number }) {
               <tr key={app.appId}>
                 <td className={`${TD} font-mono`}>
                   <Link href={appPath.page(app.appId)} title={app.name} className="block min-w-0 text-fg hover:underline">
-                    <AppName name={app.name} shopify={app.shopify} />
+                    <AppName name={app.name} kind={app.kind} />
                   </Link>
                   <span className={`block truncate font-sans text-xs text-fg-muted ${FOLD.foldedClassName}`}>{scheduleLabel(app.watch)}</span>
                 </td>
@@ -198,7 +199,7 @@ export default async function AllAppsPage({
     }),
   ]);
   const nameOf = new Map(shell.apps.map((a) => [a.id, a.label]));
-  const shopifyApps = new Set(shell.apps.filter((a) => a.shopify).map((a) => a.id));
+  const kindOf = new Map(shell.apps.map((a) => [a.id, a.kind]));
   // "On a schedule" is the scheduler's own rule: a Free team's watch stays
   // active after its trial and is never started again.
   const watchOf = new Map(
@@ -207,7 +208,7 @@ export default async function AllAppsPage({
   const all: Row[] = health.apps.map((a) => ({
     ...a,
     name: nameOf.get(a.appId) ?? a.appSlug,
-    shopify: shopifyApps.has(a.appId),
+    kind: kindOf.get(a.appId) ?? "web",
     watch: watchOf.get(a.appId),
     newestVerdict: a.verdicts.at(-1)?.verdict ?? null,
     recurring: recurringCount(recurring.get(a.appId) ?? []),
