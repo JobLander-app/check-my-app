@@ -139,6 +139,18 @@ check("a Shopify app's row is Test stores — its stores by CHE-451's rule — a
   /isShopify \? \(\s*<Row href=\{appPath\.section\(app\.id, "accounts"\)\} label="Test stores" value=\{storesLabel\(stores\.map/.test(page) &&
     /shopify \? storesOf\(db, team\.id, shopify\.handle\)/.test(page) &&
     /label="Test accounts" value=\{accountsLabel\(/.test(page));
+// CHE-467 (owner, 2026-10-13): "each run should be clickable where the majority
+// of the text is", not the small #id alone.
+{
+  const row = page.slice(page.indexOf('aria-label="Checks, newest first"'), page.indexOf("</section>", page.indexOf('aria-label="Checks, newest first"')));
+  check("a check's row opens the check from anywhere on it: one link, stretched over the row, named by its number, day and verdict",
+    /className="group relative grid/.test(row) &&
+      /href=\{appPath\.check\(app\.id, run\.runNumber\)\}\s*aria-label=\{`Check #\$\{run\.runNumber\}/.test(row) &&
+      /after:absolute after:inset-0/.test(row) &&
+      (row.match(/<Link\b/g) ?? []).length === 1);
+  check("…the #id is part of that row, not a link of its own", /<span className="font-mono text-xs text-accent group-hover:underline">#\{run\.runNumber\}<\/span>/.test(row));
+  check("…and the price stays above the row's link, with its own explanation", /<div className="relative z-10 py-3\.5 text-right text-sm">\s*\{run\.priceUsd !== null && \(\s*<CheckPrice/.test(row));
+}
 check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
   /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",
