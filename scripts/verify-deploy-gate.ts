@@ -30,7 +30,29 @@ async function main() {
   assert.ok(gateAt < migrationsAt && gateAt < deployAt, "The gate runs before anything that touches production");
   assert.equal(workflow.slice(0, gateAt).includes("jobs:\n  check"), true, "The gate belongs to the deploy job, not the check job — a red check would block every merge");
 
-  console.log("deploy gate: statuses classified once, the gate reads them, and it runs before production is touched");
+  // CHE-471: deploys queue on one group and run in the order their checks
+  // finish, so an older commit can deploy after a newer one and take it back
+  // out of production (04beb87 over 445f241, 2026-10-13). A deploy whose commit
+  // is no longer main's tip stops before it touches anything.
+  const deployJob = workflow.slice(workflow.indexOf("\n  deploy:\n"));
+  const steps = deployJob.split(/\n      - /).slice(1);
+  const stepWith = (marker: string) => {
+    const found = steps.filter(step => step.includes(marker));
+    assert.equal(found.length, 1, `Exactly one deploy step must contain ${marker}`);
+    return found[0];
+  };
+  const newest = stepWith("id: newest");
+  assert.match(newest, /commits\/main/, "The newest-commit step must ask GitHub for main's tip");
+  assert.match(newest, /\$GITHUB_SHA/, "…and compare it with the commit this deploy would ship");
+  assert.doesNotMatch(newest, /\|\|\s*(true|:)|continue-on-error/, "A tip lookup that cannot fail silently: a swallowed error would skip every deploy without a red run");
+  assert.ok(steps.indexOf(newest) < steps.indexOf(stepWith("id: creds")), "The newest-commit step answers before the deploy decides it is ready");
+  assert.match(stepWith("id: creds"), /steps\.newest\.outputs\.yes == 'true'/, "Ready means credentials and the newest commit");
+  for (const marker of ["deploy-gate-extension.ts", "d1 migrations apply", "wrangler deploy --config", "opennextjs-cloudflare deploy"]) {
+    assert.match(stepWith(marker), /if: steps\.creds\.outputs\.ready == 'true'/, `${marker} must run only when this deploy is ready`);
+  }
+  assert.match(stepWith("CLOUDFLARE_API_TOKEN not set"), /steps\.newest\.outputs\.yes == 'true'/, "A superseded deploy must not claim the token is missing");
+
+  console.log("deploy gate: statuses classified once, the gate reads them, it runs before production is touched, and only main's tip deploys");
 }
 
 main();

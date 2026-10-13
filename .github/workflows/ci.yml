@@ -44,14 +44,33 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      # Only main's tip deploys (CHE-471). Deploys queue on the group above and
+      # run in the order their checks finish, not the order they merged: on
+      # 2026-10-13 04beb87 deployed at 14:38, six minutes after its child
+      # 445f241, and took 445f241 back out of production. The tip's own deploy
+      # ships every older commit, so a deploy that finds main has moved on stops
+      # here. A failed lookup fails the job rather than skipping it.
+      - name: Check this commit is still main's tip
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main is at ${tip:0:7} now; its own deploy ships this commit too, so this one does not deploy."
+          fi
+
       # Gate: deploy only once Cloudflare creds exist (and R2/Workers Paid are
       # enabled on the account). Until then the pipeline is green and skips
       # deploy — it activates automatically when the secret is added.
       - name: Check deploy credentials
         id: creds
-        run: echo "ready=${{ secrets.CLOUDFLARE_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+        run: echo "ready=${{ secrets.CLOUDFLARE_API_TOKEN != '' && steps.newest.outputs.yes == 'true' }}" >> "$GITHUB_OUTPUT"
 
-      - if: steps.creds.outputs.ready != 'true'
+      - if: steps.creds.outputs.ready != 'true' && steps.newest.outputs.yes == 'true'
         run: echo "::notice::CLOUDFLARE_API_TOKEN not set — skipping deploy (CHE-19 awaits R2 + Workers Paid)."
 
       - if: steps.creds.outputs.ready == 'true'
