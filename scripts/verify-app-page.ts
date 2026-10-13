@@ -123,6 +123,13 @@ check("the Run button is the saved app's, as the main action", /<RunSavedApp app
 // and CHE-417 a teammate's app starts like one's own, so the scope alone decides.
 check("the Run button is shown only where pressing it starts a check: the scope allows it",
   /const mayRun = can\(scope, "run\.start"\);/.test(page) && /\{mayRun && <RunSavedApp appId=\{app\.id\} primary \/>\}/.test(page));
+// CHE-466 (owner, 2026-10-13): the way into the app's settings is a button in
+// the header, for everyone in the team; "Open latest review" repeated the list's
+// first row and is gone.
+check("the header's Settings button leads to the app's settings and is not gated on a write scope",
+  /<Link href=\{settings\} className=\{buttonClass\("primary"/.test(page) && /const settings = appPath\.settings\(app\.id\);/.test(page) &&
+    !/\{\w+ && <Link href=\{settings\}/.test(page));
+check("…and \"Open latest review\" is not on the page", !/>\s*Open latest review\s*</.test(page));
 check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
   /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",

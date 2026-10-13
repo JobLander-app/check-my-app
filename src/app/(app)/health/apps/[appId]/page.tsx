@@ -17,6 +17,7 @@ import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { trackerOffer } from "@/lib/tracker-copy";
 import { CheckPrice } from "@/components/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
+import { buttonClass } from "@/components/ui/button";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { appRunsTheAction } from "@/lib/release-action";
 import { releasesHref } from "@/lib/release-page";
@@ -157,16 +158,15 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           </div>
           <p className="max-w-2xl text-xl leading-snug">{stripStory((mine?.verdicts ?? []).map((v) => v.verdict))}</p>
           {mine && mine.verdicts.length > 0 && <VerdictStrip verdicts={mine.verdicts} className="h-5 max-w-md" />}
+          {/* CHE-466 (owner, 2026-10-13): the way into the app's settings is a
+              button here. "Open latest review" was the check list's first row
+              again, and went. The settings pages open for every member of the
+              team (each write asks its own scope), so the button is everyone's. */}
           <div className="mt-1 flex flex-wrap items-start gap-2.5">
             {mayRun && <RunSavedApp appId={app.id} primary />}
-            {mine?.latest && (
-              <Link
-                href={appPath.check(app.id, mine.latest.runNumber)}
-                className="inline-flex h-9 items-center rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
-              >
-                Open latest review
-              </Link>
-            )}
+            <Link href={settings} className={buttonClass("primary", "h-9 px-3.5 py-0")}>
+              Settings
+            </Link>
           </div>
         </header>
 
