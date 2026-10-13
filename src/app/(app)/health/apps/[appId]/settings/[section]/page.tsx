@@ -273,7 +273,14 @@ async function ShopifyStores({
       <div className="card space-y-3 p-5">
         <p className="text-sm font-medium text-fg">{STORES_COPY.heading}</p>
         {stores.length === 0 ? (
-          <p className="text-sm text-fg-muted">{STORES_COPY.none}</p>
+          // Codex on #342: a store still waiting for its app to be chosen is
+          // chosen on its own sign-in page — linked, not only named.
+          <p className="text-sm text-fg-muted">
+            {STORES_COPY.none}{" "}
+            <Link href={appPath.signIn(app.id)} className="text-accent hover:underline">
+              {STORES_COPY.signIn}
+            </Link>
+          </p>
         ) : (
           <ul className="flex flex-col divide-y divide-ink-800">
             {stores.map((s) => (
