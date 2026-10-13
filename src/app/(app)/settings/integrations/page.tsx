@@ -67,7 +67,16 @@ async function teamTrackers(db: Awaited<ReturnType<typeof requireUser>>["db"], t
     const connection = connections[kind];
     if (!connection) continue;
     const apps = await connectionApps(db, teamId, kind);
-    out.push({ kind, name: trackerName(kind), health: trackerHealth(connection, now), apps: apps.map(({ app }) => appLabel(app)) });
+    // Only an app with somewhere to file files into it (Codex on #347); one
+    // still waiting for its project or team is named as waiting.
+    const routed = (a: (typeof apps)[number]) => Boolean(a.teamId && (kind !== "jira" || a.externalOrg));
+    out.push({
+      kind,
+      name: trackerName(kind),
+      health: trackerHealth(connection, now),
+      apps: apps.filter(routed).map(({ app }) => appLabel(app)),
+      waiting: apps.filter((a) => !routed(a)).map(({ app }) => appLabel(app)),
+    });
   }
   return out;
 }

@@ -94,6 +94,16 @@ export function trackerTeamIdleLine(name: string, where: "team" | "project", con
     : `Connected for your team. Choose a ${where} below and this app's problems become tickets in ${name}.`;
 }
 
+/**
+ * The team's connection as the tracker itself answered it just now (Codex on
+ * #347): a grant revoked on the provider's side still has a refresh token
+ * here, so the stored health reads ok while every call fails. A tracker that
+ * gave no teams or projects for it gets this line and a Reconnect.
+ */
+export function trackerUnanswered(name: string): TrackerHealth {
+  return { tone: "warn", text: `${name} gave nothing for this connection just now — reconnect if access was revoked` };
+}
+
 /** Under a team tracker's row: whose connection it is, and what ending it does. */
 export const TEAM_TRACKER_LINE = "Your team's connection: every app of the team files with it, and disconnecting it stops all of them.";
 

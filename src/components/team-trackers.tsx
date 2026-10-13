@@ -9,10 +9,10 @@
 import { Button } from "@/components/ui/button";
 import { disconnectTracker } from "@/app/dashboard/actions";
 import type { TrackerHealth } from "@/lib/app-settings-sections";
-import { TEAM_TRACKER_DISCONNECT, TEAM_TRACKERS_NONE, teamTrackerApps } from "@/lib/tracker-copy";
+import { TEAM_TRACKER_DISCONNECT, TEAM_TRACKERS_NONE, teamTrackerApps, teamTrackerWaiting } from "@/lib/tracker-copy";
 
 export interface TeamTrackersProps {
-  trackers: { kind: "linear" | "jira"; name: string; health: TrackerHealth | null; apps: string[] }[];
+  trackers: { kind: "linear" | "jira"; name: string; health: TrackerHealth | null; apps: string[]; waiting: string[] }[];
   canDisconnect: boolean;
 }
 
@@ -33,6 +33,9 @@ export function TeamTrackers({ trackers, canDisconnect }: TeamTrackersProps) {
                   {t.health && <span className="text-fg-muted"> · {t.health.text}</span>}
                 </p>
                 <p className="text-xs text-fg-faint">{teamTrackerApps(t.apps)}</p>
+                {t.waiting.length > 0 && (
+                  <p className="text-xs text-status-confusing">{teamTrackerWaiting(t.waiting, t.kind === "jira" ? "project" : "team")}</p>
+                )}
                 {canDisconnect && <p className="text-xs text-fg-faint">{TEAM_TRACKER_DISCONNECT}</p>}
               </div>
               {canDisconnect && (

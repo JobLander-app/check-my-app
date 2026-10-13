@@ -39,6 +39,15 @@ export function teamTrackerApps(apps: string[]): string {
   return `${apps.length === 1 ? "1 app files" : `${apps.length} apps file`} into it: ${apps.join(", ")}.`;
 }
 
+/**
+ * Apps that use the team's tracker but file nowhere yet (Codex on #347): a
+ * grant that reaches several projects, or a reconnect that no longer reaches
+ * the one chosen, leaves an app waiting for a choice.
+ */
+export function teamTrackerWaiting(apps: string[], where: "team" | "project"): string {
+  return `Waiting for a ${where} to be chosen: ${apps.join(", ")}.`;
+}
+
 export const TEAM_TRACKER_DISCONNECT = "Disconnecting is for the whole team: every app that files into it stops filing tickets.";
 
 /** "Which trackers are supported?" — from the plans' own limits, so it cannot go stale. */

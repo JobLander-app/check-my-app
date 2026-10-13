@@ -28,6 +28,7 @@ import {
   trackerIdleLine,
   trackerSummary,
   trackerTeamIdleLine,
+  trackerUnanswered,
   type TrackerHealth,
 } from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
@@ -185,6 +186,13 @@ check("a team's tracker offers no second Connect: only where none is connected, 
 check("…the pickers read the team's grant, not the app's row",
   /freshLinearToken\(db, connectionGrant\(teamTrackers\.linear\)/.test(page) && /jiraChoices\(db, connectionGrant\(teamTrackers\.jira\)/.test(page) &&
     /const teamTrackers = await teamConnections\(db, teamId\)/.test(page));
+// Codex P2 on #347: a grant revoked on the provider's side still looks ok
+// here. A tracker that gave nothing for it turns the row to Reconnect.
+check("a team tracker that gave no teams or projects is offered Reconnect, whatever the stored token says",
+  /teamTrackers\.linear && linearTeams\.length === 0 && trackerHealth\(teamTrackers\.linear, now\)\?\.tone === "ok"\s*\?\s*trackerUnanswered\("Linear"\)/.test(page) &&
+    /teamTrackers\.jira && jiraProjects\.length === 0 && trackerHealth\(teamTrackers\.jira, now\)\?\.tone === "ok"\s*\?\s*trackerUnanswered\("Jira"\)/.test(page) &&
+    /health=\{tracker \|\| \(health && health\.tone !== "ok"\) \? health : null\}/.test(page) &&
+    trackerUnanswered("Jira").tone !== "ok");
 check("…and are shown whenever the team has that tracker, for an app that files elsewhere too",
   /\{teamTrackers\.linear && linearTeams\.length > 0 && \(/.test(page) && /current=\{tracker\?\.teamId \?\? null\}/.test(page) &&
     /\{teamTrackers\.jira && jiraProjects\.length > 0 && \(/.test(page));
@@ -235,6 +243,7 @@ const everySentence = [
   ...["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerIdleLine(name, other))),
   ...(["team", "project"] as const).flatMap((where) => ["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerTeamIdleLine(name, where, other)))),
   TEAM_TRACKER_LINE,
+  trackerUnanswered("Linear").text, trackerUnanswered("Jira").text,
   jiraAccountLine(false), jiraAccountLine(true), JIRA_NO_PROJECT, jiraBlockedLine("SEC", ["Team", "Sprint"]),
   "Linear or Jira, one at a time",
 ];

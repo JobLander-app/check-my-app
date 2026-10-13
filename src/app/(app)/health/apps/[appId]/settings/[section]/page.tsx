@@ -25,6 +25,7 @@ import {
   trackerIdleLine,
   trackerSummary,
   trackerTeamIdleLine,
+  trackerUnanswered,
   type TrackerHealth,
 } from "@/lib/app-settings-sections";
 import { listTestAccounts } from "@/lib/app-settings";
@@ -599,7 +600,7 @@ function TeamTrackerNote() {
 }
 
 // Where Connect goes, if anywhere: a tracker the team has not connected, or one
-// whose token only a new consent can restore.
+// whose token only a new consent can restore — expired here, or refused there.
 function connectHref(kind: "linear" | "jira", appId: string, team: unknown, health: TrackerHealth | null): string | null {
   return !team || (health && health.tone !== "ok") ? `/api/integrations/${kind}/start?appId=${appId}` : null;
 }
@@ -614,8 +615,6 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
   const jira = app.tracker?.type === "jira" ? app.tracker : null;
   const tracker = app.tracker && app.tracker.type !== "jira" ? app.tracker : null;
   const teamTrackers = await teamConnections(db, teamId);
-  const health = trackerHealth(teamTrackers.linear, new Date());
-  const jiraHealth = trackerHealth(teamTrackers.jira, new Date());
   const env = getCloudflareContext().env as Record<string, string | undefined>;
   const jiraCreds = { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET };
   // Which of the workspace's teams the tickets land in. Best-effort — a
@@ -634,6 +633,17 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
   const jiraBlockers = jira && teamTrackers.jira
     ? await jiraProjectBlockers(db, connectionGrant(teamTrackers.jira), jira, jiraCreds).catch(() => [] as string[])
     : [];
+  // The stored health, unless the tracker just gave nothing for the grant: a
+  // grant revoked on its side still has a refresh token here (Codex on #347).
+  // A Linear workspace always has a team, and a Jira grant with no project
+  // files nowhere — either way the answer is Reconnect.
+  const now = new Date();
+  const health = teamTrackers.linear && linearTeams.length === 0 && trackerHealth(teamTrackers.linear, now)?.tone === "ok"
+    ? trackerUnanswered("Linear")
+    : trackerHealth(teamTrackers.linear, now);
+  const jiraHealth = teamTrackers.jira && jiraProjects.length === 0 && trackerHealth(teamTrackers.jira, now)?.tone === "ok"
+    ? trackerUnanswered("Jira")
+    : trackerHealth(teamTrackers.jira, now);
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
   const [projectChoices, fromAction, github] = await Promise.all([
@@ -681,7 +691,7 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
         <TrackerRow
           name="Linear"
           href={connectHref("linear", app.id, teamTrackers.linear, health)}
-          health={tracker ? health : null}
+          health={tracker || (health && health.tone !== "ok") ? health : null}
           detail={linearTeams.length === 0 && tracker?.externalOrg ? ` · team: ${tracker.externalOrg}` : ""}
           idle={teamTrackers.linear ? trackerTeamIdleLine("Linear", "team", jira ? "Jira" : null) : trackerIdleLine("Linear", jira ? "Jira" : null)}
         >
@@ -697,7 +707,7 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
         <TrackerRow
           name="Jira"
           href={connectHref("jira", app.id, teamTrackers.jira, jiraHealth)}
-          health={jira ? jiraHealth : null}
+          health={jira || (jiraHealth && jiraHealth.tone !== "ok") ? jiraHealth : null}
           detail={
             jira && jiraProjects.length === 0
               ? `${jira.teamId ? ` · project ${jira.teamId}` : ""}${jira.externalUrl ? ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}` : ""}`

@@ -28,6 +28,7 @@ import {
   TRACKER_GUIDE_LINE,
   teamTrackerApps,
   teamTrackerOffer,
+  teamTrackerWaiting,
   trackerFaqAnswer,
   trackerOffer,
 } from "../src/lib/tracker-copy";
@@ -88,12 +89,18 @@ check("the team offer names exactly the team's trackers, and the choice each one
 function teamOffer(name: string) {
   return teamTrackerOffer([name]).text;
 }
-const teamPageLines = [TEAM_TRACKERS_NONE, TEAM_TRACKER_DISCONNECT, teamTrackerApps([]), teamTrackerApps(["a"]), teamTrackerApps(["a", "b"])];
+const teamPageLines = [TEAM_TRACKERS_NONE, TEAM_TRACKER_DISCONNECT, teamTrackerApps([]), teamTrackerApps(["a"]), teamTrackerApps(["a", "b"]), teamTrackerWaiting(["a"], "project"), teamTrackerWaiting(["a", "b"], "team")];
 const teamPageLeaky = teamPageLines.filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
 check("the team page's tracker sentences name none of our machinery", teamPageLeaky.length === 0, teamPageLeaky.join(" | "));
 check("…and the one with no tracker names both", /\bLinear\b/.test(TEAM_TRACKERS_NONE) && /\bJira\b/.test(TEAM_TRACKERS_NONE));
 const teamCard = read("src/components/team-trackers.tsx");
-check("the team page says them through the module", /\{TEAM_TRACKERS_NONE\}/.test(teamCard) && /\{teamTrackerApps\(t\.apps\)\}/.test(teamCard) && /\{TEAM_TRACKER_DISCONNECT\}/.test(teamCard));
+check("the team page says them through the module", /\{TEAM_TRACKERS_NONE\}/.test(teamCard) && /\{teamTrackerApps\(t\.apps\)\}/.test(teamCard) && /\{TEAM_TRACKER_DISCONNECT\}/.test(teamCard) && /teamTrackerWaiting\(t\.waiting, /.test(teamCard));
+// Codex P2 on #347: an app with no project or team chosen files nowhere, so it
+// is never listed as filing into the tracker — it is listed as waiting.
+const teamPage = read("src/app/(app)/settings/integrations/page.tsx");
+check("…and only an app with somewhere to file is said to file into it",
+  /const routed = \(a: \(typeof apps\)\[number\]\) => Boolean\(a\.teamId && \(kind !== "jira" \|\| a\.externalOrg\)\)/.test(teamPage) &&
+    /apps: apps\.filter\(routed\)/.test(teamPage) && /waiting: apps\.filter\(\(a\) => !routed\(a\)\)/.test(teamPage));
 check("the FAQ answers from the plans' limits", /a: <>\{trackerFaqAnswer\(PLAN_LIMITS\)\}<\/>/.test(read("src/app/faq/page.tsx")));
 check("the guide says the module's line", /<p>\{TRACKER_GUIDE_LINE\}<\/p>/.test(read("src/app/guides/results-in-your-agent/page.tsx")));
 const wizard = read("src/components/onboarding-wizard.tsx");
