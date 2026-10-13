@@ -388,8 +388,30 @@ async function image() {
   check("image: every file it copies is let into the build, and nothing else", copied.every((f) => ignore.includes(`!${f}`)) && ignore.startsWith("*\n"));
 }
 
+// A probe that lands on nothing it knows says what it saw — the page's title
+// and its frames' names — and still never its text (the 2026-10-13 19:42 probe
+// was an "error" with no word of why).
+async function unsettledProbe() {
+  // @ts-expect-error — plain JavaScript, shared with the container
+  const { observe } = await import("../spikes/shopify-session/classify.mjs");
+  const profile = await mkdtemp(join(tmpdir(), "che464-unsettled-"));
+  const context = await launchProfile(profile, await freePort());
+  try {
+    const page = await context.newPage();
+    const html = '<title>Easy Block · prod-release-1 · Shopify</title><body>Store secret text 4242<iframe name="app-frame-v2"></iframe></body>';
+    const seen = await observe(page, { timeoutMs: 500, url: `data:text/html;charset=utf-8,${encodeURIComponent(html)}` });
+    check("probe: a page with nothing it knows is an error that names its title and frames",
+      seen.state === "error" && /title "Easy Block · prod-release-1 · Shopify"/.test(seen.detail ?? "") && /iframes \[app-frame-v2\]/.test(seen.detail ?? ""), seen.detail);
+    check("probe: …and never its text", !(seen.detail ?? "").includes("4242"));
+  } finally {
+    await context.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   await jarRules();
+  await unsettledProbe();
   await seal();
   await proxy();
   await messages();
