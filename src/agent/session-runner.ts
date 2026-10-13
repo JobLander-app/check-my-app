@@ -35,9 +35,8 @@ import { sendDeps } from "./signed-out";
 import { AlreadySentError, sendRecorded } from "@/lib/telegram-send";
 import { viewKeyFor } from "@/lib/session-view";
 import { describeJar, holdsSignIn, jarOf } from "../../spikes/shopify-session/jar-rules.mjs";
-import { shouldNotify } from "../../spikes/shopify-session/classify.mjs";
 import { SESSION_TEAM_HEADER, SESSION_TEAM_ID } from "./session-address";
-import { hex, openJar, probeMessage, proxyForTeam, sealJar, viewOrigin, type Cookie, type ProbeLine } from "./session-jar";
+import { hex, openJar, probeMessage, proxyForTeam, recordProbe, sealJar, viewOrigin, type Cookie, type ProbeLine } from "./session-jar";
 
 const SERVER_PORT = 9090;
 const VIEW_PORT = 9091;
@@ -190,33 +189,7 @@ export class SessionRunner extends Container<AgentBindings> {
   }
 
   private async record(team: string, app: { appId: string }, line: ProbeLine): Promise<void> {
-    const rows = await this.env.DB.prepare("SELECT state, notified FROM SessionProbe WHERE teamId = ? ORDER BY at DESC LIMIT 48").bind(team).all<{ state: string; notified: number | null }>();
-    const history = (rows.results ?? []).reverse().map((row) => ({ state: row.state, notified: row.notified === 1 }));
-    let notified: boolean | null = null;
-    let notifyError: string | null = null;
-    if (shouldNotify(history, line.state)) {
-      notifyError = await this.tell(team, app.appId, line);
-      notified = notifyError === null;
-    }
-    await this.env.DB.prepare(
-      "INSERT INTO SessionProbe (id, teamId, appId, at, state, urlHost, urlPath, ms, challenge, detail, proxyStatus, notified, notifyError) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-      .bind(
-        `sp${Date.now().toString(36)}${randomToken().slice(0, 10)}`,
-        team,
-        app.appId,
-        line.at,
-        line.state,
-        line.url_host,
-        line.url_path,
-        Math.round(line.ms ?? 0),
-        line.challenge ?? null,
-        line.detail ?? null,
-        line.proxy_status ?? null,
-        notified === null ? null : notified ? 1 : 0,
-        notifyError,
-      )
-      .run();
+    const { notified } = await recordProbe(this.env.DB, team, app.appId, line, () => this.tell(team, app.appId, line));
     console.log(`[session-runner] probe ${line.state}${notified !== null ? ` notified=${notified}` : ""}`);
   }
 

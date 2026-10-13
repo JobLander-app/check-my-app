@@ -21,14 +21,16 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-session-runner.ts
 //        SESSION_BROWSER_CHANNEL=chrome … to run it on the system Chrome, as CI does
 
+import "./fixtures/wasm-module-loader.mjs";
 import http from "node:http";
 import net from "node:net";
+import { realD1 } from "./fixtures/real-d1";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
 import { mintViewToken, verifyPick, verifyViewToken, viewKeyFor, viewTokenSlot } from "@/lib/session-view";
-import { openJar, probeMessage, proxyForTeam, sealJar } from "@/agent/session-jar";
+import { openJar, probeMessage, proxyForTeam, recordProbe, sealJar } from "@/agent/session-jar";
 import { routeLiveView, routeSessionAdmin } from "@/agent/session-routes";
 
 let failures = 0;
@@ -129,6 +131,45 @@ async function messages() {
   const p402 = probeMessage("T", "a", { at, state: "proxy", url_host: null, url_path: null, ms: 1, proxy_status: 402 });
   const p407 = probeMessage("T", "a", { at, state: "proxy", url_host: null, url_path: null, ms: 1, proxy_status: 407 });
   check("probe message: 402 asks for a top-up, 407 for the credentials — and neither for a new sign-in", p402.includes("пополнить") && p407.includes("SESSION_PROXY_URL") && !p407.includes("пополнить") && p402.includes("Входить в Shopify заново не нужно"));
+}
+
+// The probe's lines on a real D1 (migration 0075), and who hears about them:
+// the session host's rule, per team, however long an outage lasts.
+async function probeHistory() {
+  const real = await realD1();
+  try {
+    const told: string[] = [];
+    let hour = 0;
+    const feed = (team: string, state: string, extra: Record<string, unknown> = {}) =>
+      recordProbe(real.d1, team, "app_1", { at: new Date(Date.UTC(2026, 9, 1) + hour++ * 3_600_000).toISOString(), state, url_host: null, url_path: null, ms: 1, ...extra }, async () => {
+        told.push(`${team}:${state}`);
+        return null;
+      });
+    await feed("t1", "login_page");
+    check("probe history: a browser nobody has signed in to yet is not a drop", told.length === 0);
+    await feed("t1", "ok");
+    await feed("t1", "login_page");
+    await feed("t1", "login_page");
+    check("probe history: a drop from ok is told once, not every hour", told.join() === "t1:login_page", told.join());
+    await feed("t2", "ok");
+    await feed("t2", "error");
+    const afterOne = told.length;
+    await feed("t2", "error");
+    check("probe history: one error is not a drop, two in a row are", afterOne === 1 && told.at(-1) === "t2:error" && told.length === 2, told.join());
+    await feed("t3", "ok");
+    for (let i = 0; i < 60; i++) await feed("t3", "proxy", { proxy_status: 402 });
+    check("probe history: a proxy outage of 60 hours is told once (Codex on #338)", told.filter((t) => t === "t3:proxy").length === 1, told.join());
+    await feed("t3", "ok");
+    await feed("t3", "proxy", { proxy_status: 402 });
+    check("probe history: the next outage after an ok is told again", told.filter((t) => t === "t3:proxy").length === 2);
+    await feed("t4", "ok");
+    await feed("t4", "login_page");
+    check("probe history: one team's history is not another's", told.at(-1) === "t4:login_page");
+    const row = await real.d1.prepare("SELECT COUNT(*) AS n, SUM(notified) AS told FROM SessionProbe WHERE teamId = 't3'").first<{ n: number; told: number }>();
+    check("probe history: every line is kept, the told ones marked", row?.n === 63 && row?.told === 2, JSON.stringify(row));
+  } finally {
+    await real.dispose();
+  }
 }
 
 async function viewKeys() {
@@ -352,6 +393,7 @@ async function main() {
   await seal();
   await proxy();
   await messages();
+  await probeHistory();
   await viewKeys();
   await doors();
   await forwarder();

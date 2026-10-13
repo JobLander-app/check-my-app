@@ -3,6 +3,7 @@
 // functions in Node.
 
 import { jarOf } from "../../spikes/shopify-session/jar-rules.mjs";
+import { shouldNotify } from "../../spikes/shopify-session/classify.mjs";
 
 export type Cookie = Record<string, unknown>;
 
@@ -102,6 +103,55 @@ export function probeMessage(teamName: string, appId: string, line: ProbeLine, a
     `Нужно войти заново: ${base}/health/apps/${appId}/sign-in\n` +
     "Отвечать не нужно — проба сама увидит, что вход снова на месте."
   );
+}
+
+// One probe line into D1 SessionProbe, and the owner told when the session
+// host's rule says so (classify.mjs shouldNotify): once per drop from ok, once
+// per proxy outage. `tell` sends, and answers null or why it could not.
+//
+// The history is everything since the last ok: shouldNotify looks back to it
+// for a drop, and through the whole run of proxy lines for an outage. A fixed
+// window forgot the one message of an outage longer than itself and sent it
+// again (Codex on #338).
+export async function recordProbe(
+  DB: D1Database,
+  team: string,
+  appId: string,
+  line: ProbeLine,
+  tell: () => Promise<string | null>,
+): Promise<{ notified: boolean | null }> {
+  const rows = await DB.prepare(
+    "SELECT state, notified FROM SessionProbe WHERE teamId = ? AND at >= COALESCE((SELECT MAX(at) FROM SessionProbe WHERE teamId = ? AND state = 'ok'), '') ORDER BY at DESC LIMIT 5000",
+  )
+    .bind(team, team)
+    .all<{ state: string; notified: number | null }>();
+  const history = (rows.results ?? []).reverse().map((row) => ({ state: row.state, notified: row.notified === 1 }));
+  let notified: boolean | null = null;
+  let notifyError: string | null = null;
+  if (shouldNotify(history, line.state)) {
+    notifyError = await tell();
+    notified = notifyError === null;
+  }
+  await DB.prepare(
+    "INSERT INTO SessionProbe (id, teamId, appId, at, state, urlHost, urlPath, ms, challenge, detail, proxyStatus, notified, notifyError) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      `sp${Date.now().toString(36)}${hex(crypto.getRandomValues(new Uint8Array(6)))}`,
+      team,
+      appId,
+      line.at,
+      line.state,
+      line.url_host,
+      line.url_path,
+      Math.round(line.ms ?? 0),
+      line.challenge ?? null,
+      line.detail ?? null,
+      line.proxy_status ?? null,
+      notified === null ? null : notified ? 1 : 0,
+      notifyError,
+    )
+    .run();
+  return { notified };
 }
 
 // The origin a live view may be opened from: the app's own.
