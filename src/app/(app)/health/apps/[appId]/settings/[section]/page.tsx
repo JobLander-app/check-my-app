@@ -14,7 +14,18 @@ import { AppGitHubRepo } from "@/components/app-github-repo";
 import type { UserPlan } from "@/lib/enums";
 import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { outcome } from "@/lib/checks-page";
-import { SETTINGS_SECTIONS, sectionsFor, settingsSection, trackerHealth, type TrackerHealth } from "@/lib/app-settings-sections";
+import {
+  JIRA_NO_PROJECT,
+  SETTINGS_SECTIONS,
+  jiraAccountLine,
+  jiraBlockedLine,
+  sectionsFor,
+  settingsSection,
+  trackerHealth,
+  trackerIdleLine,
+  trackerSummary,
+  type TrackerHealth,
+} from "@/lib/app-settings-sections";
 import { listTestAccounts } from "@/lib/app-settings";
 import { MAX_EXTRA_ACCOUNTS } from "@/lib/test-accounts";
 import { readExtensionOptions } from "@/lib/extension-target";
@@ -518,13 +529,9 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           <p className="text-sm font-medium text-fg">
             Issue tracker <span className="text-xs font-normal text-fg-faint">· Linear or Jira, one at a time</span>
           </p>
-          <p className="text-xs text-fg-faint">
-            {app.tracker?.teamId
-              ? `Problems found on this app become tickets in ${trackerName(app.tracker.type)}.`
-              : app.tracker
-                ? `Problems stay on the check's page until a ${app.tracker.type === "jira" ? "project" : "team"} is chosen below.`
-                : "Not connected — problems stay on the check's page instead of becoming tickets."}
-          </p>
+          {/* The words are src/lib/app-settings-sections.ts's, every one of
+              them checked against the customer-language gate. */}
+          <p className="text-xs text-fg-faint">{trackerSummary(app.tracker, jira ? jiraHealth : health, jiraBlockers)}</p>
         </div>
 
         <TrackerRow
@@ -532,7 +539,7 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           href={`/api/integrations/linear/start?appId=${app.id}`}
           health={health}
           detail={linearTeams.length === 0 && tracker?.externalOrg ? ` · team: ${tracker.externalOrg}` : ""}
-          idle={jira ? "Not connected. Connecting Linear moves this app's tickets from Jira to Linear." : "Not connected."}
+          idle={trackerIdleLine("Linear", jira ? "Jira" : null)}
         >
           {tracker && linearTeams.length > 0 && (
             <p className="flex items-center gap-2 text-xs text-fg-muted">
@@ -551,25 +558,12 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
               ? `${jira.teamId ? ` · project ${jira.teamId}` : ""}${jira.externalUrl ? ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}` : ""}`
               : ""
           }
-          idle={tracker ? "Not connected. Connecting Jira moves this app's tickets from Linear to Jira." : "Not connected."}
+          idle={trackerIdleLine("Jira", tracker ? trackerName(tracker.type) : null)}
         >
-          {/* Atlassian consents as whoever is signed in to it already, without
-              asking, and an account with no Jira site ends on Atlassian's own
-              "Access denied" page, which never comes back here (the owner,
-              2026-10-13) — so the account is named before. */}
-          {!jira && (
-            <p className="text-xs text-fg-faint">
-              Connect uses the Atlassian account you&apos;re signed in to — it has to be one with your team&apos;s Jira.
-            </p>
-          )}
-          {jira && !jira.teamId && (
-            <p className="text-xs text-status-confusing">⚠ No project chosen yet — nothing is filed until one is.</p>
-          )}
-          {jira?.teamId && jiraBlockers.length > 0 && (
-            <p className="text-xs text-status-broken">
-              ⚠ Tickets can&apos;t be filed in {jira.teamId}: it requires {jiraBlockers.join(", ")}, which CheckMyApp can&apos;t fill. Choose another project.
-            </p>
-          )}
+          {/* Before Connect and Reconnect alike: both start the same consent. */}
+          <p className="text-xs text-fg-faint">{jiraAccountLine(jira !== null)}</p>
+          {jira && !jira.teamId && <p className="text-xs text-status-confusing">{JIRA_NO_PROJECT}</p>}
+          {jira?.teamId && jiraBlockers.length > 0 && <p className="text-xs text-status-broken">{jiraBlockedLine(jira.teamId, jiraBlockers)}</p>}
           {jira && jiraProjects.length > 0 && (
             <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
               Tickets go to project
