@@ -295,6 +295,99 @@ export function stripHomework(text: string, fallback = HOMEWORK_FALLBACK): strin
   return out.length > 0 ? out : fallback;
 }
 
+// ─── A finding never names the fix (CLAUDE.md rule 9) ────────────────────────
+//
+// Pilot feedback on checkmyapp.dev finding #001, 2026-10-13: "Worth
+// strengthening the crawler's journey inference (e.g. seeding from sitemap, nav
+// links, or letting owners pin critical journeys) so each check covers
+// meaningful paths". The member's words: "A finding names the symptom and how
+// to know it is gone, never the fix." The synthesis prompt asked for "a
+// recommendation the owner could act on", the model read that as licence to
+// design the solution, and nothing downstream looked at it. Diagnosis belongs
+// to whoever fixes it, who has the code and the logs we do not take (rule 8).
+//
+// So a sentence of a finding's whyItMatters that tells the builder what to
+// build or change is cut, the consequence before it stays — the same cut as
+// the homework rule, on the same clause boundaries. The pattern list is the
+// mechanism; a new phrasing is a line added here, not a paragraph asked of a
+// model. Deliberately about implementation verbs: "should show the
+// confirmation" or "should be able to add an item" is what the user expects —
+// how to know the problem is gone — and is not touched.
+const BUILD_VERB =
+  "(?:strengthen(?:ing)?|improv(?:e|ing)|add(?:ing)?|implement(?:ing)?|seed(?:ing)?|build(?:ing)?|refactor(?:ing)?|rewrit(?:e|ing)|" +
+  "replac(?:e|ing)|switch(?:ing)?|migrat(?:e|ing)|introduc(?:e|ing)|configur(?:e|ing)|wrap(?:ping)?|debounc(?:e|ing)|cach(?:e|ing)|" +
+  "let(?:ting)?|allow(?:ing)?|fix(?:ing)?|patch(?:ing)?|updat(?:e|ing)|adjust(?:ing)?|tweak(?:ing)?|rework(?:ing)?|" +
+  "pin(?:ning)?|disabl(?:e|ing)|enforc(?:e|ing)|validat(?:e|ing)|sanitiz(?:e|ing)|escap(?:e|ing)|throttl(?:e|ing)|" +
+  "retry(?:ing)?|reorder(?:ing)?|us(?:e|ing)|expos(?:e|ing)|renam(?:e|ing)|mov(?:e|ing)|remov(?:e|ing))";
+// The same verbs as a bare imperative opening a clause. Base forms only.
+const BUILD_IMPERATIVE =
+  "(?:strengthen|improve|add|implement|seed|build|refactor|rewrite|replace|switch|migrate|introduce|configure|wrap|debounce|cache|" +
+  "let|allow|fix|patch|update|adjust|tweak|rework|pin|disable|enforce|validate|sanitize|escape|throttle|retry|reorder|use|expose|rename|move|remove)";
+// "worth"/"consider"/"should"… followed straight by an implementation verb.
+// "Users should be able to add …" and "could not add" do not match: the verb
+// must follow the recommending word directly (one adverb allowed).
+const RECOMMENDS =
+  "(?:worth|consider|recommend(?:ed|s)?:?|suggest(?:ed|s)?:?|should|ought\\s+to|needs?\\s+to|" +
+  "would\\s+(?:be\\s+)?(?:better|wise|good)\\s+to|(?:you|they|the\\s+team)\\s+(?:may|might|could)\\s+want\\s+to|try)";
+
+export const PRESCRIPTION_PATTERNS: RegExp[] = [
+  // "Worth strengthening the crawler …", "should add retries", "consider switching to …"
+  new RegExp(`\\b${RECOMMENDS}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
+  // "Add retries to the importer." — a sentence or clause that opens on the verb.
+  // "Add to cart …" and "Use of …" are a label and a noun, not an order.
+  new RegExp(`(?:^\\s*|[;:—–]\\s+|,\\s+(?:and|so|then)\\s+)${BUILD_IMPERATIVE}\\b(?!\\s+(?:to\\s+cart|of)\\b)`, "i"),
+];
+
+// The earliest prescription in one sentence, if any: where it starts, and
+// whether that is already past a clause boundary (a clause-opening match
+// begins at its own separator).
+export function prescriptionIn(sentence: string): { index: number; atBoundary: boolean } | null {
+  let best: { index: number; atBoundary: boolean } | null = null;
+  PRESCRIPTION_PATTERNS.forEach((re, i) => {
+    const m = re.exec(sentence);
+    if (!m) return;
+    const hit = { index: m.index, atBoundary: i === 1 && m.index > 0 };
+    if (!best || hit.index < best.index) best = hit;
+  });
+  return best;
+}
+
+export function hasPrescription(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return splitProse(text).some((s) => prescriptionIn(s) !== null);
+}
+
+// "e.g." and "i.e." end no sentence: cutting at them leaves the second half of
+// a recommendation standing as if it were a statement.
+function splitProse(text: string): string[] {
+  const guarded = text.replace(/\b(?:e\.g|i\.e)\./gi, (m) => m.replace(/\./g, "\u0000"));
+  return splitSentences(guarded).map((s) => s.replace(/\u0000/g, "."));
+}
+
+// The prescription goes, the consequence before it stays (cutHomework's rule:
+// a clause after a dash, semicolon, colon or comma is cut and the head kept
+// when it is a sentence of its own; a prescription that IS the sentence takes
+// the sentence). Null when nothing is left — there is no fallback to write:
+// a finding without a "why this matters" is complete, a finding with someone
+// else's design in it is not.
+export function stripPrescription(text: string): string | null {
+  const out: string[] = [];
+  for (const s of splitProse(text)) {
+    const at = prescriptionIn(s);
+    if (at === null) {
+      out.push(s);
+      continue;
+    }
+    const prefix = s.slice(0, at.index);
+    if (!at.atBoundary && !TAIL_BREAK.test(prefix)) continue;
+    const head = prefix.replace(TAIL_BREAK, "").trim();
+    if (head.length < 20 || prescriptionIn(head) !== null) continue;
+    out.push(/[.!?]$/.test(head) ? head : `${head}.`);
+  }
+  const joined = out.join(" ").replace(/\s+/g, " ").trim();
+  return joined.length > 0 ? joined : null;
+}
+
 // ─── Walk narration (CHE-197) ────────────────────────────────────────────────
 //
 // Runs #153 (joblander.app) and #154 (meetbashar.com), 2026-09-06, stored as

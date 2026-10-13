@@ -29,6 +29,8 @@ import {
   cutSelfCheckRefusalClaims,
   hasEnvironmentLeak,
   hasHomework,
+  hasPrescription,
+  stripPrescription,
   isSelfCheckRefusalStep,
   type RefusalContextStep,
   stripEnvironmentLeak,
@@ -67,9 +69,10 @@ confusing, ugly, or exposed. NEVER file "X works end-to-end" or "the flagship
 feature produced good output" as a finding: positive confirmations belong in
 the journey summaries and the bottomLine, not in the findings list, whatever
 category you'd put them under. A clean run has FEW or ZERO findings — do not
-pad the list to reach a count. Each finding's "why this matters" must contain
-a recommendation the owner could act on; if you cannot phrase one, it is not
-a finding.
+pad the list to reach a count. Each finding's "why this matters" must say what
+the problem costs the owner and what a user would see once it is gone; if you
+cannot phrase that, it is not a finding. Never say how to build or change it:
+no "worth strengthening …", no "e.g. seeding from …". The fix is the owner's.
 
 If the journeys array is empty, or a step was skipped, nothing was verified for
 it: do NOT claim it fails. When coverage is incomplete, say so in bottomLine
@@ -484,6 +487,8 @@ export function cleanFindingLanguage(f: SynthesizedFinding): SynthesizedFinding 
   let whyItMatters: string | null = detail.whyItMatters ?? null;
   if (whyItMatters && hasHomework(whyItMatters)) whyItMatters = stripHomework(whyItMatters);
   if (whyItMatters && hasEnvironmentLeak(whyItMatters)) whyItMatters = stripEnvironmentLeak(whyItMatters);
+  // Rule 9: the consequence stays, the design of the fix does not.
+  if (whyItMatters && hasPrescription(whyItMatters)) whyItMatters = stripPrescription(whyItMatters);
   const whatWeTried = Array.isArray(detail.whatWeTried)
     ? detail.whatWeTried
         .filter((s): s is string => typeof s === "string")
@@ -494,10 +499,13 @@ export function cleanFindingLanguage(f: SynthesizedFinding): SynthesizedFinding 
     typeof detail.where === "string" && hasEnvironmentLeak(detail.where)
       ? (stripEnvironmentLeak(detail.where) ?? undefined)
       : detail.where;
+  // The spread below carries the model's own whyItMatters; it must not win back
+  // a field the gates emptied.
+  const { whyItMatters: _written, ...rest } = detail;
   return {
     ...f,
     detail: {
-      ...detail,
+      ...rest,
       ...(where !== undefined ? { where } : {}),
       ...(whatWeTried !== undefined ? { whatWeTried } : {}),
       ...(whatHappened ? { whatHappened } : {}),
