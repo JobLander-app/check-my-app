@@ -13,6 +13,7 @@
 
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { liveGrant, storeGrant, type Grant } from "./connection";
 import type { CreatedIssue, IssueOutcome, TicketDraft, Tracker } from "./types";
 
 const AUTHORIZE_URL = "https://auth.atlassian.com/authorize";
@@ -157,37 +158,31 @@ export interface JiraCreds {
   clientSecret?: string;
 }
 
-export interface JiraTokenRow {
-  id: string;
-  accessTokenEnc: string;
-  refreshTokenEnc: string | null;
-  tokenExpiresAt: Date | null;
-}
-
 /**
- * A usable access token, refreshed ahead of expiry. Atlassian rotates refresh
- * tokens, so the new one is stored every time. A refresh Atlassian refuses is
- * a revoked grant: JiraAuthError, which the pages show as Reconnect Jira.
+ * A usable access token for the team's grant (CHE-469), refreshed ahead of
+ * expiry. Atlassian rotates refresh tokens, so the new one is stored every
+ * time. A refresh Atlassian refuses is a revoked grant: JiraAuthError, which
+ * the pages show as Reconnect Jira.
  */
-export async function freshJiraToken(db: PrismaClient, row: JiraTokenRow, creds: JiraCreds, fetchImpl: Fetch = fetch, now = Date.now()): Promise<string> {
-  const current = decryptSecret(row.accessTokenEnc);
-  const expiresAt = row.tokenExpiresAt?.getTime();
+export async function freshJiraToken(db: PrismaClient, held: Grant, creds: JiraCreds, fetchImpl: Fetch = fetch, now = Date.now()): Promise<string> {
+  // As stored now: a page asks twice (the picker, then the blockers), and a
+  // second refresh with the first one's spent token would be refused.
+  const grant = await liveGrant(db, held);
+  const current = decryptSecret(grant.accessTokenEnc);
+  const expiresAt = grant.tokenExpiresAt?.getTime();
   if (!expiresAt || expiresAt - now > REFRESH_MARGIN_MS) return current;
-  if (!row.refreshTokenEnc || !creds.clientId || !creds.clientSecret) {
+  if (!grant.refreshTokenEnc || !creds.clientId || !creds.clientSecret) {
     if (expiresAt <= now) throw new JiraAuthError("the Jira token has expired and cannot be refreshed");
     return current;
   }
   const token = await tokenRequest(
-    { grant_type: "refresh_token", client_id: creds.clientId, client_secret: creds.clientSecret, refresh_token: decryptSecret(row.refreshTokenEnc) },
+    { grant_type: "refresh_token", client_id: creds.clientId, client_secret: creds.clientSecret, refresh_token: decryptSecret(grant.refreshTokenEnc) },
     fetchImpl,
   );
-  await db.trackerIntegration.update({
-    where: { id: row.id },
-    data: {
-      accessTokenEnc: encryptSecret(token.access_token),
-      ...(token.refresh_token ? { refreshTokenEnc: encryptSecret(token.refresh_token) } : {}),
-      tokenExpiresAt: token.expires_in ? new Date(now + token.expires_in * 1000) : null,
-    },
+  await storeGrant(db, grant, {
+    accessTokenEnc: encryptSecret(token.access_token),
+    ...(token.refresh_token ? { refreshTokenEnc: encryptSecret(token.refresh_token) } : {}),
+    tokenExpiresAt: token.expires_in ? new Date(now + token.expires_in * 1000) : null,
   });
   return token.access_token;
 }

@@ -20,7 +20,17 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ONBOARDING_TRACKER_STEP, ONBOARDING_URGENT_LABEL, TRACKER_GUIDE_LINE, trackerFaqAnswer, trackerOffer } from "../src/lib/tracker-copy";
+import {
+  ONBOARDING_TRACKER_STEP,
+  ONBOARDING_URGENT_LABEL,
+  TEAM_TRACKERS_NONE,
+  TEAM_TRACKER_DISCONNECT,
+  TRACKER_GUIDE_LINE,
+  teamTrackerApps,
+  teamTrackerOffer,
+  trackerFaqAnswer,
+  trackerOffer,
+} from "../src/lib/tracker-copy";
 import { TRACKER_LINE } from "../src/lib/plan-catalog";
 import { PLAN_LIMITS } from "../src/lib/plans";
 import { MACHINERY_TERMS, hasEnvironmentLeak } from "../src/lib/verdict-language";
@@ -60,7 +70,30 @@ check("the urgent label names each tracker's own word for priority 1", /Urgent i
 // ── 2. The pages say them through the module ────────────────────────────────
 const appPage = read("src/app/(app)/health/apps/[appId]/page.tsx");
 check("the app page offers through trackerOffer, scheduled = an active watch whose trial has not ended",
-  /\{trackerOffer\(Boolean\(watch\?\.active && !watch\.trialEnded\)\)\}/.test(appPage) && /Connect a tracker/.test(appPage));
+  /: trackerOffer\(Boolean\(watch\?\.active && !watch\.trialEnded\)\)\}/.test(appPage) && /Connect a tracker/.test(appPage));
+// CHE-469: a team that connected a tracker is not offered a second connect —
+// the card names what the team has and offers the choice of where.
+check("…unless the team has one connected: then the module's team offer, from the team's own connections",
+  /\{teamOffer \? teamOffer\.text : trackerOffer\(/.test(appPage) && /\{teamOffer \? teamOffer\.action : "Connect a tracker"\}/.test(appPage) &&
+    /teamTrackerOffer\(teamTrackerNames\)/.test(appPage) && /await teamConnections\(db, team\.id\)/.test(appPage));
+const teamOffers = [["Linear"], ["Jira"], ["Linear", "Jira"]].map((names) => ({ names, offer: teamTrackerOffer(names) }));
+const teamLeaky = teamOffers.flatMap(({ offer }) => [offer.text, offer.action]).filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
+check("the team offer names none of our machinery and gives no homework", teamLeaky.length === 0, teamLeaky.join(" | "));
+// It states what the team has, so it names exactly the team's trackers — the
+// one place a sentence may name one tracker alone.
+check("the team offer names exactly the team's trackers, and the choice each one asks for",
+  teamOffers.every(({ names, offer }) => ["Linear", "Jira"].every((n) => names.includes(n) === new RegExp(`\\b${n}\\b`).test(offer.text))) &&
+    /project/.test(teamOffer("Jira")) && /team this app/.test(teamOffer("Linear")),
+  teamOffers.map(({ offer }) => offer.text).join(" | "));
+function teamOffer(name: string) {
+  return teamTrackerOffer([name]).text;
+}
+const teamPageLines = [TEAM_TRACKERS_NONE, TEAM_TRACKER_DISCONNECT, teamTrackerApps([]), teamTrackerApps(["a"]), teamTrackerApps(["a", "b"])];
+const teamPageLeaky = teamPageLines.filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
+check("the team page's tracker sentences name none of our machinery", teamPageLeaky.length === 0, teamPageLeaky.join(" | "));
+check("…and the one with no tracker names both", /\bLinear\b/.test(TEAM_TRACKERS_NONE) && /\bJira\b/.test(TEAM_TRACKERS_NONE));
+const teamCard = read("src/components/team-trackers.tsx");
+check("the team page says them through the module", /\{TEAM_TRACKERS_NONE\}/.test(teamCard) && /\{teamTrackerApps\(t\.apps\)\}/.test(teamCard) && /\{TEAM_TRACKER_DISCONNECT\}/.test(teamCard));
 check("the FAQ answers from the plans' limits", /a: <>\{trackerFaqAnswer\(PLAN_LIMITS\)\}<\/>/.test(read("src/app/faq/page.tsx")));
 check("the guide says the module's line", /<p>\{TRACKER_GUIDE_LINE\}<\/p>/.test(read("src/app/guides/results-in-your-agent/page.tsx")));
 const wizard = read("src/components/onboarding-wizard.tsx");

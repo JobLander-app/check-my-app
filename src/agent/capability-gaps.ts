@@ -14,6 +14,7 @@ import { LinearTracker } from "@/lib/tracker/linear";
 import { fileFindingTicket, type TicketFinding, type TicketRun } from "@/lib/tracker/file";
 import type { Tracker } from "@/lib/tracker/types";
 import { freshLinearToken } from "@/lib/tracker/token";
+import { grantFor } from "@/lib/tracker/connection";
 import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
@@ -98,8 +99,9 @@ export interface GapBoard {
 export async function ourBoard(env: AgentEnv): Promise<GapBoard | null> {
   const self = await ourApp(env);
   if (!self?.tracker?.teamId) return null;
+  // Our team's Linear grant (CHE-469), the one every app of ours files with.
   const tracker = new LinearTracker(
-    await freshLinearToken(env.db, self.tracker, {
+    await freshLinearToken(env.db, await grantFor(env.db, self.tracker, "linear"), {
       clientId: env.bindings.LINEAR_CLIENT_ID,
       clientSecret: env.bindings.LINEAR_CLIENT_SECRET,
     }),

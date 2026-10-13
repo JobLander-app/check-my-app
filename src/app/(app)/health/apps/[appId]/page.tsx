@@ -15,7 +15,9 @@ import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
 import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
 import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
-import { trackerOffer } from "@/lib/tracker-copy";
+import { teamTrackerOffer, trackerOffer } from "@/lib/tracker-copy";
+import { TRACKER_KINDS, teamConnections } from "@/lib/tracker/connection";
+import { trackerName } from "@/lib/tracker/name";
 import { CheckPrice } from "@/components/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
 import { buttonClass } from "@/components/ui/button";
@@ -135,6 +137,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // carries tracker integrations. Anyone
   // else would follow it into a refusal.
   const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
+  // CHE-469: the trackers the team has connected, which this app may simply
+  // use — read only when the card would be shown.
+  const teamTrackers = app.tracker === null && mayConnectTracker ? await teamConnections(db, team.id) : null;
+  const teamTrackerNames = teamTrackers ? TRACKER_KINDS.filter((k) => teamTrackers[k]).map(trackerName) : [];
+  const teamOffer = teamTrackerNames.length > 0 ? teamTrackerOffer(teamTrackerNames) : null;
   // CHE-443: what the team's admin has to act on — the unchecked steps whose
   // cause is not ours. Only for an admin of a team given `shopify`; the rest of
   // the team sees the cause on the step, not a task.
@@ -302,14 +309,15 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           <section className="card flex flex-col gap-2 p-[18px]">
             <div className="text-[15px] font-semibold">Send problems to your tracker</div>
             <div className="text-[13px] text-fg-muted">
-              {/* Only a scheduled check files and re-verifies by itself (src/lib/tracker-copy.ts). */}
-              {trackerOffer(Boolean(watch?.active && !watch.trialEnded))}
+              {/* Only a scheduled check files and re-verifies by itself (src/lib/tracker-copy.ts).
+                  CHE-469: a tracker the team connected is offered as a choice, not a second connect. */}
+              {teamOffer ? teamOffer.text : trackerOffer(Boolean(watch?.active && !watch.trialEnded))}
             </div>
             <Link
               href={appPath.section(app.id, "integrations")}
               className="inline-flex h-9 items-center self-start rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
             >
-              Connect a tracker
+              {teamOffer ? teamOffer.action : "Connect a tracker"}
             </Link>
           </section>
         )}

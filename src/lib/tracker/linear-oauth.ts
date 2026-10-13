@@ -1,5 +1,6 @@
-// Linear OAuth2 handshake (CHE-31). Multi-tenant: each owner authorizes their
-// own workspace; we store the resulting access token (encrypted) per App.
+// Linear OAuth2 handshake (CHE-31). Multi-tenant: each team authorizes its
+// own workspace; we store the resulting access token (encrypted) per team
+// (CHE-469, src/lib/tracker/connection.ts).
 // Spec: authorize https://linear.app/oauth/authorize, token exchange
 // POST https://api.linear.app/oauth/token (form-urlencoded). Actor=Application
 // is set in the Linear app settings so tickets are created by the integration.
@@ -62,17 +63,9 @@ export async function exchangeCode(opts: {
   return (await res.json()) as LinearToken;
 }
 
-// First team in the authorized workspace — the default ticket destination at
-// connect time; the owner re-points it via the dashboard team picker.
-export async function fetchFirstTeam(
-  accessToken: string,
-): Promise<{ id: string; name: string } | null> {
-  const teams = await fetchTeams(accessToken);
-  return teams[0] ?? null;
-}
-
-// All teams in the authorized workspace, for the team picker. Linear caps the
-// page at 250; an owner with more teams is far outside our ICP.
+// All teams in the authorized workspace, for the team picker; the first is
+// the default ticket destination at connect time (linear-connect.ts). Linear
+// caps the page at 250; an owner with more teams is far outside our ICP.
 export async function fetchTeams(
   accessToken: string,
 ): Promise<{ id: string; name: string }[]> {

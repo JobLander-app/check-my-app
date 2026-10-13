@@ -147,7 +147,11 @@ const IMPLEMENTATION = walk(path.join(repoRoot, "src")).map((f) => stripComments
 
 // What the "Tools you connect" sentence was written against.
 // externalUrl (CHE-438) is the Jira site's address: "the site … you chose".
-const TRACKER_COLUMNS = ["id", "app", "appId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "teamId", "externalOrg", "externalUrl", "createdAt", "updatedAt"];
+// connectionId (CHE-469) points at the team's grant below; it keeps nothing.
+const TRACKER_COLUMNS = ["id", "app", "appId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "teamId", "externalOrg", "externalUrl", "connection", "connectionId", "createdAt", "updatedAt"];
+// CHE-469: the team's grant — "the access token is stored encrypted", and
+// nothing else about the person or the tracker.
+const CONNECTION_COLUMNS = ["id", "team", "teamId", "type", "accessTokenEnc", "refreshTokenEnc", "tokenExpiresAt", "apps", "createdAt", "updatedAt"];
 const ISSUE_LINK_COLUMNS = ["id", "app", "appId", "dedupKey", "externalIssueId", "status", "defectClass", "findingId", "occurrences", "escalatedAt", "firstSeenRunId", "lastSeenAt", "createdAt", "updatedAt"];
 
 // ── self-tests: each checker catches the defect it exists for ───────────────
@@ -195,6 +199,10 @@ check("every \"receives nothing\" entry is still in the code (no dead exemptions
 const schema = read("prisma/schema.prisma");
 const trackerDrift = columnDrift(modelColumns(schema, "TrackerIntegration"), TRACKER_COLUMNS);
 check("TrackerIntegration keeps what the page says (a new column: read the page, then update this list)", trackerDrift === "", trackerDrift);
+const connectionDrift = columnDrift(modelColumns(schema, "TrackerConnection"), CONNECTION_COLUMNS);
+check("TrackerConnection keeps what the page says (a new column: read the page, then update this list)", connectionDrift === "", connectionDrift);
+check("a connect writes the team's grant encrypted (Linear and Jira)",
+  ["src/lib/tracker/linear-connect.ts", "src/lib/tracker/jira-connect.ts"].every((f) => /accessTokenEnc:\s*encryptSecret\(/.test(read(f)) && /refreshTokenEnc:[^\n]*encryptSecret\(/.test(read(f))));
 const linkDrift = columnDrift(modelColumns(schema, "IssueLink"), ISSUE_LINK_COLUMNS);
 check("IssueLink keeps what the page says (a new column: read the page, then update this list)", linkDrift === "", linkDrift);
 

@@ -123,7 +123,11 @@ for (const tracker of ["linear", "jira"]) {
       /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/.test(start) && !/ownerId: user\.id/.test(start));
 }
 // Its words: src/lib/tracker-copy.ts, held by scripts/verify-tracker-copy.ts.
-check("the offer names both trackers and opens the section where both are", /\{trackerOffer\(/.test(page) && /Connect a tracker/.test(page));
+check("the offer names both trackers and opens the section where both are", /: trackerOffer\(/.test(page) && /Connect a tracker/.test(page));
+// CHE-469: when the team already connected one, the same card names it and
+// opens the same section, where the app picks its team or project.
+check("…or, when the team has a tracker, names the team's and opens the same section to choose",
+  /\{teamOffer \? teamOffer\.action : "Connect a tracker"\}/.test(page) && /href=\{appPath\.section\(app\.id, "integrations"\)\}\s+className="inline-flex h-9/.test(page));
 check("the Integrations row reads the tracker's type, so it can name it", /tracker: \{ select: \{ type: true \} \}/.test(page) && /tracker: app\.tracker\?\.type \?\? null/.test(page));
 check("the Run button is the saved app's, as the main action", /<RunSavedApp appId=\{app\.id\} primary \/>/.test(page));
 // Codex P1 on #241: a button a reader may not press is not shown. Since CHE-395

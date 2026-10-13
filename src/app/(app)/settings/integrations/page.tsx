@@ -5,6 +5,10 @@ import { teamOwned } from "@/lib/tenant-db";
 import { isStranded } from "@/lib/posthog/token";
 import { missingScopes } from "@/lib/posthog/oauth";
 import { AnalyticsConnection } from "@/components/analytics-connection";
+import { TeamTrackers, type TeamTrackersProps } from "@/components/team-trackers";
+import { TRACKER_KINDS, connectionApps, teamConnections } from "@/lib/tracker/connection";
+import { trackerName } from "@/lib/tracker/name";
+import { trackerHealth } from "@/lib/app-settings-sections";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
 import { appKind, appLabel } from "@/lib/app-label";
@@ -50,12 +54,30 @@ async function analyticsConnection(
   };
 }
 
+/**
+ * The team's issue trackers as the screen needs them (CHE-469): which are
+ * connected, whether the token still renews, and which apps file into each.
+ * Tokens never leave this function.
+ */
+async function teamTrackers(db: Awaited<ReturnType<typeof requireUser>>["db"], teamId: string): Promise<TeamTrackersProps["trackers"]> {
+  const connections = await teamConnections(db, teamId);
+  const now = new Date();
+  const out: TeamTrackersProps["trackers"] = [];
+  for (const kind of TRACKER_KINDS) {
+    const connection = connections[kind];
+    if (!connection) continue;
+    const apps = await connectionApps(db, teamId, kind);
+    out.push({ kind, name: trackerName(kind), health: trackerHealth(connection, now), apps: apps.map(({ app }) => appLabel(app)) });
+  }
+  return out;
+}
+
 // Integrations (CHE-351 shell, CHE-356): the connections the whole team
-// shares — the analytics connection, and GitHub, where a release's check comes
-// from (CHE-413). The PostHog flow comes back here with ?integration=…. What
-// is set per app — the tracker and its board, the analytics project, webhooks
-// — is on that app's Integrations section, and every app is one click away
-// from here, connected or not.
+// shares — the analytics connection, the issue trackers (CHE-469), and GitHub,
+// where a release's check comes from (CHE-413). The PostHog flow comes back
+// here with ?integration=…. What is set per app — where its tickets go, the
+// analytics project, webhooks — is on that app's Integrations section, and
+// every app is one click away from here, connected or not.
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -74,8 +96,9 @@ export default async function IntegrationsPage({
   const installable = Boolean(getGitHubAppEnv(env as Record<string, unknown>).GITHUB_APP_SLUG);
   // GitHub twice: once for the team's card, and per app for the list — the
   // same fact the app's own card states.
-  const [posthog, apps, fromAction, actionApps, github] = await Promise.all([
+  const [posthog, trackers, apps, fromAction, actionApps, github] = await Promise.all([
     analyticsConnection(db, team.id),
+    teamTrackers(db, team.id),
     db.app.findMany({
       where: { ...teamOwned(team.id) },
       orderBy: { createdAt: "desc" },
@@ -109,6 +132,8 @@ export default async function IntegrationsPage({
 
       <AnalyticsConnection connection={posthog} />
 
+      <TeamTrackers trackers={trackers} canDisconnect={can(scope, "integration.connect")} />
+
       <div className="mt-6">
         <GitHubAppPanel github={github} canConnect={can(scope, "integration.connect")} installable={installable} />
       </div>
@@ -121,8 +146,8 @@ export default async function IntegrationsPage({
         <section className="card mt-6 p-5">
           <h2 className="text-lg font-medium">Per app</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            The tracker, the analytics project and webhooks are each app&apos;s own. Open an app to connect or change
-            them.
+            Where an app&apos;s tickets go, its analytics project and its webhooks are set on the app. Open an app to
+            choose or change them.
           </p>
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
@@ -140,7 +165,8 @@ export default async function IntegrationsPage({
                     })}
                   </span>
                   <Link href={appPath.section(app.id, "integrations")} className="whitespace-nowrap text-xs text-accent hover:underline">
-                    {app.tracker ? "Open →" : "Connect →"}
+                    {/* CHE-469: with the team's tracker connected, an app only chooses where. */}
+                    {app.tracker ? "Open →" : trackers.length > 0 ? "Choose →" : "Connect →"}
                   </Link>
                 </span>
               </li>

@@ -782,6 +782,8 @@ model Team {
   apiKeys     ApiKey[]
   // CHE-236: the team's analytics connection, at most one.
   posthog     PostHogIntegration?
+  // CHE-469: the team's issue trackers, at most one of each kind.
+  trackers    TrackerConnection[]
   testAccounts TestAccount[]
   // CHE-369: the GitHub App installations this team connected.
   githubInstallations GitHubInstallation[]
@@ -1129,8 +1131,10 @@ model TestAccount {
   @@index([teamId])
 }
 
-// The owner's connected issue tracker. type='linear' for now, behind a Tracker
-// abstraction (Jira/GitHub later). Tokens encrypted at rest (src/lib/crypto.ts).
+// Where an app's tickets go: which tracker, and its team (Linear) or site and
+// project (Jira). CHE-469: the grant itself is the team's TrackerConnection;
+// the token columns here are a mirror of it kept for one release, until the
+// contract step drops them (src/lib/tracker/connection.ts).
 model TrackerIntegration {
   id              String    @id @default(cuid())
   app             App       @relation(fields: [appId], references: [id])
@@ -1144,9 +1148,35 @@ model TrackerIntegration {
   // CHE-438: the Jira site, https://<name>.atlassian.net — where an issue's
   // link points. Null for Linear.
   externalUrl     String?
+  // CHE-469: the team's grant this app files with.
+  connection      TrackerConnection? @relation(fields: [connectionId], references: [id])
+  connectionId    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([connectionId])
+}
+
+// CHE-469: a team connects a tracker once. The OAuth grant lives here, one per
+// team and kind, and every app of the team that files into that tracker uses
+// it; the app's TrackerIntegration says only where its tickets go. Both
+// providers rotate refresh tokens, so a grant cannot be copied per app: the
+// first refresh would kill every copy. Tokens encrypted at rest.
+model TrackerConnection {
+  id              String    @id @default(cuid())
+  team            Team      @relation(fields: [teamId], references: [id])
+  teamId          String
+  type            String    // linear | jira
+  accessTokenEnc  String
+  refreshTokenEnc String?
+  tokenExpiresAt  DateTime?
+  apps            TrackerIntegration[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, type])
 }
 
 // The owner's connected code host, used to export generated Playwright specs

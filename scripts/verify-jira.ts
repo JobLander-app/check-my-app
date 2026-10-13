@@ -26,6 +26,7 @@ import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { JIRA_SCOPES, JiraAuthError, JiraTracker, buildJiraAuthorizeUrl, freshJiraToken, jiraProjects, pickIssueType, unfillableFields } from "../src/lib/tracker/jira";
 import { chooseJiraProject, connectJira, jiraChoices } from "../src/lib/tracker/jira-connect";
+import { connectionGrant, teamConnection } from "../src/lib/tracker/connection";
 import { saveLinearGrant } from "../src/lib/tracker/linear-connect";
 import { trackerFor } from "../src/lib/tracker/factory";
 import { LinearTracker } from "../src/lib/tracker/linear";
@@ -170,21 +171,31 @@ async function main() {
       [await connectJira(db, { appId: "a2", code: "c", redirectUri: "r", clientId: "cid", clientSecret: "sec" }, empty.fetchImpl), await db.trackerIntegration.count({ where: { appId: "a2" } })],
       ["jira_no_project", 0]);
 
-    // 3.
+    // 3. The grant is the team's (CHE-469): refreshed there, seen by every app.
     const now = Date.UTC(2026, 9, 12, 12);
-    await db.trackerIntegration.update({ where: { appId: "a1" }, data: { tokenExpiresAt: new Date(now + 2 * 60 * 1000) } });
-    const near = (await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))!;
+    // Read as stored: teamConnection would take in a row the test made fresher.
+    const teamJira = async () => (await db.trackerConnection.findUnique({ where: { teamId_type: { teamId: "t1", type: "jira" } } }))!;
+    const setExpiry = async (at: number) => db.trackerConnection.update({ where: { id: (await teamJira()).id }, data: { tokenExpiresAt: new Date(at) } });
+    await setExpiry(now + 2 * 60 * 1000);
     const before = atl.state.tokenCount;
-    const fresh = await freshJiraToken(db, near, { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
-    const after = (await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))!;
+    const fresh = await freshJiraToken(db, connectionGrant(await teamJira()), { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
+    const after = await teamJira();
     check("refresh: a token about to expire is refreshed", fresh === `at-${before + 1}`, fresh);
-    check("refresh: the rotated refresh token is stored", decryptSecret(after.refreshTokenEnc!) === `rt-${before + 1}`);
-    const far = await freshJiraToken(db, after, { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
+    check("refresh: the rotated refresh token is stored on the team's grant", decryptSecret(after.refreshTokenEnc!) === `rt-${before + 1}`);
+    check("refresh: …and mirrored onto the app's row while the old columns live", decryptSecret((await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))!.refreshTokenEnc!) === `rt-${before + 1}`);
+    const far = await freshJiraToken(db, connectionGrant(after), { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
     check("refresh: a token with time left is used as it is", far === fresh && atl.state.tokenCount === before + 1);
+    // A page asks twice (the picker, then the blockers) with the grant it read
+    // once: the second ask must use what the first stored, not refresh again
+    // with a spent token.
+    await setExpiry(now + 2 * 60 * 1000);
+    const stale = connectionGrant(await teamJira());
+    const first = await freshJiraToken(db, stale, { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
+    const second = await freshJiraToken(db, stale, { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now);
+    check("refresh: a grant read before a refresh is not refreshed twice", first === second && atl.state.tokenCount === before + 2, `${first} ${second} ${atl.state.tokenCount}`);
     atl.state.refuseRefresh = true;
-    await db.trackerIntegration.update({ where: { appId: "a1" }, data: { tokenExpiresAt: new Date(now - 1000) } });
-    const revoked = (await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))!;
-    const err = await freshJiraToken(db, revoked, { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now).then(() => null, (e) => e);
+    await setExpiry(now - 1000);
+    const err = await freshJiraToken(db, connectionGrant(await teamJira()), { clientId: "cid", clientSecret: "sec" }, atl.fetchImpl, now).then(() => null, (e) => e);
     check("refresh: a refused refresh is a revoked grant (Reconnect Jira)", err instanceof JiraAuthError, String(err));
     atl.state.refuseRefresh = false;
 
@@ -264,9 +275,9 @@ async function main() {
     atl.state.unauthorized = false;
 
     // 5.
+    await setExpiry(Date.now() + 3600_000);
     const jiraRow = (await db.trackerIntegration.findUnique({ where: { appId: "a1" } }))!;
-    await db.trackerIntegration.update({ where: { appId: "a1" }, data: { tokenExpiresAt: new Date(Date.now() + 3600_000) } });
-    const picked = await trackerFor(db, { ...jiraRow, tokenExpiresAt: new Date(Date.now() + 3600_000) }, { linear: {}, jira: { clientId: "cid", clientSecret: "sec" } }, atl.fetchImpl);
+    const picked = await trackerFor(db, { ...jiraRow, teamId: jiraRow.teamId ?? "OPS" }, { linear: {}, jira: { clientId: "cid", clientSecret: "sec" } }, atl.fetchImpl);
     check("factory: a jira integration files into Jira", picked instanceof JiraTracker);
     const linear = await trackerFor(
       db,
@@ -302,9 +313,8 @@ async function main() {
     sw.state.sites = [...sw.state.sites, { id: "cloud-2", url: "https://other.atlassian.net", name: "other", scopes: ["read:jira-work", "write:jira-work"] }];
     sw.state.projectsBySite["cloud-2"] = [{ key: "WEB", name: "Website" }];
     sw.state.projects = [{ key: "SEC", name: "Securify" }, { key: "OPS", name: "Ops" }];
-    const a3 = (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))!;
-    await db.trackerIntegration.update({ where: { appId: "a3" }, data: { tokenExpiresAt: new Date(Date.now() + 3600_000) } });
-    const choices = await jiraChoices(db, { ...a3, tokenExpiresAt: new Date(Date.now() + 3600_000) }, { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl);
+    await setExpiry(Date.now() + 3600_000);
+    const choices = await jiraChoices(db, connectionGrant(await teamJira()), { clientId: "cid", clientSecret: "sec" }, sw.fetchImpl);
     eq("picker: every project on every site, the site named when there are two", choices.map((c) => c.value), ["cloud-1/SEC", "cloud-1/OPS", "cloud-2/WEB"]);
     check("picker: labels say which site", choices.every((c) => c.label.includes("atlassian.net")), choices.map((c) => c.label).join(" | "));
 
@@ -321,15 +331,22 @@ async function main() {
     // 6, back: Jira → Linear.
     await db.issueLink.create({ data: { appId: "a3", dedupKey: "k-WEB-1", externalIssueId: "WEB-1", status: "open" } });
     const appRow = { id: "a3", teamId: "t1", ownerId: "u1", appSlug: "three.test" };
-    let firstTeamCalls = 0;
-    await saveLinearGrant(db, appRow, { access_token: "lin-2", expires_in: 86400 }, async () => (firstTeamCalls++, { id: "lin-first", name: "First" }));
+    const workspace = [{ id: "lin-first", name: "First" }, { id: "lin-chosen", name: "Chosen" }];
+    await saveLinearGrant(db, appRow, { access_token: "lin-2", expires_in: 86400 }, async () => workspace);
     const back = await db.trackerIntegration.findUnique({ where: { appId: "a3" } });
     eq("switch back: the row is Linear again, with a Linear team, not the Jira project key", [back?.type, back?.teamId, back?.externalOrg, back?.externalUrl], ["linear", "lin-first", "First", null]);
-    check("switch back: the Linear token is the one stored", decryptSecret(back!.accessTokenEnc) === "lin-2");
+    check("switch back: the Linear token is the one stored", decryptSecret(back!.accessTokenEnc) === "lin-2" && decryptSecret((await teamConnection(db, "t1", "linear"))!.accessTokenEnc) === "lin-2");
     check("switch back: Jira's links are retired", !(await links()).includes("WEB-1:open") && (await superseded()).includes("WEB-1"));
     await db.trackerIntegration.update({ where: { appId: "a3" }, data: { teamId: "lin-chosen", externalOrg: "Chosen" } });
-    await saveLinearGrant(db, appRow, { access_token: "lin-3" }, async () => (firstTeamCalls++, { id: "lin-first", name: "First" }));
-    eq("reconnect: a Linear reconnect keeps the team the owner chose", [(await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))?.teamId, firstTeamCalls], ["lin-chosen", 1]);
+    await saveLinearGrant(db, appRow, { access_token: "lin-3" }, async () => workspace);
+    eq("reconnect: a Linear reconnect keeps the team the owner chose", (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))?.teamId, "lin-chosen");
+    await saveLinearGrant(db, appRow, { access_token: "lin-3b" }, async () => []);
+    eq("reconnect: …and keeps it when Linear does not say which teams the grant reaches", (await db.trackerIntegration.findUnique({ where: { appId: "a3" } }))?.teamId, "lin-chosen");
+    await db.issueLink.create({ data: { appId: "a3", dedupKey: "k-OLD-1", externalIssueId: "OLD-1", status: "open" } });
+    await saveLinearGrant(db, appRow, { access_token: "lin-4" }, async () => [{ id: "other-ws", name: "Elsewhere" }]);
+    const moved4 = await db.trackerIntegration.findUnique({ where: { appId: "a3" } });
+    eq("reconnect: a grant that no longer reaches the chosen team files into its first team", [moved4?.teamId, moved4?.externalOrg], ["other-ws", "Elsewhere"]);
+    check("reconnect: …and the old workspace's links are retired", !(await links()).includes("OLD-1:open") && (await superseded()).includes("OLD-1"));
   } finally {
     await real.dispose();
   }

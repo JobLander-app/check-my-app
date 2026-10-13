@@ -60,7 +60,14 @@ export function trackerHealth(tracker: { refreshTokenEnc: string | null; tokenEx
 // can run every one of them through the customer-language gate.
 
 /** The card's first line: where this app's problems go right now — never a promise the rows below contradict. */
-export function trackerSummary(tracker: { type: string; teamId: string | null } | null, health: TrackerHealth | null, blockers: string[]): string {
+export function trackerSummary(
+  tracker: { type: string; teamId: string | null } | null,
+  health: TrackerHealth | null,
+  blockers: string[],
+  // CHE-469: the team has a tracker connected, which this app may simply use.
+  teamConnected = false,
+): string {
+  if (!tracker && teamConnected) return "Problems stay on the check's page until this app picks where its tickets go below.";
   if (!tracker) return "Not connected — problems stay on the check's page instead of becoming tickets.";
   const name = trackerName(tracker.type);
   const where = tracker.type === "jira" ? "project" : "team";
@@ -70,10 +77,25 @@ export function trackerSummary(tracker: { type: string; teamId: string | null } 
   return `Problems found on this app become tickets in ${name}.`;
 }
 
-/** A tracker's row when it is not the connected one; `connected` names the one that is. */
+/** A tracker's row when the team has not connected it; `connected` names the one this app files into. */
 export function trackerIdleLine(name: string, connected: string | null): string {
-  return connected ? `Not connected. Connecting ${name} moves this app's tickets from ${connected} to ${name}.` : "Not connected.";
+  return connected
+    ? `Not connected. Connecting ${name} connects it for your whole team and moves this app's tickets from ${connected} to ${name}.`
+    : "Not connected. Connected once, it serves every app of your team; each app picks where its tickets go.";
 }
+
+// CHE-469: a tracker is connected once per team. An app of a team that has
+// one connected is never asked to connect it again — only where its tickets go.
+
+/** A tracker the team has connected that this app does not file into (yet). */
+export function trackerTeamIdleLine(name: string, where: "team" | "project", connected: string | null): string {
+  return connected
+    ? `Connected for your team. Choosing a ${where} below moves this app's tickets from ${connected} to ${name}.`
+    : `Connected for your team. Choose a ${where} below and this app's problems become tickets in ${name}.`;
+}
+
+/** Under a team tracker's row: whose connection it is, and what ending it does. */
+export const TEAM_TRACKER_LINE = "Your team's connection: every app of the team files with it, and disconnecting it stops all of them.";
 
 // Atlassian consents as whoever is signed in to it already, without asking,
 // and an account with no Jira site ends on Atlassian's own "Access denied"

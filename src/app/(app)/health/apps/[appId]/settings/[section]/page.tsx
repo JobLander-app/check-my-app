@@ -16,6 +16,7 @@ import { LIVE_RUN_STATUSES } from "@/lib/enums";
 import { outcome } from "@/lib/checks-page";
 import {
   JIRA_NO_PROJECT,
+  TEAM_TRACKER_LINE,
   jiraAccountLine,
   jiraBlockedLine,
   sectionsFor,
@@ -23,6 +24,7 @@ import {
   trackerHealth,
   trackerIdleLine,
   trackerSummary,
+  trackerTeamIdleLine,
   type TrackerHealth,
 } from "@/lib/app-settings-sections";
 import { listTestAccounts } from "@/lib/app-settings";
@@ -31,6 +33,7 @@ import { readExtensionOptions } from "@/lib/extension-target";
 import { projectChoicesFor } from "@/lib/posthog/choices";
 import { fetchTeams } from "@/lib/tracker/linear-oauth";
 import { freshLinearToken } from "@/lib/tracker/token";
+import { connectionGrant, teamConnections } from "@/lib/tracker/connection";
 import { appRunsTheAction } from "@/lib/release-action";
 import { integrationNotice } from "@/lib/integration-notice";
 import { setAppNotifiers, setIntegrationEndpoints, updateAppSettings } from "@/app/dashboard/actions";
@@ -553,8 +556,9 @@ type AppWithIntegrations = Prisma.AppGetPayload<{ include: { policy: true; track
 
 // One tracker's row in the Issue tracker card: its name, its state, what it
 // files into, and its own Connect. Linear and Jira share the frame, so neither
-// can quietly grow a different card again.
-function TrackerRow({ name, href, health, detail, idle, children }: { name: string; href: string; health: TrackerHealth | null; detail: string; idle: string; children?: React.ReactNode }) {
+// can quietly grow a different card again. CHE-469: a tracker the team has
+// connected offers no Connect — only Reconnect, and only when its token needs it.
+function TrackerRow({ name, href, health, detail, idle, children }: { name: string; href: string | null; health: TrackerHealth | null; detail: string; idle: string; children?: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 border-t border-ink-700 pt-4">
       <div className="space-y-1">
@@ -569,44 +573,66 @@ function TrackerRow({ name, href, health, detail, idle, children }: { name: stri
         )}
         {children}
       </div>
-      <a
-        href={href}
-        className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
-      >
-        {health ? "Reconnect →" : "Connect →"}
-      </a>
+      {href && (
+        <a
+          href={href}
+          className="shrink-0 rounded-lg border border-ink-600 px-3 py-1.5 font-mono text-xs text-fg-muted transition-colors hover:border-fg-faint hover:text-fg"
+        >
+          {health ? "Reconnect →" : "Connect →"}
+        </a>
+      )}
     </div>
   );
+}
+
+// Under a tracker the team has connected: it is the team's, and it is ended on
+// the team's page, for every app at once.
+function TeamTrackerNote() {
+  return (
+    <p className="text-xs text-fg-faint">
+      {TEAM_TRACKER_LINE}{" "}
+      <Link href="/settings/integrations" className="text-accent hover:underline">
+        Team integrations →
+      </Link>
+    </p>
+  );
+}
+
+// Where Connect goes, if anywhere: a tracker the team has not connected, or one
+// whose token only a new consent can restore.
+function connectHref(kind: "linear" | "jira", appId: string, team: unknown, health: TrackerHealth | null): string | null {
+  return !team || (health && health.tone !== "ok") ? `/api/integrations/${kind}/start?appId=${appId}` : null;
 }
 
 // Where problems go besides this page, and where checks come from: one card
 // per integration, each with its state and its own action.
 async function Integrations({ app, teamId, plan, scope, githubError, save }: { app: AppWithIntegrations; teamId: string; plan: UserPlan; scope: TeamScope; githubError: string | undefined; save: Save }) {
   const { db } = await requireUser();
-  // CHE-438: an app files into one tracker — Linear or Jira. Each card reads
-  // only its own kind; connecting one replaces the other.
+  // CHE-438: an app files into one tracker — Linear or Jira. CHE-469: the
+  // grants are the team's, so a tracker another app connected is offered here
+  // as a choice of team or project, never as a second consent.
   const jira = app.tracker?.type === "jira" ? app.tracker : null;
   const tracker = app.tracker && app.tracker.type !== "jira" ? app.tracker : null;
-  const health = trackerHealth(tracker, new Date());
-  const jiraHealth = trackerHealth(jira, new Date());
+  const teamTrackers = await teamConnections(db, teamId);
+  const health = trackerHealth(teamTrackers.linear, new Date());
+  const jiraHealth = trackerHealth(teamTrackers.jira, new Date());
   const env = getCloudflareContext().env as Record<string, string | undefined>;
+  const jiraCreds = { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET };
   // Which of the workspace's teams the tickets land in. Best-effort — a
   // transient Linear error hides the picker and shows the stored name.
-  const linearTeams = tracker
-    ? await freshLinearToken(db, tracker, { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET })
+  const linearTeams = teamTrackers.linear
+    ? await freshLinearToken(db, connectionGrant(teamTrackers.linear), { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET })
         .then(fetchTeams)
         .catch(() => [] as { id: string; name: string }[])
     : [];
   // CHE-438: every project on every site the Jira grant reaches. Best-effort,
   // like the Linear teams: an Atlassian error hides the picker.
-  const jiraProjects = jira
-    ? await jiraChoices(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(
-        () => [] as { value: string; label: string }[],
-      )
+  const jiraProjects = teamTrackers.jira
+    ? await jiraChoices(db, connectionGrant(teamTrackers.jira), jiraCreds).catch(() => [] as { value: string; label: string }[])
     : [];
   // Required fields of the chosen project that a ticket of ours cannot fill.
-  const jiraBlockers = jira
-    ? await jiraProjectBlockers(db, jira, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET }).catch(() => [] as string[])
+  const jiraBlockers = jira && teamTrackers.jira
+    ? await jiraProjectBlockers(db, connectionGrant(teamTrackers.jira), jira, jiraCreds).catch(() => [] as string[])
     : [];
   // CHE-237: the projects this team's PostHog connection can see, ranked for
   // this app. Costs nothing when no connection exists.
@@ -644,49 +670,60 @@ async function Integrations({ app, teamId, plan, scope, githubError, save }: { a
           </p>
           {/* The words are src/lib/app-settings-sections.ts's, every one of
               them checked against the customer-language gate. */}
-          <p className="text-xs text-fg-faint">{trackerSummary(app.tracker, jira ? jiraHealth : health, jiraBlockers)}</p>
+          <p className="text-xs text-fg-faint">
+            {trackerSummary(app.tracker, jira ? jiraHealth : health, jiraBlockers, Boolean(teamTrackers.linear || teamTrackers.jira))}
+          </p>
         </div>
 
+        {/* Each row: the app's own state when it files there; the team's
+            connection offered as a choice when it does not; Connect only when
+            the team has not connected that tracker at all (CHE-469). */}
         <TrackerRow
           name="Linear"
-          href={`/api/integrations/linear/start?appId=${app.id}`}
-          health={health}
+          href={connectHref("linear", app.id, teamTrackers.linear, health)}
+          health={tracker ? health : null}
           detail={linearTeams.length === 0 && tracker?.externalOrg ? ` · team: ${tracker.externalOrg}` : ""}
-          idle={trackerIdleLine("Linear", jira ? "Jira" : null)}
+          idle={teamTrackers.linear ? trackerTeamIdleLine("Linear", "team", jira ? "Jira" : null) : trackerIdleLine("Linear", jira ? "Jira" : null)}
         >
-          {tracker && linearTeams.length > 0 && (
+          {teamTrackers.linear && linearTeams.length > 0 && (
             <p className="flex items-center gap-2 text-xs text-fg-muted">
               Tickets go to team
-              <TeamSelect appId={app.id} teams={linearTeams} current={tracker.teamId} />
+              <TeamSelect appId={app.id} teams={linearTeams} current={tracker?.teamId ?? null} />
             </p>
           )}
+          {teamTrackers.linear && <TeamTrackerNote />}
         </TrackerRow>
 
         <TrackerRow
           name="Jira"
-          href={`/api/integrations/jira/start?appId=${app.id}`}
-          health={jiraHealth}
+          href={connectHref("jira", app.id, teamTrackers.jira, jiraHealth)}
+          health={jira ? jiraHealth : null}
           detail={
             jira && jiraProjects.length === 0
               ? `${jira.teamId ? ` · project ${jira.teamId}` : ""}${jira.externalUrl ? ` on ${jira.externalUrl.replace(/^https?:\/\//, "")}` : ""}`
               : ""
           }
-          idle={trackerIdleLine("Jira", tracker ? trackerName(tracker.type) : null)}
+          idle={
+            teamTrackers.jira
+              ? trackerTeamIdleLine("Jira", "project", tracker ? trackerName(tracker.type) : null)
+              : trackerIdleLine("Jira", tracker ? trackerName(tracker.type) : null)
+          }
         >
           {/* Before Connect and Reconnect alike: both start the same consent. */}
-          <p className="text-xs text-fg-faint">{jiraAccountLine(jira !== null)}</p>
+          {connectHref("jira", app.id, teamTrackers.jira, jiraHealth) && <p className="text-xs text-fg-faint">{jiraAccountLine(teamTrackers.jira !== null)}</p>}
           {jira && !jira.teamId && <p className="text-xs text-status-confusing">{JIRA_NO_PROJECT}</p>}
           {jira?.teamId && jiraBlockers.length > 0 && <p className="text-xs text-status-broken">{jiraBlockedLine(jira.teamId, jiraBlockers)}</p>}
-          {jira && jiraProjects.length > 0 && (
+          {teamTrackers.jira && jiraProjects.length > 0 && (
             <p className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
               Tickets go to project
               <JiraProjectSelect
                 appId={app.id}
                 choices={jiraProjects}
-                current={jira.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
+                current={jira?.externalOrg && jira.teamId ? `${jira.externalOrg}/${jira.teamId}` : null}
               />
             </p>
           )}
+          {teamTrackers.jira && <TeamTrackerNote />}
         </TrackerRow>
 
         {app.policy && (
