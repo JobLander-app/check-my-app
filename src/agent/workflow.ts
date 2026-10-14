@@ -41,7 +41,7 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { RUN_CANCELED } from "@/lib/run-cancel";
-import { askForSession, isSessionTarget, releaseSession, runSessionSlot, SESSION_NO_SLOT, sessionHost, waitForSession } from "./session-browser";
+import { askForSession, isSessionTarget, releaseSession, runSessionSlot, SESSION_NO_SLOT, sessionHost, slotHolderOnTeam, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
@@ -294,6 +294,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // saying nothing at all would read as a check that hung.
     const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
       if (!isSession) return;
+      // CHE-482 (Codex on #351): every time the browser is taken, the person
+      // whose sign-in it holds must still be on the team.
+      const stillOn = await step.do(`session-member-${phase}`, () => slotHolderOnTeam(env.db, run.sessionSlot));
+      if (!stillOn) throw new NonRetryableError(SESSION_NO_SLOT, "SessionSlotMissing");
       await waitForSession(
         {
           ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.sessionSlot), run.id)),

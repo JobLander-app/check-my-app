@@ -22,7 +22,7 @@
 import type { Browser, BrowserContext, Locator, Page } from "@cloudflare/playwright";
 import type { AgentBindings } from "./env";
 import { SESSION_SLOT_HEADER, sessionRunnerFor } from "./session-address";
-import { storeSlot } from "@/lib/session-view";
+import { slotParts, storeSlot } from "@/lib/session-view";
 
 export const SESSION_KIND = "session";
 
@@ -70,6 +70,18 @@ export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, slo
 export function runSessionSlot(run: { teamId: string | null; app?: { ownerId: string | null; onTeam?: boolean } | null }): string | null {
   if (!run.teamId || !run.app || run.app.onTeam === false) return null;
   return storeSlot({ teamId: run.teamId, ownerId: run.app.ownerId });
+}
+
+// Whether the person a slot belongs to is still on its team. Asked again each
+// time a run takes the browser, not only when it loaded (Codex on #351): a
+// person removed while a check runs takes their sign-in with them at once.
+export async function slotHolderOnTeam(
+  db: { membership: { findFirst(args: { where: { teamId: string; userId: string }; select: { id: true } }): Promise<{ id: string } | null> } },
+  slot: string | null | undefined,
+): Promise<boolean> {
+  const who = slot ? slotParts(slot) : null;
+  if (!who) return false;
+  return (await db.membership.findFirst({ where: { teamId: who.teamId, userId: who.userId }, select: { id: true } })) !== null;
 }
 
 // A session run that has no slot stops before it starts — our failure, never a

@@ -34,6 +34,7 @@ import {
   isSignOutText,
   releaseSession,
   runSessionSlot,
+  slotHolderOnTeam,
   SESSION_WAIT_MAX_SECONDS,
   SESSION_WAIT_MIN_SECONDS,
   SessionBrowser,
@@ -131,7 +132,22 @@ async function main() {
       runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: false } }) === null &&
         runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: true } }) === "team_abc--u_owner",
     );
+    // Codex on #351: asked again whenever the browser is taken.
+    const members = new Set(["team_abc|u_owner"]);
+    const stub = { membership: { findFirst: async ({ where }: { where: { teamId: string; userId: string } }) => (members.has(`${where.teamId}|${where.userId}`) ? { id: "m" } : null) } };
+    const onBefore = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    members.clear();
+    const onAfter = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    check(
+      "configuration: the slot's person is asked for each time — removed mid-check, their browser is not taken again",
+      onBefore && !onAfter && !(await slotHolderOnTeam(stub, null)) && !(await slotHolderOnTeam(stub, "team_abc")),
+    );
     const workflowSource = await readFile("src/agent/workflow.ts", "utf8");
+    check(
+      "configuration: every phase that takes the browser asks first",
+      /const stillOn = await step\.do\(`session-member-\$\{phase\}`, \(\) => slotHolderOnTeam\(env\.db, run\.sessionSlot\)\);\s*if \(!stillOn\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("slotHolderOnTeam(env.db") < workflowSource.indexOf("await waitForSession("),
+    );
     check(
       "configuration: a session run with no slot stops before anything starts, not retried",
       /membership\.findFirst\(\{ where: \{ teamId: r\.teamId, userId: app\.ownerId \}/.test(workflowSource) &&
@@ -665,7 +681,9 @@ async function main() {
     const helperAt = workflow.indexOf("const sessionTurn = async");
     const helper = workflow.slice(helperAt, workflow.indexOf("// Everything below is inside the failure handler", helperAt));
     check("the workflow: a session run takes its turn in steps that sleep — and only a session run",
-      helperAt > 0 && /if \(!isSession\) return;\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
+      // CHE-482: between the two, the slot's person is asked for (a step that
+      // reads, never one that waits).
+      helperAt > 0 && /if \(!isSession\) return;[\s\S]{0,400}?await waitForSession\(/.test(helper) && helper.indexOf("if (!isSession) return;") < helper.indexOf("slotHolderOnTeam(") && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
       helper.slice(0, 80));
     // Before every phase that opens the browser, under that phase's name: a
     // wait inside a phase would be a step failing and being retried.

@@ -156,9 +156,17 @@ async function main() {
     await db.membership.deleteMany({ where: { teamId: "team_a", userId: "bob" } });
     const afterLeft = await connectApp(db, ann, APP("bob-dev", "securify"));
     const handed = await db.app.findUnique({ where: { id: bobsId }, select: { ownerId: true, appSlug: true } });
-    check("once its connector has left, whoever connects it again makes it theirs and is sent to sign in for it",
-      "ok" in afterLeft && afterLeft.appId === bobsId && !afterLeft.connected && handed?.ownerId === "ann" && handed.appSlug === "shopify:bob-dev/securify",
+    check("once its connector has left, whoever connects it again makes it theirs, waiting for its pick on their sign-in page",
+      "ok" in afterLeft && afterLeft.appId === bobsId && !afterLeft.connected && handed?.ownerId === "ann" && handed.appSlug === "shopify:bob-dev",
       JSON.stringify({ afterLeft, handed }));
+    // Codex on #351: …and that pick connects it again and starts its first check.
+    const repicked = await chooseApp(db, ann, bobsId, pick({ store: "bob-dev" }));
+    const reconnected = await db.app.findUnique({ where: { id: bobsId }, select: { appSlug: true, ownerId: true } });
+    const before = triggered;
+    const restarted = "ok" in repicked ? await startSavedApp(db, { id: "ann", teamId: "team_a", plan: "business" }, bobsId, startDeps) : repicked;
+    check("…the new connector's pick reconnects the same store, and its first check starts",
+      "ok" in repicked && reconnected?.appSlug === "shopify:bob-dev/securify" && reconnected.ownerId === "ann" && "publicId" in restarted && triggered === before + 1,
+      JSON.stringify({ repicked, reconnected, restarted }));
     // Codex on #351: a team key outlives its person. Bob, gone, connects
     // nothing — not even through a key that still works.
     const bobAfterLeft = await connectApp(db, bob, APP("bob-new", "securify"));

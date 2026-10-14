@@ -60,7 +60,15 @@ export async function connectApp(
       ? (await db.membership.findFirst({ where: { teamId: actor.teamId, userId: existing.ownerId }, select: { id: true } })) !== null
       : false;
     if (connectorOnTeam) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
-    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: existing.id }, data: { ownerId: actor.userId } });
+    // Back to waiting for its pick, in the new connector's name: their sign-in
+    // page then picks the linked app and starts the first check, as for any
+    // store just connected (Codex on #351) — the address keeps the app, so
+    // the pick is the one it had. Its history, scenarios and watch stay.
+    await db.app.update({
+      ...alreadyScoped("the App was just scoped to this team"),
+      where: { id: existing.id },
+      data: { ownerId: actor.userId, appSlug: shopifySlug(store), targetUrl: shopifyAdminUrl(store, handle) },
+    });
     return { ok: true, appId: existing.id, store, handle, reused: true, connected: false };
   }
   // A store already waiting for its app is the same pending app — pointed at
