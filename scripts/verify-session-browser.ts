@@ -126,6 +126,18 @@ async function main() {
       "configuration: a run whose app has no connector has no slot",
       runSessionSlot({ teamId: "team_abc", app: { ownerId: null } }) === null && runSessionSlot({ teamId: null, app: { ownerId: "u" } }) === null && runSessionSlot({ teamId: "team_abc", app: null }) === null,
     );
+    check(
+      "configuration: a store whose connector left the team has no slot — their sign-in is not the team's to use (Codex on #351)",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: false } }) === null &&
+        runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: true } }) === "team_abc--u_owner",
+    );
+    const workflowSource = await readFile("src/agent/workflow.ts", "utf8");
+    check(
+      "configuration: a session run with no slot stops before anything starts, not retried",
+      /membership\.findFirst\(\{ where: \{ teamId: r\.teamId, userId: app\.ownerId \}/.test(workflowSource) &&
+        /if \(isSession && !run\.sessionSlot\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("!run.sessionSlot) throw") < workflowSource.indexOf('step.do("survey"'),
+    );
     for (const [what, make] of [
       ["no slot", () => sessionHost(bindings, null)],
       ["a slot that is not one", () => sessionHost(bindings, "team abc/../x")],

@@ -223,10 +223,13 @@ export class SessionRunner extends Container<AgentBindings> {
     await this.schedule(seconds, "probe");
   }
 
-  // The person's Shopify store to look at: their first in the team.
+  // The person's Shopify store to look at: their first in the team — and only
+  // while they are on it. Someone who left takes their sign-in with them
+  // (Codex on #351): no store of theirs is a target, so the next probe drops
+  // the jar and stops, as for a person with no store left.
   private async probeTarget(owner: { teamId: string; userId: string }): Promise<{ appId: string; url: string } | null> {
     const row = await this.env.DB.prepare(
-      "SELECT id, targetUrl FROM App WHERE teamId = ? AND ownerId = ? AND targetKind = 'session' AND targetUrl LIKE 'https://admin.shopify.com/store/%/apps/%' ORDER BY createdAt ASC LIMIT 1",
+      "SELECT a.id, a.targetUrl FROM App a JOIN Membership m ON m.teamId = a.teamId AND m.userId = a.ownerId WHERE a.teamId = ? AND a.ownerId = ? AND a.targetKind = 'session' AND a.targetUrl LIKE 'https://admin.shopify.com/store/%/apps/%' ORDER BY a.createdAt ASC LIMIT 1",
     )
       .bind(owner.teamId, owner.userId)
       .first<{ id: string; targetUrl: string }>();

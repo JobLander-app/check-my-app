@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
 import { mintViewToken, sessionSlot, slotParts, storeSignIn, storeSlot, verifyPick, verifyViewToken, viewKeyFor, viewTokenSlot } from "@/lib/session-view";
 import { openJar, probeMessage, proxyForSlot, recordProbe, sealJar } from "@/agent/session-jar";
-import { routeLiveView, routeSessionAdmin } from "@/agent/session-routes";
+import { ensureSessionProbes, routeLiveView, routeSessionAdmin } from "@/agent/session-routes";
 import { SESSION_SLOT_HEADER } from "@/agent/session-address";
 
 let failures = 0;
@@ -205,6 +205,21 @@ async function probeHistory() {
     check("probe history: every line is kept, the told ones marked", row?.n === 63 && row?.told === 2, JSON.stringify(row));
     const bob = await real.d1.prepare("SELECT COUNT(*) AS n FROM SessionProbe WHERE teamId = 't5' AND userId = 'u_bob'").first<{ n: number }>();
     check("probe history: each line says whose sign-in it looked at", bob?.n === 3, JSON.stringify(bob));
+
+    // The scheduler's sweep (Codex on #351): it wakes the slot of everyone
+    // with a store, while they are on the team — not someone who left.
+    await real.db.user.createMany({ data: [
+      { id: "u_alice", clerkUserId: "ck_alice", email: "alice@otp.test" },
+      { id: "u_bob", clerkUserId: "ck_bob", email: "bob@otp.test" },
+    ] });
+    await real.db.team.create({ data: { id: "team_aaaa", name: "A", plan: "business" } });
+    await real.db.membership.create({ data: { teamId: "team_aaaa", userId: "u_alice", scope: "admin" } as never });
+    for (const [id, owner] of [["s_a1", "u_alice"], ["s_a2", "u_alice"], ["s_b1", "u_bob"]] as const) {
+      await real.db.app.create({ data: { id, teamId: "team_aaaa", ownerId: owner, appSlug: `shopify:${id}/h`, targetUrl: `https://admin.shopify.com/store/${id}/apps/h`, targetKind: "session" } });
+    }
+    const woken: string[] = [];
+    const swept = await ensureSessionProbes({ DB: real.d1, SESSION_RUNNER: { getByName: (name: string) => ({ ensureProbe: async (slot: string) => { woken.push(`${name}:${slot}`); return true; } }) } } as never);
+    check("sweep: each person on the team with a store is woken once, in their own slot; one who left is not", swept === 1 && woken.join() === `${TEAM_A}:${TEAM_A}`, woken.join());
   } finally {
     await real.dispose();
   }
@@ -424,6 +439,14 @@ async function forwarder() {
   }
 }
 
+// The Durable Object needs the Workers runtime, so its probe's one query is
+// read as text: a person's store is a target only while they are on the team
+// (Codex on #351) — someone who left has nothing to probe, and the jar goes.
+async function probeTargetQuery() {
+  const runner = await readFile("src/agent/session-runner.ts", "utf8");
+  check("probe: a store is probed only while its connector is on the team", /FROM App a JOIN Membership m ON m\.teamId = a\.teamId AND m\.userId = a\.ownerId WHERE a\.teamId = \? AND a\.ownerId = \?/.test(runner));
+}
+
 async function image() {
   const dockerfile = await readFile("spikes/shopify-session/Dockerfile", "utf8");
   const copied = /^COPY (.+) \.\/$/m.exec(dockerfile.split("\n").filter((l) => l.startsWith("COPY") && !l.includes("package")).join("\n"))?.[1].split(/\s+/) ?? [];
@@ -471,6 +494,7 @@ async function main() {
   await viewKeys();
   await doors();
   await forwarder();
+  await probeTargetQuery();
   await image();
   await serverWithJar();
   say(failures ? `\nverify-session-runner: ${failures} FAILED` : "\nverify-session-runner: all passed");

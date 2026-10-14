@@ -63,12 +63,13 @@ async function sameText(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-// The scheduler's tick: every person with a Shopify store in a team has their
-// probe scheduled (a no-op for a slot whose browser has never held a sign-in).
+// The scheduler's tick: every person with a Shopify store in a team, while they
+// are on it, has their probe scheduled (a no-op for a slot whose browser has
+// never held a sign-in). Someone who left is not woken (Codex on #351).
 export async function ensureSessionProbes(bindings: Pick<AgentBindings, "SESSION_RUNNER" | "DB">): Promise<number> {
   if (!bindings.SESSION_RUNNER) return 0;
   const rows = await bindings.DB.prepare(
-    "SELECT DISTINCT teamId, ownerId FROM App WHERE targetKind = 'session' AND teamId IS NOT NULL AND ownerId IS NOT NULL",
+    "SELECT DISTINCT a.teamId, a.ownerId FROM App a JOIN Membership m ON m.teamId = a.teamId AND m.userId = a.ownerId WHERE a.targetKind = 'session'",
   ).all<{ teamId: string; ownerId: string }>();
   let watched = 0;
   for (const row of rows.results ?? []) {

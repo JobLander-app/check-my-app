@@ -148,6 +148,17 @@ async function main() {
     check("a store a teammate left waiting for its pick becomes the store of whoever connects it now — still one row",
       "ok" in annLeft && "ok" in bobTakes && bobTakes.appId === annLeft.appId && taken?.ownerId === "bob" && (await db.app.count({ where: { teamId: "team_a", appSlug: "shopify:shared-staging" } })) === 1,
       JSON.stringify({ annLeft, bobTakes, taken }));
+    // Codex on #351: Bob's store is checked as Bob. While Bob is on the team,
+    // Ann linking it is led to it; once Bob has left, Ann connecting it makes
+    // it hers and sends her to sign in for it.
+    const whileOn = await connectApp(db, ann, APP("bob-dev", "securify"));
+    check("a connected store whose connector is on the team stays theirs", "ok" in whileOn && whileOn.connected && (await db.app.findUnique({ where: { id: bobsId }, select: { ownerId: true } }))?.ownerId === "bob", JSON.stringify(whileOn));
+    await db.membership.deleteMany({ where: { teamId: "team_a", userId: "bob" } });
+    const afterLeft = await connectApp(db, ann, APP("bob-dev", "securify"));
+    const handed = await db.app.findUnique({ where: { id: bobsId }, select: { ownerId: true, appSlug: true } });
+    check("once its connector has left, whoever connects it again makes it theirs and is sent to sign in for it",
+      "ok" in afterLeft && afterLeft.appId === bobsId && !afterLeft.connected && handed?.ownerId === "ann" && handed.appSlug === "shopify:bob-dev/securify",
+      JSON.stringify({ afterLeft, handed }));
 
     const site = await createAppForTeam(db, ann, { targetUrl: "https://shop.example/path" });
     const siteRow = "ok" in site ? await db.app.findUnique({ where: { id: site.app.id }, select: { appSlug: true, targetKind: true } }) : null;

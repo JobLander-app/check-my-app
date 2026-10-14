@@ -44,8 +44,18 @@ export async function connectApp(
   if (!link) return { error: BAD_LINK, code: "invalid_input" };
   const { store, handle } = link;
   // This app already connected: its page, not a second row.
-  const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true } });
-  if (existing) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
+  const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true, ownerId: true } });
+  if (existing) {
+    // CHE-482 (Codex on #351): unless whoever connected it is no longer on the
+    // team. Their sign-in left with them and nothing checks the store now;
+    // whoever connects it again makes it theirs, and signs in for it.
+    const connectorOnTeam = existing.ownerId
+      ? (await db.membership.findFirst({ where: { teamId: actor.teamId, userId: existing.ownerId }, select: { id: true } })) !== null
+      : false;
+    if (connectorOnTeam) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
+    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: existing.id }, data: { ownerId: actor.userId } });
+    return { ok: true, appId: existing.id, store, handle, reused: true, connected: false };
+  }
   // A store already waiting for its app is the same pending app — pointed at
   // the app asked for now: opening the connect page twice must not leave two.
   // CHE-482: and it becomes the store of whoever connects it now. A store is
