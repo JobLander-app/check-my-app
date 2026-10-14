@@ -35,6 +35,21 @@ export async function preferredTeamId(): Promise<string | null> {
   }
 }
 
+// The other half: make `teamId` the one this browser works in. Callers check
+// membership first — the cookie is only ever honoured for a team the person is
+// on, so writing it for any other team would do nothing, and that is the point.
+export async function rememberActiveTeam(teamId: string): Promise<void> {
+  (await cookies()).set(ACTIVE_TEAM_COOKIE, teamId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    // A year: switching teams is not a security boundary — membership is. The
+    // cookie only remembers which of your own teams you were last working in.
+    maxAge: 60 * 60 * 24 * 365,
+  });
+}
+
 // Once per request (CHE-351): the app shell's layout and the page inside it
 // both need the signed-in person, and each call writes the user mirror. React's
 // cache() hands the second caller the first one's answer.
