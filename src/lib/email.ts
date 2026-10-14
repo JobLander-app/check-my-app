@@ -5,6 +5,7 @@
 
 import { VERDICT_META } from "@/lib/status";
 import { BALANCE_PATH } from "@/lib/balance-links";
+import { INVITE_MAIL, inviteMailScope } from "@/lib/invite-copy";
 
 // The bottom line is model-written prose about the customer's product; it goes
 // into HTML mail, so it gets escaped rather than trusted.
@@ -467,13 +468,10 @@ export async function sendTeamInvite({
   from,
   replyTo,
 }: TeamInviteArgs): Promise<string | null> {
-  const subject = `${invitedBy} added you to ${teamName} on CheckMyApp`;
-  const whatTheyCanDo =
-    scope === "admin"
-      ? "You will be able to run checks, change settings, manage the team and its billing."
-      : scope === "member"
-        ? "You will be able to run checks, change an app's settings and act on what we find."
-        : "You will be able to read everything the team's checks find. Running a check is left to the others.";
+  // CHE-481: every sentence is INVITE_MAIL's (src/lib/invite-copy.ts), under
+  // the language guards in scripts/verify-invites.ts.
+  const subject = INVITE_MAIL.subject(invitedBy, teamName);
+  const whatTheyCanDo = inviteMailScope(scope);
 
   if (!apiKey || !from) {
     console.log(`[email:dev] to=${to} subject="${subject}" url=${acceptUrl}`);
@@ -482,7 +480,7 @@ export async function sendTeamInvite({
 
   // Opening the link is safe by design (a mail scanner may do it); only the
   // Join button on that page creates the membership.
-  const why = `You get this because ${invitedBy} entered this address. If you weren't expecting it, ignore this mail — nothing happens unless you choose Join on the invitation page.`;
+  const why = INVITE_MAIL.why(invitedBy);
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -493,17 +491,18 @@ export async function sendTeamInvite({
       ...replyToField(replyTo),
       html: htmlDocument(
         subject,
-        `<p><strong>${escapeHtml(invitedBy)}</strong> added you to <strong>${escapeHtml(teamName)}</strong> on CheckMyApp.</p>` +
-          `<p>CheckMyApp uses your team's apps the way a visitor would, every day, and tells you what broke.</p>` +
+        `<p>${escapeHtml(INVITE_MAIL.lead(invitedBy, teamName))}</p>` +
+          `<p>${escapeHtml(INVITE_MAIL.about)}</p>` +
           `<p>${escapeHtml(whatTheyCanDo)}</p>` +
-          `<p><a href="${acceptUrl}">Join ${escapeHtml(teamName)} →</a></p>` +
-          `<p style="color:#666">The link works for 7 days.</p><p style="color:#666">— CheckMyApp</p>`,
+          `<p><a href="${acceptUrl}">${escapeHtml(INVITE_MAIL.join(teamName))} →</a></p>` +
+          `<p style="color:#666">${escapeHtml(INVITE_MAIL.newHere)}</p>` +
+          `<p style="color:#666">${escapeHtml(INVITE_MAIL.lasts)}</p><p style="color:#666">— CheckMyApp</p>`,
         escapeHtml(why),
       ),
       text:
-        `${invitedBy} added you to ${teamName} on CheckMyApp.\n\n` +
-        `CheckMyApp uses your team's apps the way a visitor would, every day, and tells you what broke.\n\n` +
-        `${whatTheyCanDo}\n\nJoin ${teamName}: ${acceptUrl}\n\nThe link works for 7 days.\n\n— CheckMyApp\n\n${why}`,
+        `${INVITE_MAIL.lead(invitedBy, teamName)}\n\n` +
+        `${INVITE_MAIL.about}\n\n` +
+        `${whatTheyCanDo}\n\n${INVITE_MAIL.join(teamName)}: ${acceptUrl}\n\n${INVITE_MAIL.newHere}\n\n${INVITE_MAIL.lasts}\n\n— CheckMyApp\n\n${why}`,
     }),
   });
   if (!res.ok) {

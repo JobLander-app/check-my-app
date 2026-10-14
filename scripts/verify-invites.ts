@@ -22,6 +22,7 @@ import {
   type InviteRow,
 } from "@/lib/invites";
 import { allInviteSentences } from "@/lib/invite-copy";
+import { sendTeamInvite } from "@/lib/email";
 import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 
 let failures = 0;
@@ -221,10 +222,34 @@ for (const scope of ["admin", "member", "reader"]) {
   check(`accepted scope: ${scope}`, checkInviteRequest({ email: "a@b.test", scope }).ok);
 }
 
-// The token checks are the only async ones (SubtleCrypto), and the esbuild
-// transform this runs under has no top-level await — so they run last, and the
-// summary waits for them.
-tokenChecks().then(() => {
+// ─── The email (CHE-481) ─────────────────────────────────────────────────────
+//
+// What is actually handed to the mail provider, read off the request the real
+// sendTeamInvite builds. It invites — nobody is on the team before Join — and
+// tells someone without an account that the link brings them back.
+async function mailChecks() {
+  const sent: { subject: string; text: string; html: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+    sent.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ id: "msg_1" }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    await sendTeamInvite({ to: "b@example.org", teamName: "Securify", invitedBy: "Vladislav", scope: "member", acceptUrl: `https://checkmyapp.dev/invite/${TOKEN}`, apiKey: "k", from: "x@checkmyapp.dev" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const mail = sent[0];
+  check("mail: the subject invites — it does not say they were added", mail?.subject === "Vladislav invited you to join Securify on CheckMyApp" && !/added you/i.test(JSON.stringify(mail)), mail?.subject);
+  check("mail: both parts carry the link and say a new person comes back to join after making an account",
+    Boolean(mail) && [mail.text, mail.html].every((part) => part.includes(`/invite/${TOKEN}`) && part.includes("brings you back to join")));
+  check("mail: what the member may do is said", mail?.text.includes("act on what we find"));
+}
+
+// The token and mail checks are the async ones (SubtleCrypto, the send), and
+// the esbuild transform this runs under has no top-level await — so they run
+// last, and the summary waits for them.
+Promise.all([tokenChecks(), mailChecks()]).then(() => {
   console.log(failures === 0 ? "\nall pass" : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 });
