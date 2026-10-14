@@ -59,6 +59,24 @@ check(
   chooseTeam([{ teamId: "team_acme" }, { teamId: "team_client" }], PERSONAL, "team_client")?.teamId === "team_client",
 );
 check("no memberships at all resolves to nothing, for the caller to handle", chooseTeam([], PERSONAL, null) === null);
+// CHE-481: someone who signed up to accept an invitation, on a new browser.
+const invitee = [{ teamId: PERSONAL, apps: 0 }, { teamId: "team_acme", apps: 3 }, { teamId: "team_client", apps: 1 }];
+check(
+  "an empty personal team gives way to the oldest team they joined — signing in elsewhere opens the team, not an empty one",
+  chooseTeam(invitee, PERSONAL, null)?.teamId === "team_acme",
+  String(chooseTeam(invitee, PERSONAL, null)?.teamId),
+);
+check("…their own choice still wins, the empty team included", chooseTeam(invitee, PERSONAL, PERSONAL)?.teamId === PERSONAL);
+check(
+  "a personal team with apps in it stays the default, whatever else they joined",
+  chooseTeam([{ teamId: PERSONAL, apps: 2 }, { teamId: "team_acme", apps: 3 }], PERSONAL, null)?.teamId === PERSONAL,
+);
+check("an empty personal team and nothing else is still theirs", chooseTeam([{ teamId: PERSONAL, apps: 0 }], PERSONAL, null)?.teamId === PERSONAL);
+const teamsSource = readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "src/lib/teams.ts"), "utf8");
+check(
+  "activeTeamContext tells the rule how many apps each team holds",
+  /_count:\s*\{\s*select:\s*\{\s*apps:\s*true\s*\}\s*\}/.test(teamsSource) && /apps:\s*m\.team\._count\.apps/.test(teamsSource),
+);
 check("the cookie has a name that says whose it is", ACTIVE_TEAM_COOKIE.startsWith("cma_"), ACTIVE_TEAM_COOKIE);
 
 // ─── 2. Nothing takes tenancy from a URL ─────────────────────────────────────

@@ -82,7 +82,14 @@ export const ACTIVE_TEAM_COOKIE = "cma_team";
 // is a member of that team — a cookie is something the holder can edit, so it
 // is a request, never an authority. Anything else falls back to their personal
 // team, and to the oldest membership if (impossibly) they have no personal one.
-export function chooseTeam<T extends { teamId: string }>(
+//
+// CHE-481: except a personal team with nothing in it. Someone who signed up to
+// accept an invitation has a team of their own they never asked for; on a new
+// browser (no cookie yet) it opened empty, and the team they joined was a
+// switch away — "it made me a new account". An empty personal team gives way
+// to the oldest team they joined. `apps` is how many apps the team holds;
+// left out, nothing is known and the personal team stands.
+export function chooseTeam<T extends { teamId: string; apps?: number }>(
   memberships: T[],
   personalId: string,
   preferred: string | null,
@@ -91,7 +98,10 @@ export function chooseTeam<T extends { teamId: string }>(
     const asked = memberships.find((m) => m.teamId === preferred);
     if (asked) return asked;
   }
-  return memberships.find((m) => m.teamId === personalId) ?? memberships[0] ?? null;
+  const personal = memberships.find((m) => m.teamId === personalId);
+  const joined = memberships.find((m) => m.teamId !== personalId);
+  if (personal && personal.apps === 0 && joined) return joined;
+  return personal ?? memberships[0] ?? null;
 }
 
 // Which team this person is acting for, and what they may do in it.
@@ -108,10 +118,14 @@ export async function activeTeamContext(
 ): Promise<TeamContext> {
   const memberships = await db.membership.findMany({
     where: { userId: user.id },
-    include: { team: true },
+    include: { team: { include: { _count: { select: { apps: true } } } } },
     orderBy: { createdAt: "asc" },
   });
-  const chosen = chooseTeam(memberships, personalTeamId(user.id), preferredTeamId);
+  const chosen = chooseTeam(
+    memberships.map((m) => ({ ...m, apps: m.team._count.apps })),
+    personalTeamId(user.id),
+    preferredTeamId,
+  );
   if (!chosen) {
     // No membership at all: an account that predates the backfill or was
     // written straight by a webhook. Give it its team rather than refusing the
