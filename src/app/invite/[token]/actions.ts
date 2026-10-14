@@ -9,10 +9,9 @@
 // look like a broken link rather than a rule.
 
 import { redirect } from "next/navigation";
-import { requireUser } from "@/lib/auth";
+import { rememberActiveTeam, requireUser } from "@/lib/auth";
 import { refuseSelfCheck } from "@/lib/self-check-action";
 import { decideAccept, hashInviteToken } from "@/lib/invites";
-import { personalTeamId } from "@/lib/teams";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { recordTeamEvent } from "@/lib/team-events";
 import { getStripeEnv } from "@/lib/stripe";
@@ -48,7 +47,8 @@ export async function acceptInviteAction(token: string): Promise<void> {
     redirect(`/invite/${token}?error=${encodeURIComponent(decision.reason)}`);
   }
   if (decision.kind === "already_member") {
-    redirect(`/home?team=${decision.teamId}`);
+    await rememberActiveTeam(decision.teamId);
+    redirect("/home");
   }
 
   // The membership and the invitation's own record of what happened to it. D1
@@ -82,8 +82,11 @@ export async function acceptInviteAction(token: string): Promise<void> {
   });
 
   // Their personal team still exists and still holds their own apps; this adds
-  // a second one rather than replacing anything (T8 adds the switch between
-  // them). The redirect goes to the team they just joined.
-  void personalTeamId(user.id);
-  redirect(`/home?team=${decision.teamId}`);
+  // a second one rather than replacing anything. Pressing "Join" is choosing
+  // the team, so it becomes the one they work in — the dashboard opens on it.
+  // Until 2026-10-14 this put the team in a query parameter that nothing read:
+  // a person who joined landed on their own empty team and took it for a new
+  // account.
+  await rememberActiveTeam(decision.teamId);
+  redirect("/home");
 }

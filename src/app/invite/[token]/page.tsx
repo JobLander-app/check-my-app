@@ -1,7 +1,11 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { auth } from "@clerk/nextjs/server";
 import { requireUser } from "@/lib/auth";
+import { getDbFromContext } from "@/lib/db";
 import { Button, buttonClass } from "@/components/ui/button";
-import { decideAccept, hashInviteToken, inviteState } from "@/lib/invites";
+import { decideAccept, hashInviteToken, inviteAuthPath, inviteState } from "@/lib/invites";
+import { switchTeamAction } from "@/app/team/switch-actions";
 import { acceptInviteAction } from "./actions";
 
 // CHE-257 (Teams T4): the page an invitation link opens.
@@ -18,10 +22,23 @@ export default async function InvitePage({
   params: Promise<{ token: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  // Signing in first is deliberate: a team membership needs an identity, and
-  // requireUser sends them through sign-in and back here.
-  const { user, db } = await requireUser();
+  // Signing in first is deliberate: a team membership needs an identity. The
+  // way there carries the way back (inviteAuthPath) — requireUser's own
+  // redirect is a bare /sign-in, and this page is the one place that loses
+  // the person if they come out of sign-up anywhere but here.
   const { token } = await params;
+  if (!(await auth()).userId) {
+    const db = await getDbFromContext();
+    const sentTo = await db.teamInvite.findUnique({
+      where: { tokenHash: await hashInviteToken(token) },
+      select: { email: true },
+    });
+    const hasAccount = sentTo
+      ? (await db.user.findFirst({ where: { email: sentTo.email }, select: { id: true } })) !== null
+      : false;
+    redirect(inviteAuthPath(token, hasAccount));
+  }
+  const { user, db } = await requireUser();
   const { error } = await searchParams;
 
   const invite = await db.teamInvite.findUnique({
@@ -53,9 +70,13 @@ export default async function InvitePage({
         <section className="card p-6">
           <h1 className="break-words text-xl font-semibold">You are already on {invite?.team.name}</h1>
           <p className="mt-2 text-sm text-fg-muted">Nothing to accept — the team is in your dashboard.</p>
-          <Link href="/home" className={buttonClass("primary", "mt-6")}>
-            Open the dashboard
-          </Link>
+          {/* Opens the dashboard IN that team: a plain link would open whichever
+              team this browser last used, usually their own empty one. */}
+          <form action={switchTeamAction.bind(null, invite!.teamId, "/home")}>
+            <Button type="submit" className="mt-6">
+              Open {invite!.team.name}
+            </Button>
+          </form>
         </section>
       ) : decision.kind === "refused" ? (
         <section className="card p-6">

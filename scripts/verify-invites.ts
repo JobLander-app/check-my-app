@@ -8,6 +8,7 @@
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-invites.ts
 
+import { readFileSync } from "node:fs";
 import {
   INVITE_TOKEN_RE,
   INVITE_TTL_DAYS,
@@ -15,6 +16,7 @@ import {
   decideAccept,
   generateInviteToken,
   hashInviteToken,
+  inviteAuthPath,
   inviteExpiry,
   inviteState,
   type InviteRow,
@@ -132,6 +134,55 @@ for (const row of [
     d.kind === "refused" && d.reason.length > 20,
   );
 }
+
+// ─── Getting from the email to the team ──────────────────────────────────────
+//
+// 2026-10-14: the first person who followed an invitation came out of sign-up
+// on /home in a team of their own, with the invitation still pending. Two
+// breaks, each enough on its own: the page sent signed-out visitors to a bare
+// /sign-in, and joining redirected to /home?team=…, which nothing read.
+
+const TOKEN = "inv_0123456789abcdef0123456789abcdef";
+const backFrom = (path: string) => new URL(path, "https://x.test").searchParams.get("redirect_url");
+
+check(
+  "a newcomer is sent to sign-up, and sign-up brings them back to the invitation",
+  inviteAuthPath(TOKEN, false).startsWith("/sign-up?") && backFrom(inviteAuthPath(TOKEN, false)) === `/invite/${TOKEN}`,
+  inviteAuthPath(TOKEN, false),
+);
+check(
+  "someone whose invited address has an account is sent to sign-in, with the same way back",
+  inviteAuthPath(TOKEN, true).startsWith("/sign-in?") && backFrom(inviteAuthPath(TOKEN, true)) === `/invite/${TOKEN}`,
+  inviteAuthPath(TOKEN, true),
+);
+check(
+  "whatever is typed into the link, the way back stays on the invitation page",
+  new URL(backFrom(inviteAuthPath("../../home", false))!, "https://x.test").pathname.startsWith("/invite/"),
+  backFrom(inviteAuthPath("../../home", false)) ?? "",
+);
+
+// The two call sites. A rule in a pure function protects nobody if the page
+// stops calling it, so the wiring is asserted too.
+const page = readFileSync("src/app/invite/[token]/page.tsx", "utf8");
+const accept = readFileSync("src/app/invite/[token]/actions.ts", "utf8");
+check(
+  "the invitation page decides the way to sign-in itself, before requireUser's bare redirect can",
+  page.includes("inviteAuthPath(") && page.indexOf("inviteAuthPath(") < page.indexOf("await requireUser()"),
+);
+// Joined, or already on it: both leave for /home, and the line before each
+// leaving is the one that makes the team the active one.
+const acceptLines = accept.split("\n").map((l) => l.trim());
+const toHome = acceptLines.flatMap((l, i) => (l.startsWith('redirect("/home")') ? [i] : []));
+check(
+  "every way out of joining makes the team the active one first",
+  toHome.length === 2 && toHome.every((i) => acceptLines[i - 1] === "await rememberActiveTeam(decision.teamId);"),
+  `${toHome.length} redirects to /home`,
+);
+check("no redirect carries ?team= — nothing reads it", !/[?&]team=/.test(accept + page));
+check(
+  "\"already on the team\" opens that team, not whichever one the browser last used",
+  page.includes("switchTeamAction.bind(null, invite!.teamId"),
+);
 
 // ─── What an admin may send ──────────────────────────────────────────────────
 

@@ -100,17 +100,36 @@ check(
   suspects.join(", ") || "clean",
 );
 
-// The switch itself must check membership rather than trusting what it is
-// handed — the one place the active team changes.
+// The active team changes in exactly two places — the switch, and pressing
+// "Join" on an invitation — and both go through rememberActiveTeam. Each must
+// establish membership before it writes, rather than trusting what it is handed.
 const switchAction = readFileSync(join(ROOT, "src/app/team/switch-actions.ts"), "utf8");
 check(
   "switching verifies membership before it changes anything",
   /db\.membership\.findFirst/.test(switchAction) &&
-    switchAction.indexOf("db.membership.findFirst") < switchAction.indexOf("cookies()"),
+    switchAction.indexOf("db.membership.findFirst") < switchAction.indexOf("rememberActiveTeam("),
 );
+const joinAction = readFileSync(join(ROOT, "src/app/invite/[token]/actions.ts"), "utf8");
+check(
+  "joining makes the person a member before it makes the team their active one",
+  joinAction.indexOf("db.membership.upsert") > 0 &&
+    joinAction.indexOf("db.membership.upsert") < joinAction.lastIndexOf("rememberActiveTeam(") &&
+    // The early exit is the already-a-member branch: membership is the reason it exists.
+    joinAction.indexOf('decision.kind === "already_member"') < joinAction.indexOf("rememberActiveTeam("),
+);
+const writers = walk(join(ROOT, "src"))
+  .map((f) => relative(ROOT, f))
+  .filter((f) => f !== "src/lib/auth.ts" && /rememberActiveTeam\(/.test(readFileSync(join(ROOT, f), "utf8")))
+  .sort();
+check(
+  "nothing else changes the active team",
+  JSON.stringify(writers) === JSON.stringify(["src/app/invite/[token]/actions.ts", "src/app/team/switch-actions.ts"]),
+  writers.join(", "),
+);
+const authLib = readFileSync(join(ROOT, "src/lib/auth.ts"), "utf8");
 check(
   "the cookie is httpOnly — the active team is not a thing page scripts set",
-  /httpOnly:\s*true/.test(switchAction),
+  /export async function rememberActiveTeam[\s\S]{0,200}httpOnly:\s*true/.test(authLib),
 );
 check(
   "a redirect target from the caller must be a local path",
