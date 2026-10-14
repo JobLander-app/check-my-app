@@ -9,8 +9,8 @@ export type Cookie = Record<string, unknown>;
 
 // ── the jar, sealed ──
 //
-// AES-GCM under a key derived from SESSION_JAR_KEY, with the team's id as the
-// associated data: a jar copied into another team's object does not open.
+// AES-GCM under a key derived from SESSION_JAR_KEY, with the slot as the
+// associated data: a jar copied into another slot's object does not open.
 
 const b64 = (bytes: Uint8Array) => {
   let binary = "";
@@ -27,30 +27,31 @@ async function jarKey(secret: string | undefined): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function sealJar(secret: string | undefined, teamId: string, jar: Cookie[]): Promise<{ iv: string; data: string }> {
+export async function sealJar(secret: string | undefined, slot: string, jar: Cookie[]): Promise<{ iv: string; data: string }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(teamId) },
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(slot) },
     await jarKey(secret),
     new TextEncoder().encode(JSON.stringify(jar)),
   );
   return { iv: b64(iv), data: b64(new Uint8Array(data)) };
 }
 
-export async function openJar(secret: string | undefined, teamId: string, sealed: { iv: string; data: string }): Promise<Cookie[]> {
+export async function openJar(secret: string | undefined, slot: string, sealed: { iv: string; data: string }): Promise<Cookie[]> {
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: unb64(sealed.iv), additionalData: new TextEncoder().encode(teamId) },
+    { name: "AES-GCM", iv: unb64(sealed.iv), additionalData: new TextEncoder().encode(slot) },
     await jarKey(secret),
     unb64(sealed.data),
   );
   return jarOf(JSON.parse(new TextDecoder().decode(plain))) as Cookie[];
 }
 
-// One team, one sticky residential session. The upstream's password carries
-// `_session-<id>`; each team's is derived from its id, so one team's exit
-// address never moves because of another's (CHE-426's rule). A URL with no
-// session part is used as it is; no URL means direct egress.
-export async function proxyForTeam(url: string | undefined, teamId: string): Promise<string | null> {
+// One slot, one sticky residential session. The upstream's password carries
+// `_session-<id>`; each slot's is derived from it, so one person's exit
+// address never moves because of another's (CHE-426's rule, per person since
+// CHE-482). A URL with no session part is used as it is; no URL means direct
+// egress.
+export async function proxyForSlot(url: string | undefined, slot: string): Promise<string | null> {
   const raw = url?.trim();
   if (!raw) return null;
   let parsed: URL;
@@ -62,7 +63,7 @@ export async function proxyForTeam(url: string | undefined, teamId: string): Pro
   if (parsed.protocol !== "http:" || !parsed.username) return null;
   const password = decodeURIComponent(parsed.password);
   if (!/_session-[A-Za-z0-9]{1,32}/.test(password)) return raw;
-  const session = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`session-proxy:${teamId}`)))).slice(0, 8);
+  const session = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`session-proxy:${slot}`)))).slice(0, 8);
   parsed.password = password.replace(/_session-[A-Za-z0-9]{1,32}/, `_session-${session}`);
   return parsed.toString();
 }
@@ -85,8 +86,15 @@ const REASON: Record<string, string> = {
   error: "проба второй час подряд не может открыть админку",
 };
 
-// What the owner reads when a team's sign-in or its egress went down.
-export function probeMessage(teamName: string, appId: string, line: ProbeLine, appUrl?: string): string {
+// Whose sign-in a probe looked at: the team's name and the person's address,
+// as the owner reads them.
+export interface ProbeWho {
+  team: string;
+  person: string;
+}
+
+// What the owner reads when a person's sign-in or the egress went down.
+export function probeMessage(who: ProbeWho, appId: string, line: ProbeLine, appUrl?: string): string {
   if (line.state === "proxy") {
     const why =
       line.proxy_status === 407
@@ -99,8 +107,8 @@ export function probeMessage(teamName: string, appId: string, line: ProbeLine, a
   }
   const base = (appUrl ?? "https://checkmyapp.dev").replace(/\/+$/, "");
   return (
-    `Вход в Shopify у команды «${teamName}» закончился: ${REASON[line.state] ?? line.state} (${line.at}).\n` +
-    `Нужно войти заново: ${base}/health/apps/${appId}/sign-in\n` +
+    `Вход в Shopify у ${who.person} (команда «${who.team}») закончился: ${REASON[line.state] ?? line.state} (${line.at}).\n` +
+    `Войти заново может только ${who.person}: ${base}/health/apps/${appId}/sign-in\n` +
     "Отвечать не нужно — проба сама увидит, что вход снова на месте."
   );
 }
@@ -113,17 +121,21 @@ export function probeMessage(teamName: string, appId: string, line: ProbeLine, a
 // for a drop, and through the whole run of proxy lines for an outage. A fixed
 // window forgot the one message of an outage longer than itself and sent it
 // again (Codex on #338).
+//
+// CHE-482: the history is one person's in one team — another person's sign-in
+// ending is not a reason to tell, or not to tell, about this one.
 export async function recordProbe(
   DB: D1Database,
-  team: string,
+  owner: { teamId: string; userId: string },
   appId: string,
   line: ProbeLine,
   tell: () => Promise<string | null>,
 ): Promise<{ notified: boolean | null }> {
+  const { teamId, userId } = owner;
   const rows = await DB.prepare(
-    "SELECT state, notified FROM SessionProbe WHERE teamId = ? AND at >= COALESCE((SELECT MAX(at) FROM SessionProbe WHERE teamId = ? AND state = 'ok'), '') ORDER BY at DESC LIMIT 5000",
+    "SELECT state, notified FROM SessionProbe WHERE teamId = ? AND userId = ? AND at >= COALESCE((SELECT MAX(at) FROM SessionProbe WHERE teamId = ? AND userId = ? AND state = 'ok'), '') ORDER BY at DESC LIMIT 5000",
   )
-    .bind(team, team)
+    .bind(teamId, userId, teamId, userId)
     .all<{ state: string; notified: number | null }>();
   const history = (rows.results ?? []).reverse().map((row) => ({ state: row.state, notified: row.notified === 1 }));
   let notified: boolean | null = null;
@@ -133,11 +145,12 @@ export async function recordProbe(
     notified = notifyError === null;
   }
   await DB.prepare(
-    "INSERT INTO SessionProbe (id, teamId, appId, at, state, urlHost, urlPath, ms, challenge, detail, proxyStatus, notified, notifyError) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO SessionProbe (id, teamId, userId, appId, at, state, urlHost, urlPath, ms, challenge, detail, proxyStatus, notified, notifyError) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   )
     .bind(
       `sp${Date.now().toString(36)}${hex(crypto.getRandomValues(new Uint8Array(6)))}`,
-      team,
+      teamId,
+      userId,
       appId,
       line.at,
       line.state,

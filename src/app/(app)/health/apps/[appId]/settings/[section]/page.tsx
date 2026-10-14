@@ -263,7 +263,7 @@ async function ShopifyStores({
   hasStorePassword: boolean;
   save: Save;
 }) {
-  const { db } = await requireUser();
+  const { db, user } = await requireUser();
   const shopify = connectedShopifyAppOf(app);
   const stores = shopify ? await storesOf(db, teamId, shopify.handle) : [];
   // Every sentence is STORES_COPY's (src/lib/sign-in-copy.ts), under the
@@ -272,6 +272,8 @@ async function ShopifyStores({
     <div className="flex flex-col gap-4">
       <div className="card space-y-3 p-5">
         <p className="text-sm font-medium text-fg">{STORES_COPY.heading}</p>
+        {/* CHE-482: how stores work, where they are connected. */}
+        <p className="text-xs text-fg-muted">{STORES_COPY.how}</p>
         {stores.length === 0 ? (
           // Codex on #342: a store still waiting for its app to be chosen is
           // chosen on its own sign-in page — linked, not only named.
@@ -285,18 +287,24 @@ async function ShopifyStores({
           <ul className="flex flex-col divide-y divide-ink-800">
             {stores.map((s) => (
               <li key={s.appId} className="flex items-center justify-between gap-4 py-2 text-sm">
-                {s.appId === app.id ? (
-                  <span className="font-mono">
-                    {s.store} <span className="font-sans text-xs text-fg-faint">· {STORES_COPY.thisPage}</span>
-                  </span>
-                ) : (
-                  <Link href={appPath.page(s.appId)} className="font-mono text-accent hover:underline">
-                    {s.store}
+                <span className="flex flex-col">
+                  {s.appId === app.id ? (
+                    <span className="font-mono">
+                      {s.store} <span className="font-sans text-xs text-fg-faint">· {STORES_COPY.thisPage}</span>
+                    </span>
+                  ) : (
+                    <Link href={appPath.page(s.appId)} className="font-mono text-accent hover:underline">
+                      {s.store}
+                    </Link>
+                  )}
+                  <span className="text-xs text-fg-faint">{STORES_COPY.signedInAs({ mine: s.ownerId === user.id, email: s.ownerEmail })}</span>
+                </span>
+                {/* Only the store's own connector signs in for it (storeSignIn). */}
+                {s.ownerId === user.id && (
+                  <Link href={appPath.signIn(s.appId)} className="text-xs text-fg-muted hover:text-accent">
+                    {STORES_COPY.signIn}
                   </Link>
                 )}
-                <Link href={appPath.signIn(s.appId)} className="text-xs text-fg-muted hover:text-accent">
-                  {STORES_COPY.signIn}
-                </Link>
               </li>
             ))}
           </ul>

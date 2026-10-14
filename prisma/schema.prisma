@@ -1482,13 +1482,16 @@ model TelegramMessage {
 }
 
 // ─── Shopify session probes (CHE-464) ────────────────────────────────────────
-// One line per hourly look at a team's Shopify admin from the team's session
-// browser (src/agent/session-runner.ts): is the team's sign-in still alive.
-// The session host's probe.jsonl, per team. Written by the Durable Object with
-// raw statements; operator data, never read for a customer.
+// One line per hourly look at a Shopify admin from a person's session browser
+// (src/agent/session-runner.ts): is their sign-in still alive. The session
+// host's probe.jsonl, per person in a team (CHE-482). Written by the Durable
+// Object with raw statements; operator data, never read for a customer.
 model SessionProbe {
   id          String   @id
   teamId      String
+  // Whose sign-in: the session is one person's in the team (CHE-482). Null on
+  // lines from before, when a team had one shared session.
+  userId      String?
   // The team's app the probe opened.
   appId       String?
   at          DateTime
@@ -1507,6 +1510,7 @@ model SessionProbe {
   notifyError String?
 
   @@index([teamId, at])
+  @@index([teamId, userId, at])
 }
 
 // ─── Feedback (CHE-434) ──────────────────────────────────────────────────────

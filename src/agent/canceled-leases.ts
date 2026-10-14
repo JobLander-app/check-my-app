@@ -9,7 +9,7 @@
 // released. The release names the run, so it frees nothing another run holds,
 // and asking twice is harmless.
 
-import { releaseSession, sessionHost, SESSION_KIND, SESSION_LEASE_SECONDS, type SessionHost } from "./session-browser";
+import { releaseSession, runSessionSlot, sessionHost, SESSION_KIND, SESSION_LEASE_SECONDS, type SessionHost } from "./session-browser";
 import type { AgentEnv } from "./env";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { systemWide } from "@/lib/tenant-db";
@@ -26,15 +26,16 @@ export async function releaseCanceledLeases(
       targetKind: SESSION_KIND,
       completedAt: { gte: new Date(now.getTime() - SESSION_LEASE_SECONDS * 1000) },
     },
-    select: { id: true, teamId: true },
+    select: { id: true, teamId: true, app: { select: { ownerId: true } } },
   });
   if (stopped.length === 0) return [];
   const released: string[] = [];
-  // CHE-464: each run's lease is in its own team's browser.
+  // CHE-482: each run's lease is in the browser of its store's connector.
   for (const run of stopped) {
-    if (!run.teamId) continue;
+    const slot = runSessionSlot(run);
+    if (!slot) continue;
     try {
-      if (await release(sessionHost(env.bindings, run.teamId), run.id)) released.push(run.id);
+      if (await release(sessionHost(env.bindings, slot), run.id)) released.push(run.id);
     } catch (error) {
       console.warn(`[cancel] could not release ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
     }

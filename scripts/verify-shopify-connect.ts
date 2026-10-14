@@ -10,6 +10,9 @@
 //     not open, or another team's app are refused;
 //   - a second app of the same store is a second app, and the same app twice
 //     is a duplicate that names the first;
+//   - CHE-482: a store is its connector's — a member connects their own, a
+//     teammate's pick for it is refused, and a store left waiting for its pick
+//     becomes the store of whoever connects it now;
 //   - an ordinary website is still keyed on its host.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-shopify-connect.ts
@@ -124,6 +127,27 @@ async function main() {
       "ok" in c1 && !c1.watchRefused && "ok" in c2 && Boolean(c2.watchRefused) && activeF === 1, JSON.stringify({ c1, c2, activeF }));
     const trial = await db.watch.findFirst({ where: { teamId: "team_f", active: true }, select: { trialEndsAt: true } });
     check("…and the Free trial runs from the moment the app was chosen", Boolean(trial?.trialEndsAt) && new Date(trial!.trialEndsAt!).getTime() > Date.now() + 6 * 24 * 3600_000, JSON.stringify(trial));
+
+    // CHE-482: a store is checked signed in as whoever connected it. Bob, a
+    // member of team A, connects his own dev store; Ann cannot pick for it,
+    // and a store Ann left waiting becomes Bob's when Bob connects it.
+    await db.user.create({ data: { id: "bob", clerkUserId: "ck_bob", email: "bob@team-a.test" } });
+    await db.membership.create({ data: { teamId: "team_a", userId: "bob", scope: "member" } as never });
+    const bob = { userId: "bob", teamId: "team_a", plan: "business" as const };
+    const bobs = await connectApp(db, bob, APP("bob-dev", "securify"));
+    const bobsId = "ok" in bobs ? bobs.appId : "";
+    const bobsRow = await db.app.findUnique({ where: { id: bobsId }, select: { ownerId: true } });
+    check("a member connects a dev store of their own, and it is theirs", "ok" in bobs && bobsRow?.ownerId === "bob", JSON.stringify({ bobs, bobsRow }));
+    const annPicks = await chooseApp(db, ann, bobsId, pick({ store: "bob-dev" }));
+    check("a teammate's pick for that store is refused — its checks open it signed in as its connector", "error" in annPicks && annPicks.code === "invalid_input" && !hasEnvironmentLeak(annPicks.error) && !hasHomework(annPicks.error), JSON.stringify(annPicks));
+    const bobPicks = await chooseApp(db, bob, bobsId, pick({ store: "bob-dev" }));
+    check("…and the connector's own pick connects it", "ok" in bobPicks, JSON.stringify(bobPicks));
+    const annLeft = await connectApp(db, ann, APP("shared-staging", "securify"));
+    const bobTakes = await connectApp(db, bob, APP("shared-staging", "securify"));
+    const taken = "ok" in bobTakes ? await db.app.findUnique({ where: { id: bobTakes.appId }, select: { ownerId: true } }) : null;
+    check("a store a teammate left waiting for its pick becomes the store of whoever connects it now — still one row",
+      "ok" in annLeft && "ok" in bobTakes && bobTakes.appId === annLeft.appId && taken?.ownerId === "bob" && (await db.app.count({ where: { teamId: "team_a", appSlug: "shopify:shared-staging" } })) === 1,
+      JSON.stringify({ annLeft, bobTakes, taken }));
 
     const site = await createAppForTeam(db, ann, { targetUrl: "https://shop.example/path" });
     const siteRow = "ok" in site ? await db.app.findUnique({ where: { id: site.app.id }, select: { appSlug: true, targetKind: true } }) : null;

@@ -48,10 +48,16 @@ export async function connectApp(
   if (existing) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
   // A store already waiting for its app is the same pending app — pointed at
   // the app asked for now: opening the connect page twice must not leave two.
+  // CHE-482: and it becomes the store of whoever connects it now. A store is
+  // checked signed in as its connector, and nobody has signed in for a pending
+  // one yet; left with a teammate who started and walked away, it would send
+  // this person to a sign-in page that is not theirs to use. One's own pending
+  // store first, so a person never takes over a teammate's while holding one.
   const targetUrl = shopifyAdminUrl(store, handle);
-  const pending = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store) }, select: { id: true } });
+  const pendingRows = await db.app.findMany({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store) }, select: { id: true, ownerId: true } });
+  const pending = pendingRows.find((p) => p.ownerId === actor.userId) ?? pendingRows[0];
   if (pending) {
-    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: pending.id }, data: { targetUrl } });
+    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: pending.id }, data: { targetUrl, ownerId: actor.userId } });
     return { ok: true, appId: pending.id, store, handle, reused: true, connected: false };
   }
   const created = await createAppForTeam(db, actor, {
@@ -72,9 +78,12 @@ export type ChooseResult =
 export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string, pick: Pick): Promise<ChooseResult> {
   const app = await db.app.findFirst({
     where: { ...teamOwned(actor.teamId), id: appId },
-    select: { id: true, targetUrl: true, targetKind: true, appSlug: true },
+    select: { id: true, targetUrl: true, targetKind: true, appSlug: true, ownerId: true },
   });
   if (!app || app.targetKind !== "session") return { error: CONNECT_ERRORS.notFound, code: "not_found" };
+  // CHE-482: the pick was read in the chooser's own browser; the store's checks
+  // run in its connector's. Only the connector's pick is saved.
+  if (app.ownerId !== actor.userId) return { error: CONNECT_ERRORS.notYours, code: "invalid_input" };
   const store = storeOfAdminUrl(app.targetUrl);
   if (!store || store !== pick.store) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
   // Only a store still waiting for its app takes a choice: a connected app is

@@ -41,7 +41,7 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { RUN_CANCELED } from "@/lib/run-cancel";
-import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
+import { askForSession, isSessionTarget, releaseSession, runSessionSlot, sessionHost, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
@@ -235,13 +235,20 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           ownerId: true,
           // CHE-253/CHE-262: whose run this is, and therefore who hears about it.
           teamId: true,
+          // CHE-482: a store is checked signed in as whoever connected it.
+          app: { select: { ownerId: true } },
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
       // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
       // here, so neither the tools, the evidence rules nor the prompt ever
       // treat one of our hosts as the customer's product.
-      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
+      const { app, ...row } = r;
+      return {
+        ...row,
+        sessionSlot: runSessionSlot({ teamId: r.teamId, app }),
+        allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)),
+      };
     });
     // CHE-436: BYOK — decrypt the team's OpenRouter key here, once, and pass it
     // to makeLlm as an override. decryptSecret is synchronous; no step needed.
@@ -260,7 +267,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings, run.teamId), run.id);
+          return await releaseSession(sessionHost(env.bindings, run.sessionSlot), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -278,7 +285,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.teamId), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.sessionSlot), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);

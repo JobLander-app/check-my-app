@@ -60,7 +60,7 @@ async function main() {
 
     const triggered: string[] = [];
     const deps = { db, origin: "https://checkmyapp.dev", trigger: async (id: string) => void triggered.push(id), siteCap: () => 1000, ephemeralTtlDays: () => 7, sleep: async () => {}, now: () => Date.now() };
-    const as = (scope: "admin" | "member") =>
+    const as = (scope: "admin" | "member" | "reader") =>
       createRemoteTools({ user: { id: "u", email: "vladislav@securify.test", name: null }, team: { id: "ts", name: "Securify", plan: "business", features: ["shopify"] }, scope, door: "mcp" } as never, deps as never);
     const parse = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
 
@@ -71,10 +71,10 @@ async function main() {
     check("list_apps: a website carries no Shopify fields", !("shopify_app" in listed.apps.find((a: { app_id: string }) => a.app_id === "site")));
 
     // 3.
-    const memberAdd = parse(await as("member").add_store({ shopify_app: HANDLE, store: "vladislav-dog-photos" }));
-    // What the refusal says beyond "forbidden" (the key's scope, what it can
-    // still do) is #317's, checked in verify-mcp-remote.
-    check("add_store: a member key is refused", memberAdd.code === "forbidden", JSON.stringify(memberAdd));
+    // CHE-482: a store is the person's own, connected with their own Shopify
+    // sign-in — a member adds theirs; a reader starts nothing, so adds none.
+    const readerAdd = parse(await as("reader").add_store({ shopify_app: HANDLE, store: "vladislav-dog-photos" }));
+    check("add_store: a reader key is refused", readerAdd.code === "forbidden", JSON.stringify(readerAdd));
     const unknown = parse(await as("admin").add_store({ shopify_app: "not-connected", store: "x" }));
     check("add_store: an app the team never connected is not found, and says how to connect it", unknown.code === "not_found" && /connect_shopify_app/.test(unknown.error), unknown.error);
     const again = parse(await as("admin").add_store({ shopify_app: HANDLE, store: "prod-release-1" }));

@@ -368,8 +368,8 @@ export function memberToolsSentence(scope: TeamScope, pilot: boolean): string {
   }
   if (scope === "member") {
     return pilot
-      ? "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check and marks findings; " +
-          "storing a login and connecting a Shopify store (connect_shopify_app) take an admin key."
+      ? "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check, marks findings, " +
+          "and connects the user's own Shopify dev stores (connect_shopify_app, add_store); storing a login takes an admin key."
       : "It reads everything and also starts checks (start_check); storing a login takes an admin key.";
   }
   return "";
@@ -513,6 +513,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           // CHE-322: label and email only. The password column is not selected,
           // so no later edit to the mapping below can leak it.
           testAccounts: { orderBy: { createdAt: "asc" }, select: { label: true, email: true } },
+          // CHE-482: a store's checks open it signed in as whoever connected it.
+          owner: { select: { email: true } },
           watch: { select: { active: true, frequency: true, nextRunAt: true, trialEndsAt: true } },
           runs: {
             orderBy: { createdAt: "desc" },
@@ -538,18 +540,21 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           }),
         ),
       );
-      const byHandle = new Map<string, { appId: string; store: string }[]>();
+      const byHandle = new Map<string, { appId: string; store: string; by: string | null }[]>();
       for (const a of apps) {
         // Only a connected store is another store of the app (a pending one has
         // not had its app confirmed yet).
         const of = connectedShopifyAppOf(a);
-        if (of) byHandle.set(of.handle, [...(byHandle.get(of.handle) ?? []), { appId: a.id, store: of.store }]);
+        if (of) byHandle.set(of.handle, [...(byHandle.get(of.handle) ?? []), { appId: a.id, store: of.store, by: a.owner?.email ?? null }]);
       }
-      const shopifyFields = (id: string, slug: string, targetUrl: string) => {
+      const shopifyFields = (id: string, slug: string, targetUrl: string, by: string | null) => {
         const of = shopifyAppOf({ appSlug: slug, targetUrl });
         if (!of) return {};
-        const others = (byHandle.get(of.handle) ?? []).filter((s) => s.appId !== id).map((s) => ({ store: s.store, app_id: s.appId }));
-        return { shopify_app: of.handle, store: of.store, other_stores: others };
+        const others = (byHandle.get(of.handle) ?? [])
+          .filter((s) => s.appId !== id)
+          .map((s) => ({ store: s.store, app_id: s.appId, signed_in_as: s.by }));
+        // signed_in_as: whose Shopify sign-in this store's checks use (CHE-482).
+        return { shopify_app: of.handle, store: of.store, signed_in_as: by, other_stores: others };
       };
       return text({
         ok: true,
@@ -584,7 +589,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             has_store_password: Boolean(a.storePasswordEnc),
             // CHE-451: a Shopify app on several stores — which app and store
             // this is, and the same app's other stores in the team.
-            ...shopifyFields(a.id, a.appSlug, a.targetUrl),
+            ...shopifyFields(a.id, a.appSlug, a.targetUrl, a.owner?.email ?? null),
             // What a check of this app usually costs; null until it has a
             // history (plan.typical_check_price_usd covers it until then).
             usual_price_usd: money?.range ? { low: money.range.low, high: money.range.high } : null,
@@ -619,7 +624,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     // the admin and hands the person a page: they sign in there, the app is
     // picked up, and its first check starts from that page.
     async connect_shopify_app(args: { app_url: string }): Promise<ToolResult> {
-      const denied = deny("app.credentials.write");
+      // CHE-482: the store is the key holder's own, opened with their own
+      // Shopify sign-in — a member connects theirs.
+      const denied = deny("shopify.store.connect");
       if (denied) return denied;
       const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_url);
       if ("error" in result) {
@@ -653,7 +660,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     // CHE-451: the same Shopify app on one more dev store. Named for what the
     // agent is doing — adding a store — not "connect an app", which it is not.
     async add_store(args: { shopify_app: string; store: string }): Promise<ToolResult> {
-      const denied = deny("app.credentials.write");
+      const denied = deny("shopify.store.connect");
       if (denied) return denied;
       const known = await storesOf(db, team.id, args.shopify_app);
       if (known.length === 0) {
@@ -1319,11 +1326,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   connect_shopify_app: MCP_CONNECT_COPY.description,
-  add_store:
-    "Add one more dev store to a Shopify app the team already checks — staging, production, a store with the data a " +
-    "feature needs. Pass shopify_app (list_apps) and the store's name. The person opens the returned page and confirms " +
-    "the app on that store (signing in only if the account cannot open it); the app's team scenarios come with it. " +
-    "Then start_check with shopify_app and store checks the app there.",
+  add_store: MCP_CONNECT_COPY.addStore,
   update_app:
     "Change a saved app: its name, scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +

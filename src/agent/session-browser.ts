@@ -21,7 +21,8 @@
 
 import type { Browser, BrowserContext, Locator, Page } from "@cloudflare/playwright";
 import type { AgentBindings } from "./env";
-import { SESSION_TEAM_HEADER, sessionRunnerFor } from "./session-address";
+import { SESSION_SLOT_HEADER, sessionRunnerFor } from "./session-address";
+import { storeSlot } from "@/lib/session-view";
 
 export const SESSION_KIND = "session";
 
@@ -41,20 +42,28 @@ export interface SessionHost {
   token?: string;
 }
 
-// The run's team's browser. A run with no team, or a Worker without the
-// binding, cannot run this kind at all — an internal error (rule 4), never
+// The browser of the run's store: its team's, signed in as whoever connected
+// the store (CHE-482, runSessionSlot). A run with no slot, or a Worker without
+// the binding, cannot run this kind at all — an internal error (rule 4), never
 // something a customer reads.
-export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, teamId: string | null | undefined): SessionHost {
-  if (!teamId) throw new Error("internal: a session check needs its team");
-  const runner = sessionRunnerFor(bindings, teamId);
+export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, slot: string | null | undefined): SessionHost {
+  if (!slot) throw new Error("internal: a session check needs the slot of its store");
+  const runner = sessionRunnerFor(bindings, slot);
   return {
     url: "http://session",
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
-      headers.set(SESSION_TEAM_HEADER, teamId);
+      headers.set(SESSION_SLOT_HEADER, slot);
       return runner.fetch(new Request(input, { ...init, headers }));
     },
   };
+}
+
+// A run's slot: its team, and the person who connected the app it checks. Read
+// from the run's own team and its app's connector — never from whoever started
+// the check: a teammate's check of my store still opens it signed in as me.
+export function runSessionSlot(run: { teamId: string | null; app?: { ownerId: string | null } | null }): string | null {
+  return run.teamId && run.app ? storeSlot({ teamId: run.teamId, ownerId: run.app.ownerId }) : null;
 }
 
 // Another run holds the host. Not a verdict and not a failure of the product:

@@ -33,6 +33,7 @@ import {
   isSignOutAddress,
   isSignOutText,
   releaseSession,
+  runSessionSlot,
   SESSION_WAIT_MAX_SECONDS,
   SESSION_WAIT_MIN_SECONDS,
   SessionBrowser,
@@ -46,6 +47,7 @@ import {
   type SessionHost,
   type SessionSteps,
 } from "@/agent/session-browser";
+import { SESSION_SLOT_HEADER } from "@/agent/session-address";
 
 // src/agent/browser.ts reaches @cloudflare/playwright, which requires the
 // `cloudflare:workers` builtin at load time (verify-closed-door does the same).
@@ -98,29 +100,36 @@ async function launchProfile(profile: string, debugPort: number): Promise<Browse
 }
 
 async function main() {
-  // ── the configuration (CHE-464): the run's team's browser, or the kind cannot run ──
+  // ── the configuration (CHE-464, CHE-482): the browser of the run's store's
+  // connector, or the kind cannot run ──
   {
-    const asked: { name: string; team: string | null; path: string }[] = [];
+    const asked: { name: string; slot: string | null; path: string }[] = [];
     const namespace = {
       getByName: (name: string) => ({
         fetch: async (request: Request) => {
-          asked.push({ name, team: request.headers.get("X-Session-Team"), path: new URL(request.url).pathname });
+          asked.push({ name, slot: request.headers.get(SESSION_SLOT_HEADER), path: new URL(request.url).pathname });
           return Response.json({ sessionId: "s-1" });
         },
       }),
     };
     const bindings = { SESSION_RUNNER: namespace } as unknown as Parameters<typeof sessionHost>[0];
-    const host = sessionHost(bindings, "team_abc");
+    // A teammate started the check; the store was connected by u_owner.
+    const slot = runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner" } });
+    const host = sessionHost(bindings, slot);
     await askForSession(host, RUN_A);
     check(
-      "configuration: a run's requests go to its own team's browser, named by the team and saying which team",
-      asked.length === 1 && asked[0].name === "team_abc" && asked[0].team === "team_abc" && asked[0].path === "/lease",
+      "configuration: a run's requests go to the browser of whoever connected its store, named by that slot and saying it",
+      slot === "team_abc--u_owner" && asked.length === 1 && asked[0].name === slot && asked[0].slot === slot && asked[0].path === "/lease",
       JSON.stringify(asked),
     );
+    check(
+      "configuration: a run whose app has no connector has no slot",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: null } }) === null && runSessionSlot({ teamId: null, app: { ownerId: "u" } }) === null && runSessionSlot({ teamId: "team_abc", app: null }) === null,
+    );
     for (const [what, make] of [
-      ["no team", () => sessionHost(bindings, null)],
-      ["a team id that is not one", () => sessionHost(bindings, "team abc/../x")],
-      ["no binding", () => sessionHost({} as typeof bindings, "team_abc")],
+      ["no slot", () => sessionHost(bindings, null)],
+      ["a slot that is not one", () => sessionHost(bindings, "team abc/../x")],
+      ["no binding", () => sessionHost({} as typeof bindings, "team_abc--u_owner")],
     ] as const) {
       let threw = "";
       try {
