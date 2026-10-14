@@ -59,6 +59,41 @@ check(
   chooseTeam([{ teamId: "team_acme" }, { teamId: "team_client" }], PERSONAL, "team_client")?.teamId === "team_client",
 );
 check("no memberships at all resolves to nothing, for the caller to handle", chooseTeam([], PERSONAL, null) === null);
+// CHE-481: someone who signed up to accept an invitation, on a new browser.
+const invitee = [{ teamId: PERSONAL, apps: 0 }, { teamId: "team_acme", apps: 3 }, { teamId: "team_client", apps: 1 }];
+const fresh = { preferred: null, neverChosen: true };
+check(
+  "a browser that never chose: an empty personal team gives way to the oldest team they joined",
+  chooseTeam(invitee, PERSONAL, fresh)?.teamId === "team_acme",
+  String(chooseTeam(invitee, PERSONAL, fresh)?.teamId),
+);
+check("…their own choice still wins, the empty team included", chooseTeam(invitee, PERSONAL, { preferred: PERSONAL, neverChosen: false })?.teamId === PERSONAL);
+// Codex on #352: nobody but a browser that never chose is moved.
+check(
+  "a stale cookie (a team they are not on) still falls back to their own team",
+  chooseTeam(invitee, PERSONAL, { preferred: "team_somebody_else", neverChosen: false })?.teamId === PERSONAL,
+);
+check(
+  "a caller with no browser (a legacy key with no team: null) acts for the personal team, never a team its minter is on",
+  chooseTeam(invitee, PERSONAL, null)?.teamId === PERSONAL,
+);
+check(
+  "a personal team with apps in it stays the default, whatever else they joined",
+  chooseTeam([{ teamId: PERSONAL, apps: 2 }, { teamId: "team_acme", apps: 3 }], PERSONAL, fresh)?.teamId === PERSONAL,
+);
+check("an empty personal team and nothing else is still theirs", chooseTeam([{ teamId: PERSONAL, apps: 0 }], PERSONAL, fresh)?.teamId === PERSONAL);
+const authSource = readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "src/lib/auth.ts"), "utf8");
+check(
+  "neverChosen is a browser with no cookie at all — not an empty or unreadable one",
+  /neverChosen: value === undefined/.test(authSource) && /catch \{[\s\S]{0,300}neverChosen: false/.test(authSource),
+);
+const mcpSource = readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "src/lib/mcp/handler.ts"), "utf8");
+check("the MCP key path names no browser choice", /activeTeamContext\(deps\.db, grant\.user, null\)/.test(mcpSource));
+const teamsSource = readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "src/lib/teams.ts"), "utf8");
+check(
+  "activeTeamContext tells the rule how many apps each team holds",
+  /_count:\s*\{\s*select:\s*\{\s*apps:\s*true\s*\}\s*\}/.test(teamsSource) && /apps:\s*m\.team\._count\.apps/.test(teamsSource),
+);
 check("the cookie has a name that says whose it is", ACTIVE_TEAM_COOKIE.startsWith("cma_"), ACTIVE_TEAM_COOKIE);
 
 // ─── 2. Nothing takes tenancy from a URL ─────────────────────────────────────

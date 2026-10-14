@@ -23,6 +23,31 @@ export const INVITE_COPY = {
   worksUntil: (day: string) => `This link works until ${day}.`,
 } as const;
 
+// The invitation email (src/lib/email.ts sendTeamInvite). It INVITES: nobody
+// is on the team until they press Join. Until 2026-10-14 it said "added you",
+// and the first person who followed it signed up, landed in a team of their
+// own, and read that as the product losing them (CHE-481). Someone without an
+// account is told the link takes them through sign-up and back.
+export const INVITE_MAIL = {
+  subject: (invitedBy: string, team: string) => `${invitedBy} invited you to join ${team} on CheckMyApp`,
+  lead: (invitedBy: string, team: string) => `${invitedBy} invited you to join ${team} on CheckMyApp.`,
+  about: "CheckMyApp uses your team's apps the way a visitor would, every day, and tells you what broke.",
+  scope: {
+    admin: "You will be able to run checks, change settings, manage the team and its billing.",
+    member: "You will be able to run checks, change an app's settings and act on what we find.",
+    reader: "You will be able to read everything the team's checks find. Running a check is left to the others.",
+  } satisfies Record<TeamScope, string>,
+  join: (team: string) => `Join ${team}`,
+  newHere: "No CheckMyApp account yet? You create one on the way, and the link brings you back to join.",
+  lasts: "The link works for 7 days.",
+  why: (invitedBy: string) =>
+    `You get this because ${invitedBy} entered this address. If you weren't expecting it, ignore this mail — nothing happens unless you choose Join on the invitation page.`,
+} as const;
+
+export function inviteMailScope(scope: string): string {
+  return scope === "admin" ? INVITE_MAIL.scope.admin : scope === "member" ? INVITE_MAIL.scope.member : INVITE_MAIL.scope.reader;
+}
+
 // Every sentence above, for the guard.
 export function allInviteSentences(team = "Securify", email = "a@b.test"): string[] {
   return [
@@ -36,5 +61,13 @@ export function allInviteSentences(team = "Securify", email = "a@b.test"): strin
     INVITE_COPY.signedInAs(email, email),
     INVITE_COPY.joinButton(team),
     INVITE_COPY.worksUntil("2026-10-20"),
+    INVITE_MAIL.subject(email, team),
+    INVITE_MAIL.lead(email, team),
+    INVITE_MAIL.about,
+    ...Object.values(INVITE_MAIL.scope),
+    INVITE_MAIL.join(team),
+    INVITE_MAIL.newHere,
+    INVITE_MAIL.lasts,
+    INVITE_MAIL.why(email),
   ];
 }
