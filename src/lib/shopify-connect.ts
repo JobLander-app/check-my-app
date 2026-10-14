@@ -38,8 +38,15 @@ export async function connectApp(
   db: PrismaClient,
   actor: AppActor,
   rawLink: string,
-): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal> {
+): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal | { error: string; code: "forbidden" }> {
   if (!(await teamHasFeature(db, actor.teamId, "shopify"))) return { error: NOT_OPEN_YET, code: "invalid_input" };
+  // CHE-482 (Codex on #351): a store is connected with the connector's own
+  // Shopify sign-in, so the connector must be on the team. A team key outlives
+  // the person who made it; through it, someone who left would be recorded as
+  // the store's connector, and nobody could ever sign in for it.
+  if (!(await db.membership.findFirst({ where: { teamId: actor.teamId, userId: actor.userId }, select: { id: true } }))) {
+    return { error: CONNECT_ERRORS.notOnTeam, code: "forbidden" };
+  }
   const link = parseAppLink(rawLink);
   if (!link) return { error: BAD_LINK, code: "invalid_input" };
   const { store, handle } = link;

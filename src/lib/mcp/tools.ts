@@ -631,7 +631,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_url);
       if ("error" in result) {
         const code = result.code === "duplicate" ? "invalid_input" : result.code;
-        return fail(code, result.error, HINTS[code]);
+        // The only refusal of this kind is a key whose person left the team: a
+        // key with more access would not help — the user's own key would.
+        return fail(code, result.error, code === "forbidden" ? MCP_CONNECT_COPY.ownKey(deps.origin) : HINTS[code]);
       }
       if (result.connected) {
         return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: MCP_CONNECT_COPY.alreadyConnected });

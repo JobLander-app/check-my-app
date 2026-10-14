@@ -9,7 +9,7 @@
 // released. The release names the run, so it frees nothing another run holds,
 // and asking twice is harmless.
 
-import { releaseSession, runSessionSlot, sessionHost, SESSION_KIND, SESSION_LEASE_SECONDS, type SessionHost } from "./session-browser";
+import { releaseSession, sessionHost, SESSION_KIND, SESSION_LEASE_SECONDS, type SessionHost } from "./session-browser";
 import type { AgentEnv } from "./env";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { systemWide } from "@/lib/tenant-db";
@@ -26,13 +26,15 @@ export async function releaseCanceledLeases(
       targetKind: SESSION_KIND,
       completedAt: { gte: new Date(now.getTime() - SESSION_LEASE_SECONDS * 1000) },
     },
-    select: { id: true, teamId: true, app: { select: { ownerId: true } } },
+    select: { id: true, sessionSlot: true },
   });
   if (stopped.length === 0) return [];
   const released: string[] = [];
-  // CHE-482: each run's lease is in the browser of its store's connector.
+  // CHE-482: each run's lease is in the slot it recorded when it loaded — its
+  // store's connector's browser — which outlives the store itself (Codex on
+  // #351). A run stopped before it loaded never took a lease.
   for (const run of stopped) {
-    const slot = runSessionSlot(run);
+    const slot = run.sessionSlot;
     if (!slot) continue;
     try {
       if (await release(sessionHost(env.bindings, slot), run.id)) released.push(run.id);

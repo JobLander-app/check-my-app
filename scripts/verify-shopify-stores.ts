@@ -52,6 +52,8 @@ async function main() {
   try {
     await db.user.create({ data: { id: "u", clerkUserId: "ck", email: "vladislav@securify.test" } });
     await db.team.create({ data: { id: "ts", name: "Securify", plan: "business", features: '["shopify"]' } });
+    // CHE-482: the person connecting a store is on the team.
+    await db.membership.create({ data: { teamId: "ts", userId: "u", scope: "admin" } as never });
     await db.app.create({ data: { id: "prod", teamId: "ts", ownerId: "u", appSlug: "admin.shopify.com", targetUrl: PROD, targetKind: "session", allowedOrigins: '["https://admin.shopify.com"]' } });
     await db.app.create({ data: { id: "site", teamId: "ts", ownerId: "u", appSlug: "securification.ai", targetUrl: "https://securification.ai/", targetKind: "website" } });
     await db.appJourney.create({ data: { appId: "prod", key: "block-country", title: "Block a country", description: "Add Germany; a German visitor sees the block page.", source: "team", daily: true, authorId: "u" } });

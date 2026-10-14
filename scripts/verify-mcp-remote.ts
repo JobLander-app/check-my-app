@@ -98,6 +98,13 @@ async function seed() {
       // CHE-325: a Free team with one check left and a watch past its trial.
       { id: "team_g", name: "Last-check team", plan: "free", isPersonal: true },
     ],
+    // CHE-482: a store is connected by someone on the team.
+    membership: [
+      { id: "m_a", teamId: "team_a", userId: "u_a", scope: "admin" },
+      { id: "m_b", teamId: "team_b", userId: "u_b", scope: "admin" },
+      { id: "m_f", teamId: "team_f", userId: "u_f", scope: "admin" },
+      { id: "m_g", teamId: "team_g", userId: "u_g", scope: "admin" },
+    ],
     apiKey: [
       { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
       { id: "k_r", ownerId: "u_a", teamId: "team_a", scope: "reader", keyHash: await hashApiKey(KEY_A_READER), lastUsedAt: null },

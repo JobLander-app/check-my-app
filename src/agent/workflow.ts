@@ -250,9 +250,14 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         r.teamId && app?.ownerId
           ? (await env.db.membership.findFirst({ where: { teamId: r.teamId, userId: app.ownerId }, select: { id: true } })) !== null
           : false;
+      const sessionSlot = runSessionSlot({ teamId: r.teamId, app: app ? { ownerId: app.ownerId, onTeam } : null });
+      // Kept on the row, so the slot outlives the store (canceled-leases.ts).
+      if (sessionSlot && isSessionTarget(r)) {
+        await env.db.run.update({ where: { id: runId }, data: { sessionSlot } });
+      }
       return {
         ...row,
-        sessionSlot: runSessionSlot({ teamId: r.teamId, app: app ? { ownerId: app.ownerId, onTeam } : null }),
+        sessionSlot,
         allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)),
       };
     });

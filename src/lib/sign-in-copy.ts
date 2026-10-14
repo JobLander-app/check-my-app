@@ -75,6 +75,7 @@ export const MCP_CONNECT_COPY = {
     "the store without signing in again. The app's team scenarios come with it. Then start_check with shopify_app and " +
     "store checks the app there.",
   alreadyConnected: "This app is already connected — list_apps has it; start_check checks it.",
+  ownKey: (origin: string) => `Ask the user for a key of their own: ${origin}/settings/api-keys. Their stores are connected with their own Shopify sign-in.`,
   appUrl:
     "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
     "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
@@ -92,6 +93,8 @@ export const CONNECT_ERRORS = {
   cannotOpen: "This app cannot be checked: the address it is served from is not one we can open.",
   alreadyConnected: (name: string) => `${name} is already connected.`,
   notYours: "A teammate connected this store, and its checks open it signed in as them. Connect a store of your own to check the app there.",
+  notOnTeam:
+    "A store is connected with the Shopify sign-in of the person connecting it, and this key belongs to someone no longer on the team. Connect it with a key of your own.",
 } as const;
 
 export type SignInErrorCode = "busy" | "idle" | "failed" | "closed";
@@ -190,7 +193,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.cancel,
     ...Object.values(CONNECT_COPY),
     ...Object.values(CONNECT_ERRORS).map((v) => (typeof v === "function" ? v("Securify") : v)),
-    ...Object.values(MCP_CONNECT_COPY),
+    ...Object.values(MCP_CONNECT_COPY).map((v) => (typeof v === "function" ? v("https://checkmyapp.dev") : v)),
     CHOOSE_COPY.retry,
     ...Object.values(SIGN_IN_ERRORS),
     CHOOSE_COPY.signedIn(store),

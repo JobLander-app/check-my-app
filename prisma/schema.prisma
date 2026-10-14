@@ -63,6 +63,10 @@ model Run {
   // input like the test login: encrypted the same way, cleared with it after
   // a one-off run (clearedCredentials), and entered by code, never the model.
   storePasswordEnc     String?
+  // CHE-482: the Shopify session slot (team + connector) this check took its
+  // lease in, written when the run loads. Kept here so a stopped check gives
+  // the browser back even after its store is removed (Codex on #351).
+  sessionSlot          String?
   // CHE-436: the team's own OpenRouter key, copied from Team.openrouterKeyEnc
   // when the run is created. The agent decrypts it and uses it instead of the
   // worker binding — the team pays their own OpenRouter bill; the run is free

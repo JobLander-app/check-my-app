@@ -159,6 +159,12 @@ async function main() {
     check("once its connector has left, whoever connects it again makes it theirs and is sent to sign in for it",
       "ok" in afterLeft && afterLeft.appId === bobsId && !afterLeft.connected && handed?.ownerId === "ann" && handed.appSlug === "shopify:bob-dev/securify",
       JSON.stringify({ afterLeft, handed }));
+    // Codex on #351: a team key outlives its person. Bob, gone, connects
+    // nothing — not even through a key that still works.
+    const bobAfterLeft = await connectApp(db, bob, APP("bob-new", "securify"));
+    check("someone no longer on the team connects no store, and is told why",
+      "error" in bobAfterLeft && bobAfterLeft.code === "forbidden" && !hasHomework(bobAfterLeft.error) && !hasEnvironmentLeak(bobAfterLeft.error) && (await db.app.count({ where: { appSlug: { startsWith: "shopify:bob-new" } } })) === 0,
+      JSON.stringify(bobAfterLeft));
 
     const site = await createAppForTeam(db, ann, { targetUrl: "https://shop.example/path" });
     const siteRow = "ok" in site ? await db.app.findUnique({ where: { id: site.app.id }, select: { appSlug: true, targetKind: true } }) : null;

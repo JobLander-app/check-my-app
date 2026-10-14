@@ -143,10 +143,10 @@ async function main() {
 
     // 3. The session host.
     const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
-    // CHE-482: the store was connected by bo; ann stopped the check.
-    await db.user.create({ data: { id: "bo", clerkUserId: "ck_bo", email: "bo@a.test" } });
-    await db.app.create({ data: { id: "store", teamId: "ta", ownerId: "bo", appSlug: "shopify:s/h", targetUrl: "https://admin.shopify.com/store/s/apps/h", targetKind: "session" } });
-    const store = { targetKind: "session", appId: "store" };
+    // CHE-482: the store was connected by bo; ann stopped the check. Each run
+    // recorded its slot when it loaded; the store is then removed (Codex on
+    // #351) — the lease is still given back, in bo's browser.
+    const store = { targetKind: "session", sessionSlot: "ta--bo" };
     await run("s1", 11, "ta", "canceled", { ...store, completedAt: minutesAgo(5) });
     await run("s2", 12, "ta", "canceled", { ...store, completedAt: minutesAgo(SESSION_LEASE_SECONDS / 60 + 5) });
     await run("s3", 13, "ta", "canceled", { targetKind: "url", completedAt: minutesAgo(5) });
