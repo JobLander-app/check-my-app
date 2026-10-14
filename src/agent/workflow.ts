@@ -41,7 +41,7 @@ import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
 import { RUN_CANCELED } from "@/lib/run-cancel";
-import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
+import { askForSession, isSessionTarget, releaseSession, runSessionSlot, SESSION_NO_SLOT, sessionHost, slotHolderOnTeam, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
 import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
@@ -235,13 +235,31 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           ownerId: true,
           // CHE-253/CHE-262: whose run this is, and therefore who hears about it.
           teamId: true,
+          // CHE-482: a store is checked signed in as whoever connected it.
+          app: { select: { ownerId: true } },
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
       // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
       // here, so neither the tools, the evidence rules nor the prompt ever
       // treat one of our hosts as the customer's product.
-      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
+      const { app, ...row } = r;
+      // CHE-482 (Codex on #351): the connector's sign-in is used only while
+      // they are on the team.
+      const onTeam =
+        r.teamId && app?.ownerId
+          ? (await env.db.membership.findFirst({ where: { teamId: r.teamId, userId: app.ownerId }, select: { id: true } })) !== null
+          : false;
+      const sessionSlot = runSessionSlot({ teamId: r.teamId, app: app ? { ownerId: app.ownerId, onTeam } : null });
+      // Kept on the row, so the slot outlives the store (canceled-leases.ts).
+      if (sessionSlot && isSessionTarget(r)) {
+        await env.db.run.update({ where: { id: runId }, data: { sessionSlot } });
+      }
+      return {
+        ...row,
+        sessionSlot,
+        allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)),
+      };
     });
     // CHE-436: BYOK — decrypt the team's OpenRouter key here, once, and pass it
     // to makeLlm as an override. decryptSecret is synchronous; no step needed.
@@ -260,7 +278,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings, run.teamId), run.id);
+          return await releaseSession(sessionHost(env.bindings, run.sessionSlot), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -276,9 +294,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // saying nothing at all would read as a check that hung.
     const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
       if (!isSession) return;
+      // CHE-482 (Codex on #351): every time the browser is taken, the person
+      // whose sign-in it holds must still be on the team.
+      const stillOn = await step.do(`session-member-${phase}`, () => slotHolderOnTeam(env.db, run.sessionSlot));
+      if (!stillOn) throw new NonRetryableError(SESSION_NO_SLOT, "SessionSlotMissing");
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.teamId), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.sessionSlot), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
@@ -294,6 +316,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // non-terminal status is worse than a failed one — the scheduler treats it
     // as still in flight and never fires that Watch again.
     try {
+      // CHE-482: no slot, no session check — stopped here, not retried.
+      if (isSession && !run.sessionSlot) throw new NonRetryableError(SESSION_NO_SLOT, "SessionSlotMissing");
       // Survey (CHE-132): what the app's pages look like to a plain fetch, and
       // whether that differs from the last snapshot. Free, under a minute, and
       // the input every mode decision below reads. Swallowed on error like the

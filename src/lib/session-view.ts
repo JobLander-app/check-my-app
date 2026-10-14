@@ -24,22 +24,64 @@ const hmac = async (secret: string, text: string): Promise<Uint8Array> => {
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
 };
 
-// CHE-464: a team's view key. Every team's container holds a key of its own,
-// derived from SESSION_VIEW_SECRET and the team's id, never the secret itself:
-// a container can mint a view token, and sign an app pick, for its own team
-// only. Tokens for a team are minted, and its picks verified, with this key;
-// the token's slot is the team's id.
-export async function viewKeyFor(secret: string, teamId: string): Promise<string> {
-  return [...(await hmac(secret, `session-view:${teamId}`))].map((b) => b.toString(16).padStart(2, "0")).join("");
+// CHE-482: a session browser is one PERSON's in one team, not the team's. A
+// Shopify sign-in is a person's own account: while a team had one browser, the
+// second person to sign in replaced the first one's sign-in, and their dev
+// stores could never be checked side by side. So a browser is named by its
+// slot, `<teamId>--<userId>`, and a store is checked in the slot of whoever
+// connected it (App.ownerId) — a dev store is that person's test account.
+export const SESSION_SLOT = /^[A-Za-z0-9_-]{1,100}$/;
+
+// Team and user ids are cuids ([a-z0-9]) or `team_<cuid>`; neither holds the
+// separator, so a slot reads back into exactly the two ids it was made of.
+const SLOT_ID = /^[A-Za-z0-9_]{1,48}$/;
+const SLOT_SEPARATOR = "--";
+
+export function sessionSlot(teamId: string, userId: string): string {
+  if (!SLOT_ID.test(teamId) || !SLOT_ID.test(userId)) throw new Error("internal: a session slot needs a team id and a user id");
+  return `${teamId}${SLOT_SEPARATOR}${userId}`;
 }
 
-// The team a token names, read before it is verified — to know which team's
+/** The team and the person a slot names, or null for anything else. */
+export function slotParts(slot: string): { teamId: string; userId: string } | null {
+  if (!SESSION_SLOT.test(slot)) return null;
+  const parts = slot.split(SLOT_SEPARATOR);
+  if (parts.length !== 2 || !SLOT_ID.test(parts[0]) || !SLOT_ID.test(parts[1])) return null;
+  return { teamId: parts[0], userId: parts[1] };
+}
+
+/** The slot a store is checked in: its team's, signed in as whoever connected it. */
+export function storeSlot(app: { teamId: string | null; ownerId: string | null }): string | null {
+  return app.teamId && app.ownerId ? sessionSlot(app.teamId, app.ownerId) : null;
+}
+
+// Who may sign in for a store, on its sign-in page: only the person whose
+// Shopify sign-in its checks use. Anyone else on the team signing in there
+// would put THEIR account into someone else's browser — and the next check of
+// every store of that person would open as them.
+export type StoreSignIn = { kind: "mine"; slot: string } | { kind: "theirs"; ownerId: string } | { kind: "none" };
+
+export function storeSignIn(app: { teamId: string | null; ownerId: string | null }, viewerId: string): StoreSignIn {
+  const slot = storeSlot(app);
+  if (!slot || !app.ownerId) return { kind: "none" };
+  return app.ownerId === viewerId ? { kind: "mine", slot } : { kind: "theirs", ownerId: app.ownerId };
+}
+
+// CHE-464: a slot's view key. Every container holds a key of its own, derived
+// from SESSION_VIEW_SECRET and its slot, never the secret itself: a container
+// can mint a view token, and sign an app pick, for its own slot only. Tokens
+// for a slot are minted, and its picks verified, with this key.
+export async function viewKeyFor(secret: string, slot: string): Promise<string> {
+  return [...(await hmac(secret, `session-view:${slot}`))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// The slot a token names, read before it is verified — to know which slot's
 // key verifies it. Never trusted on its own.
 export function viewTokenSlot(token: string): string | null {
   if (typeof token !== "string" || token.length > 2048) return null;
   try {
     const payload = JSON.parse(new TextDecoder().decode(fromBase64url(token.split(".")[0] ?? "")));
-    return typeof payload?.slot === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(payload.slot) ? payload.slot : null;
+    return typeof payload?.slot === "string" && SESSION_SLOT.test(payload.slot) ? payload.slot : null;
   } catch {
     return null;
   }

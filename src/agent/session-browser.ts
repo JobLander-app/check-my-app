@@ -21,7 +21,8 @@
 
 import type { Browser, BrowserContext, Locator, Page } from "@cloudflare/playwright";
 import type { AgentBindings } from "./env";
-import { SESSION_TEAM_HEADER, sessionRunnerFor } from "./session-address";
+import { SESSION_SLOT_HEADER, sessionRunnerFor } from "./session-address";
+import { slotParts, storeSlot } from "@/lib/session-view";
 
 export const SESSION_KIND = "session";
 
@@ -41,21 +42,55 @@ export interface SessionHost {
   token?: string;
 }
 
-// The run's team's browser. A run with no team, or a Worker without the
-// binding, cannot run this kind at all — an internal error (rule 4), never
+// The browser of the run's store: its team's, signed in as whoever connected
+// the store (CHE-482, runSessionSlot). A run with no slot, or a Worker without
+// the binding, cannot run this kind at all — an internal error (rule 4), never
 // something a customer reads.
-export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, teamId: string | null | undefined): SessionHost {
-  if (!teamId) throw new Error("internal: a session check needs its team");
-  const runner = sessionRunnerFor(bindings, teamId);
+export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, slot: string | null | undefined): SessionHost {
+  if (!slot) throw new Error("internal: a session check needs the slot of its store");
+  const runner = sessionRunnerFor(bindings, slot);
   return {
     url: "http://session",
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
-      headers.set(SESSION_TEAM_HEADER, teamId);
+      headers.set(SESSION_SLOT_HEADER, slot);
       return runner.fetch(new Request(input, { ...init, headers }));
     },
   };
 }
+
+// A run's slot: its team, and the person who connected the app it checks. Read
+// from the run's own team and its app's connector — never from whoever started
+// the check: a teammate's check of my store still opens it signed in as me.
+//
+// Only while that person is still on the team (Codex on #351): someone who
+// left, or was removed, takes their Shopify sign-in with them, and the team
+// must never go on opening stores with their cookies. `onTeam: false` → no
+// slot; left out, the caller has not asked, and the slot stands.
+export function runSessionSlot(run: { teamId: string | null; app?: { ownerId: string | null; onTeam?: boolean } | null }): string | null {
+  if (!run.teamId || !run.app || run.app.onTeam === false) return null;
+  return storeSlot({ teamId: run.teamId, ownerId: run.app.ownerId });
+}
+
+// Whether the person a slot belongs to is still on its team. Asked again each
+// time a run takes the browser, not only when it loaded (Codex on #351): a
+// person removed while a check runs takes their sign-in with them at once.
+export async function slotHolderOnTeam(
+  db: { membership: { findFirst(args: { where: { teamId: string; userId: string }; select: { id: true } }): Promise<{ id: string } | null> } },
+  slot: string | null | undefined,
+): Promise<boolean> {
+  const who = slot ? slotParts(slot) : null;
+  if (!who) return false;
+  return (await db.membership.findFirst({ where: { teamId: who.teamId, userId: who.userId }, select: { id: true } })) !== null;
+}
+
+// A session run that has no slot stops before it starts — our failure, never a
+// verdict (rule 4): its store was removed while the check waited, or whoever
+// connected it is no longer on the team, and someone on the team connects it
+// again with their own sign-in.
+export const SESSION_NO_SLOT =
+  "internal: this store has no Shopify sign-in to be checked in — whoever connected it is no longer on the team, " +
+  "or the store was removed while the check waited; nothing may be checked on it until someone connects it again (CHE-482)";
 
 // Another run holds the host. Not a verdict and not a failure of the product:
 // the caller waits and tries again (the Workflow step's own retry).
