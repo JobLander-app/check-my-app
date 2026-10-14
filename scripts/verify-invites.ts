@@ -21,6 +21,8 @@ import {
   inviteState,
   type InviteRow,
 } from "@/lib/invites";
+import { allInviteSentences } from "@/lib/invite-copy";
+import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -165,9 +167,12 @@ check(
 // stops calling it, so the wiring is asserted too.
 const page = readFileSync("src/app/invite/[token]/page.tsx", "utf8");
 const accept = readFileSync("src/app/invite/[token]/actions.ts", "utf8");
+// The helper's answer IS the redirect — a call whose result went anywhere else
+// would leave requireUser's bare /sign-in in charge (CodeRabbit on #350).
+const toAuth = page.indexOf("redirect(inviteAuthPath(token, ");
 check(
-  "the invitation page decides the way to sign-in itself, before requireUser's bare redirect can",
-  page.includes("inviteAuthPath(") && page.indexOf("inviteAuthPath(") < page.indexOf("await requireUser()"),
+  "the invitation page redirects with the way back, before requireUser's bare redirect can",
+  toAuth > 0 && toAuth < page.indexOf("await requireUser()") && page.split("inviteAuthPath(").length === 2,
 );
 // Joined, or already on it: both leave for /home, and the line before each
 // leaving is the one that makes the team the active one.
@@ -183,6 +188,16 @@ check(
   "\"already on the team\" opens that team, not whichever one the browser last used",
   page.includes("switchTeamAction.bind(null, invite!.teamId"),
 );
+
+// ─── What the page says (R18) ────────────────────────────────────────────────
+
+const refusals = [null, invite({ acceptedAt: NOW }), invite({ revokedAt: NOW, revokedReason: "revoked" }), invite({ revokedAt: NOW, revokedReason: "resent" }), invite()]
+  .map((row) => decideAccept(row, false, later(30)))
+  .flatMap((d) => (d.kind === "refused" ? [d.reason] : []));
+for (const text of [...allInviteSentences(), ...refusals]) {
+  check(`rule 1: no homework, no machinery — "${text.slice(0, 60)}"`, !hasHomework(text) && !hasEnvironmentLeak(text));
+}
+check("the page's words come from the copy module", page.includes("INVITE_COPY.") && !/>\s*(Join|Open|You are already)\s/.test(page));
 
 // ─── What an admin may send ──────────────────────────────────────────────────
 

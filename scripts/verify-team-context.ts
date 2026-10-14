@@ -126,6 +126,22 @@ check(
   JSON.stringify(writers) === JSON.stringify(["src/app/invite/[token]/actions.ts", "src/app/team/switch-actions.ts"]),
   writers.join(", "),
 );
+// …and nothing goes around rememberActiveTeam to the cookie itself: the cookie
+// is named in exactly two files — where it is defined, and auth.ts, which reads
+// and writes it (CodeRabbit on #350).
+const cookieFiles = walk(join(ROOT, "src"))
+  .map((f) => relative(ROOT, f))
+  .filter((f) => !f.startsWith("src/generated/"))
+  .filter((f) => {
+    const text = readFileSync(join(ROOT, f), "utf8");
+    return text.includes("ACTIVE_TEAM_COOKIE") || text.includes(`"${ACTIVE_TEAM_COOKIE}"`);
+  })
+  .sort();
+check(
+  "only auth.ts touches the active-team cookie",
+  JSON.stringify(cookieFiles) === JSON.stringify(["src/lib/auth.ts", "src/lib/teams.ts"]),
+  cookieFiles.join(", "),
+);
 const authLib = readFileSync(join(ROOT, "src/lib/auth.ts"), "utf8");
 check(
   "the cookie is httpOnly — the active team is not a thing page scripts set",
