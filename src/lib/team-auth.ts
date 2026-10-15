@@ -21,7 +21,7 @@ import { NextResponse } from "next/server";
 import { getOptionalUser, getOwnerFromRequest, requireUser } from "./auth";
 import { resolveApiKeyGrant } from "./apiKeys";
 import { activeTeamContext, type TeamContext, type TeamRow } from "./teams";
-import { preferredTeamId } from "./auth";
+import { browserTeamChoice } from "./auth";
 import { can, refusal, type TeamAction, type TeamScope } from "./scopes";
 import type { PrismaClient } from "@/generated/prisma/client";
 
@@ -72,8 +72,8 @@ export async function requireScope(
   // CHE-261: an API-key caller has no browser and therefore no cookie — it
   // acts for the team its key belongs to, which resolves to that owner's
   // personal team today and becomes the key's own team in T10.
-  const preferred = caller.via === "clerk" ? await preferredTeamId() : null;
-  const { team, scope } = await activeTeamContext(db, caller.user, preferred);
+  const choice = caller.via === "clerk" ? await browserTeamChoice() : null;
+  const { team, scope } = await activeTeamContext(db, caller.user, choice);
   if (!can(scope, action)) {
     return {
       ok: false,
@@ -111,8 +111,8 @@ export async function callerTeamContext(
     const grant = await resolveApiKeyGrant(db, req);
     if (grant?.team) return { team: grant.team as TeamRow, scope: grant.scope as TeamScope };
   }
-  const preferred = caller.via === "clerk" ? await preferredTeamId() : null;
-  return activeTeamContext(db, caller.user, preferred);
+  const choice = caller.via === "clerk" ? await browserTeamChoice() : null;
+  return activeTeamContext(db, caller.user, choice);
 }
 
 // CHE-265: who is calling, for a route that also serves strangers.
@@ -125,6 +125,6 @@ export async function callerScope(db: PrismaClient, req: Request): Promise<TeamS
   if (grant?.team) return grant.scope as TeamScope;
   const user = await getOptionalUser(db);
   if (!user) return null;
-  const { scope } = await activeTeamContext(db, user, await preferredTeamId());
+  const { scope } = await activeTeamContext(db, user, await browserTeamChoice());
   return scope;
 }

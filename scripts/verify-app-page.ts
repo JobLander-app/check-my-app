@@ -14,8 +14,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "../src/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "../src/lib/app-page";
 import { QUICK_COMPARISON, quickCheckWork } from "../src/lib/check-price";
+import { hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
+import { VERDICT_META } from "../src/lib/status";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -77,6 +79,11 @@ eq("integrations: none", integrationsLabel({ tracker: null, analyticsProject: nu
 eq("integrations: by name", integrationsLabel({ tracker: "linear", analyticsProject: "JobLander", github: false, webhook: true, slack: false }), "Linear · PostHog · Webhook");
 // CHE-438: a Jira tracker is named Jira — the label once said "Linear" for any tracker.
 eq("integrations: a Jira tracker is named Jira", integrationsLabel({ tracker: "jira", analyticsProject: null, github: true, webhook: false, slack: false }), "Jira · GitHub");
+// CHE-468: a Shopify app's row is its test stores, by name while they fit.
+eq("stores: one", storesLabel(["prod-release-1"]), "prod-release-1");
+eq("stores: two", storesLabel(["prod-release-1", "staging"]), "prod-release-1, staging");
+eq("stores: many", storesLabel(["a", "b", "c"]), "3 stores");
+eq("stores: none yet", storesLabel([]), "None");
 eq("journeys: none mapped", journeysLabel(0), "Not mapped yet");
 eq("journeys: one", journeysLabel(1), "1 journey");
 eq("journeys: several", journeysLabel(12), "12 journeys");
@@ -123,6 +130,35 @@ check("the Run button is the saved app's, as the main action", /<RunSavedApp app
 // and CHE-417 a teammate's app starts like one's own, so the scope alone decides.
 check("the Run button is shown only where pressing it starts a check: the scope allows it",
   /const mayRun = can\(scope, "run\.start"\);/.test(page) && /\{mayRun && <RunSavedApp appId=\{app\.id\} primary \/>\}/.test(page));
+// CHE-466 (owner, 2026-10-13): the way into the app's settings is a button in
+// the header, for everyone in the team; "Open latest review" repeated the list's
+// first row and is gone.
+check("the header's Settings button leads to the app's settings and is not gated on a write scope",
+  /<Link href=\{settings\} className=\{buttonClass\("primary"/.test(page) && /const settings = appPath\.settings\(app\.id\);/.test(page) &&
+    !/\{\w+ && <Link href=\{settings\}/.test(page));
+check("…and \"Open latest review\" is not on the page", !/>\s*Open latest review\s*</.test(page));
+check("a Shopify app's row is Test stores — its stores by CHE-451's rule — and every other app's stays Test accounts (CHE-468)",
+  /isShopify \? \(\s*<Row href=\{appPath\.section\(app\.id, "accounts"\)\} label="Test stores" value=\{storesLabel\(stores\.map/.test(page) &&
+    /shopify \? storesOf\(db, team\.id, shopify\.handle\)/.test(page) &&
+    /label="Test accounts" value=\{accountsLabel\(/.test(page));
+// CHE-467 (owner, 2026-10-13): "each run should be clickable where the majority
+// of the text is", not the small #id alone.
+{
+  const row = page.slice(page.indexOf('aria-label="Checks, newest first"'), page.indexOf("</section>", page.indexOf('aria-label="Checks, newest first"')));
+  check("a check's row opens the check from anywhere on it: one link, stretched over the row, named by its number, day and verdict",
+    /className="group relative grid/.test(row) &&
+      /href=\{appPath\.check\(app\.id, run\.runNumber\)\}\s*aria-label=\{checkRowLabel\(run\.runNumber, when, /.test(row) &&
+      /after:absolute after:inset-0/.test(row) &&
+      (row.match(/<Link\b/g) ?? []).length === 1);
+  // Codex on #343 (R18): the name is a sentence a screen-reader user hears —
+  // built in app-page.ts and held to the language guards for every verdict.
+  eq("…named \"Check #n, day: verdict\"", checkRowLabel(373, "12 Oct", "Not verified"), "Check #373, 12 Oct: Not verified");
+  eq("…without a day when the check has none", checkRowLabel(5, null, "All good"), "Check #5: All good");
+  const names = Object.values(VERDICT_META).map((m) => checkRowLabel(1, "1 Jan", m.label));
+  check("…and no name the row can have leaks our machinery or hands the reader homework", names.every((n) => !hasEnvironmentLeak(n) && !hasHomework(n)), names.join(" | "));
+  check("…the #id is part of that row, not a link of its own", /<span className="font-mono text-xs text-accent group-hover:underline">#\{run\.runNumber\}<\/span>/.test(row));
+  check("…and the price stays above the row's link, with its own explanation", /<div className="relative z-10 py-3\.5 text-right text-sm">\s*\{run\.priceUsd !== null && \(\s*<CheckPrice/.test(row));
+}
 check("an extension's Schedule row is a statement, not a link to a schedule it cannot have",
   /isExtension \? \([\s\S]*?On request only[\s\S]*?\) : \(\s*<Row href=\{appPath\.schedule\(app\.id\)\}/.test(page));
 check("a quick check's row is the price explanation's own line, never its stored bottom line",

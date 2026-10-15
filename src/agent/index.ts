@@ -28,11 +28,12 @@ export default {
   async fetch(req: Request, env: AgentBindings): Promise<Response> {
     const url = new URL(req.url);
 
-    // A person on a Shopify app's sign-in page, to their team's browser.
+    // A person on a Shopify app's sign-in page, to their own browser.
     if (url.pathname === "/session/view") return routeLiveView(req, env);
     if (url.hostname === LIVE_HOST) return new Response(null, { status: 404 });
-    // Ours: moving a live sign-in into a team's browser, reading its state.
-    if (url.pathname === "/session/jar" || url.pathname === "/session/state") return routeSessionAdmin(req, env);
+    // Ours: moving a live sign-in into a slot's browser or from one to
+    // another, reading a slot's state.
+    if (url.pathname === "/session/jar" || url.pathname === "/session/move" || url.pathname === "/session/state") return routeSessionAdmin(req, env);
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true, worker: "agent" });

@@ -112,6 +112,24 @@ export function decideAccept(
   }
 }
 
+// Where a signed-out visitor to an invitation goes, and the way back. Joining
+// needs an identity, but the identity is a step on the way to the team, not the
+// destination: the link has to survive it. Before this the page sent people to a
+// bare /sign-in, they came out on /home inside a fresh team of their own, and
+// the invitation sat pending — to them it read as "this made me a new account"
+// (connect@otp.plus, 2026-10-14).
+//
+// Most people holding an invitation have never been here, so the default is
+// sign-up; someone whose invited address already has an account goes to
+// sign-in. Either page links to the other with the way back intact, so a wrong
+// guess costs one click, never the invitation.
+export function inviteAuthPath(token: string, hasAccount: boolean): string {
+  // The token is encoded on its own first, so whatever was typed into the path
+  // stays inside the one segment and the way back cannot lead anywhere else.
+  const back = encodeURIComponent(`/invite/${encodeURIComponent(token)}`);
+  return `${hasAccount ? "/sign-in" : "/sign-up"}?redirect_url=${back}`;
+}
+
 export type InviteRequest = { email: string; scope: string };
 export type InviteCheck = { ok: true; email: string; scope: TeamScope } | { ok: false; reason: string };
 

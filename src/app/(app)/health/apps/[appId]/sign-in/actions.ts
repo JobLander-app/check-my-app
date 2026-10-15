@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireActionScope } from "@/lib/team-auth";
 import { refuseSelfCheck } from "@/lib/self-check-action";
 import { appPath } from "@/lib/app-shell";
-import { verifyPick, viewKeyFor } from "@/lib/session-view";
+import { sessionSlot, verifyPick, viewKeyFor } from "@/lib/session-view";
 import { PICK_ERRORS } from "@/lib/sign-in-copy";
 import { chooseApp } from "@/lib/shopify-connect";
 import { startSavedApp } from "@/lib/start-saved-app";
@@ -14,21 +14,22 @@ import type { UserPlan } from "@/lib/enums";
 
 // CHE-333: the person picked their app on the sign-in page; the session host
 // signed what it read (its handle, name and the origin it is served from). We
-// save it and start its first check. `app.credentials.write`: what is saved
-// names where a check of this app may act, the same rule as allowed origins on
-// the settings page (createActionFor).
+// save it and start its first check. CHE-482: `shopify.store.connect` — the
+// store is the person's own; the origins saved were read by our host, never
+// typed in.
 export async function chooseShopifyApp(
   appId: string,
   pickToken: string,
 ): Promise<{ error: string; href?: string } | { runHref: string | null; runRefused?: string; appHref: string; watchRefused?: string }> {
   await refuseSelfCheck(appPath.signIn(appId));
-  const { user, db, team } = await requireActionScope("app.credentials.write");
+  const { user, db, team } = await requireActionScope("shopify.store.connect");
   const { env } = getCloudflareContext();
   const secret = (env as unknown as { SESSION_VIEW_SECRET?: string }).SESSION_VIEW_SECRET;
-  // CHE-464: signed by this team's container with this team's key — a pick
-  // read in another team's browser does not verify here.
-  const pick = secret ? await verifyPick(await viewKeyFor(secret, team.id), pickToken) : null;
-  if (!pick || pick.slot !== team.id) return { error: PICK_ERRORS.expired };
+  // CHE-464/CHE-482: signed by THIS person's container with its key — a pick
+  // read in anyone else's browser does not verify here.
+  const mine = sessionSlot(team.id, user.id);
+  const pick = secret ? await verifyPick(await viewKeyFor(secret, mine), pickToken) : null;
+  if (!pick || pick.slot !== mine) return { error: PICK_ERRORS.expired };
   const actor = { userId: user.id, teamId: team.id, plan: team.plan as UserPlan };
   const chosen = await chooseApp(db, actor, appId, pick);
   if (!("ok" in chosen)) return { error: chosen.error, ...(chosen.appId ? { href: appPath.page(chosen.appId) } : {}) };
