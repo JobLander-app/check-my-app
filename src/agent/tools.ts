@@ -31,6 +31,7 @@ import { ExtensionRuntimeError } from "./extension-error";
 import { extensionToolAllowed } from "./extension-contract";
 import { DEFAULT_ACCOUNT_LABEL, normalizeAccountLabel } from "@/lib/test-accounts";
 import { isStoreGateUrl } from "@/lib/store-gate";
+import { failedRequestSentence, type FailedRequestAnswer } from "@/lib/failed-request-copy";
 import { controlSeen, inSignedInSession, isSignOutAddress, isSignOutText, signOutIn, signOutRefusal } from "./session-browser";
 import { challengeAnswerIn, coerceHumanCheck, humanCheckIn, humanCheckRefusal, isChallengeAnswerField, isChallengeMarkup, isHumanCheckText, noteHumanCheck } from "./human-check";
 import { onStoreGate, storeRefused, storeUndriven, unlockStoreGate, type StoreAccess, type UnlockOutcome } from "./store-password";
@@ -169,7 +170,7 @@ export interface OwnRequestFailure {
   // consume a magic link or repeat an action, and would not be the same request
   // anyway — no body, no cookies (Codex, #344). Everything is still listed to the model.
   probeable: boolean;
-  probe?: { failing: boolean; says: string };
+  probe?: { failing: boolean; answer: FailedRequestAnswer };
 }
 
 // CHE-373: may this run navigate to, and type a test login on, this origin?
@@ -2685,6 +2686,16 @@ export function noteOwnRequestFailure(
   map.set(url.href, { browserReason, probeable });
 }
 
+export function forgetOwnRequestFailure(env: Pick<ToolEnv, "ownRequestFailures">, rawUrl: string): void {
+  try {
+    const url = new URL(rawUrl);
+    url.hash = "";
+    env.ownRequestFailures?.delete(url.href);
+  } catch {
+    /* not a URL */
+  }
+}
+
 // What a step has to say to be about this request — something only this request
 // carries: the subdomain it is served from when that is not the product's own
 // host ("chat" for chat.joblander.app, or the host itself), its file name
@@ -2724,7 +2735,7 @@ function shownUrl(href: string): string {
 // The exact URL the page asked for, asked again from here. Failing means no
 // answer at all or the product's own error status; 401/403/429 are a gate or
 // our volume (rule 3), not the product being down.
-async function probeOwnRequest(url: string): Promise<{ failing: boolean; says: string }> {
+async function probeOwnRequest(url: string): Promise<{ failing: boolean; answer: FailedRequestAnswer }> {
   try {
     const res = await fetch(url, {
       method: "GET",
@@ -2732,11 +2743,10 @@ async function probeOwnRequest(url: string): Promise<{ failing: boolean; says: s
       signal: AbortSignal.timeout(10_000),
       headers: { "User-Agent": "Mozilla/5.0 (compatible; CheckMyApp link check)" },
     });
-    if (res.status === 404 || res.status === 410 || res.status >= 500) return { failing: true, says: `it answers HTTP ${res.status}` };
-    return { failing: false, says: `HTTP ${res.status}` };
+    const failing = res.status === 404 || res.status === 410 || res.status >= 500;
+    return { failing, answer: { kind: "status", status: res.status } };
   } catch (err) {
-    const timedOut = unreachableReason(err) === "timed out";
-    return { failing: true, says: timedOut ? "it does not answer" : "the connection cannot be completed" };
+    return { failing: true, answer: { kind: unreachableReason(err) === "timed out" ? "timeout" : "unreachable" } };
   }
 }
 
@@ -2755,7 +2765,7 @@ export async function coerceOwnRequestFailure(
   const failures = env.ownRequestFailures;
   if (!failures?.size) return;
   const text = `${step.label ?? ""} ${step.attempted ?? ""} ${step.observed ?? ""}`;
-  let confirmed: { url: string; says: string } | null = null;
+  let confirmed: { url: string; answer: FailedRequestAnswer } | null = null;
   let asked = 0;
   for (const [href, failure] of failures) {
     if (!failure.probeable || !stepIsAbout(text, new URL(href), env.targetOrigin)) continue;
@@ -2765,18 +2775,17 @@ export async function coerceOwnRequestFailure(
       failure.probe = await probeOwnRequest(href);
     }
     if (failure.probe.failing) {
-      confirmed = { url: href, says: failure.probe.says };
+      confirmed = { url: href, answer: failure.probe.answer };
       break;
     }
   }
   if (!confirmed) return;
-  console.warn(`[report_step] "${step.label}": skipped/our_capability, but ${confirmed.url} fails for the page and from here → broken`);
+  // Logged and published without the query: it can carry a signed token, and
+  // this is written after report_step's scrub (Codex, #344).
+  console.warn(`[report_step] "${step.label}": skipped/our_capability, but ${shownUrl(confirmed.url)} fails for the page and from here → broken`);
   step.status = "broken";
   step.unverifiedReason = undefined;
-  // The address without its query: a signed or tokened parameter is not ours to
-  // publish, and this sentence is written after report_step's scrub (Codex, #344).
-  const shown = new URL(confirmed.url);
-  step.observed = `The page requests ${shown.origin}${shown.pathname} and that request fails: ${confirmed.says}. Whatever depends on it does not load.`;
+  step.observed = failedRequestSentence(confirmed.url, confirmed.answer);
 }
 
 export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
@@ -3507,6 +3516,9 @@ export function attachLogCapture(env: ToolEnv): void {
   env.page.on("response", (res) => {
     env.networkLog.push(`${res.request().method()} ${res.url()} → ${res.status()}`);
     if (env.networkLog.length > 200) env.networkLog.splice(0, 100);
+    // The same URL answered after it had failed (a retry): the earlier failure
+    // is no longer evidence of anything (Codex, #344).
+    if (env.ownRequestFailures?.size && res.status() < 400) forgetOwnRequestFailure(env, res.url());
   });
   env.page.on("requestfailed", (req) => {
     noteOwnRequestFailure(env, req.url(), req.failure()?.errorText ?? "request failed", { method: req.method(), resourceType: req.resourceType() });

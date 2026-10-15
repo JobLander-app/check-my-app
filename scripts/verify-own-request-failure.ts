@@ -25,7 +25,8 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-own-request-failure.ts
 
 import { attachLogCapture, executeTool, type ReportedStep, type ToolEnv } from "@/agent/tools";
-import { hasEnvironmentLeak } from "@/lib/verdict-language";
+import { failedRequestSentence, type FailedRequestAnswer } from "@/lib/failed-request-copy";
+import { hasEnvironmentLeak, hasHomework } from "@/lib/verdict-language";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -204,6 +205,27 @@ async function main() {
       `${asked.length} asked, ${step.status}`);
     // Codex, #344 round 2: what the model is shown carries no query value.
     if (u.search) check(`…and the model is shown it without its query`, !log.includes(u.search) && !/s3cr3t|id=42/.test(log), log.split("\n").filter((l) => l.includes(u.pathname)).join(" | "));
+  }
+
+  // Codex, #344 round 3: the sentence comes from a pure module (R18); every
+  // variant speaks of the product only, sets no homework and shows no query.
+  for (const answer of [{ kind: "status", status: 404 }, { kind: "status", status: 503 }, { kind: "timeout" }, { kind: "unreachable" }] as FailedRequestAnswer[]) {
+    const s = failedRequestSentence(`${SDK}?token=s3cr3t`, answer);
+    check(`sentence (${answer.kind}${answer.kind === "status" ? ` ${answer.status}` : ""}) is clean`,
+      !hasEnvironmentLeak(s) && !hasHomework(s) && s.includes(SDK) && !s.includes("?") && !s.includes("s3cr3t"), s);
+  }
+
+  // Codex, #344 round 3: the page retried the asset and it loaded — the earlier
+  // failure is not evidence any more, and nothing is asked about it.
+  {
+    const { env, emit } = stubEnv();
+    emit("requestfailed", failedRequest(SDK, "net::ERR_CONNECTION_RESET"));
+    emit("response", { url: () => SDK, status: () => 200, request: () => ({ method: () => "GET" }) });
+    const asked = stubFetch(() => new Error("connect ECONNRESET"));
+    const step = await reportStep(env, CHAT_STEP);
+    globalThis.fetch = realFetch;
+    check("a failed asset that later loaded on a retry is forgotten; the step stays a gap of ours",
+      !env.ownRequestFailures?.size && asked.length === 0 && step.status === "skipped", `${env.ownRequestFailures?.size} left, ${asked.length} asked, ${step.status}`);
   }
 
   // Codex, #344 round 2: a word the asset's path happens to share is not what a
