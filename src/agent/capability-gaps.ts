@@ -17,6 +17,7 @@ import { freshLinearToken } from "@/lib/tracker/token";
 import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
+import { wakeMender } from "./mender-dispatch";
 import type { RouteRefusal } from "./llm";
 import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, MACHINE_DECIDED_CLASSES, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
@@ -380,6 +381,8 @@ export async function fileCapabilityGaps(
       notes.push({ icon: "warn", text: `Couldn't file our checker gap "${label}": ${text}` });
     }
   }
+  // CHE-486: the ticket is the event that wakes Mender — no clock.
+  if (notes.some((n) => n.icon === "ok")) await wakeMender(env.bindings, `checker gap(s) from run #${run.runNumber}`);
   return notes;
 }
 

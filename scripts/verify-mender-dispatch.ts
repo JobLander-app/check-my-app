@@ -1,19 +1,23 @@
-// CHE-445: the worker's cron is Mender's clock (GitHub fired the workflow's
-// own schedule every 4–7 h). Without a token it does nothing; with one it asks
-// GitHub for exactly one run of mender-agent.yml on main; a refusal is an
-// error the scheduler logs and survives.
+// CHE-445, CHE-486: how Mender is started. It used to be the worker's cron (a
+// clock); owner, 2026-10-15: «главное чтобы не было кронов, а триггерами
+// монитора были ошибки в проде». Now the ticket filed for Mender wakes it, at
+// the place that files it (wakeMender), and nothing does on a timer.
+//
+// Without a token dispatch does nothing; with one it asks GitHub for exactly
+// one run of mender-agent.yml on main; a refusal is an error that wakeMender
+// logs and survives.
 //
 // The scheduler half is behavioural: it runs the real runDueWatches against a
 // database with no rows and a fetch that records what leaves the worker, so it
-// fails if the call is removed, moved behind an early return, or wrapped so it
-// never runs — which a regex over the source cannot tell (CHE-449).
+// fails if a dispatch is put back on the clock (CHE-449).
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-mender-dispatch.ts
 
 import Module from "node:module";
+import { readFileSync } from "node:fs";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
-import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW } from "../src/agent/mender-dispatch";
+import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW, wakeMender } from "../src/agent/mender-dispatch";
 
 // The generated Prisma client is the workerd build, which plain Node cannot
 // load, so the scheduler's database is the in-memory stand-in the other verify
@@ -83,22 +87,35 @@ async function main() {
   };
   const dispatches = () => sent.filter((u) => u.includes("/actions/workflows/") && u.endsWith("/dispatches")).length;
 
+  // CHE-486: no clock. A tick with a token and nothing filed starts no Mender.
   const active = await tick("t", () => new Response(null, { status: 204 }));
-  check("a tick with a token dispatches Mender exactly once", dispatches() === 1 && active.threw === null,
+  check("the scheduler's tick no longer starts Mender (no crons)", dispatches() === 0 && active.threw === null,
     `${dispatches()} dispatch(es)${active.threw ? `, tick threw: ${active.threw}` : ""}`);
 
-  const idle = await tick(undefined, () => new Response(null, { status: 204 }));
-  check("a tick without a token dispatches nothing", dispatches() === 0 && idle.threw === null);
+  // wakeMender: the event's own call, which never throws.
+  const said: string[] = [];
+  const realLog = console.log;
+  console.log = (...args: unknown[]) => void said.push(args.join(" "));
+  console.warn = (...args: unknown[]) => void said.push(args.join(" "));
+  const woke = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-1", ok);
+  const refused = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-2", async () => new Response("{}", { status: 403 }));
+  const down = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-3", async () => { throw new Error("network down"); });
+  const none = await wakeMender({}, "run failure CHE-4", ok);
+  console.log = realLog;
+  console.warn = realWarn;
+  check("waking Mender says why, and a refused or unreachable GitHub is logged, never thrown",
+    woke === "dispatched" && refused === "failed" && down === "failed" && none === "no-token" &&
+      said.some((s) => s.includes("woken: run failure CHE-1")) && said.some((s) => s.includes("CHE-3") && s.includes("network down")), said.join(" | "));
 
-  const refused = await tick("t", () => new Response("{}", { status: 403 }));
-  check("a refused dispatch is logged and does not fail the tick",
-    dispatches() === 1 && refused.threw === null && warned.some((w) => w.includes("[mender]")),
-    refused.threw ? `tick threw: ${refused.threw}` : warned.join(" | "));
-
-  const down = await tick("t", () => Promise.reject(new Error("network down")));
-  check("an unreachable GitHub does not fail the tick",
-    dispatches() === 1 && down.threw === null && warned.some((w) => w.includes("[mender]")),
-    down.threw ? `tick threw: ${down.threw}` : warned.join(" | "));
+  // Every place that files a ticket for Mender wakes it, right after filing.
+  const src = (p: string) => readFileSync(new URL(`../src/agent/${p}`, import.meta.url), "utf8");
+  check("a checker gap, a run failure and a pilot report each wake Mender when filed",
+    /await wakeMender\(env\.bindings, `checker gap/.test(src("capability-gaps.ts")) &&
+      /selfPolicy\(self, "\[Checker failure\] \{verdict\}", \[MENDER_LABEL\]\)/.test(src("run-failures.ts")) &&
+      /await wakeMender\(env\.bindings, `run failure/.test(src("run-failures.ts")) &&
+      /if \(filed\.length\) await wakeMender\(env\.bindings, `pilot feedback/.test(src("feedback-filing.ts")));
+  const wf = readFileSync(new URL("../.github/workflows/mender-agent.yml", import.meta.url), "utf8");
+  check("Mender's workflow has no schedule", !/^\s*schedule:|cron:/m.test(wf));
 
   console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

@@ -18,8 +18,9 @@
 name: Mender
 
 on:
-  schedule:
-    - cron: "7,37 * * * *"
+  # No timer (owner, 2026-10-15: no crons; CHE-486). Mender is started by the
+  # event that has work for it: a ticket filed for it (the agent worker's
+  # wakeMender, src/agent/mender-dispatch.ts), a review on its PR, its own chain.
   workflow_dispatch:
     inputs:
       ticket:

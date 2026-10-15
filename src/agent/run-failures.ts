@@ -45,9 +45,10 @@
 // real classification and the real filing path against a stub board.
 
 import { fileFindingTicket, type TicketFinding } from "@/lib/tracker/file";
-import { ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
+import { MENDER_LABEL, ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
 import { isOwnRun, silenceReason } from "./notify-verdict";
 import type { AgentEnv } from "./env";
+import { wakeMender } from "./mender-dispatch";
 
 export type FailureOwner =
   | { kind: "ours"; signature: string }
@@ -247,11 +248,15 @@ export async function fileRunFailure(
         // customer whose check it ends.
         appSlug: self.appSlug,
       },
-      policy: selfPolicy(self, "[Checker failure] {verdict}"),
+      // CHE-486: a failed check is an error in production, so it is Mender's
+      // to mend, and the ticket wakes it — no clock.
+      policy: selfPolicy(self, "[Checker failure] {verdict}", [MENDER_LABEL]),
       ownerId: self.ownerId,
       verdictUrl: runUrl,
       recurrenceDetail: occurrence,
     });
+    if (outcome.kind === "commented") await tracker.addLabel(outcome.identifier, MENDER_LABEL).catch(() => {});
+    if (outcome.kind === "created" || outcome.kind === "commented") await wakeMender(env.bindings, `run failure ${outcome.identifier}`);
     return {
       icon: "ok",
       text:

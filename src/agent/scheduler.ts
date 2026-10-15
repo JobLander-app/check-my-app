@@ -14,7 +14,6 @@ import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
 import { releaseCanceledLeases, settleCanceledPrices } from "./canceled-leases";
-import { dispatchMender } from "./mender-dispatch";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepSelfCheckLeftovers, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { recipientsForApp } from "@/lib/recipients";
@@ -144,12 +143,8 @@ export async function runDueWatches(
   // nothing behind it, and counts as in flight for its watch and its app until
   // somebody ends it. Before the due watches are read, so a watch it was
   // blocking is looked at in this same tick.
-  // CHE-445: Mender's clock. Never fails the tick.
-  try {
-    await dispatchMender(env.bindings);
-  } catch (err) {
-    console.warn(`[mender] dispatch failed: ${err instanceof Error ? err.message : err}`);
-  }
+  // CHE-486: Mender is no longer woken by this clock, but by the ticket filed
+  // for it (mender-dispatch.ts wakeMender) — owner 2026-10-15, no crons.
 
   try {
     await sweepOrphanedRuns(env, now);

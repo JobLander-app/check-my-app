@@ -14,6 +14,7 @@ import { ourBoard, type GapBoard } from "./capability-gaps";
 import { REASON_LABEL, type FeedbackReason } from "@/lib/feedback";
 import { systemWide } from "@/lib/tenant-db";
 import type { AgentEnv } from "./env";
+import { wakeMender } from "./mender-dispatch";
 
 const PER_TICK = 10;
 export const CLAIM_LEASE_MS = 30 * 60 * 1000;
@@ -73,6 +74,9 @@ export async function fileOpenFeedback(
     else if (recorded === "lost") console.warn(`[feedback] ${row.id} was taken over by another tick after ${identifier} was made — a duplicate for triage`);
     else console.warn(`[feedback] filed ${row.id} as ${identifier} but could not record it; the row stays claimed`);
   }
+  // CHE-486: the report is filed for Mender (labelled `mender`), and the ticket
+  // is what wakes it — no clock.
+  if (filed.length) await wakeMender(env.bindings, `pilot feedback ${filed.join(", ")}`);
   return { filed, failed };
 }
 
