@@ -20,12 +20,17 @@
 //       is applied to the recorded base, pushed to `mender/*` with the personal
 //       token, the PR opened, CodeRabbit asked, the ticket told.
 // The Linear, Notion and OpenRouter keys are the agent's own tools and are
-// visible to it; that residual exposure is accepted and stated. Nothing here
-// merges: a person does. TICKET=CHE-123 picks a ticket.
+// visible to it; that residual exposure is accepted and stated.
+//   node scripts/mender/agent.mjs gate     — no model: a Mender PR whose CI is
+//       green and whose review is done merges itself (CHE-486, owner
+//       2026-10-15; gate.mjs). It used to wait for a person, and ten waited for
+//       days. TICKET=CHE-123 picks a ticket; GATE_PR=123 limits the gate to one PR.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { codexReviewState, gateDecision, isP1, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
+import { codexSummaryState, REVIEW_REQUEST, REVIEWER_LOGIN } from "../doer/review.mjs";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
 const LABEL = "mender";
@@ -45,7 +50,9 @@ const MAX_ROUNDS = 3;
 const MAX_ATTEMPTS = 2;
 const ATTEMPT_MARK = "<!-- mender:attempt -->";
 const ROUND_MARK = "<!-- mender:round -->";
-const REVIEWER = "coderabbitai[bot]";
+// Whose review comments start a round: CodeRabbit, and Codex since the gate
+// asks it (CHE-486) — CodeRabbit is rate-limited more often than not.
+const REVIEWERS = ["coderabbitai[bot]", "chatgpt-codex-connector[bot]"];
 
 // AGENTS.md's sequence, after the model is done: the client is regenerated in
 // case the schema changed, then everything CI runs, the acceptance registry
@@ -148,7 +155,7 @@ export async function usableAnswer(answer) {
 export function pendingReview({ reviewComments, lastCommitAt, lastRoundAt = "", roundsUsed }) {
   if (roundsUsed >= MAX_ROUNDS) return [];
   const handled = lastRoundAt > lastCommitAt ? lastRoundAt : lastCommitAt;
-  return reviewComments.filter((c) => c.user === REVIEWER && c.createdAt > handled && c.body.trim());
+  return reviewComments.filter((c) => REVIEWERS.includes(c.user) && c.createdAt > handled && c.body.trim());
 }
 
 // `release: false` is the read-only look `peek` takes: it changes nothing on the
@@ -560,7 +567,7 @@ async function publish() {
   push(branch, `${issue.identifier}: ${issue.title}\n\n${clean(r.text)}`, { force: true });
   const existing = gh(["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty"]);
   const url = existing || gh(["pr", "create", "--head", branch, "--title", `${issue.identifier}: ${issue.title}`,
-    "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerged by a person, never by Mender.`]);
+    "--body", `${issue.url}\n\n${clean(r.text)}${footer(r)}\n\nMerges itself once CI is green and the review is done (CHE-486); the watch after the deploy decides whether it stays.`]);
   markUi(url, paths);
   gh(["pr", "comment", url, "--body", "@coderabbitai review"]);
   await comment(issue.id, `${ATTEMPT_MARK}\n**Pull request opened:** ${url}\nCodeRabbit asked to review.\n\n${clean(r.text)}${footer(r)}`);
@@ -595,9 +602,123 @@ async function chainNext() {
   say("more work queued — next tick started");
 }
 
+// ─── The merge gate (CHE-486): Mender's pull requests merge themselves ───────
+//
+// Owner, 2026-10-15: «пусть все мержится само … монитор на следующем тике все
+// поймает». Run on a fresh machine from main, with no model, whenever something
+// that can change the decision happens: CI finishing on a mender/ branch, the
+// reviewer answering, a tick ending. The decision is gate.mjs; this gathers the
+// facts from GitHub and acts on them.
+
+const pagesOf = (path, jq) => gh(["api", "--paginate", `${path}?per_page=100`, "--jq", `.[] | ${jq} | tojson`])
+  .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+
+/** Everything the gate decides from, for one open Mender pull request. */
+function gateFacts(repo, pr) {
+  const head = pr.headRefOid;
+  const headAt = gh(["api", `repos/${repo}/commits/${head}`, "--jq", ".commit.committer.date"]);
+  // The latest `check` job on this head (a re-run is a newer one).
+  const check = ghJson(["api", `repos/${repo}/commits/${head}/check-runs?per_page=100`, "--jq",
+    `[.check_runs[] | select(.name == "check")] | sort_by(.id) | last // null | if . == null then null else {status, conclusion} end`]);
+  const ci = !check ? "none" : check.status !== "completed" ? "pending" : check.conclusion === "success" ? "success" : "failure";
+  const comments = pagesOf(`repos/${repo}/issues/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: (.body // \"\")}");
+  const inline = pagesOf(`repos/${repo}/pulls/${pr.number}/comments`,
+    "{user: .user.login, sha: .original_commit_id, createdAt: .created_at, body: (.body // \"\"), reply: .in_reply_to_id}");
+  const onHead = inline.filter((c) => c.user === REVIEWER_LOGIN && c.sha === head && !c.reply);
+  const summary = comments.filter((c) => c.user === REVIEWER_LOGIN).map((c) => codexReviewState(c.body)).find((s) => s?.commitSha === head);
+  const table = comments.filter((c) => c.user === REVIEWER_LOGIN).map((c) => codexSummaryState(c.body, head)).find(Boolean);
+  const review = summary?.status === "completed" ? (summary.hasAnyFindings || onHead.length ? "findings" : "clean")
+    : summary?.status === "running" || table === "running" ? "running"
+      : table === "completed" ? (onHead.length ? "findings" : "clean")
+        : onHead.length ? "findings" : null;
+  const lastFindingAt = onHead.map((c) => c.createdAt).sort().at(-1) ?? "";
+  const rounds = comments.filter((c) => c.body.includes(ROUND_MARK));
+  const asks = comments.filter((c) => c.body.toLowerCase().includes(REVIEW_REQUEST) && c.createdAt > headAt).map((c) => c.createdAt).sort();
+  return {
+    ci,
+    review,
+    p1: onHead.filter((c) => isP1(c.body)).length,
+    roundsUsed: rounds.length,
+    answered: Boolean(lastFindingAt) && rounds.some((c) => c.createdAt > lastFindingAt),
+    askedMinutesAgo: asks.length ? (Date.now() - Date.parse(asks[0])) / 60_000 : null,
+    findings: onHead.map((c) => `- ${c.body.split("\n").find((l) => l.trim() && !l.includes("Badge")) ?? c.body.slice(0, 200)}`).join("\n"),
+  };
+}
+
+/** The ticket a mender/che-N-… branch belongs to, from Linear. */
+async function ticketOf(branch) {
+  const id = branch.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+  if (!id) return null;
+  const d = await linear("query($i:String!){issue(id:$i){id identifier}}", { i: id });
+  return d.issue ?? null;
+}
+
+async function mergePr(pr, reason) {
+  // The personal token, so the push to main starts CI and the deploy (a merge by
+  // GITHUB_TOKEN starts no workflow). The deploy itself waits for checks in flight.
+  gh(["pr", "merge", String(pr.number), "--squash", "--delete-branch"]);
+  gh(["pr", "comment", String(pr.number), "--body",
+    `**Merged by the gate:** ${reason}.\n\nWhether the problem is gone is for the watch after the deploy and the next CheckMyApp check to say — not for this merge.`]);
+  const issue = await ticketOf(pr.headRefName);
+  if (issue) {
+    await comment(issue.id, `**Merged:** ${pr.url} — ${reason}.`);
+    await setState(issue.id, "Done");
+  }
+  say(`merged #${pr.number}`);
+}
+
+async function closePr(pr, reason, facts) {
+  gh(["pr", "close", String(pr.number), "--delete-branch", "--comment",
+    `**Closed by the gate:** ${reason}. The ticket goes back to Mender's queue with what stopped it.`]);
+  const issue = await ticketOf(pr.headRefName);
+  if (issue) {
+    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender's pull request ${pr.url} was closed:** ${reason}.` +
+      (facts.findings ? `\n\nWhat the review found on its last head:\n${facts.findings}` : "") +
+      "\n\nBack to Todo; the next attempt starts from current main.");
+    await setState(issue.id, "Todo");
+  }
+  say(`closed #${pr.number}: ${reason}`);
+}
+
+/** Codex answers only an identity linked to a ChatGPT account, so it is asked with the owner's token (CHE-155). */
+function askReview(pr) {
+  const token = process.env.CODEX_REVIEW_TOKEN;
+  if (!token) return say(`#${pr.number}: CODEX_REVIEW_TOKEN is not set — the review cannot be asked; the gate merges after ${REVIEW_SILENCE_MINUTES} minutes of silence`);
+  execFileSync("gh", ["pr", "comment", String(pr.number), "--body", `${REVIEW_REQUEST}\n\nAsked by Mender's gate for ${pr.headRefOid.slice(0, 7)}.`],
+    { stdio: "inherit", env: { ...process.env, GH_TOKEN: token } });
+}
+
+async function gate() {
+  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  const only = Number(process.env.GATE_PR) || null;
+  const prs = ghJson(["pr", "list", "--state", "open", "--limit", "50", "--json", "number,headRefName,headRefOid,url,isCrossRepository,mergeable"])
+    .filter((p) => validBranch(p.headRefName) && !p.isCrossRepository && (!only || p.number === only));
+  let failed = 0;
+  for (const pr of prs) {
+    // One PR the gate cannot read or act on never holds the others.
+    try {
+      // A branch main has moved under: the next attempt starts from main instead.
+      if (pr.mergeable === "CONFLICTING") {
+        await closePr(pr, "it conflicts with main", { findings: "" });
+        continue;
+      }
+      const facts = gateFacts(repo, pr);
+      const d = gateDecision(facts);
+      say(`gate #${pr.number} ${pr.headRefOid.slice(0, 7)}: ${d.action} — ${d.reason}`);
+      if (d.action === "ask") askReview(pr);
+      if (d.action === "merge") await mergePr(pr, d.reason);
+      if (d.action === "close") await closePr(pr, d.reason, facts);
+    } catch (e) {
+      failed++;
+      console.error(`[mender] gate #${pr.number}: ${e.message}`);
+    }
+  }
+  if (failed) throw new Error(`the gate could not decide ${failed} pull request(s)`);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const step = process.argv[2];
-  const run = { peek, work, publish: () => publish().then(chainNext) }[step];
-  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish")))
+  const run = { peek, work, gate, publish: () => publish().then(chainNext) }[step];
+  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish|gate")))
     .catch((e) => { console.error(e); process.exit(1); });
 }
