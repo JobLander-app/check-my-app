@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, pendingReview, stagedPaths, stranded, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -107,7 +107,51 @@ check("the personal token pushes only to mender/che-* branches",
 check("a ticket's branch is a valid one, whatever its title",
   validBranch(branchFor({ identifier: "CHE-9", title: "«Quoted» — weird/title!!" })) && validBranch(branchFor({ identifier: "CHE-9", title: "!!!" })));
 
+// 2026-10-14: the key reached its $30 limit on CHE-480's first turn; OpenCode
+// reported every refusal in an `error` event Mender never read, and two tickets
+// were marked "unfinished" with an empty report. The event below is what
+// opencode-ai@1.18.35 printed for a refused key (headers dropped).
+const refused = (statusCode, message) => ({ type: "error", sessionID: "ses_x",
+  error: { name: "APIError", data: { message, statusCode, isRetryable: false, responseBody: JSON.stringify({ error: { message, code: statusCode } }) } } });
+const turn = (events) => events.reduce(readEvent, { session: null, cost: 0, steps: 0, text: "", error: null });
+check("OpenCode's error event is read: a refused key is the key's fault, not the ticket's",
+  turn([refused(401, "User not found.")]).error?.keyRefused === true &&
+    [402, 403].every((s) => turnError(refused(s, "Key limit exceeded"))?.keyRefused === true) &&
+    turnError(refused(400, "context length exceeded"))?.keyRefused === false &&
+    turnError({ type: "step_finish", part: { cost: 0.1 } }) === null);
+check("…and a turn that also did work keeps its steps and cost",
+  (() => { const t = turn([{ type: "step_finish", sessionID: "s", part: { cost: 0.69 } }, refused(403, "Key limit exceeded")]);
+    return t.steps === 1 && t.cost === 0.69 && t.error?.status === 403; })());
+{
+  let calls = 0;
+  const r = await runAgent("ticket", async () => { calls++; return { session: "s", cost: 0, steps: 0, text: "", error: turnError(refused(403, "Key limit exceeded")) }; });
+  check("a refused key ends the run on its first refusal, not after eight empty turns",
+    calls === 1 && r.status === "key refused" && r.error.status === 403, `${calls} calls, ${r.status}`);
+  calls = 0;
+  const other = await runAgent("ticket", async () => { calls++; return { session: "s", cost: 0, steps: 0, text: "", error: turnError(refused(400, "context length exceeded")) }; });
+  check("…any other error is kept, so the ticket says why the report is empty",
+    other.status === "unfinished" && calls > 1 && /OpenCode stopped: 400 context length exceeded/.test(report(other)), report(other));
+}
+check("a key that cannot pay for one more ticket stops the tick; one that can, or has no limit, does not",
+  /\$0\.00 left of its \$30 limit \(it never resets\)/.test(keyShortfall({ limit: 30, limit_remaining: 0, limit_reset: null }, 5) ?? "") &&
+    keyShortfall({ limit: 100, limit_remaining: 4.99, limit_reset: "monthly" }, 5) !== null &&
+    keyShortfall({ limit: 100, limit_remaining: 71.84, limit_reset: "monthly" }, 5) === null &&
+    keyShortfall({ limit: null, limit_remaining: null }, 5) === null);
+
 const agent = read("scripts/mender/agent.mjs");
+const workSrc = agent.slice(agent.indexOf("async function work()"), agent.indexOf("// ─── Publishing"));
+check("the key is asked before any ticket is claimed or released",
+  workSrc.indexOf("await keyServes();") > 0 && workSrc.indexOf("await keyServes();") < workSrc.indexOf("findWork()"));
+const stopped = workSrc.slice(workSrc.indexOf('if (r.status === "key refused") {'), workSrc.indexOf("const patch = r.status", workSrc.indexOf('if (r.status === "key refused") {')));
+check("a ticket stopped by the key goes back to Todo without counting as an attempt, and the tick fails",
+  /setState\(issue\.id, "Todo"\);\s*return alarm\(/.test(stopped) && !/ATTEMPT_MARK/.test(stopped) &&
+    /async function alarm\([\s\S]*?throw new Error/.test(agent));
+check("the alarm is one open ticket, never in Mender's own queue",
+  ALARM_TITLE.startsWith("[Mender]") && /if \(!\(await openAlarm\(\)\)\)/.test(agent) &&
+    !/issueCreate\(input:\{[^}]*labelIds/.test(agent));
+check("…and Mender closes it once the key serves again",
+  /const open = await openAlarm\(\);\s*\n\s*if \(!open\) return;[\s\S]*?setState\(open\.id, "Done"\)/.test(agent));
+
 const publishSrc = agent.slice(agent.indexOf("async function publish()"));
 check("publishing takes its targets from GitHub and Linear, not from the artifact the model could rewrite",
   /const target = await trustedTarget\(job\);/.test(publishSrc) &&
