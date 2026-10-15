@@ -38,20 +38,51 @@ export async function connectApp(
   db: PrismaClient,
   actor: AppActor,
   rawLink: string,
-): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal> {
+): Promise<{ ok: true; appId: string; store: string; handle: string; reused: boolean; connected: boolean } | AppRefusal | { error: string; code: "forbidden" }> {
   if (!(await teamHasFeature(db, actor.teamId, "shopify"))) return { error: NOT_OPEN_YET, code: "invalid_input" };
+  // CHE-482 (Codex on #351): a store is connected with the connector's own
+  // Shopify sign-in, so the connector must be on the team. A team key outlives
+  // the person who made it; through it, someone who left would be recorded as
+  // the store's connector, and nobody could ever sign in for it.
+  if (!(await db.membership.findFirst({ where: { teamId: actor.teamId, userId: actor.userId }, select: { id: true } }))) {
+    return { error: CONNECT_ERRORS.notOnTeam, code: "forbidden" };
+  }
   const link = parseAppLink(rawLink);
   if (!link) return { error: BAD_LINK, code: "invalid_input" };
   const { store, handle } = link;
   // This app already connected: its page, not a second row.
-  const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true } });
-  if (existing) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
+  const existing = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store, handle) }, select: { id: true, ownerId: true } });
+  if (existing) {
+    // CHE-482 (Codex on #351): unless whoever connected it is no longer on the
+    // team. Their sign-in left with them and nothing checks the store now;
+    // whoever connects it again makes it theirs, and signs in for it.
+    const connectorOnTeam = existing.ownerId
+      ? (await db.membership.findFirst({ where: { teamId: actor.teamId, userId: existing.ownerId }, select: { id: true } })) !== null
+      : false;
+    if (connectorOnTeam) return { ok: true, appId: existing.id, store, handle, reused: true, connected: true };
+    // Back to waiting for its pick, in the new connector's name: their sign-in
+    // page then picks the linked app and starts the first check, as for any
+    // store just connected (Codex on #351) — the address keeps the app, so
+    // the pick is the one it had. Its history, scenarios and watch stay.
+    await db.app.update({
+      ...alreadyScoped("the App was just scoped to this team"),
+      where: { id: existing.id },
+      data: { ownerId: actor.userId, appSlug: shopifySlug(store), targetUrl: shopifyAdminUrl(store, handle) },
+    });
+    return { ok: true, appId: existing.id, store, handle, reused: true, connected: false };
+  }
   // A store already waiting for its app is the same pending app — pointed at
   // the app asked for now: opening the connect page twice must not leave two.
+  // CHE-482: and it becomes the store of whoever connects it now. A store is
+  // checked signed in as its connector, and nobody has signed in for a pending
+  // one yet; left with a teammate who started and walked away, it would send
+  // this person to a sign-in page that is not theirs to use. One's own pending
+  // store first, so a person never takes over a teammate's while holding one.
   const targetUrl = shopifyAdminUrl(store, handle);
-  const pending = await db.app.findFirst({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store) }, select: { id: true } });
+  const pendingRows = await db.app.findMany({ where: { ...teamOwned(actor.teamId), appSlug: shopifySlug(store) }, select: { id: true, ownerId: true } });
+  const pending = pendingRows.find((p) => p.ownerId === actor.userId) ?? pendingRows[0];
   if (pending) {
-    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: pending.id }, data: { targetUrl } });
+    await db.app.update({ ...alreadyScoped("the App was just scoped to this team"), where: { id: pending.id }, data: { targetUrl, ownerId: actor.userId } });
     return { ok: true, appId: pending.id, store, handle, reused: true, connected: false };
   }
   const created = await createAppForTeam(db, actor, {
@@ -72,9 +103,12 @@ export type ChooseResult =
 export async function chooseApp(db: PrismaClient, actor: AppActor, appId: string, pick: Pick): Promise<ChooseResult> {
   const app = await db.app.findFirst({
     where: { ...teamOwned(actor.teamId), id: appId },
-    select: { id: true, targetUrl: true, targetKind: true, appSlug: true },
+    select: { id: true, targetUrl: true, targetKind: true, appSlug: true, ownerId: true },
   });
   if (!app || app.targetKind !== "session") return { error: CONNECT_ERRORS.notFound, code: "not_found" };
+  // CHE-482: the pick was read in the chooser's own browser; the store's checks
+  // run in its connector's. Only the connector's pick is saved.
+  if (app.ownerId !== actor.userId) return { error: CONNECT_ERRORS.notYours, code: "invalid_input" };
   const store = storeOfAdminUrl(app.targetUrl);
   if (!store || store !== pick.store) return { error: CONNECT_ERRORS.otherStore, code: "invalid_input" };
   // Only a store still waiting for its app takes a choice: a connected app is

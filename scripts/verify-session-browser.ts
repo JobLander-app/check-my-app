@@ -33,6 +33,8 @@ import {
   isSignOutAddress,
   isSignOutText,
   releaseSession,
+  runSessionSlot,
+  slotHolderOnTeam,
   SESSION_WAIT_MAX_SECONDS,
   SESSION_WAIT_MIN_SECONDS,
   SessionBrowser,
@@ -46,6 +48,7 @@ import {
   type SessionHost,
   type SessionSteps,
 } from "@/agent/session-browser";
+import { SESSION_SLOT_HEADER } from "@/agent/session-address";
 
 // src/agent/browser.ts reaches @cloudflare/playwright, which requires the
 // `cloudflare:workers` builtin at load time (verify-closed-door does the same).
@@ -98,27 +101,72 @@ async function launchProfile(profile: string, debugPort: number): Promise<Browse
 }
 
 async function main() {
-  // ── the configuration: all four values or the kind cannot run ──
-  const full = { SESSION_HOST_URL: " https://session-api.example.test/ ", SESSION_ACCESS_CLIENT_ID: "id.access", SESSION_ACCESS_CLIENT_SECRET: "secret", SESSION_SERVER_TOKEN: "token" };
-  const parsed = sessionHost(full);
-  check("configuration: read, trimmed, no trailing slash", parsed.url === "https://session-api.example.test" && parsed.accessClientId === "id.access" && parsed.token === "token");
-  for (const missing of Object.keys(full) as (keyof typeof full)[]) {
-    let threw = "";
-    try {
-      sessionHost({ ...full, [missing]: "" });
-    } catch (error) {
-      threw = (error as Error).message;
-    }
-    check(`configuration: without ${missing} the kind cannot run — an internal error, nothing a customer reads`, threw.startsWith("internal:"), threw);
-  }
+  // ── the configuration (CHE-464, CHE-482): the browser of the run's store's
+  // connector, or the kind cannot run ──
   {
-    let threw = "";
-    try {
-      sessionHost({ ...full, SESSION_HOST_URL: "http://session-api.example.test" });
-    } catch (error) {
-      threw = (error as Error).message;
+    const asked: { name: string; slot: string | null; path: string }[] = [];
+    const namespace = {
+      getByName: (name: string) => ({
+        fetch: async (request: Request) => {
+          asked.push({ name, slot: request.headers.get(SESSION_SLOT_HEADER), path: new URL(request.url).pathname });
+          return Response.json({ sessionId: "s-1" });
+        },
+      }),
+    };
+    const bindings = { SESSION_RUNNER: namespace } as unknown as Parameters<typeof sessionHost>[0];
+    // A teammate started the check; the store was connected by u_owner.
+    const slot = runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner" } });
+    const host = sessionHost(bindings, slot);
+    await askForSession(host, RUN_A);
+    check(
+      "configuration: a run's requests go to the browser of whoever connected its store, named by that slot and saying it",
+      slot === "team_abc--u_owner" && asked.length === 1 && asked[0].name === slot && asked[0].slot === slot && asked[0].path === "/lease",
+      JSON.stringify(asked),
+    );
+    check(
+      "configuration: a run whose app has no connector has no slot",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: null } }) === null && runSessionSlot({ teamId: null, app: { ownerId: "u" } }) === null && runSessionSlot({ teamId: "team_abc", app: null }) === null,
+    );
+    check(
+      "configuration: a store whose connector left the team has no slot — their sign-in is not the team's to use (Codex on #351)",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: false } }) === null &&
+        runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: true } }) === "team_abc--u_owner",
+    );
+    // Codex on #351: asked again whenever the browser is taken.
+    const members = new Set(["team_abc|u_owner"]);
+    const stub = { membership: { findFirst: async ({ where }: { where: { teamId: string; userId: string } }) => (members.has(`${where.teamId}|${where.userId}`) ? { id: "m" } : null) } };
+    const onBefore = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    members.clear();
+    const onAfter = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    check(
+      "configuration: the slot's person is asked for each time — removed mid-check, their browser is not taken again",
+      onBefore && !onAfter && !(await slotHolderOnTeam(stub, null)) && !(await slotHolderOnTeam(stub, "team_abc")),
+    );
+    const workflowSource = await readFile("src/agent/workflow.ts", "utf8");
+    check(
+      "configuration: every phase that takes the browser asks first",
+      /const stillOn = await step\.do\(`session-member-\$\{phase\}`, \(\) => slotHolderOnTeam\(env\.db, run\.sessionSlot\)\);\s*if \(!stillOn\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("slotHolderOnTeam(env.db") < workflowSource.indexOf("await waitForSession("),
+    );
+    check(
+      "configuration: a session run with no slot stops before anything starts, not retried",
+      /membership\.findFirst\(\{ where: \{ teamId: r\.teamId, userId: app\.ownerId \}/.test(workflowSource) &&
+        /if \(isSession && !run\.sessionSlot\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("!run.sessionSlot) throw") < workflowSource.indexOf('step.do("survey"'),
+    );
+    for (const [what, make] of [
+      ["no slot", () => sessionHost(bindings, null)],
+      ["a slot that is not one", () => sessionHost(bindings, "team abc/../x")],
+      ["no binding", () => sessionHost({} as typeof bindings, "team_abc--u_owner")],
+    ] as const) {
+      let threw = "";
+      try {
+        make();
+      } catch (error) {
+        threw = (error as Error).message;
+      }
+      check(`configuration: with ${what} the kind cannot run — an internal error, nothing a customer reads`, threw.startsWith("internal:"), threw);
     }
-    check("configuration: the host is reached over https or not at all", threw.startsWith("internal:"), threw);
   }
   check("kind: only \"session\" is a session target", isSessionTarget({ targetKind: "session" }) && !isSessionTarget({ targetKind: "website" }) && !isSessionTarget({ targetKind: "extension" }) && !isSessionTarget({}));
 
@@ -243,7 +291,8 @@ async function main() {
   // @ts-expect-error — no type declarations for the host's .mjs
   const { startSessionServer } = await import("../spikes/shopify-session/session-server.mjs");
   const server = await startSessionServer({ token: TOKEN, cdp: `http://127.0.0.1:${debugPort}`, port: 0, probeLog: join(profile, "no-probe.jsonl"), onGate: () => {} });
-  const host: SessionHost = { url: `http://127.0.0.1:${server.port}`, accessClientId: "client-id.access", accessClientSecret: "client-secret", token: TOKEN };
+  // The bearer is held here; in the Worker the team's Durable Object adds its own.
+  const host: SessionHost = { url: `http://127.0.0.1:${server.port}`, token: TOKEN, fetch: (input, init) => fetch(input, init) };
 
   // What SessionBrowser asked for when it connected: the Worker's client calls
   // endpoint.fetch with an Upgrade request to a placeholder host. Recorded
@@ -288,11 +337,8 @@ async function main() {
     const request = asked[asked.length - 1];
     check("open: the DevTools request goes to the session host, at the lease's address",
       request.url === `${host.url}/v1/devtools/browser/${lease?.sessionId}?persistent=true`, request.url);
-    check("open: it carries the Access service token and the server's bearer — and the client's own headers",
-      request.headers["cf-access-client-id"] === "client-id.access" &&
-        request.headers["cf-access-client-secret"] === "client-secret" &&
-        request.headers.authorization === `Bearer ${TOKEN}` &&
-        request.headers.upgrade === "websocket",
+    check("open: it carries the server's bearer — and the client's own headers",
+      request.headers.authorization === `Bearer ${TOKEN}` && request.headers.upgrade === "websocket",
       JSON.stringify(Object.keys(request.headers)));
     check("the registry knows the browser", sessionBrowserFor(session.browser) === session);
     check("the person's tab is not among the run's pages", session.context().pages().length === 0, String(session.context().pages().length));
@@ -635,7 +681,9 @@ async function main() {
     const helperAt = workflow.indexOf("const sessionTurn = async");
     const helper = workflow.slice(helperAt, workflow.indexOf("// Everything below is inside the failure handler", helperAt));
     check("the workflow: a session run takes its turn in steps that sleep — and only a session run",
-      helperAt > 0 && /if \(!isSession\) return;\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
+      // CHE-482: between the two, the slot's person is asked for (a step that
+      // reads, never one that waits).
+      helperAt > 0 && /if \(!isSession\) return;[\s\S]{0,400}?await waitForSession\(/.test(helper) && helper.indexOf("if (!isSession) return;") < helper.indexOf("slotHolderOnTeam(") && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
       helper.slice(0, 80));
     // Before every phase that opens the browser, under that phase's name: a
     // wait inside a phase would be a step failing and being retried.

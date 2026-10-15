@@ -18,6 +18,10 @@
 // Environment (all optional):
 //   PROBE_CDP   DevTools endpoint      default http://127.0.0.1:9222
 //   PROBE_LOG   JSONL log              default /var/lib/session-host/probe.jsonl
+//               "-" (CHE-464, a team's container): print the line and nothing
+//               else — no log, no message. The team's Durable Object keeps the
+//               history and decides who hears about it.
+//   PROBE_URL   what to open           default classify.mjs TARGET_URL
 
 import { appendFile, readFile } from "node:fs/promises";
 import { request } from "node:http";
@@ -120,7 +124,7 @@ async function main() {
     const context = browser.contexts()[0];
     if (!context) throw new Error("no default browser context");
     page = await context.newPage();
-    result = await observe(page);
+    result = await observe(page, process.env.PROBE_URL ? { url: process.env.PROBE_URL } : {});
   } catch (error) {
     result = { state: "error", url_host: null, url_path: null, detail: String(error.message).split("\n")[0].slice(0, 200) };
   } finally {
@@ -136,6 +140,11 @@ async function main() {
   if (result.challenge) line.challenge = result.challenge;
   if (result.detail) line.detail = result.detail;
   if (result.proxy_status) line.proxy_status = result.proxy_status;
+
+  if (LOG === "-") {
+    console.log(JSON.stringify(line));
+    process.exit(0);
+  }
 
   const history = parseLog(await readFile(LOG, "utf8").catch(() => ""));
   if (shouldNotify(history, line.state)) {

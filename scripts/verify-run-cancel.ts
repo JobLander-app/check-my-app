@@ -23,6 +23,7 @@ import { cancelRun, stoppedLine } from "../src/lib/run-cancel";
 import { settleCanceledPrices } from "../src/agent/canceled-leases";
 import { releaseCanceledLeases } from "../src/agent/canceled-leases";
 import { SESSION_LEASE_SECONDS } from "../src/agent/session-browser";
+import { SESSION_SLOT_HEADER } from "../src/agent/session-address";
 import type { AgentEnv } from "../src/agent/env";
 import { completeSignedOut } from "../src/agent/signed-out";
 import { completeClosedDoor } from "../src/agent/closed-door";
@@ -142,21 +143,32 @@ async function main() {
 
     // 3. The session host.
     const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
-    await run("s1", 11, "ta", "canceled", { targetKind: "session", completedAt: minutesAgo(5) });
-    await run("s2", 12, "ta", "canceled", { targetKind: "session", completedAt: minutesAgo(SESSION_LEASE_SECONDS / 60 + 5) });
+    // CHE-482: the store was connected by bo; ann stopped the check. Each run
+    // recorded its slot when it loaded; the store is then removed (Codex on
+    // #351) — the lease is still given back, in bo's browser.
+    const store = { targetKind: "session", sessionSlot: "ta--bo" };
+    await run("s1", 11, "ta", "canceled", { ...store, completedAt: minutesAgo(5) });
+    await run("s2", 12, "ta", "canceled", { ...store, completedAt: minutesAgo(SESSION_LEASE_SECONDS / 60 + 5) });
     await run("s3", 13, "ta", "canceled", { targetKind: "url", completedAt: minutesAgo(5) });
-    await run("s4", 14, "ta", "walking", { targetKind: "session" });
-    await run("s5", 15, "ta", "failed", { targetKind: "session", completedAt: minutesAgo(5) });
+    await run("s4", 14, "ta", "walking", store);
+    await run("s5", 15, "ta", "failed", { ...store, completedAt: minutesAgo(5) });
+    // CHE-464/CHE-482: each run's lease is in the browser of its store's connector.
     const asked: string[] = [];
-    const env = {
-      db,
-      bindings: { SESSION_HOST_URL: "https://host.test", SESSION_ACCESS_CLIENT_ID: "id", SESSION_ACCESS_CLIENT_SECRET: "secret", SESSION_SERVER_TOKEN: "token" },
-    } as unknown as AgentEnv;
+    const namespace = {
+      getByName: (name: string) => ({
+        fetch: async (request: Request) => {
+          asked.push(`${name}|${request.headers.get(SESSION_SLOT_HEADER)}`);
+          return Response.json({ released: true });
+        },
+      }),
+    };
+    const env = { db, bindings: { SESSION_RUNNER: namespace } } as unknown as AgentEnv;
     const released = await releaseCanceledLeases(env, now, async (host, id) => {
-      asked.push(`${host.url}:${id}`);
+      await host.fetch(`${host.url}/lease`, { method: "DELETE" });
+      asked.push(id);
       return true;
     });
-    eq("a session check stopped within one lease is released — and nothing else", [released, asked], [["s1"], ["https://host.test:s1"]]);
+    eq("a session check stopped within one lease is released, in its store connector's browser — and nothing else", [released, asked], [["s1"], ["ta--bo|ta--bo", "s1"]]);
     eq("nothing stopped, nothing asked — and no host needed", await releaseCanceledLeases({ db: { run: { findMany: async () => [] } }, bindings: {} } as unknown as AgentEnv, now), []);
   } finally {
     await real.dispose();

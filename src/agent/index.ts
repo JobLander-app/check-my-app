@@ -8,11 +8,18 @@ import { fileOpenFeedback } from "./feedback-filing";
 import { answerFeedback } from "./feedback-answers";
 import { sendPilotDigest } from "./pilot-digest";
 import { runDueWatches } from "./scheduler";
+import { ensureSessionProbes, routeLiveView, routeSessionAdmin } from "./session-routes";
 import type { CheckRunParams } from "./workflow";
 import { CheckRunWorkflow } from "./workflow";
 
 export { CheckRunWorkflow };
 export { ExtensionRunner } from "./extension-runner";
+// CHE-464: one Shopify session browser per team, in a Cloudflare Container.
+export { SessionRunner } from "./session-runner";
+
+// CHE-464: the live view's own hostname (a custom domain of this worker). On
+// it the sign-in page's socket is the only thing served.
+const LIVE_HOST = "live.checkmyapp.dev";
 // CHE-341: the web worker sends team invites through this entrypoint (service
 // binding MAILER in wrangler.jsonc), so the mail key lives in one worker only.
 export { Mailer } from "./mailer";
@@ -20,6 +27,13 @@ export { Mailer } from "./mailer";
 export default {
   async fetch(req: Request, env: AgentBindings): Promise<Response> {
     const url = new URL(req.url);
+
+    // A person on a Shopify app's sign-in page, to their own browser.
+    if (url.pathname === "/session/view") return routeLiveView(req, env);
+    if (url.hostname === LIVE_HOST) return new Response(null, { status: 404 });
+    // Ours: moving a live sign-in into a slot's browser or from one to
+    // another, reading a slot's state.
+    if (url.pathname === "/session/jar" || url.pathname === "/session/move" || url.pathname === "/session/state") return routeSessionAdmin(req, env);
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true, worker: "agent" });
@@ -50,6 +64,13 @@ export default {
   async scheduled(controller: ScheduledController, env: AgentBindings): Promise<void> {
     const { started, skipped } = await runDueWatches(env);
     console.log(`[scheduler] tick: started ${started.length}, skipped ${skipped}`);
+    // CHE-464: every team whose browser holds a Shopify sign-in has its hourly
+    // probe scheduled — a lost alarm does not stop the watch for long.
+    try {
+      await ensureSessionProbes(env);
+    } catch (err) {
+      console.warn(`[session-probe] scheduling failed: ${err instanceof Error ? err.message : err}`);
+    }
     // CHE-434: reports of the check's mistakes, to our board — after the due
     // checks have started, so a slow tracker never delays one.
     try {

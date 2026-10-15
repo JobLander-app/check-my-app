@@ -8,7 +8,8 @@
 // else by its address, as before.
 //
 // A Shopify app is an app checked inside the Shopify admin (targetKind
-// "session" — the only apps that kind holds), and every list marks it as one.
+// "session" — the only apps that kind holds). Every list marks each app with
+// what it is: a Shopify app, an extension, a website.
 
 import { extensionDisplayName } from "@/lib/extension-target";
 
@@ -29,6 +30,10 @@ export function appLabel(app: Labelled, extensionEvidence?: string | null): stri
   return app.targetKind === "extension" ? extensionDisplayName(app.targetUrl, extensionEvidence) : app.appSlug;
 }
 
-export function isShopifyApp(app: { targetKind: string }): boolean {
-  return app.targetKind === "session";
+// What the mark beside the name shows (src/components/app-mark.tsx). Anything
+// that is neither checked inside the Shopify admin nor an extension is a website.
+export type AppKind = "shopify" | "extension" | "web";
+
+export function appKind(app: { targetKind: string }): AppKind {
+  return app.targetKind === "session" ? "shopify" : app.targetKind === "extension" ? "extension" : "web";
 }

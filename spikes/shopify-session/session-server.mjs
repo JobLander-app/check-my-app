@@ -21,6 +21,15 @@
 // waitForDebuggerOnStart, and while such a connection stays open every new tab
 // sits paused at about:blank (README.md, the 2026-10-01 note).
 //
+// In a team's container (CHE-464, runner.mjs) there is no profile on disk: the
+// team's sign-in is its cookie jar, kept by the team's Durable Object. Four
+// more routes, for that Durable Object only (the same bearer):
+//
+//   GET    /ready                         { jarLoaded, lease, connected, person }
+//   PUT    /jar     {cookies}             the team's jar into the browser; until it is in, no lease
+//   GET    /jar                           the team's jar out of the browser (values — never logged)
+//   POST   /probe   {url}                 the hourly look at the admin (probe.mjs) → its line
+//
 // Environment:
 //   SESSION_SERVER_TOKEN   bearer token, at least 32 characters (required)
 //   SESSION_SERVER_PORT    default 9090
@@ -55,9 +64,18 @@ export async function startSessionServer({
   // measurements must not share it (Codex on #287). The check is told 409 and
   // asks again later, as it does when another check holds the lease.
   personPresent = () => false,
+  // CHE-464: { load(cookies) → count, read() → cookies } in a team's
+  // container; null on the session host, whose profile is on disk.
+  jar = null,
+  // CHE-464: (url) → the probe's line, in a team's container.
+  probe = null,
 } = {}) {
   if (typeof token !== "string" || token.length < 32) throw new Error("A bearer token of at least 32 characters is required");
   const book = new LeaseBook(now);
+  // A browser with a jar to receive is not given to a check until it has it:
+  // a check that navigated first would meet the sign-in page and call it the
+  // product. On the session host there is nothing to wait for.
+  let jarLoaded = jar === null;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE });
   let connection = null; // at most one: { sessionId, end() }
 
@@ -83,15 +101,34 @@ export async function startSessionServer({
 
   const view = (lease) => ({ sessionId: lease.sessionId, ownerRunId: lease.ownerRunId, expiresAt: new Date(lease.expiresAt).toISOString() });
 
-  async function body(req) {
+  async function body(req, limit = 64 * 1024) {
     const chunks = [];
     let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 64 * 1024) throw new Error("Request too large");
+      if (size > limit) throw new Error("Request too large");
       chunks.push(chunk);
     }
     return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  }
+
+  // The jar's routes say nothing about what failed beyond that it failed: a
+  // parse error quotes the body, and the body is cookie values.
+  async function jarRoute(req, send) {
+    try {
+      if (req.method === "PUT") {
+        const input = await body(req, 512 * 1024);
+        const loaded = await jar.load(Array.isArray(input?.cookies) ? input.cookies : []);
+        jarLoaded = true;
+        send(200, { loaded });
+      } else if (req.method === "GET") {
+        send(200, { cookies: await jar.read() });
+      } else {
+        send(405, { error: "Not here" });
+      }
+    } catch {
+      send(req.method === "PUT" ? 422 : 503, { error: "The jar could not be moved" });
+    }
   }
 
   const server = http.createServer(async (req, res) => {
@@ -102,7 +139,18 @@ export async function startSessionServer({
     const send = (status, value) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
     try {
       const path = new URL(req.url, "http://session").pathname;
-      if (req.method === "GET" && path === "/state") {
+      if (jar && path === "/jar") {
+        await jarRoute(req, send);
+      } else if (jar && req.method === "GET" && path === "/ready") {
+        send(200, { jarLoaded, lease: book.current() !== null, connected: Boolean(connection), person: personPresent() });
+      } else if (probe && req.method === "POST" && path === "/probe") {
+        const input = await body(req);
+        if (!jarLoaded) {
+          send(503, { error: "The browser has not been given its jar" });
+          return;
+        }
+        send(200, await probe(String(input?.url ?? "")));
+      } else if (req.method === "GET" && path === "/state") {
         const lease = book.current();
         const browser = await chrome().then((c) => c.browser, () => null);
         send(200, { lease: lease ? view(lease) : null, connected: Boolean(connection), browser, probe: await lastProbe() });
@@ -115,6 +163,10 @@ export async function startSessionServer({
           browser = (await chrome()).browser;
         } catch {
           send(503, { error: "The browser on the session host is not running" });
+          return;
+        }
+        if (!jarLoaded) {
+          send(503, { error: "The browser has not been given its jar" });
           return;
         }
         // A run renewing the lease it already holds keeps it: the person was

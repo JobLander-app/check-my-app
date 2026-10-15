@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PHASE_LABELS, PHASE_ORDER, type RunEvent, type RunPhase } from "@/lib/types";
 import { RunFailed } from "@/components/run-failed";
-import { AppName } from "@/components/shopify-mark";
+import { AppName } from "@/components/app-mark";
+import type { AppKind } from "@/lib/app-label";
 import { StopRun } from "@/components/stop-run";
 
 interface Snapshot {
@@ -43,7 +44,7 @@ export function RunLive({
   startedAt,
   notifyEmail,
   isExtension = false,
-  isShopify = false,
+  kind,
   mayStop = false,
 }: {
   publicId: string;
@@ -52,8 +53,8 @@ export function RunLive({
   startedAt: string;
   notifyEmail: string | null;
   isExtension?: boolean;
-  // CHE-457: an app inside the Shopify admin carries the Shopify mark.
-  isShopify?: boolean;
+  // The mark beside the app's name (src/components/app-mark.tsx).
+  kind: AppKind;
   // CHE-454: a member or admin of the run's team sees Stop.
   mayStop?: boolean;
 }) {
@@ -100,7 +101,7 @@ export function RunLive({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="mono text-lg text-fg">
-            <AppName name={appSlug} shopify={isShopify} />
+            <AppName name={appSlug} kind={kind} />
           </p>
           <p className="font-mono text-xs text-fg-faint">
             Started {fmt(started)} · Estimated {fmt(estimated)}

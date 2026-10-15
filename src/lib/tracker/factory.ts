@@ -51,7 +51,4 @@ export async function trackerFor(db: PrismaClient, row: TrackerRow, creds: Track
   return new LinearTracker(await freshLinearToken(db, row, creds.linear), row.teamId);
 }
 
-/** How the tracker is named to a person: "Linear" or "Jira". */
-export function trackerName(type: string | null | undefined): string {
-  return type === "jira" ? "Jira" : "Linear";
-}
+export { trackerName } from "./name";

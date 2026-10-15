@@ -20,8 +20,8 @@ import { CheckPrice } from "@/components/check-price";
 import type { UserPlan } from "@/lib/enums";
 import type { AppLens, RunEvent } from "@/lib/types";
 import { extensionReportPublished } from "@/lib/extension-target";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { AppName } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppName } from "@/components/app-mark";
 import { alreadyScoped, publicRow } from "@/lib/tenant-db";
 import { FeedbackThread } from "@/components/feedback-thread";
 import { REASONS_FOR, feedbackForRun, mayComment } from "@/lib/feedback";
@@ -294,7 +294,7 @@ export async function VerdictView({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
               <h1 className="mono text-xl text-fg">
-                <AppName name={appName} shopify={isShopifyApp(run)} />
+                <AppName name={appName} kind={appKind(run)} />
               </h1>
               <p className="mt-1 font-mono text-xs text-fg-faint">
                 Checked{" "}

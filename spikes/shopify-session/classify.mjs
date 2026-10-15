@@ -155,12 +155,14 @@ export function parseLog(text) {
 }
 
 /**
- * Open TARGET_URL in `page`, wait for it to settle, return
- * { state, url_host, url_path[, challenge] }. Never returns the query string
- * (it can carry tokens) or any page text.
+ * Open `url` (TARGET_URL unless told) in `page`, wait for it to settle, return
+ * { state, url_host, url_path[, challenge][, detail] }. Never returns the query
+ * string (it can carry tokens) or any page text; an "error" carries the page's
+ * title and its frames' names. A team's container (CHE-464) is told the
+ * address of the team's own app.
  */
-export async function observe(page, { timeoutMs = 45_000 } = {}) {
-  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+export async function observe(page, { timeoutMs = 45_000, url = TARGET_URL } = {}) {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForSelector(SETTLED, { state: "attached", timeout: timeoutMs }).catch(() => {});
   // The admin redirects to accounts.shopify.com with script, and the sign-in
   // form swaps its first step for the next; let one of those finish.
@@ -183,5 +185,19 @@ export async function observe(page, { timeoutMs = 45_000 } = {}) {
   const state = classify(signals);
   const observed = { state, url_host: final.hostname, url_path: final.pathname };
   if (state === "captcha") observed.challenge = challengeKind(signals);
+  // A page that settled on none of the above said nothing about why (the
+  // 2026-10-13 19:42 probe: the app's own address, no frame, no form, no
+  // detail). The title and the frames' names say whether it was a slow
+  // admin, an error page, or a renamed app frame — still no page text.
+  if (state === "error") observed.detail = await unsettled(page, timeoutMs);
   return observed;
+}
+
+async function unsettled(page, timeoutMs) {
+  const title = (await page.title().catch(() => "")).replace(/\s+/g, " ").trim().slice(0, 80);
+  const frames = await page
+    .locator("iframe")
+    .evaluateAll((els) => els.slice(0, 8).map((el) => el.getAttribute("name") || el.id || "unnamed"))
+    .catch(() => []);
+  return `nothing settled in ${Math.round(timeoutMs / 1000)} s: title "${title}", iframes [${frames.join(", ")}]`;
 }

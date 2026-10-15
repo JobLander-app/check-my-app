@@ -39,7 +39,9 @@ export function connectedShopifyAppOf(app: { appSlug: string; targetUrl: string;
   return isPendingShopifyApp(app) ? null : shopifyAppOf(app);
 }
 
-export type StoreOfApp = { appId: string; store: string };
+// CHE-482: who connected the store — its checks open it signed in to Shopify
+// as them, so a store is that person's test account.
+export type StoreOfApp = { appId: string; store: string; ownerId: string | null; ownerEmail: string | null };
 
 /** Every store of the team where this Shopify app is connected, by store name. */
 export async function storesOf(db: PrismaClient, teamId: string, handle: string): Promise<StoreOfApp[]> {
@@ -48,12 +50,12 @@ export async function storesOf(db: PrismaClient, teamId: string, handle: string)
       ...teamOwned(teamId),
       OR: [{ targetUrl: { startsWith: "https://admin.shopify.com/store/" } }, { appSlug: { startsWith: "shopify:" } }],
     },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true },
+    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, ownerId: true, owner: { select: { email: true } } },
   });
   return rows
-    .map((r) => ({ appId: r.id, of: connectedShopifyAppOf(r) }))
-    .filter((r): r is { appId: string; of: { store: string; handle: string } } => r.of?.handle === handle)
-    .map((r) => ({ appId: r.appId, store: r.of.store }))
+    .map((r) => ({ appId: r.id, of: connectedShopifyAppOf(r), ownerId: r.ownerId, ownerEmail: r.owner?.email ?? null }))
+    .filter((r): r is typeof r & { of: { store: string; handle: string } } => r.of?.handle === handle)
+    .map((r) => ({ appId: r.appId, store: r.of.store, ownerId: r.ownerId, ownerEmail: r.ownerEmail }))
     .sort((a, b) => a.store.localeCompare(b.store));
 }
 

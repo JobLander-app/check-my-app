@@ -7,8 +7,8 @@ import { missingScopes } from "@/lib/posthog/oauth";
 import { AnalyticsConnection } from "@/components/analytics-connection";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
-import { appLabel, isShopifyApp } from "@/lib/app-label";
-import { AppName } from "@/components/shopify-mark";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppName } from "@/components/app-mark";
 import { integrationsLabel } from "@/lib/app-page";
 import { appsRunningTheAction, teamRunsTheAction } from "@/lib/release-action";
 import { GitHubCard } from "@/components/github-card";
@@ -81,7 +81,7 @@ export default async function IntegrationsPage({
       orderBy: { createdAt: "desc" },
       select: {
         id: true, name: true, appSlug: true, targetKind: true, targetUrl: true, posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
-        tracker: { select: { externalOrg: true } },
+        tracker: { select: { type: true } },
       },
     }),
     teamRunsTheAction(db, team.id),
@@ -127,12 +127,12 @@ export default async function IntegrationsPage({
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
               <li key={app.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
-                <AppName name={appLabel(app)} shopify={isShopifyApp(app)} className="font-mono text-sm" />
+                <AppName name={appLabel(app)} kind={appKind(app)} className="font-mono text-sm" />
                 <span className="flex items-center gap-3">
                   {/* The app page's own words for the same facts (src/lib/app-page.ts). */}
                   <span className="text-xs text-fg-muted">
                     {integrationsLabel({
-                      tracker: app.tracker !== null,
+                      tracker: app.tracker?.type ?? null,
                       analyticsProject: app.posthogProjectName,
                       github: actionApps.has(app.id),
                       webhook: Boolean(app.webhookUrl),

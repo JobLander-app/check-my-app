@@ -156,10 +156,11 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/dashboard/actions.ts#toggleOwnNotifications": { kind: "team", action: "read" },
   "src/app/onboarding/actions.ts#createApp": { kind: "team", action: "app.settings.write" },
   // CHE-333: a Shopify app is connected by the link to it in the store's admin
-  // and confirmed after the person signs in. Both save where a check of the app may act (the admin and
-  // the app's own origin) — allowed origins, so credentials.write.
-  "src/app/(app)/connect/shopify/actions.ts#connectShopifyApp": { kind: "team", action: "app.credentials.write" },
-  "src/app/(app)/health/apps/[appId]/sign-in/actions.ts#chooseShopifyApp": { kind: "team", action: "app.credentials.write" },
+  // and confirmed after the person signs in. CHE-482: each person connects
+  // their own dev stores with their own Shopify sign-in, so a member may; the
+  // origins saved are fixed or read by our host, never typed in.
+  "src/app/(app)/connect/shopify/actions.ts#connectShopifyApp": { kind: "team", action: "shopify.store.connect" },
+  "src/app/(app)/health/apps/[appId]/sign-in/actions.ts#chooseShopifyApp": { kind: "team", action: "shopify.store.connect" },
   // CHE-360: the four marks on the Issues pages, the same decision as PATCH
   // /api/findings/[id] for the team the run belongs to.
   "src/app/(app)/health/issues/actions.ts#markFinding": { kind: "team", action: "finding.mark" },
