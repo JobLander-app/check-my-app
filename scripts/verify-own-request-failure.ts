@@ -55,7 +55,12 @@ function stubEnv(): { env: ToolEnv; emit: (event: string, arg: unknown) => void 
   attachLogCapture(env);
   return { env, emit: (event, arg) => (handlers.get(event) ?? []).forEach((h) => h(arg)) };
 }
-const failedRequest = (url: string, errorText: string) => ({ url: () => url, failure: () => ({ errorText }) });
+const failedRequest = (url: string, errorText: string, method = "GET", resourceType = "script") => ({
+  url: () => url,
+  failure: () => ({ errorText }),
+  method: () => method,
+  resourceType: () => resourceType,
+});
 
 async function reportStep(env: ToolEnv, input: ReportedStep): Promise<ReportedStep> {
   const reported: ReportedStep[] = [];
@@ -173,6 +178,40 @@ async function main() {
     globalThis.fetch = realFetch;
     check("a failure of another site's host is never evidence against the product",
       foreign.status === "skipped" && foreign.unverifiedReason === "our_capability" && !env.ownRequestFailures?.size);
+  }
+
+  // 6 — Codex, #344: only a static GET is asked again. A magic link, an
+  // unsubscribe or a form post is listed to the model but never replayed: a
+  // second request could consume it, and an anonymous GET is not the request
+  // the page made.
+  for (const [what, url, method, resourceType] of [
+    ["a GET magic link (a document)", `${ORIGIN}/auth/chat-magic?token=s3cr3t`, "GET", "document"],
+    ["a POST from a script", `${ORIGIN}/api/chat/session`, "POST", "fetch"],
+    ["a GET xhr", `${ORIGIN}/api/chat/unsubscribe?id=42`, "GET", "xhr"],
+  ] as const) {
+    const { env, emit } = stubEnv();
+    emit("requestfailed", failedRequest(url, "net::ERR_CONNECTION_RESET", method, resourceType));
+    const asked = stubFetch(() => new Error("connect ECONNRESET"));
+    const step = await reportStep(env, CHAT_STEP);
+    const log = await executeTool(env, "get_network_log", {});
+    globalThis.fetch = realFetch;
+    check(`${what} is listed to the model but never asked again; the step stays a gap of ours`,
+      asked.length === 0 && step.status === "skipped" && step.unverifiedReason === "our_capability" && log.includes(url),
+      `${asked.length} asked, ${step.status}`);
+  }
+
+  // …and a static resource carrying a token is asked as it was, but the
+  // customer's sentence shows its address without the query.
+  {
+    const { env, emit } = stubEnv();
+    const signed = `${SDK}?token=s3cr3t&sig=abc123`;
+    emit("requestfailed", failedRequest(signed, "net::ERR_CONNECTION_RESET"));
+    const asked = stubFetch(() => new Error("connect ECONNRESET"));
+    const step = await reportStep(env, CHAT_STEP);
+    globalThis.fetch = realFetch;
+    check("a signed static URL is asked exactly as the page asked it", asked.length === 1 && asked[0] === signed, asked.join(" "));
+    check("…and the published sentence carries no query",
+      step.status === "broken" && step.observed.includes(SDK) && !/s3cr3t|abc123|\?/.test(step.observed), step.observed);
   }
 
   if (failures) {

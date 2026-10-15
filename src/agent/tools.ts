@@ -164,6 +164,11 @@ export interface ToolEnv {
 export interface OwnRequestFailure {
   // The browser's own reason, kept for the log; never shown to a customer.
   browserReason: string;
+  // May the worker ask this URL again? Only a GET for a static resource (a
+  // script, stylesheet, font or image): asking any other request again could
+  // consume a magic link or repeat an action, and would not be the same request
+  // anyway — no body, no cookies (Codex, #344). Everything is still listed to the model.
+  probeable: boolean;
   probe?: { failing: boolean; says: string };
 }
 
@@ -2657,10 +2662,12 @@ export function coerceUndrivenControl(
 // the worker before anything is concluded. Cancelled requests (a navigation
 // leaving the page) are the browser's own housekeeping, not failures.
 const MAX_OWN_FAILURES = 30;
+const STATIC_RESOURCES = new Set(["script", "stylesheet", "font", "image"]);
 export function noteOwnRequestFailure(
   env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins" | "ownRequestFailures">,
   rawUrl: string,
   browserReason: string,
+  request: { method?: string; resourceType?: string } = {},
 ): void {
   if (/ERR_ABORTED|ERR_BLOCKED_BY/i.test(browserReason)) return;
   let url: URL;
@@ -2674,7 +2681,8 @@ export function noteOwnRequestFailure(
   url.hash = "";
   const map = (env.ownRequestFailures ??= new Map());
   if (map.has(url.href) || map.size >= MAX_OWN_FAILURES) return;
-  map.set(url.href, { browserReason });
+  const probeable = (request.method ?? "").toUpperCase() === "GET" && STATIC_RESOURCES.has(request.resourceType ?? "");
+  map.set(url.href, { browserReason, probeable });
 }
 
 // What a step has to say to be about this request: the host it names, or a word
@@ -2742,7 +2750,7 @@ export async function coerceOwnRequestFailure(
   let confirmed: { url: string; says: string } | null = null;
   let asked = 0;
   for (const [href, failure] of failures) {
-    if (!stepIsAbout(text, new URL(href), env.targetOrigin)) continue;
+    if (!failure.probeable || !stepIsAbout(text, new URL(href), env.targetOrigin)) continue;
     if (!failure.probe) {
       if (asked >= 3) continue;
       asked++;
@@ -2757,7 +2765,10 @@ export async function coerceOwnRequestFailure(
   console.warn(`[report_step] "${step.label}": skipped/our_capability, but ${confirmed.url} fails for the page and from here → broken`);
   step.status = "broken";
   step.unverifiedReason = undefined;
-  step.observed = `The page requests ${confirmed.url} and that request fails: ${confirmed.says}. Whatever depends on it does not load.`;
+  // The address without its query: a signed or tokened parameter is not ours to
+  // publish, and this sentence is written after report_step's scrub (Codex, #344).
+  const shown = new URL(confirmed.url);
+  step.observed = `The page requests ${shown.origin}${shown.pathname} and that request fails: ${confirmed.says}. Whatever depends on it does not load.`;
 }
 
 export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
@@ -3490,7 +3501,7 @@ export function attachLogCapture(env: ToolEnv): void {
     if (env.networkLog.length > 200) env.networkLog.splice(0, 100);
   });
   env.page.on("requestfailed", (req) => {
-    noteOwnRequestFailure(env, req.url(), req.failure()?.errorText ?? "request failed");
+    noteOwnRequestFailure(env, req.url(), req.failure()?.errorText ?? "request failed", { method: req.method(), resourceType: req.resourceType() });
   });
   env.page.on("console", (msg) => {
     env.consoleLog.push(`[${msg.type()}] ${msg.text().slice(0, 300)}`);
