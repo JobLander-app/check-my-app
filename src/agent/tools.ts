@@ -2649,7 +2649,10 @@ export function coerceUndrivenControl(
 // create: where it may, a step that did not add is the walker's own business.
 // The step's own words stay — they say what was confirmed (the lookup) and
 // what was not.
-const WRITE_NAMED = CREATE_VERBS;
+//
+// The "not carried out" must be said of the act the step names, in the same
+// sentence: "Review order details" with "payment was not submitted" is a
+// review that was done, not an order left unplaced (Codex, #354).
 const WRITE_NOT_CARRIED_OUT = new RegExp(
   [
     String.raw`\b(?:deliberately|intentionally|purposely|on purpose)\s+(?:not|left|stopped|skipped|withheld)\b`,
@@ -2661,11 +2664,20 @@ const WRITE_NOT_CARRIED_OUT = new RegExp(
   "i",
 );
 
+/** The write acts a step names, each as a pattern for its forms: "Add" → add, adds, added, adding. */
+function namedWrites(step: ReportedStep): RegExp[] {
+  const named = `${step.label ?? ""} ${step.attempted ?? ""}`.match(new RegExp(CREATE_VERBS.source, "gi")) ?? [];
+  const stems = new Set(named.map((v) => v.toLowerCase().replace(/\s+/g, String.raw`\s?`).replace(/e$/, "")));
+  return [...stems].map((s) => new RegExp(String.raw`\b${s}(?:e|es|s|ed|d|ing|ion|ation|ted|ting)?\b`, "i"));
+}
+
 export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "writeAllowed">): void {
   if (env.writeAllowed) return;
   if (step.status !== "ok") return;
-  if (!WRITE_NAMED.test(step.label ?? "") && !WRITE_NAMED.test(step.attempted ?? "")) return;
-  if (!WRITE_NOT_CARRIED_OUT.test(step.observed ?? "")) return;
+  const acts = namedWrites(step);
+  if (!acts.length) return;
+  const sentences = (step.observed ?? "").split(/(?<=[.;!?])\s+/);
+  if (!sentences.some((s) => WRITE_NOT_CARRIED_OUT.test(s) && acts.some((act) => act.test(s)))) return;
   console.warn(`[report_step] "${step.label}": ok, but the act it names was not carried out in a read-only run → skipped`);
   step.status = "skipped";
   step.unverifiedReason = "not_applicable";

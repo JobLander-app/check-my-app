@@ -60,6 +60,25 @@ duplicates.observed = "The field accepts input and the list does not add duplica
 coerceUnperformedWrite(duplicates, { writeAllowed: false });
 check("'does not add' about the product is not 'we did not add'", duplicates.status === "ok");
 
+// Codex, #354: the "not carried out" must be said of the act the step names.
+const review: ReportedStep = {
+  label: "Review order details",
+  status: "ok",
+  attempted: "Opened the order summary to check the totals.",
+  observed: "The totals were correct; payment was not submitted.",
+};
+coerceUnperformedWrite(review, { writeAllowed: false });
+check("a review whose label names an order stays ok when something else was not submitted", review.status === "ok", review.status);
+
+const unplaced: ReportedStep = { ...review, label: "Place the order", observed: "The summary was correct. The order was deliberately not placed." };
+coerceUnperformedWrite(unplaced, { writeAllowed: false });
+check("…and is skipped when the order it names was the act not carried out", unplaced.status === "skipped", unplaced.status);
+
+const otherSentence = production();
+otherSentence.observed = "Adding works from the dropdown. The export was not performed.";
+coerceUnperformedWrite(otherSentence, { writeAllowed: false });
+check("the named act and the 'not carried out' must share a sentence", otherSentence.status === "ok", otherSentence.status);
+
 const broken: ReportedStep = { ...production(), status: "broken", observed: "Adding a country was not performed because the page crashed." };
 coerceUnperformedWrite(broken, { writeAllowed: false });
 check("a problem step is never softened", broken.status === "broken");
