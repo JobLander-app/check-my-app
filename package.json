@@ -62,6 +62,7 @@
     "verify:step-language": "tsx --tsconfig tsconfig.json scripts/verify-step-language.ts",
     "verify:summary-voice": "tsx --tsconfig tsconfig.json scripts/verify-summary-voice.ts",
     "verify:findings-gate": "tsx --tsconfig tsconfig.json scripts/verify-findings-gate.ts",
+    "verify:no-fix-in-finding": "tsx --tsconfig tsconfig.json scripts/verify-no-fix-in-finding.ts",
     "verify:verdict-integrity": "tsx --tsconfig tsconfig.json scripts/verify-verdict-integrity.ts",
     "verify:store-password": "tsx --tsconfig tsconfig.json scripts/verify-store-password.ts",
     "verify:gap-filing": "tsx --tsconfig tsconfig.json scripts/verify-gap-filing.ts",
