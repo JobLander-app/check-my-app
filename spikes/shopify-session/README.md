@@ -1,5 +1,46 @@
 # Shopify admin session host (CHE-378)
 
+## Since CHE-464: one container per team
+
+Every Shopify check now runs in its team's own browser: a Cloudflare
+Container (`SessionRunner`, `src/agent/session-runner.ts`; one Durable Object
+per team, named by the team's id) running this directory's stack —
+`runner.mjs` starts Xvfb, `forwarder.mjs` (tinyproxy's job: the IPRoyal
+upstream from the agent worker's `SESSION_PROXY_URL`, a sticky session per
+team), and google-chrome-stable as a plain process with `session-chrome`'s
+flags; then the same `session-server.mjs` gate and `viewer.mjs` live view.
+CHE-461 measured why this works: the sign-in is three `.shopify.com` cookies,
+and they open the admin in a never-used Chrome on any machine and address.
+
+- **The team's sign-in is its cookie jar** (`jar-rules.mjs`, `jar.mjs`), sealed
+  in the Durable Object with `SESSION_JAR_KEY` (AES-GCM, the team's id as
+  associated data). It goes into every fresh Chrome before the server gives
+  anything a lease (`PUT /jar`, `GET /ready`), and is read back after every
+  check (`DELETE /lease`), probe and sign-in. A jar with no
+  `_merchant_essential` never replaces one that has it. Values are never logged.
+- **Who reaches it:** only the Durable Object, with a bearer it makes for each
+  start. The agent's `SessionBrowser` goes through the object
+  (`session-browser.ts sessionHost(bindings, teamId)`); a person's sign-in page
+  through `wss://live.checkmyapp.dev/session/view` (`session-routes.ts`), with a
+  view token signed by the team's own key (`viewKeyFor`: HMAC of
+  `SESSION_VIEW_SECRET` and the team's id — a container never holds the secret).
+- **The hourly probe** is the object's `schedule`: wake the browser, give it
+  the jar, `POST /probe` (this directory's `probe.mjs` in a process of its own,
+  told the team's first Shopify app), keep the jar, one row in D1
+  `SessionProbe`, and on the way down from `ok` one message to the owner's chat
+  (`classify.mjs shouldNotify`). Read it with
+  `SELECT at, state, urlHost, notified FROM SessionProbe WHERE teamId = '…' ORDER BY at DESC`.
+- **Ours to operate** (agent worker, `Authorization: Bearer $SESSION_ADMIN_TOKEN`):
+  `GET /session/state?teamId=…` (running, jar saved when and why, next probe —
+  never a value) and `POST /session/jar` (`scripts/session-jar-import.mjs`
+  moves the host's live sign-in into a team's browser).
+- **Guards:** `scripts/verify-session-runner.ts` (jar, seal, keys, doors,
+  forwarder, the server with a jar on a real Chrome, the image's launch rules)
+  and `.github/workflows/session-runner-image.yml` (the image built and booted
+  on every pull request that changes this directory).
+
+What follows is the VM this replaced, kept until it is taken down.
+
 Phase B of CHE-333. The Shopify admin sign-in is behind a captcha, which we
 never solve. A human signs in once on a host we own; agents then work inside
 that session. Whether that is a product depends on one number nobody knows yet:

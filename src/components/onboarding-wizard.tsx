@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { createApp } from "@/app/onboarding/actions";
 import { ExtensionFields } from "./extension-fields";
 import { parseExtensionLink, type ExtensionOptions } from "@/lib/extension-target";
+import { ONBOARDING_TRACKER_STEP, ONBOARDING_URGENT_LABEL } from "@/lib/tracker-copy";
 
 // Owner onboarding. One sectioned form (resumable multi-step is a later refinement)
 // that captures everything the agent needs for recurring QA + the ticket contract,
@@ -106,14 +107,10 @@ export function OnboardingWizard({
         </>)}
       </section>
 
-      {/* 3 — Tracker (Linear) */}
+      {/* 3 — Tracker (Linear or Jira, CHE-438) */}
       <section className="card space-y-3 p-5">
         <p className="text-sm font-medium text-fg">3 · Connect your tracker</p>
-        <p className="text-xs text-fg-faint">
-          After you save, connect Linear from your dashboard (one-click OAuth) — we&apos;ll file
-          tickets into the team you authorize. The ticket parameters below take effect once that
-          connection is live; set them now so your self-healing automation picks the tickets up.
-        </p>
+        <p className="text-xs text-fg-faint">{ONBOARDING_TRACKER_STEP}</p>
       </section>
 
       {/* 4 — Ticket parameters */}
@@ -131,9 +128,7 @@ export function OnboardingWizard({
           <Input name="repoLabel" placeholder="repo: your-app" />
         </label>
         <label className="block space-y-1">
-          <span className="text-xs text-fg-muted">
-            Critical journeys → Urgent (comma-separated)
-          </span>
+          <span className="text-xs text-fg-muted">{ONBOARDING_URGENT_LABEL}</span>
           <Input name="urgentJourneys" placeholder="login, dashboard, checkout" />
         </label>
         <p className="text-xs text-fg-faint">

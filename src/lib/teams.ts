@@ -82,16 +82,33 @@ export const ACTIVE_TEAM_COOKIE = "cma_team";
 // is a member of that team — a cookie is something the holder can edit, so it
 // is a request, never an authority. Anything else falls back to their personal
 // team, and to the oldest membership if (impossibly) they have no personal one.
-export function chooseTeam<T extends { teamId: string }>(
+//
+// CHE-481: except, for a browser that has never chosen a team (no cookie at
+// all), a personal team with nothing in it. Someone who signed up to accept an
+// invitation has a team of their own they never asked for; on a new browser it
+// opened empty, and the team they joined was a switch away — "it made me a new
+// account". There, an empty personal team gives way to the oldest team they
+// joined. Nowhere else (Codex on #352): a cookie naming a team they are not on
+// still falls back to personal, and so does every caller with no browser —
+// a legacy API key with no team of its own acts for its minter's personal
+// team, never for whichever team they happen to be on. `apps` is how many apps
+// the team holds; left out, nothing is known and the personal team stands.
+export type TeamChoice = { preferred: string | null; neverChosen: boolean };
+
+export function chooseTeam<T extends { teamId: string; apps?: number }>(
   memberships: T[],
   personalId: string,
-  preferred: string | null,
+  choice: TeamChoice | string | null,
 ): T | null {
+  const { preferred, neverChosen } = typeof choice === "object" && choice !== null ? choice : { preferred: choice, neverChosen: false };
   if (preferred) {
     const asked = memberships.find((m) => m.teamId === preferred);
     if (asked) return asked;
   }
-  return memberships.find((m) => m.teamId === personalId) ?? memberships[0] ?? null;
+  const personal = memberships.find((m) => m.teamId === personalId);
+  const joined = memberships.find((m) => m.teamId !== personalId);
+  if (neverChosen && personal && personal.apps === 0 && joined) return joined;
+  return personal ?? memberships[0] ?? null;
 }
 
 // Which team this person is acting for, and what they may do in it.
@@ -104,14 +121,20 @@ export function chooseTeam<T extends { teamId: string }>(
 export async function activeTeamContext(
   db: PrismaClient,
   user: { id: string; name?: string | null; email: string },
-  preferredTeamId: string | null = null,
+  // A team id the caller names (a callback's state, a key's minter: null), or
+  // a browser's choice (browserTeamChoice, src/lib/auth.ts).
+  choice: TeamChoice | string | null = null,
 ): Promise<TeamContext> {
   const memberships = await db.membership.findMany({
     where: { userId: user.id },
-    include: { team: true },
+    include: { team: { include: { _count: { select: { apps: true } } } } },
     orderBy: { createdAt: "asc" },
   });
-  const chosen = chooseTeam(memberships, personalTeamId(user.id), preferredTeamId);
+  const chosen = chooseTeam(
+    memberships.map((m) => ({ ...m, apps: m.team._count.apps })),
+    personalTeamId(user.id),
+    choice,
+  );
   if (!chosen) {
     // No membership at all: an account that predates the backfill or was
     // written straight by a webhook. Give it its team rather than refusing the

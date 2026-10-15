@@ -48,6 +48,11 @@ export const THEME_TOKENS = {
     broken: { dark: "#ff5252", light: "#b91c1c" },
     exposed: { dark: "#b06bff", light: "#8b2fd6" },
   },
+  // Marks of the platforms an app lives on (CHE-457): the Shopify green on the
+  // dark page, Shopify's own darker green where a light page needs contrast.
+  brand: {
+    shopify: { dark: "#95bf47", light: "#5e8e3e" },
+  },
 } as const;
 
 export type ThemeName = "dark" | "light";

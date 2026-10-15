@@ -188,14 +188,16 @@ async function main() {
 
   // saveTeamKey, called: the key is stored only when the check says ok.
   const writes: unknown[] = [];
-  const keyDb = { team: { update: async (args: unknown) => { writes.push(args); return {}; } } } as never;
+  const keyDb = { team: { findUnique: async () => null, update: async (args: unknown) => { writes.push(args); return {}; } } } as never;
   const enc = (p: string) => `enc(${p.length})`;
-  const refused = await saveTeamKey(keyDb, "t1", full, { encrypt: enc, check: async () => ({ ok: false, reason: "no" }) });
+  // CHE-458: the credit question is answered here, never by the network.
+  const keyDeps = { encrypt: enc, decrypt: (b: string) => b, probe: async () => "credit" as const };
+  const refused = await saveTeamKey(keyDb, "t1", full, { ...keyDeps, check: async () => ({ ok: false, reason: "no" }) });
   assert.equal(refused.ok, false, "a refused key is not saved");
   assert.equal(writes.length, 0, "…nothing is written");
-  assert.equal((await saveTeamKey(keyDb, "t1", "   ", { encrypt: enc, check: async () => ({ ok: true }) })).ok, false, "an empty key is not saved");
+  assert.equal((await saveTeamKey(keyDb, "t1", "   ", { ...keyDeps, check: async () => ({ ok: true }) })).ok, false, "an empty key is not saved");
   assert.equal(writes.length, 0, "…nothing is written");
-  const accepted = await saveTeamKey(keyDb, "t1", ` ${full} `, { encrypt: enc, check: async () => ({ ok: true }) });
+  const accepted = await saveTeamKey(keyDb, "t1", ` ${full} `, { ...keyDeps, check: async () => ({ ok: true }) });
   assert.deepEqual([accepted.ok, writes.length], [true, 1], "an accepted key is written once");
   assert.equal(JSON.stringify(writes[0]).includes(full), false, "…encrypted, never in the clear");
   console.log("✓ actions: admin only; a key is stored only after OpenRouter accepts it, encrypted; behind shopify");
@@ -210,7 +212,7 @@ async function main() {
   assert.equal(usage.length, 1, "the page renders the section once");
   assert.equal(usage[0].guard, "showModelKey", "…only when the team has the shopify feature");
   assert.ok(callsIn("src/app/(app)/settings/team/page.tsx", "TeamPage").some((c) => c.callee === "teamHasFeature" && c.args[2] === '"shopify"'), "…which is the shopify flag");
-  assert.deepEqual(usage[0].props, { stored: "storedKey", mayManage: 'can(scope, "billing.manage")' }, "the browser gets the stored key's view and the server's own answer to who may change it");
+  assert.deepEqual(usage[0].props, { stored: "storedKey", mayManage: 'can(scope, "billing.manage")', noCredit: "byokPaused(keyRow)" }, "the browser gets the stored key's view, the server's own answer to who may change it, and whether the key can pay (CHE-458)");
   const component = read("src/components/team-model-key.tsx");
   assert.ok(!/openrouterKeyEnc|decryptSecret|@\/lib\/crypto/.test(component), "the client component never touches the stored key");
 

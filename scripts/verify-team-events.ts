@@ -55,6 +55,8 @@ const MUST_LOG: [string, string][] = [
   // verdicts disagree with no record of why.
   ["src/app/dashboard/actions.ts", "setAppPosthogProject"],
   ["src/app/dashboard/actions.ts", "setTrackerTeam"],
+  // CHE-438: which Jira project (and site) an app's tickets go to.
+  ["src/app/dashboard/actions.ts", "setJiraProject"],
   // CHE-369: which repository's deploys start (paid) checks of an app.
   ["src/app/dashboard/actions.ts", "setAppGitHubRepo"],
   // CHE-236: ending the team's analytics access. "Why did the funnel numbers

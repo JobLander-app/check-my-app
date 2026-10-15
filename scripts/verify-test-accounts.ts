@@ -420,13 +420,18 @@ async function main() {
     // a fourth exit was added that did clear, and would have stayed green for
     // one that did not if another use had moved. Each early exit must clear, or
     // be the one that says why it does not (a watch keeps them for its next run).
-    const exits = workflow.split(/\n {8}return;\n/).slice(0, -1).map((before) => before.slice(-1600));
+    // CHE-454: a stopped check exits without writing — the stop itself cleared
+    // what a one-off run held (src/lib/run-cancel.ts, under
+    // scripts/verify-run-cancel.ts), and its workflow may write nothing more.
+    const allExits = workflow.split(/\n {8}return;\n/).slice(0, -1).map((before) => before.slice(-1600));
+    const stopped = allExits.filter((before) => /await releaseSessionHost\("release-session-canceled"\);\s*$/.test(before));
+    const exits = allExits.filter((before) => !stopped.includes(before));
     const clearing = exits.filter((before) => /clearedCredentials\(run\)/.test(before));
     const keeping = exits.filter((before) => !/clearedCredentials\(run\)/.test(before));
     check("workflow: every way a run ends clears through clearedCredentials",
       exits.length >= 3 && keeping.every((before) => /Watch retains its credentials/.test(before)) && keeping.length <= 1 &&
-        uses === clearing.length + 2 && !/testPasswordEnc:\s*null/.test(workflow),
-      `${uses} uses; ${exits.length} early exits, ${clearing.length} clear, ${keeping.length} keep for a watch`);
+        uses === clearing.length + 2 && !/testPasswordEnc:\s*null/.test(workflow) && stopped.length <= 2,
+      `${uses} uses; ${exits.length} early exits, ${clearing.length} clear, ${keeping.length} keep for a watch, ${stopped.length} stopped by the team`);
   }
 
   // ── the janitor's sweep of a test-account app takes its credentials along ──

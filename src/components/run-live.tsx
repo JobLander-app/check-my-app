@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PHASE_LABELS, PHASE_ORDER, type RunEvent, type RunPhase } from "@/lib/types";
 import { RunFailed } from "@/components/run-failed";
+import { AppName } from "@/components/app-mark";
+import type { AppKind } from "@/lib/app-label";
+import { StopRun } from "@/components/stop-run";
 
 interface Snapshot {
   status: string;
@@ -41,6 +44,8 @@ export function RunLive({
   startedAt,
   notifyEmail,
   isExtension = false,
+  kind,
+  mayStop = false,
 }: {
   publicId: string;
   appSlug: string;
@@ -48,6 +53,10 @@ export function RunLive({
   startedAt: string;
   notifyEmail: string | null;
   isExtension?: boolean;
+  // The mark beside the app's name (src/components/app-mark.tsx).
+  kind: AppKind;
+  // CHE-454: a member or admin of the run's team sees Stop.
+  mayStop?: boolean;
 }) {
   const router = useRouter();
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -91,7 +100,9 @@ export function RunLive({
       {/* Header row: target, run number, progress */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="mono text-lg text-fg">{appSlug}</p>
+          <p className="mono text-lg text-fg">
+            <AppName name={appSlug} kind={kind} />
+          </p>
           <p className="font-mono text-xs text-fg-faint">
             Started {fmt(started)} · Estimated {fmt(estimated)}
           </p>
@@ -101,6 +112,7 @@ export function RunLive({
           <p className="font-mono text-sm text-fg-muted">{pct}%</p>
         </div>
       </div>
+      {mayStop && <StopRun publicId={publicId} />}
 
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-800">
         <div

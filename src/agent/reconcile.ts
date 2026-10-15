@@ -24,8 +24,7 @@
 // Failure contract matches autofile: every error becomes a warn note and is
 // swallowed — a tracker outage must never cost the owner a verdict.
 
-import { LinearTracker } from "@/lib/tracker/linear";
-import { freshLinearToken } from "@/lib/tracker/token";
+import { trackerCreds, trackerFor } from "@/lib/tracker/factory";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { classifyCheckerDefect, fileCheckerDefect } from "./capability-gaps";
 import type { Tracker } from "@/lib/tracker/types";
@@ -74,13 +73,9 @@ export async function reconcileIssueLinks(
   });
   if (links.length === 0) return EMPTY;
 
-  const tracker: Tracker = new LinearTracker(
-    await freshLinearToken(env.db, app.tracker, {
-      clientId: env.bindings.LINEAR_CLIENT_ID,
-      clientSecret: env.bindings.LINEAR_CLIENT_SECRET,
-    }),
-    app.tracker.teamId,
-  );
+  // CHE-438: Linear or Jira, as the app connected it.
+  const tracker: Tracker | null = await trackerFor(env.db, app.tracker, trackerCreds(env.bindings as unknown as Record<string, unknown>));
+  if (!tracker) return EMPTY;
 
   const notes: ReconcileNote[] = [];
   const reverify: ReverifyTarget[] = [];
@@ -272,13 +267,8 @@ export async function verifyFixedLinks(env: AgentEnv, runId: string): Promise<Re
   });
   const presentKeys = new Set(findings.map((f) => dedupKeyForFinding(f, run)));
 
-  const tracker: Tracker = new LinearTracker(
-    await freshLinearToken(env.db, app.tracker, {
-      clientId: env.bindings.LINEAR_CLIENT_ID,
-      clientSecret: env.bindings.LINEAR_CLIENT_SECRET,
-    }),
-    app.tracker.teamId,
-  );
+  const tracker: Tracker | null = await trackerFor(env.db, app.tracker, trackerCreds(env.bindings as unknown as Record<string, unknown>));
+  if (!tracker) return [];
   const baseUrl = env.bindings.APP_URL ?? "https://checkmyapp.dev";
   const notes: ReconcileNote[] = [];
 

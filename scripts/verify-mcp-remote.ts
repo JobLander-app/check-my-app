@@ -47,7 +47,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { hashApiKey } from "@/lib/apiKeys";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { handleMcpRequest, UNAUTHORIZED_MESSAGE } from "@/lib/mcp/handler";
-import { MAX_INSTRUCTIONS_CHARS } from "@/lib/mcp/instructions";
+import { MAX_INSTRUCTIONS_CHARS, PILOT_PARAGRAPH } from "@/lib/mcp/instructions";
+import { memberToolsSentence } from "@/lib/mcp/tools";
 import { WAIT_BUDGET_MS, type McpDeps } from "@/lib/mcp/tools";
 import { PLAN_LIMITS, WATCH_TRIAL_DAYS, typicalPriceRange, usd } from "@/lib/plans";
 
@@ -96,6 +97,13 @@ async function seed() {
       { id: "team_f", name: "Free team", plan: "free", isPersonal: true },
       // CHE-325: a Free team with one check left and a watch past its trial.
       { id: "team_g", name: "Last-check team", plan: "free", isPersonal: true },
+    ],
+    // CHE-482: a store is connected by someone on the team.
+    membership: [
+      { id: "m_a", teamId: "team_a", userId: "u_a", scope: "admin" },
+      { id: "m_b", teamId: "team_b", userId: "u_b", scope: "admin" },
+      { id: "m_f", teamId: "team_f", userId: "u_f", scope: "admin" },
+      { id: "m_g", teamId: "team_g", userId: "u_g", scope: "admin" },
     ],
     apiKey: [
       { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
@@ -253,15 +261,16 @@ async function main() {
   // 2 — the tool list.
   {
     const names = (await a.listTools()).tools.map((t) => t.name).sort();
-    const expected = ["add_scenario", "connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review", "get_verdict",
-      "latest_results", "list_apps", "list_check_mistakes", "list_scenarios", "remove_scenario", "report_check_mistake", "start_check", "update_app",
-      "update_scenario", "wait_for_review", "wait_for_run"];
-    check("tools: exactly the nineteen", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
-    // CHE-433 / CHE-434 / CHE-435: a team without the "shopify" feature is
-    // offered neither the Shopify tool, the mistake reports nor the scenario tools.
-    const pilotOnly = new Set(["connect_shopify_app", "report_check_mistake", "list_check_mistakes", "list_scenarios", "add_scenario", "update_scenario", "remove_scenario"]);
+    const expected = ["add_scenario", "add_store", "cancel_check", "connect_shopify_app", "create_app", "disable_watch", "enable_watch", "get_check_status", "get_review",
+      "get_verdict", "latest_results", "list_apps", "list_check_mistakes", "list_scenarios", "mark_finding", "remove_scenario", "report_check_mistake",
+      "start_check", "update_app", "update_scenario", "wait_for_review", "wait_for_run"];
+    check("tools: exactly the twenty-two", JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    // CHE-433 / CHE-434 / CHE-435 / CHE-444 / CHE-451: a team without the "shopify" feature is
+    // offered neither the Shopify tools, the mistake reports, the scenario tools nor mark_finding.
+    // CHE-454: cancel_check is every team's.
+    const pilotOnly = new Set(["connect_shopify_app", "add_store", "report_check_mistake", "list_check_mistakes", "list_scenarios", "add_scenario", "update_scenario", "remove_scenario", "mark_finding"]);
     const namesB = (await b.listTools()).tools.map((t) => t.name).sort();
-    check("tools: a team without the shopify feature has the twelve, without the pilot's tools",
+    check("tools: a team without the shopify feature has the thirteen, without the pilot's tools",
       JSON.stringify(namesB) === JSON.stringify(expected.filter((n) => !pilotOnly.has(n))), namesB.join(", "));
   }
 
@@ -274,7 +283,9 @@ async function main() {
     check("instructions: tell the agent to raise new findings at the start and offer get_review",
       /start of this session/.test(text) && text.includes("get_review"), text.slice(0, 200));
     check("instructions: the user should not need the dashboard", /should not need to open its dashboard/.test(text));
-    check(`instructions: under ${MAX_INSTRUCTIONS_CHARS} characters`, text.length <= MAX_INSTRUCTIONS_CHARS, String(text.length));
+    // A pilot team's paragraph (CHE-444) is on top of the budget, never inside it.
+    check(`instructions: under ${MAX_INSTRUCTIONS_CHARS} characters, plus the pilot's paragraph`,
+      text.length <= MAX_INSTRUCTIONS_CHARS + PILOT_PARAGRAPH.length + 1, String(text.length));
     const quiet = b.getInstructions() ?? "";
     check("instructions: team B hears only about its own app, and that nothing is new",
       quiet.includes("secret-b.test") && !quiet.includes("shop-a.test") && /Nothing new/.test(quiet), quiet);
@@ -441,6 +452,8 @@ async function main() {
     const denied = await call(reader, "start_check", { app_id: "app_a" });
     check("scope: a reader key cannot start a check",
       denied.isError && denied.out.code === "forbidden" && triggered.length === before, JSON.stringify(denied.out));
+    // Least privilege: a member key starts checks, so that is the key a reader is pointed to.
+    check("scope: the refusal names the smallest scope that would do (member, not admin)", denied.out.needs_scope === "member", String(denied.out.needs_scope));
     const readerCreate = await call(reader, "create_app", { url: "https://reader.test" });
     check("scope: a reader key cannot add an app", readerCreate.isError && readerCreate.out.code === "forbidden");
     const readerList = await call(reader, "list_apps");
@@ -615,6 +628,50 @@ async function main() {
     check("guide: /guides/connect-your-agent says how to have every deploy checked, and links it",
       /To have every deploy checked[\s\S]{0,80}href="\/guides\/check-every-release"/.test(
         renderToStaticMarkup(createElement(ConnectAgentGuide))));
+  }
+
+  // 12 — CHE-444: a member's own key on a pilot team does the pilot's work.
+  {
+    const marked = await call(a, "mark_finding", { run_id: "pub_a2", finding: 2, mark: "false_positive" });
+    check("member: mark_finding with the member's own key marks the team's finding",
+      marked.out.ok === true && stub.table("finding").find((f) => f.id === "f3")?.mark === "false_positive", JSON.stringify(marked.out));
+    const asReader = await call(reader, "mark_finding", { run_id: "pub_a2", finding: 1, mark: "known" });
+    check("member: a reader key is refused with a sentence, nothing marked",
+      asReader.isError && asReader.out.code === "forbidden" && stub.table("finding").find((f) => f.id === "f2")?.mark === "none", JSON.stringify(asReader.out));
+    check("member: …and pointed to a member key, which marks findings", asReader.out.needs_scope === "member", String(asReader.out.needs_scope));
+    // A team without the pilot is not sent to the pilot's tools, which it is not offered.
+    const offPilot = [memberToolsSentence("reader", false), memberToolsSentence("member", false)].join(" ");
+    const pilotOnlyNames = ["list_scenarios", "list_check_mistakes", "scenario", "mistake", "mark", "connect_shopify_app", "add_store"];
+    check("member: a refusal off the pilot names none of the pilot's tools", pilotOnlyNames.every((n) => !offPilot.includes(n)), offPilot);
+    check("member: on the pilot it names them", ["list_scenarios", "scenarios", "marks findings"].every((n) => [memberToolsSentence("reader", true), memberToolsSentence("member", true)].join(" ").includes(n)));
+    const missing = await call(a, "mark_finding", { run_id: "pub_a2", finding: 9, mark: "known" });
+    check("member: a finding the check does not have is not_found", missing.isError && missing.out.code === "not_found", JSON.stringify(missing.out));
+    const reported = await call(a, "report_check_mistake", { run_id: "pub_a2", reason: "wrong", text: "Sign-in works; the check pressed the wrong button." });
+    check("member: report_check_mistake with the member's key is accepted", reported.out.ok === true, JSON.stringify(reported.out));
+    const scenario = await call(a, "add_scenario", { app_id: "app_a", title: "Block a country", description: "Add Germany; a German visitor sees the block page." });
+    check("member: add_scenario with the member's key is accepted", scenario.out.ok === true, JSON.stringify(scenario.out));
+    const started = await call(a, "start_check", { app_id: "app_a" });
+    check("member: start_check with the member's key starts a check of the team's app", started.out.ok === true || "run_id" in started.out, JSON.stringify(started.out).slice(0, 200));
+    const login = await call(a, "update_app", { app_id: "app_a", test_password: "x-new-secret" });
+    check("member: storing a login stays an admin's — refused with a sentence", login.isError && login.out.code === "forbidden", JSON.stringify(login.out));
+    // Securify's agent, 2026-10-12: "an admin can do that" did not say whether
+    // start_check or add_scenario would be refused next.
+    const hint = String(login.out.hint ?? "");
+    check(
+      "member: a refusal names this key's scope, the scope that would do, and what this key still can",
+      login.out.key_scope === "member" && login.out.needs_scope === "admin" && hint.includes("start_check") && hint.includes("/settings/api-keys"),
+      JSON.stringify(login.out),
+    );
+    // CHE-482: a dev store is a person's own, connected with their own Shopify
+    // sign-in — a member's agent connects theirs.
+    const store = await call(a, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
+    check("member: connect_shopify_app with the member's key connects their store and hands back its sign-in page",
+      store.out.ok === true && /\/sign-in$/.test(String(store.out.sign_in_url ?? "")), JSON.stringify(store.out));
+    const readerStore = await call(reader, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
+    check("reader: connecting a store is refused — it starts checks", readerStore.isError && readerStore.out.code === "forbidden", JSON.stringify(readerStore.out));
+    const text = a.getInstructions() ?? "";
+    check("member: a pilot team's agent is told what to report and with which call",
+      text.includes(PILOT_PARAGRAPH) && !(b.getInstructions() ?? "").includes("report_check_mistake"), text.slice(-600));
   }
 
   for (const c of [a, b, reader, free, last]) await c.close();

@@ -5,6 +5,7 @@ import type { UserPlan, WatchFrequency } from "./enums";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { ownerScoped, teamOwned } from "@/lib/tenant-db";
 import { PAID_RETRY_SOURCE } from "@/lib/failed-run";
+import { byokRefusal } from "@/lib/byok-credit";
 
 export interface PlanLimits {
   // CHE-327 (owner, 2026-09-28): a plan is a dollar BALANCE, and every check
@@ -423,7 +424,7 @@ export function balanceTooLowReason(plan: UserPlan, balance: Pick<TeamBalance, "
 
 export type BalanceDecision =
   | { ok: true }
-  | { ok: false; reason: string; code: "quota_free" | "quota_balance" };
+  | { ok: false; reason: string; code: "quota_free" | "quota_balance" | "byok_no_credit" };
 
 // Pure: may a team with `balance` start a check expected to cost `estimateUsd`?
 export function balanceDecision(plan: UserPlan, balance: TeamBalance, estimateUsd: number): BalanceDecision {
@@ -444,6 +445,10 @@ export async function admitTeamCheck(
   appSlug: string | null,
   now: Date = new Date(),
 ): Promise<BalanceDecision> {
+  // CHE-458: a team whose checks run on its own OpenRouter key, and that key
+  // cannot pay — nothing starts on it, from any door, and the sentence says why.
+  const keyPaused = await byokRefusal(db, team.id);
+  if (keyPaused) return { ok: false, code: "byok_no_credit", reason: keyPaused };
   const [balance, estimate] = await Promise.all([
     teamBalance(db, team, now),
     estimateCheckPrice(db, team, appSlug),
@@ -464,7 +469,7 @@ export function splitPrice(priceUsd: number, creditLeftUsd: number | null): { fr
 
 export type RunGate =
   | { ok: true }
-  | { ok: false; reason: string; code: "quota_anon" | "quota_free" | "quota_site" | "quota_balance" };
+  | { ok: false; reason: string; code: "quota_anon" | "quota_free" | "quota_site" | "quota_balance" | "byok_no_credit" };
 
 // Gate for starting a run: the dashboard, the API, MCP, a re-check. A team's
 // run needs the team's balance (admitTeamCheck); an anonymous one goes through
