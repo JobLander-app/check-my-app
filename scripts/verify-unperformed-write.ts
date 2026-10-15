@@ -79,6 +79,26 @@ otherSentence.observed = "Adding works from the dropdown. The export was not per
 coerceUnperformedWrite(otherSentence, { writeAllowed: false });
 check("the named act and the 'not carried out' must share a sentence", otherSentence.status === "ok", otherSentence.status);
 
+// Codex, #354 round 2: passive wording of every named write is recognised…
+for (const [label, observed] of [
+  ["Place the order", "The summary was correct. The order was not placed."],
+  ["Send invitation", "The form validated the address. The invitation was not sent."],
+  ["Sign up", "The form accepted the details. Signing up was not performed."],
+]) {
+  const s: ReportedStep = { label, status: "ok", attempted: `Filled the form for: ${label}.`, observed };
+  coerceUnperformedWrite(s, { writeAllowed: false });
+  check(`passive "${observed.split(". ").at(-1)}" under "${label}" is skipped`, s.status === "skipped", s.status);
+}
+// …and a negative on the way to a write that did happen is not "not carried out".
+for (const [label, observed] of [
+  ["Save settings", "The invalid draft was not saved; after correction, the settings were saved successfully."],
+  ["Add country", "The country was not added until the code was fixed, after which it was added."],
+]) {
+  const s: ReportedStep = { label, status: "ok", attempted: `${label}.`, observed };
+  coerceUnperformedWrite(s, { writeAllowed: false });
+  check(`"${label}" that ended performed stays ok`, s.status === "ok", s.status);
+}
+
 const broken: ReportedStep = { ...production(), status: "broken", observed: "Adding a country was not performed because the page crashed." };
 coerceUnperformedWrite(broken, { writeAllowed: false });
 check("a problem step is never softened", broken.status === "broken");

@@ -2652,23 +2652,41 @@ export function coerceUndrivenControl(
 //
 // The "not carried out" must be said of the act the step names, in the same
 // sentence: "Review order details" with "payment was not submitted" is a
-// review that was done, not an order left unplaced (Codex, #354).
+// review that was done, not an order left unplaced (Codex, #354). And a step
+// whose observation says the act did happen in the end ("not saved; after
+// correction, the settings were saved successfully") is left alone.
 const WRITE_NOT_CARRIED_OUT = new RegExp(
   [
     String.raw`\b(?:deliberately|intentionally|purposely|on purpose)\s+(?:not|left|stopped|skipped|withheld)\b`,
     String.raw`\bnot\s+(?:performed|pressed|submitted|clicked|saved|completed|carried out|executed|done)\b`,
     String.raw`\b(?:did not|didn't|was not|wasn't|were not|weren't|never)\s+(?:actually\s+)?(?:perform(?:ed)?|press(?:ed)?|submit(?:ted)?|click(?:ed)?|sav(?:e|ed)|complet(?:e|ed)|add(?:ed)?|creat(?:e|ed))\b`,
+    // Passive, any verb: "the order was not placed", "the invitation was not sent".
+    String.raw`\b(?:was|were|is|are|been)\s+(?:not|never)\s+(?:\w+ed|sent|bought|made|done)\b`,
     String.raw`\bwithout\s+(?:actually\s+)?(?:pressing|submitting|clicking|saving|adding|creating)\b`,
     String.raw`\b(?:stopped|stopping)\s+(?:short|before)\b`,
   ].join("|"),
   "i",
 );
 
-/** The write acts a step names, each as a pattern for its forms: "Add" → add, adds, added, adding. */
-function namedWrites(step: ReportedStep): RegExp[] {
+// Verbs of CREATE_VERBS whose forms are not the stem plus an ending.
+const IRREGULAR_FORMS: Record<string, string> = { send: "send|sends|sending|sent", buy: "buy|buys|buying|bought" };
+
+/**
+ * The write acts a step names, each as the pattern of its forms ("Add" → add,
+ * adds, added, adding; "Sign up" → signing up; "Send" → sent) and of its being
+ * done ("was added", "saved successfully").
+ */
+function namedWrites(step: ReportedStep): { said: RegExp; done: RegExp }[] {
   const named = `${step.label ?? ""} ${step.attempted ?? ""}`.match(new RegExp(CREATE_VERBS.source, "gi")) ?? [];
-  const stems = new Set(named.map((v) => v.toLowerCase().replace(/\s+/g, String.raw`\s?`).replace(/e$/, "")));
-  return [...stems].map((s) => new RegExp(String.raw`\b${s}(?:e|es|s|ed|d|ing|ion|ation|ted|ting)?\b`, "i"));
+  return [...new Set(named.map((v) => v.toLowerCase().replace(/\s+/g, " ")))].map((act) => {
+    const [head, ...rest] = act.split(" ");
+    const forms = IRREGULAR_FORMS[head] ?? String.raw`${head.replace(/e$/, "")}(?:e|es|s|ed|d|ing|ion|ation|ted|ting)?`;
+    const form = String.raw`\b(?:${forms})${rest.map((w) => String.raw`\s?${w}`).join("")}\b`;
+    return {
+      said: new RegExp(form, "i"),
+      done: new RegExp(String.raw`\b(?:was|were|been|got)\s+(?:then\s+|finally\s+|eventually\s+|later\s+|successfully\s+)?${form}|${form}\s+successfully|\bsuccessfully\s+${form}`, "i"),
+    };
+  });
 }
 
 export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "writeAllowed">): void {
@@ -2677,7 +2695,8 @@ export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "w
   const acts = namedWrites(step);
   if (!acts.length) return;
   const sentences = (step.observed ?? "").split(/(?<=[.;!?])\s+/);
-  if (!sentences.some((s) => WRITE_NOT_CARRIED_OUT.test(s) && acts.some((act) => act.test(s)))) return;
+  if (!sentences.some((s) => WRITE_NOT_CARRIED_OUT.test(s) && acts.some((act) => act.said.test(s)))) return;
+  if (sentences.some((s) => acts.some((act) => act.done.test(s)))) return;
   console.warn(`[report_step] "${step.label}": ok, but the act it names was not carried out in a read-only run → skipped`);
   step.status = "skipped";
   step.unverifiedReason = "not_applicable";
