@@ -923,6 +923,8 @@ async function executeToolUnscrubbed(
         // drive is our gap. Before classifyUnverified, which leaves an
         // already-reasoned skipped step alone.
         coerceUndrivenControl(step, env);
+        // A step named for an act this run did not carry out is not "ok".
+        coerceUnperformedWrite(step, env);
         if (env.undrivenControls) env.undrivenControls.length = 0;
         // CHE-372: a step on the store's locked password page is about access
         // or our own hands, never the store. Before classifyUnverified, which
@@ -2786,6 +2788,67 @@ export async function coerceOwnRequestFailure(
   step.status = "broken";
   step.unverifiedReason = undefined;
   step.observed = failedRequestSentence(confirmed.url, confirmed.answer);
+}
+
+// A step that names the act of adding, creating or saving and was never
+// carried out is not "ok" (pilot feedback CHE-480). Securify's "Use the Add
+// country search field" was reported ok in a read-only run: the walker typed
+// into the field, did not add a country — and its own observed text said so
+// ("adding a country was deliberately not performed"). The journey then read
+// "Everything on the Block Countries journey works" and the member, who
+// manages blocked countries for a living, answered "it was not really
+// checked". The read-only instructions already say a create step is reported
+// "skipped"; a sentence in a prompt is a request, so the step is written
+// skipped/not_applicable here, and the journey rolls up to "partly verified"
+// (execution.ts journeyStatus) instead of "Works". Only a run that may not
+// create: where it may, a step that did not add is the walker's own business.
+// The step's own words stay — they say what was confirmed (the lookup) and
+// what was not.
+//
+// The "not carried out" must be said of the act the step names itself — the
+// negation on that act, not anywhere near it (Codex, #354): "Review order
+// details" with "the order totals were correct and payment was not submitted"
+// is a review that was done. And an act the observation says was done in the
+// end ("not saved; after correction, the settings were saved successfully") is
+// not one left undone; a different act being done does not count.
+
+// A negation right before the act: "did not send", "was not sent", "never
+// booked", "without adding". "does not add" describes the product and is not here.
+const NEGATED = String.raw`\b(?:did not|didn't|was not|wasn't|were not|weren't|is not|isn't|has not|hasn't|had not|hadn't|never|without)\s+(?:actually\s+|deliberately\s+|intentionally\s+)?`;
+// The act as the subject, a few words before a negated passive: "adding a
+// country was deliberately not performed", "the order was not placed".
+const NEGATED_PASSIVE = String.raw`\s+(?:\w+\s+){0,3}?(?:was|were|is|are|has been|had been)\s+(?:\w+ly\s+)?(?:not|never)\s+(?:\w+ed|sent|bought|made|done)\b`;
+
+// Verbs of CREATE_VERBS whose forms are not the stem plus an ending.
+const IRREGULAR_FORMS: Record<string, string> = { send: "send|sends|sending|sent", buy: "buy|buys|buying|bought" };
+
+/**
+ * The write acts a step names, each with the pattern of its being refused and
+ * of its being done, over all its forms ("Add" → add, adds, added, adding;
+ * "Sign up" → signing up; "Send" → sent).
+ */
+function namedWrites(step: ReportedStep): { refused: RegExp; done: RegExp }[] {
+  const named = `${step.label ?? ""} ${step.attempted ?? ""}`.match(new RegExp(CREATE_VERBS.source, "gi")) ?? [];
+  return [...new Set(named.map((v) => v.toLowerCase().replace(/\s+/g, " ")))].map((act) => {
+    const [head, ...rest] = act.split(" ");
+    const forms = IRREGULAR_FORMS[head] ?? String.raw`${head.replace(/e$/, "")}(?:e|es|s|ed|d|ing|ion|ation|ted|ting)?`;
+    const form = String.raw`\b(?:${forms})${rest.map((w) => String.raw`\s?${w}`).join("")}\b`;
+    return {
+      refused: new RegExp(String.raw`${NEGATED}${form}|${form}${NEGATED_PASSIVE}|\b(?:stopped|stopping)\s+(?:short\s+of|before)\s+${form}`, "i"),
+      done: new RegExp(String.raw`\b(?:was|were|been|got)\s+(?:then\s+|finally\s+|eventually\s+|later\s+|successfully\s+)?${form}|${form}\s+successfully|\bsuccessfully\s+${form}`, "i"),
+    };
+  });
+}
+
+export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "writeAllowed">): void {
+  if (env.writeAllowed) return;
+  if (step.status !== "ok") return;
+  const sentences = (step.observed ?? "").split(/(?<=[.;!?])\s+/);
+  const said = (re: RegExp) => sentences.some((s) => re.test(s));
+  if (!namedWrites(step).some((act) => said(act.refused) && !said(act.done))) return;
+  console.warn(`[report_step] "${step.label}": ok, but the act it names was not carried out in a read-only run → skipped`);
+  step.status = "skipped";
+  step.unverifiedReason = "not_applicable";
 }
 
 export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {

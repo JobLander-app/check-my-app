@@ -143,6 +143,7 @@
     "verify:shopify-connect": "tsx --tsconfig tsconfig.json scripts/verify-shopify-connect.ts",
     "verify:unrecorded-walk": "tsx --tsconfig tsconfig.json scripts/verify-unrecorded-walk.ts",
     "verify:gap-journey-not-coverage": "tsx --tsconfig tsconfig.json scripts/verify-gap-journey-not-coverage.ts",
+    "verify:unperformed-write": "tsx --tsconfig tsconfig.json scripts/verify-unperformed-write.ts",
     "verify:unconfirmed-step": "tsx --tsconfig tsconfig.json scripts/verify-unconfirmed-step.ts",
     "verify:session-browser": "tsx --tsconfig tsconfig.json scripts/verify-session-browser.ts",
     "verify:session-runner": "tsx --tsconfig tsconfig.json scripts/verify-session-runner.ts",
