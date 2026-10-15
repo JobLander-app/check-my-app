@@ -273,7 +273,7 @@ async function alarm(reason) {
 
 /** What OpenRouter says of the key now: why it cannot pay for one more ticket (null if it can), and its numbers. */
 async function keyProblem() {
-  const r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}` } });
+  const r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}` }, signal: AbortSignal.timeout(30_000) });
   if (!r.ok) return { why: `OpenRouter refused the key (HTTP ${r.status})`, info: null };
   const info = (await r.json()).data;
   return { why: keyShortfall(info), info };
@@ -285,6 +285,7 @@ async function modelAnswers() {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: MODEL, max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
+    signal: AbortSignal.timeout(60_000),
   });
   return r.ok ? null : `OpenRouter still refuses a request (HTTP ${r.status}: ${(await r.text()).slice(0, 200)})`;
 }
@@ -412,7 +413,7 @@ async function work() {
     (capped ? ` A previous attempt reached the $${BUDGET} cap: split the ticket first (.mender/MENDER.md "Too big for one pull request").` : ""));
   const ours = r.status === "refused" ? await ourRefusal(r.error) : null;
   if (ours) {
-    await comment(issue.id, `**Mender stopped on its own key, not on this ticket:** ${ours}. Back to Todo; this is not counted as an attempt.`);
+    await comment(issue.id, `**Mender stopped on its own key, not on this ticket:** ${ours}. Back to Todo; this is not counted as an attempt.${footer(r)}`);
     await setState(issue.id, "Todo");
     return alarm(`${ours}, on ${issue.identifier}`);
   }
