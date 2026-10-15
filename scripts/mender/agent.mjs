@@ -205,14 +205,125 @@ export function stranded(issues, openTickets) {
   return issues.filter((i) => givenToMender(i) && i.state.type === "started" && i.state.name === "In Progress" && !openTickets.has(i.identifier));
 }
 
+// ─── The key (2026-10-14) ────────────────────────────────────────────────────
+// Mender's OpenRouter key (`journeyman`) reached its $30 limit on CHE-480's
+// first turn. Every turn after that was refused; OpenCode said so in an `error`
+// event nobody read, and Mender marked CHE-480 and CHE-311 "unfinished" with an
+// empty report. A refused key is ours to fix, not the ticket's: the tick stops
+// before claiming anything, the ticket keeps its attempts, and one alarm sits on
+// the board until the key serves again — Mender closes it then.
+
+/**
+ * OpenRouter refused the request: an unknown key (401), no money (402), a key
+ * over its limit — or a guardrail on the prompt (403; Codex, #353). Whether a
+ * refusal is the key's or the ticket's is decided by `ourRefusal`.
+ */
+export const REFUSED = [401, 402, 403];
+export const ALARM_TITLE = "[Mender] OpenRouter does not serve Mender's key";
+
+/** OpenCode's `error` event (`opencode run --format json`), as what Mender needs of it. */
+export function turnError(event) {
+  if (event?.type !== "error") return null;
+  const status = Number(event.error?.data?.statusCode) || null;
+  const message = String(event.error?.data?.message ?? event.error?.name ?? "unknown error").slice(0, 300);
+  // OpenRouter names a spent key or account itself: 402, or `limit_source` in the body.
+  const ours = status === 402 || /openrouter_(key_limit|credits)/.test(String(event.error?.data?.responseBody ?? ""));
+  return { status, message, refused: REFUSED.includes(status), ours };
+}
+
+/**
+ * A refusal mid-run: why it is ours (the key or the account), or null when it is
+ * the ticket's — a guardrail on its prompt, with the key still able to pay. A
+ * ticket's refusal counts as its attempt, so it cannot hold the queue forever.
+ */
+export async function ourRefusal(error, askKey = keyProblem) {
+  const answered = `OpenRouter answered HTTP ${error.status}: ${error.message}`;
+  if (error.ours) return answered;
+  const { why } = await askKey();
+  return why ? `${why} (${answered})` : null;
+}
+
+/** Why the key cannot pay for one more ticket, from GET /api/v1/key's `data`; null when it can. */
+export function keyShortfall(info, budget = BUDGET) {
+  const left = info?.limit_remaining;
+  if (typeof left !== "number" || left >= budget) return null;
+  return `the OpenRouter key has $${left.toFixed(2)} left of its $${info.limit} limit` +
+    (info.limit_reset ? ` (it resets ${info.limit_reset})` : " (it never resets)") + `, and one ticket may spend $${budget}`;
+}
+
+async function openAlarm() {
+  const d = await linear("query($f:IssueFilter){issues(filter:$f,first:1){nodes{id}}}",
+    { f: { team: { id: { eq: TEAM_ID } }, title: { eq: ALARM_TITLE }, state: { type: { in: OPEN } } } });
+  return d.issues.nodes[0] ?? null;
+}
+
+/** One open alarm on the board, then the tick fails. Never labelled `mender`: Mender cannot mend its own key. */
+async function alarm(reason) {
+  const run = process.env.GITHUB_RUN_ID ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : "";
+  if (!(await openAlarm())) {
+    await linear("mutation($team:String!,$t:String!,$d:String!){issueCreate(input:{teamId:$team,title:$t,description:$d,priority:1}){success}}", {
+      team: TEAM_ID, t: ALARM_TITLE,
+      d: `Mender stopped: ${reason}.${run ? ` (${run})` : ""}\n\nNo ticket is claimed and no attempt is counted; the queue waits. ` +
+        "Mender tries again every half hour and closes this ticket itself once the key serves.\n\n" +
+        "What ends it: the limit of the OpenRouter key `journeyman` (raised through the management key in the Progress Log), or its reset.",
+    });
+  }
+  throw new Error(`Mender stopped: ${reason}`);
+}
+
+/** What OpenRouter says of the key now: why it cannot pay for one more ticket (null if it can), and its numbers. */
+async function keyProblem() {
+  const r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}` }, signal: AbortSignal.timeout(30_000) });
+  if (!r.ok) return { why: `OpenRouter refused the key (HTTP ${r.status})`, info: null };
+  const info = (await r.json()).data;
+  return { why: keyShortfall(info), info };
+}
+
+/** One request of a single token to the model: null when it is served, else why not. */
+async function modelAnswers() {
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  return r.ok ? null : `OpenRouter still refuses a request (HTTP ${r.status}: ${(await r.text()).slice(0, 200)})`;
+}
+
+/**
+ * Before any work: the key must be able to pay for a whole ticket. An open
+ * alarm closes only on a request the model actually serves: /api/v1/key does
+ * not see the account's credits, so a 402 would close and reopen it every tick
+ * (Codex, #353). While it is refused, nothing is claimed.
+ */
+async function keyServes() {
+  const { why, info } = await keyProblem();
+  if (why) return alarm(why);
+  const open = await openAlarm();
+  if (!open) return;
+  const still = await modelAnswers();
+  if (still) return alarm(still);
+  await comment(open.id, `The model answers again ($${Number(info?.limit_remaining ?? 0).toFixed(2)} left of the key's $${info?.limit ?? "∞"}); Mender resumed.`);
+  await setState(open.id, "Done");
+}
+
 // ─── Running the agent ───────────────────────────────────────────────────────
+
+/** What a turn learns from one OpenCode event. */
+export function readEvent(out, e) {
+  out.session = out.session ?? e.sessionID;
+  if (e.type === "text") out.text = String(e.part?.text ?? out.text);
+  if (e.type === "step_finish") { out.steps++; out.cost += Number(e.part?.cost ?? 0); }
+  out.error = turnError(e) ?? out.error;
+  return out;
+}
 
 function opencode(message, session) {
   const args = ["run", "-m", `openrouter/${MODEL}`, "--format", "json", ...(session ? ["--session", session] : []), message];
   return new Promise((resolve) => {
     const p = spawn("opencode", args, { stdio: ["ignore", "pipe", "inherit"], env: agentEnv(process.env) });
     let buf = "";
-    const out = { session, cost: 0, steps: 0, text: "" };
+    const out = { session, cost: 0, steps: 0, text: "", error: null };
     p.stdout.on("data", (d) => {
       buf += d;
       let nl;
@@ -221,9 +332,7 @@ function opencode(message, session) {
         buf = buf.slice(nl + 1);
         let e;
         try { e = JSON.parse(line); } catch { continue; }
-        out.session = out.session ?? e.sessionID;
-        if (e.type === "text") out.text = String(e.part?.text ?? out.text);
-        if (e.type === "step_finish") { out.steps++; out.cost += Number(e.part?.cost ?? 0); }
+        readEvent(out, e);
       }
     });
     p.on("close", (code) => resolve({ ...out, code }));
@@ -239,13 +348,18 @@ function failingChecks() {
   return null;
 }
 
-/** Turns until the agent says it is done or blocked and the checks pass, within budget. */
-async function runAgent(prompt) {
-  let session = null, cost = 0, steps = 0, text = "", message = prompt;
+/**
+ * Turns until the agent says it is done or blocked and the checks pass, within
+ * budget. A refusal ends the run at once: every further turn would be refused
+ * too. Any other error is kept, so the ticket says why a turn was empty.
+ */
+export async function runAgent(prompt, run = opencode) {
+  let session = null, cost = 0, steps = 0, text = "", message = prompt, error = null;
   for (let turn = 0; turn < MAX_TURNS && cost < BUDGET; turn++) {
-    const r = await opencode(message, session);
-    session = r.session; cost += r.cost; steps += r.steps; text = r.text || text;
-    say(`turn ${turn + 1}: ${r.steps} steps, $${r.cost.toFixed(4)} (total $${cost.toFixed(4)})`);
+    const r = await run(message, session);
+    session = r.session; cost += r.cost; steps += r.steps; text = r.text || text; error = r.error ?? error;
+    say(`turn ${turn + 1}: ${r.steps} steps, $${r.cost.toFixed(4)} (total $${cost.toFixed(4)})${r.error ? ` — OpenCode error ${r.error.status ?? ""}: ${r.error.message}` : ""}`);
+    if (r.error?.refused) return { status: "refused", text, cost, steps, error };
     if (/MENDER_BLOCKED/.test(text)) return { status: "blocked", text, cost, steps };
     if (/MENDER_SPLIT/.test(text)) return { status: "split", text, cost, steps };
     if (/MENDER_ANSWERED/.test(text)) return { status: "answered", text, cost, steps };
@@ -255,8 +369,11 @@ async function runAgent(prompt) {
     message = `You said MENDER_DONE, but a check fails. Fix it, run it again, then end with MENDER_DONE.\n\n${failing}`;
     text = "";
   }
-  return { status: cost >= BUDGET ? "budget" : "unfinished", text, cost, steps };
+  return { status: cost >= BUDGET ? "budget" : "unfinished", text, cost, steps, error };
 }
+
+/** The model's report, or — when it wrote none — the error that left it empty. */
+export const report = (r) => clean(r.text) || (r.error ? `OpenCode stopped: ${r.error.status ?? "error"} ${r.error.message}` : "(no report)");
 
 /** The whole change against the base, committed by the model or not, as a patch. */
 function patchFrom(baseSha) {
@@ -267,6 +384,7 @@ function patchFrom(baseSha) {
 async function work() {
   mkdirSync(DIR, { recursive: true });
   writeFileSync(PATCH, "");
+  await keyServes();
   const job = await findWork();
   if (!job) {
     say("nothing to do: no open review and no CHE ticket labelled `mender`");
@@ -278,6 +396,10 @@ async function work() {
     const baseSha = sh("git", ["rev-parse", "HEAD"]);
     const findings = job.pending.map((c) => `- ${c.body.slice(0, 2000)}`).join("\n");
     const r = await runAgent(`This branch is the pull request ${job.pr.url} for ${job.ticket ?? "its ticket"}. Review round ${job.round}: CodeRabbit left these comments. Follow .mender/MENDER.md "Review rounds".\n\n${findings}`);
+    // Ours: the round is not spent (publish never runs) and the next tick takes it
+    // again. The ticket's: it is an ordinary round that pushed nothing.
+    const ours = r.status === "refused" ? await ourRefusal(r.error) : null;
+    if (ours) return alarm(`${ours}, during review round ${job.round} on #${job.pr.number}`);
     const patch = r.status === "done" ? patchFrom(baseSha) : "";
     writeFileSync(PATCH, patch);
     return writeFileSync(OUT, JSON.stringify({ ...job, pending: undefined, baseSha, result: r, changed: patch.length > 0 }));
@@ -289,6 +411,14 @@ async function work() {
   const capped = issue.comments.nodes.some((c) => c.body.includes(CAP_NOTE));
   const r = await runAgent(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.` +
     (capped ? ` A previous attempt reached the $${BUDGET} cap: split the ticket first (.mender/MENDER.md "Too big for one pull request").` : ""));
+  const ours = r.status === "refused" ? await ourRefusal(r.error) : null;
+  if (ours) {
+    await comment(issue.id, `**Mender stopped on its own key, not on this ticket:** ${ours}. Back to Todo; this is not counted as an attempt.${footer(r)}`);
+    await setState(issue.id, "Todo");
+    return alarm(`${ours}, on ${issue.identifier}`);
+  }
+  // The key can pay: OpenRouter refused this ticket's prompt, and that is its attempt.
+  if (r.status === "refused") r.status = `refused by OpenRouter (HTTP ${r.error.status}: ${r.error.message})`;
   const patch = r.status === "done" ? patchFrom(baseSha) : "";
   writeFileSync(PATCH, patch);
   writeFileSync(OUT, JSON.stringify({ kind: "ticket", issue, baseSha, result: r, changed: patch.length > 0 }));
@@ -382,7 +512,7 @@ async function publish() {
     const { pr, ticket } = target;
     const round = Math.max(1, Math.min(MAX_ROUNDS, Number(job.round) || 1));
     if (job.changed) { push(pr.headRefName, `Review round ${round} (${ticket})`); markUi(pr.url, paths); }
-    gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${clean(r.text) || "(no report)"}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
+    gh(["pr", "comment", pr.url, "--body", `${ROUND_MARK}\n**Round ${round}: ${job.changed ? "pushed" : "nothing pushed"} (${r.status}).**\n\n${report(r)}${footer(r)}${job.changed && round < MAX_ROUNDS ? "\n\n@coderabbitai review" : ""}`]);
     if (ticket) {
       const d = await linear(`query($i:String!){issue(id:$i){id}}`, { i: ticket });
       await comment(d.issue.id, `**Review round ${round} on ${pr.url}: ${job.changed ? "fixes pushed" : "nothing pushed"}.**${footer(r)}`);
@@ -420,7 +550,7 @@ async function publish() {
   }
   if (answer) r.status = "answer refused by the customer-language rules";
   if (!job.changed) {
-    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${clean(r.text) || "(no report)"}${footer(r)}`);
+    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender did not open a pull request** (${r.status === "done" ? "no change" : r.status}).\n\n${report(r)}${footer(r)}`);
     return setState(issue.id, "Todo");
   }
   const branch = branchFor(issue);
@@ -445,7 +575,9 @@ async function publish() {
  * idle tick ends in seconds. Writes `work=yes|no` for the workflow's later steps.
  */
 async function peek() {
-  const yes = Boolean(process.env.TICKET) || Boolean(await findWork({ release: false }));
+  // An open alarm is work too: only `work` can see the model serve again and
+  // close it, whatever is left in the queue (Codex, #353).
+  const yes = Boolean(process.env.TICKET) || Boolean(await findWork({ release: false })) || Boolean(await openAlarm());
   say(`peek: ${yes ? "work to do" : "nothing to do"}`);
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, `work=${yes ? "yes" : "no"}\n`, { flag: "a" });
   return yes;
