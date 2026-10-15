@@ -40,9 +40,12 @@ import { ExtensionRuntimeError } from "./extension-error";
 import { extensionCoverageGap, completeExtensionAccessCheck } from "./extension-evidence";
 import { completeClosedDoor } from "./closed-door";
 import { completeSignedOut, noteSessionReached, SIGNED_OUT_FEED, tellOwnerSignedOut } from "./signed-out";
-import { askForSession, isSessionTarget, releaseSession, sessionHost, waitForSession } from "./session-browser";
+import { RUN_CANCELED } from "@/lib/run-cancel";
+import { askForSession, isSessionTarget, releaseSession, runSessionSlot, SESSION_NO_SLOT, sessionHost, slotHolderOnTeam, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
+import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
+import { isTeamKeyDry, recordTeamKeyDry } from "@/lib/byok-credit";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { findingSignature } from "@/lib/finding-signature";
 import { discoverApp, type KnownMap, type ProposedJourney, type RunInput } from "./discovery";
@@ -232,13 +235,31 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           ownerId: true,
           // CHE-253/CHE-262: whose run this is, and therefore who hears about it.
           teamId: true,
+          // CHE-482: a store is checked signed in as whoever connected it.
+          app: { select: { ownerId: true } },
         },
       });
       if (!r) throw new Error(`run ${runId} not found`);
       // CHE-373: our own SELF_CHECK_HOSTS out of the allowed origins once,
       // here, so neither the tools, the evidence rules nor the prompt ever
       // treat one of our hosts as the customer's product.
-      return { ...r, allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)) };
+      const { app, ...row } = r;
+      // CHE-482 (Codex on #351): the connector's sign-in is used only while
+      // they are on the team.
+      const onTeam =
+        r.teamId && app?.ownerId
+          ? (await env.db.membership.findFirst({ where: { teamId: r.teamId, userId: app.ownerId }, select: { id: true } })) !== null
+          : false;
+      const sessionSlot = runSessionSlot({ teamId: r.teamId, app: app ? { ownerId: app.ownerId, onTeam } : null });
+      // Kept on the row, so the slot outlives the store (canceled-leases.ts).
+      if (sessionSlot && isSessionTarget(r)) {
+        await env.db.run.update({ where: { id: runId }, data: { sessionSlot } });
+      }
+      return {
+        ...row,
+        sessionSlot,
+        allowedOrigins: serializeAllowedOrigins(parseAllowedOrigins(r.allowedOrigins, env.bindings.SELF_CHECK_HOSTS)),
+      };
     });
     // CHE-436: BYOK — decrypt the team's OpenRouter key here, once, and pass it
     // to makeLlm as an override. decryptSecret is synchronous; no step needed.
@@ -257,7 +278,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       if (!isSession) return;
       await step.do(stepName, async () => {
         try {
-          return await releaseSession(sessionHost(env.bindings), run.id);
+          return await releaseSession(sessionHost(env.bindings, run.sessionSlot), run.id);
         } catch (err) {
           console.warn(`[session] could not release the host: ${err instanceof Error ? err.message : String(err)}`);
           return false;
@@ -273,9 +294,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // saying nothing at all would read as a check that hung.
     const sessionTurn = async (phase: string, feed: { phase: "connecting" | "discovery" | "walking"; text: "Waiting to start" | "Waiting to continue" }) => {
       if (!isSession) return;
+      // CHE-482 (Codex on #351): every time the browser is taken, the person
+      // whose sign-in it holds must still be on the team.
+      const stillOn = await step.do(`session-member-${phase}`, () => slotHolderOnTeam(env.db, run.sessionSlot));
+      if (!stillOn) throw new NonRetryableError(SESSION_NO_SLOT, "SessionSlotMissing");
       await waitForSession(
         {
-          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings), run.id)),
+          ask: (name) => step.do(name, () => askForSession(sessionHost(env.bindings, run.sessionSlot), run.id)),
           waiting: (name) =>
             step.do(name, async () => {
               console.log(`[session] run ${runId} waits for the host before ${phase}: another check holds it`);
@@ -291,6 +316,8 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
     // non-terminal status is worse than a failed one — the scheduler treats it
     // as still in flight and never fires that Watch again.
     try {
+      // CHE-482: no slot, no session check — stopped here, not retried.
+      if (isSession && !run.sessionSlot) throw new NonRetryableError(SESSION_NO_SLOT, "SessionSlotMissing");
       // Survey (CHE-132): what the app's pages look like to a plain fetch, and
       // whether that differs from the last snapshot. Free, under a minute, and
       // the input every mode decision below reads. Swallowed on error like the
@@ -442,8 +469,9 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         // this to "unverified". The guard is right about LLM runs and wrong here —
         // coverage came from the baseline, and the bottom line says so out loud.
         await step.do("replay-complete", async () => {
-          await env.db.run.update({
-            where: { id: runId },
+          // CHE-454: fenced like every write that ends a run.
+          const done = await env.db.run.updateMany({
+            where: { id: runId, status: { not: "canceled" } },
             data: {
               status: "completed",
               verdict: smoke.verdict,
@@ -463,6 +491,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               completedAt: new Date(),
             },
           });
+          if (done.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         });
         // CHE-327: a quick check costs its real, tiny price — priced on the
         // balance like every other check (src/lib/plans.ts priceRun).
@@ -565,8 +594,11 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       // else's data, not a sandbox we can clean up — so the permission is void
       // however the app is configured. Deterministic, not a prompt promise.
       const hasTestAccount = Boolean(run.testEmail && run.testPasswordEnc);
-      const writeAllowed = writeMode === "create_cleanup" && hasTestAccount;
-      if (writeMode === "create_cleanup" && !hasTestAccount) {
+      // CHE-468 (Codex on #342): a check inside a store's admin only reads,
+      // whatever the app's row says — a person's signed-in store is nobody's
+      // sandbox, and the settings page promises it. CHE-442 is the opt-in.
+      const writeAllowed = writeMode === "create_cleanup" && hasTestAccount && !isSession;
+      if (writeMode === "create_cleanup" && !hasTestAccount && !isSession) {
         await appendEvent(env, runId, "connecting", {
           icon: "warn",
           text:
@@ -653,7 +685,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         const host = scan.signedOut;
         await step.do("signed-out", async () => {
           await appendEvent(env, runId, "surface_scan", { icon: "warn", text: SIGNED_OUT_FEED });
-          await completeSignedOut(env, { id: runId, targetUrl: run.targetUrl }, host);
+          await completeSignedOut(env, { id: runId, targetUrl: run.targetUrl }, host).catch(stopIfCanceled);
         });
         await step.do("price-signed-out", async () => {
           await priceRun(env.db, runId);
@@ -699,7 +731,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             icon: "warn",
             text: "The first page turned the check away before anything loaded — nothing to check this run",
           });
-          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door);
+          await completeClosedDoor(env, { id: runId, targetUrl: run.targetUrl }, door).catch(stopIfCanceled);
         });
         await step.do("price-closed-door", async () => {
           await priceRun(env.db, runId);
@@ -1058,6 +1090,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           if (gap === "missing_access") return completeExtensionAccessCheck(env, runId, (discovery?.costUsd ?? 0) + walkCost);
           if (gap) throw new NonRetryableError("internal: the extension's core result and cleanup were not established; no verdict may be published", "ExtensionRuntimeError");
         }
+        // CHE-453: a session run whose walk met nothing of the app is our
+        // outage (the host's egress died mid-run, run #373): fail it with an
+        // internal reason through the catch below — no verdict, no mail, $0.
+        if (isSession) {
+          const walked = await env.db.journey.findMany({
+            where: { runId },
+            select: { status: true, carriedFromRunId: true, steps: { select: { status: true, unverifiedReason: true } } },
+          });
+          if (sessionWalkReachedNothing(walked)) throw new NonRetryableError(SESSION_OUTAGE_MESSAGE, "SessionOutageError");
+        }
         await transition(env, runId, "writing", { icon: "info", text: "Writing your verdict" });
         const structured = extensionEvidence ? await prepareExtensionPublication(env, runId, extensionEvidence) : null;
         const synth = structured ?? await synthesizeVerdict({ env, llm, runId, anatomy, knowledge }).catch(
@@ -1195,8 +1237,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         })();
 
         const costUsd = (discovery?.costUsd ?? 0) + walkCost + synth.costUsd;
-        await env.db.run.update({
-          where: { id: runId },
+        // CHE-454: fenced — a run stopped while the verdict was being written
+        // keeps "canceled"; the verdict is not written over it.
+        const written = await env.db.run.updateMany({
+          where: { id: runId, status: { not: "canceled" } },
           data: {
             // CHE-331: a run with journeys still to list stays in "writing"
             // until they land (the step below). A terminal status is what
@@ -1214,6 +1258,7 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             currentAction: null,
           },
         });
+        if (written.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         return checked.verdict;
       });
 
@@ -1241,10 +1286,12 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
               (listed.length > 6 ? ` and ${listed.length - 6} more` : ""),
           });
           // Last, so nothing reads the run as finished before its list is.
-          await env.db.run.update({
-            where: { id: runId },
+          // CHE-454: fenced like every terminal write.
+          const done = await env.db.run.updateMany({
+            where: { id: runId, status: { not: "canceled" } },
             data: { status: "completed", completedAt: new Date() },
           });
+          if (done.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
         });
       }
 
@@ -1467,6 +1514,13 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
       await releaseSessionHost("release-session");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // CHE-454: stopped by its team. The cancel already wrote the row, the
+      // price and the feed; nothing here may write over it, and nothing is ours
+      // to file. Only the session host is ours to give back.
+      if (err instanceof Error && (err.name === "RunCanceled" || msg === RUN_CANCELED)) {
+        await releaseSessionHost("release-session-canceled");
+        return;
+      }
       // CHE-76: our own LLM budget dying is an internal outage, not a fact
       // about the customer's app. Mark the run failed with an internal
       // reason (no verdict/findings/email were published — the throw
@@ -1475,10 +1529,19 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         err instanceof LlmBudgetError ||
         (err instanceof Error &&
           (err.name === "LlmBudgetError" || /available credits|payment_required/i.test(msg)));
+      // CHE-458: on a BYOK run the credit that ran out is the TEAM's — their
+      // OpenRouter account behind their key. That is their access, not our
+      // outage: the key is marked, nothing more starts on it until it can pay,
+      // and every place says why. Nothing is filed on our board.
+      const teamKeyDry = isTeamKeyDry({ budget, byokKeyEnc: run.byokKeyEnc, teamId: run.teamId });
+      const ourBudget = budget && !teamKeyDry;
       // Returns the phase the run died in (Run.status until this write), for
       // the ticket below.
-      const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean }> => {
+      const ended = await step.do("fail", async (): Promise<{ phase: string | null; afterVerdict: boolean; canceled?: boolean }> => {
         const before = await env.db.run.findUnique({ where: { id: runId }, select: { status: true } });
+        // CHE-454: stopped by its team before this failure was noticed. The
+        // cancel wrote the ending; there is nothing ours to record over it.
+        if (before?.status === "canceled") return { phase: "canceled", afterVerdict: false, canceled: true };
         // Privacy, same rule as the "cleanup" step: a one-off run keeps the
         // test password only while it runs. That step sits on the success
         // path, so a run that failed kept the encrypted password forever —
@@ -1509,14 +1572,18 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           await countOpenIssues(env, run);
           return { phase: `${before.status}, after the verdict was written`, afterVerdict: true };
         }
-        await env.db.run.update({
-          where: { id: runId },
+        // CHE-454: a run stopped while this step was getting here stays
+        // stopped — the fence, not the read above, decides.
+        await env.db.run.updateMany({
+          where: { id: runId, status: { not: "canceled" } },
           data: {
             status: "failed",
             ...cleared,
-            errorMessage: budget
-              ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
-              : msg,
+            errorMessage: teamKeyDry
+              ? `team key: the team's OpenRouter key has no credit — nothing was published. ${msg}`.slice(0, 500)
+              : budget
+                ? `internal: LLM budget exhausted — nothing was published. ${msg}`.slice(0, 500)
+                : msg,
           },
         });
         // CHE-327: a failed run costs the customer nothing (rule 4: our
@@ -1544,8 +1611,17 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
             }] })) console.warn(`[extension-gap] ${note.text}`);
           } catch (error) { console.warn(`[extension-gap] filing failed: ${String(error)}`); }
         }
-        if (budget) {
-          console.error(`[budget] run ${runId} aborted: LLM provider refused for credit state`);
+        // CHE-453: the session host's egress dying is the same kind of outage —
+        // ours, said in the feed the same way, and the watch tries again.
+        const sessionOutage = err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE);
+        if (teamKeyDry) {
+          console.warn(`[byok] run ${runId} stopped: team ${run.teamId}'s OpenRouter key has no credit`);
+          // The key paused (only if it is still the team's) and the feed told —
+          // nothing else: no watch retry, the scheduler leaves the team's
+          // watches until the key can pay (byok-credit.ts).
+          await recordTeamKeyDry(env.db, { id: runId, teamId: run.teamId!, byokKeyEnc: run.byokKeyEnc!, phase: "connecting" }, new Date());
+        } else if (ourBudget || sessionOutage) {
+          console.error(`[${budget ? "budget" : "session-outage"}] run ${runId} aborted: ${budget ? "LLM provider refused for credit state" : msg}`);
           // CHE-329: the feed is public (the live page, get_check_status's
           // recent_events) — it says what happened to the check, not which of
           // our providers did it. The retry is promised only where it exists.
@@ -1566,10 +1642,16 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
         return { phase: before?.status ?? null, afterVerdict: false };
       });
+      if (ended.canceled) {
+        await releaseSessionHost("release-session-canceled");
+        return;
+      }
       // CHE-329: on our own board within the same minute, not discovered by
       // the owner a day later on the customer's page. Its own step, so a
       // retried "fail" cannot count one failure twice; never throws.
       await step.do("file-failure", async () => {
+        // CHE-458: the team's own key running dry is not ours to file.
+        if (teamKeyDry) return null;
         const note = await fileRunFailure(env, runId, { message: msg, budget, ...ended });
         if (note) console.log(`[run-failure] ${note.text}`);
         return note?.text ?? null;
@@ -1986,7 +2068,17 @@ async function transition(
 ) {
   const events = await readEvents(env, runId);
   events.push({ at: new Date().toISOString(), phase, ...event });
-  await env.db.run.update({ where: { id: runId }, data: { status: phase, events: JSON.stringify(events) } });
+  // CHE-454: a canceled run is never moved on — its next phase stops it here.
+  const moved = await env.db.run.updateMany({ where: { id: runId, status: { not: "canceled" } }, data: { status: phase, events: JSON.stringify(events) } });
+  if (moved.count === 0) throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
+}
+
+// CHE-454: a helper outside the workflow (signed-out.ts, closed-door.ts) whose
+// fenced write lost throws RunCanceledError; inside a step it becomes the
+// non-retryable stop, so the step is not retried into the same fence.
+function stopIfCanceled(err: unknown): never {
+  if (err instanceof Error && err.name === "RunCanceled") throw new NonRetryableError(RUN_CANCELED, "RunCanceled");
+  throw err;
 }
 
 async function appendEvent(

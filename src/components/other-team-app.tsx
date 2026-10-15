@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { switchTeamAction } from "@/app/team/switch-actions";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel } from "@/lib/app-label";
 import { Button } from "@/components/ui/button";
 
 // An app of another team of yours, opened while acting as a different team
@@ -16,11 +16,11 @@ export function OtherTeamApp({
   acting,
   to,
 }: {
-  app: { appSlug: string; targetUrl: string; targetKind: string; teamId: string; team: { name: string } | null };
+  app: { name: string | null; appSlug: string; targetUrl: string; targetKind: string; teamId: string; team: { name: string } | null };
   acting: string;
   to: string;
 }) {
-  const name = app.targetKind === "extension" ? extensionDisplayName(app.targetUrl) : app.appSlug;
+  const name = appLabel(app);
   const team = app.team?.name ?? "another team of yours";
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-10">

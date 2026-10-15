@@ -1,5 +1,5 @@
-// Tracker abstraction (CHE-31). Linear is the only implementation now; Jira /
-// GitHub Issues can implement the same interface later. The producer side
+// Tracker abstraction (CHE-31). Linear and Jira (CHE-438) implement it, and
+// ./factory.ts picks one by the app's integration. The producer side
 // (watch-diff → ticket) never imports a concrete tracker — only this interface.
 
 export interface TicketDraft {

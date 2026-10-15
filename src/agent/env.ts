@@ -9,12 +9,15 @@
 import { getDb } from "@/lib/db";
 import { putObject } from "@/lib/storage";
 import type { ExtensionRunner } from "./extension-runner";
+import type { SessionRunner } from "./session-runner";
 
 export interface AgentBindings {
   DB: D1Database;
   EVIDENCE: R2Bucket;
   MYBROWSER: Fetcher;
   EXTENSION_RUNNER?: DurableObjectNamespace<ExtensionRunner>;
+  // CHE-464: one Shopify session browser per team (session-runner.ts).
+  SESSION_RUNNER?: DurableObjectNamespace<SessionRunner>;
   CHECK_RUN: Workflow;
   // CHE-445: starts one Mender tick per scheduler tick (src/agent/mender-dispatch.ts).
   MENDER_DISPATCH_TOKEN?: string;
@@ -36,6 +39,9 @@ export interface AgentBindings {
   // 24h access tokens with these. Absent = tokens die a day after connect.
   LINEAR_CLIENT_ID?: string;
   LINEAR_CLIENT_SECRET?: string;
+  // CHE-438: our Atlassian OAuth app, to refresh a team's Jira grant.
+  JIRA_CLIENT_ID?: string;
+  JIRA_CLIENT_SECRET?: string;
   // Verdict-ready notifications (Resend). All optional — absent = log-only.
   EMAIL_API_KEY?: string;
   EMAIL_FROM?: string;
@@ -81,21 +87,21 @@ export interface AgentBindings {
   // the self-check of 2026-09-05 (run #146) created two real runs on a
   // stranger's app and graded a stranger's verdict. Unset → production only.
   SELF_CHECK_HOSTS?: string;
-  // CHE-389: the session host — a browser a person signed in to, for products
-  // whose sign-in we cannot perform (the Shopify admin's has a captcha). A run
-  // of an app whose kind is "session" works there, through the host's session
-  // server: its address, the Cloudflare Access service token that lets the
-  // request reach it, and the server's own bearer token. All four or the kind
-  // cannot run (session-browser.ts).
-  SESSION_HOST_URL?: string;
-  SESSION_ACCESS_CLIENT_ID?: string;
-  SESSION_ACCESS_CLIENT_SECRET?: string;
-  SESSION_SERVER_TOKEN?: string;
-  // CHE-389: when the sign-in on the session host has ended, the person who
+  // CHE-464: a team's Shopify session browser (session-runner.ts), four
+  // secrets: SESSION_JAR_KEY seals each team's cookie jar; SESSION_VIEW_SECRET
+  // (the web worker's too) derives each team's live-view key;
+  // SESSION_PROXY_URL is the residential upstream (Secret Manager
+  // `session-host-proxy`), unset = direct egress; SESSION_ADMIN_TOKEN guards
+  // our own /session/jar and /session/state.
+  SESSION_JAR_KEY?: string;
+  SESSION_VIEW_SECRET?: string;
+  SESSION_PROXY_URL?: string;
+  SESSION_ADMIN_TOKEN?: string;
+  // CHE-389: when a session check meets an ended sign-in, the person who
   // signs in is told — once per ended sign-in (signed-out.ts) — in the owner's
   // chat (CHE-375): the bot's token and the chat, both secrets, and the address
-  // to sign in at (a var). Without the token or the chat nothing is sent; the
-  // run still ends Not verified and says why.
+  // to sign in at (a var) for a run with no saved app. Without the token or the
+  // chat nothing is sent; the run still ends Not verified and says why.
   TELEGRAM_BOT_TOKEN?: string;
   OWNER_TELEGRAM_CHAT_ID?: string;
   SESSION_SIGN_IN_URL?: string;

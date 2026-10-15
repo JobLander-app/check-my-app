@@ -196,6 +196,8 @@ export async function notifyVerdictReady(
       id: true,
       bottomLine: true,
       findings: { select: { category: true }, where: { mark: { not: "false_positive" } } },
+      // CHE-457: the mail names the app as the team calls it.
+      app: { select: { name: true } },
     },
   });
   const findings = written?.findings ?? [];
@@ -229,7 +231,7 @@ export async function notifyVerdictReady(
     for (const to of recipients.to) {
     const providerMessageId = await sendVerdictReady({
       to,
-      appSlug: run.appSlug,
+      appSlug: written?.app?.name?.trim() || run.appSlug,
       publicId: run.publicId,
       verdict,
       recurring: Boolean(run.watchId),

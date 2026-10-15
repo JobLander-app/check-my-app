@@ -289,6 +289,7 @@ const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/api/status/[slug]/route.ts": "reads",
   "src/app/api/tests/[id]/route.ts": "reads",
   "src/app/api/integrations/linear/start/route.ts": "browser-only",
+  "src/app/api/integrations/jira/start/route.ts": "browser-only",
   "src/app/api/integrations/posthog/start/route.ts": "browser-only",
   "src/app/api/integrations/github/app/start/route.ts": "browser-only",
   "src/app/api/billing/one-check/route.ts": {
@@ -298,6 +299,11 @@ const GET_HANDLERS: Record<string, GetKind> = {
   "src/app/api/integrations/linear/callback/route.ts": {
     writes: "stores the tracker connection",
     needs: "the nonce cookie its start route set AND a code Linear's token endpoint accepts — issued only after a person consents at Linear, off our origin",
+  },
+  // CHE-438
+  "src/app/api/integrations/jira/callback/route.ts": {
+    writes: "stores the tracker connection",
+    needs: "the nonce cookie its start route set AND a code Atlassian's token endpoint accepts — issued only after a person consents at Atlassian, off our origin",
   },
   "src/app/api/integrations/posthog/callback/route.ts": {
     writes: "stores the analytics connection",
@@ -404,7 +410,8 @@ function inventory() {
         const src = readFileSync(path.join(repoRoot, `src/app/api/integrations/${provider}/callback/route.ts`), "utf8");
         const nonceAt = src.search(/[nN]once[^\n]*!== nonce/);
         const exchangeAt = src.indexOf("exchangeCode(");
-        const writeAt = src.search(/\.upsert\(/);
+        // CHE-438: the Linear write lives in saveLinearGrant (linear-connect.ts).
+        const writeAt = src.search(/\.upsert\(|saveLinearGrant\(/);
         return nonceAt > 0 && exchangeAt > nonceAt && writeAt > exchangeAt;
       }) &&
       // CHE-369: the nonce is compared (when a state travelled), the

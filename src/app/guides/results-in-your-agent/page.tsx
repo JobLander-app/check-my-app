@@ -1,5 +1,6 @@
 import { CodeBlock } from "@/components/code-block";
 import { watchChannelCommands } from "@/lib/agent-connect";
+import { TRACKER_GUIDE_LINE } from "@/lib/tracker-copy";
 import { A, Code, Example, GuidePage, Note, Section, Strong, guideMetadata } from "../guide-kit";
 
 export const metadata = guideMetadata("results-in-your-agent");
@@ -73,10 +74,7 @@ export default function ResultsInAgentGuide() {
       </Section>
 
       <Note label="not using an agent?">
-        <p>
-          Every result also stays in your dashboard. From the app’s settings, new regressions
-          can become tickets in Linear, and results can go to email, Slack or your own webhook.
-        </p>
+        <p>{TRACKER_GUIDE_LINE}</p>
       </Note>
     </GuidePage>
   );

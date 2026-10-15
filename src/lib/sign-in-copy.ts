@@ -7,11 +7,22 @@
 // The session host sends a code, never a sentence (viewer.mjs `{t:"error",
 // code}`): the words live here, under the guards.
 
+// CHE-482: a dev store is the app's test account. Its checks open the app in
+// the store's admin signed in to Shopify as whoever connected the store, so
+// each person connects their own, and signs in to Shopify once, here in the
+// browser — after that their stores connect without signing in again. The
+// connect page, the stores section, this page and MCP all say so.
 export const SIGN_IN_COPY = {
   title: (store: string) => `Sign in to ${store}`,
   intro:
-    "Sign in the way you always do. Checks of this app open it from inside your admin, so they need you signed in; " +
+    "Sign in the way you always do. Checks of this store open your app from inside its admin, signed in as you; " +
     "when the sign-in ends, we will ask you to come back here.",
+  once:
+    "You sign in to Shopify once. After that, each of your dev stores connects on its page without signing in again. " +
+    "Teammates connect their own stores with their own sign-in.",
+  theirs: (person: string | null) =>
+    `Checks of this store open it signed in to Shopify as ${person ?? "the teammate who connected it"}, so only they sign in here. ` +
+    "To check the app on a store of yours, connect that store on Check a Shopify app.",
   unavailable: "Signing in is not available right now. Try again in a few minutes.",
   connecting: "Opening the sign-in page…",
   live: "Click into the page and sign in. Paste works as usual (⌘V / Ctrl+V).",
@@ -29,8 +40,10 @@ export const SIGN_IN_COPY = {
 export const CONNECT_COPY = {
   title: "Check a Shopify app",
   intro:
-    "Open your app in your store's Shopify admin and paste its address here. Next you sign in to that store here, the way " +
-    "you always do. The app's first check starts right away, and it is checked every day after that.",
+    "Your dev stores are this app's test accounts: a check opens the app inside a store's admin, signed in to Shopify as you. " +
+    "Open your app in one of your stores and paste its address here. The first time, you sign in to Shopify on the next page — " +
+    "once; after that, each of your stores connects without signing in again. The app's first check starts right away, and " +
+    "it is checked every day after that.",
   label: "Link to your app in the Shopify admin",
   placeholder: "https://admin.shopify.com/store/my-store/apps/my-app",
   submit: "Continue",
@@ -41,16 +54,28 @@ export const CONNECT_COPY = {
 // (src/lib/mcp/tools.ts): the tool's description and its hints.
 export const MCP_CONNECT_COPY = {
   description:
-    "Connect a Shopify app — one that lives inside a store's admin (admin.shopify.com). Pass app_url, the link to the app " +
-    "in the admin (the store and the app are both read from it); the result's sign_in_url is for the user: they sign in " +
-    "to their store on that page (CheckMyApp never asks for their Shopify password, and neither should you), the app is " +
-    "picked up and its first check starts there; after that it is checked daily like any app. Use this instead of " +
-    "create_app for an app inside the Shopify admin.",
+    "Connect a Shopify app on one of the user's dev stores — an app that lives inside a store's admin (admin.shopify.com). " +
+    "A dev store is the app's test account: its checks open the app in that store's admin signed in to Shopify as the " +
+    "person who connected the store, so each person on the team connects their own stores. Pass app_url, the link to the " +
+    "app in the admin (the store and the app are both read from it). The result's sign_in_url is for the user: the first " +
+    "time, they sign in to Shopify once, on that page (CheckMyApp never asks for their Shopify password, and " +
+    "neither should you); the app is picked up and its first check starts there. After that first sign-in, each further " +
+    "store of theirs connects on its sign_in_url without signing in again. Use this instead of create_app for an app " +
+    "inside the Shopify admin; add_store adds another store to an app already connected.",
   signIn:
-    "Give the user sign_in_url. They sign in to their store there (the way they always do — never ask for their password); " +
-    "the app is then picked up and its first check starts on that page; it is checked daily after that. " +
-    "Then list_apps shows the app under its own name, and start_check / wait_for_run work as for any app.",
+    "Give the user sign_in_url. If they have not signed in to Shopify on CheckMyApp before, they sign in once, on that page " +
+    "(the way they always do — never ask for their password); if they have, the page connects the store without asking. " +
+    "The app's first check starts on that page, and it is checked daily after that. Then list_apps shows the store, and " +
+    "start_check / wait_for_run work as for any app.",
+  addStore:
+    "Add one more dev store to a Shopify app the team already checks — staging, production, a store with the data a " +
+    "feature needs. A store is a test account: its checks open the app signed in to Shopify as the person who adds it, so " +
+    "a person adds their own stores. Pass shopify_app (list_apps) and the store's name. The person opens the returned " +
+    "sign_in_url: the first time, they sign in to Shopify once, on that page; after that, it confirms the app on " +
+    "the store without signing in again. The app's team scenarios come with it. Then start_check with shopify_app and " +
+    "store checks the app there.",
   alreadyConnected: "This app is already connected — list_apps has it; start_check checks it.",
+  ownKey: (origin: string) => `Ask the user for a key of their own: ${origin}/settings/api-keys. Their stores are connected with their own Shopify sign-in.`,
   appUrl:
     "The link to the app inside the store's Shopify admin, as the address bar shows it when the app is open: " +
     "https://admin.shopify.com/store/<store>/apps/<app> (or https://<store>.myshopify.com/admin/apps/<app>)",
@@ -67,6 +92,9 @@ export const CONNECT_ERRORS = {
   notLinked: "That is not the app you linked to.",
   cannotOpen: "This app cannot be checked: the address it is served from is not one we can open.",
   alreadyConnected: (name: string) => `${name} is already connected.`,
+  notYours: "A teammate connected this store, and its checks open it signed in as them. Connect a store of your own to check the app there.",
+  notOnTeam:
+    "A store is connected with the Shopify sign-in of the person connecting it, and this key belongs to someone no longer on the team. Connect it with a key of your own.",
 } as const;
 
 export type SignInErrorCode = "busy" | "idle" | "failed" | "closed";
@@ -109,11 +137,50 @@ export function signInError(code: unknown): string {
   return typeof code === "string" && code in SIGN_IN_ERRORS ? SIGN_IN_ERRORS[code as SignInErrorCode] : SIGN_IN_COPY.connectionEnded;
 }
 
+// CHE-468: a Shopify app's "Test stores" settings section — its stores, how to
+// add one, the store password — and what the "What we check" section says in
+// place of the record-creation choice: a check of an app in a store's admin
+// reads the store and changes nothing in it (CHE-442 is where a team would opt
+// a test store in).
+export const STORES_COPY = {
+  heading: "Stores",
+  // CHE-482: what a store is, and how one is connected.
+  how:
+    "Each store is a test account for this app: its checks open the app in that store's admin, signed in to Shopify as " +
+    "whoever connected it. Everyone connects their own stores. The first time, you sign in to Shopify once, on a store's " +
+    "sign-in page here; after that, each of your stores connects without signing in again.",
+  signedInAs: (who: { mine: boolean; email: string | null }) =>
+    who.mine ? "Signed in as you" : `Signed in as ${who.email ?? "a teammate"}`,
+  none: "No store yet: choose the app on the store's sign-in page first.",
+  thisPage: "this page",
+  signIn: "Sign in",
+  addBefore: "Another store of yours: open the app in that store's admin and paste its address on",
+  addLink: "Check a Shopify app",
+  addAfter: ". Its scenarios come with it.",
+  passwordTitle: "Store password",
+  passwordWhat: "For a store that shows a password page before anything else.",
+  passwordSet: "One is set.",
+  passwordRule: "Encrypted at rest, never logged; a blank box keeps the current one.",
+  passwordRemove: "Remove the store password",
+  passwordSave: "Save store password",
+  passwordIsSet: "A store password is set.",
+  passwordNone: "No store password.",
+  passwordByAdmin: "It is set by an admin of the team.",
+  readOnlyTitle: "Test records",
+  readOnly: "A check of an app in your store's admin only reads: it never creates, changes or deletes anything in the store.",
+} as const;
+
 // Every sentence above, for the guard.
 export function allSignInSentences(store = "my-store"): string[] {
   return [
     SIGN_IN_COPY.title(store),
     SIGN_IN_COPY.intro,
+    SIGN_IN_COPY.once,
+    SIGN_IN_COPY.theirs("teammate@example.test"),
+    SIGN_IN_COPY.theirs(null),
+    STORES_COPY.signedInAs({ mine: true, email: null }),
+    STORES_COPY.signedInAs({ mine: false, email: "teammate@example.test" }),
+    STORES_COPY.signedInAs({ mine: false, email: null }),
     SIGN_IN_COPY.unavailable,
     SIGN_IN_COPY.connecting,
     SIGN_IN_COPY.live,
@@ -126,7 +193,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     SIGN_IN_COPY.cancel,
     ...Object.values(CONNECT_COPY),
     ...Object.values(CONNECT_ERRORS).map((v) => (typeof v === "function" ? v("Securify") : v)),
-    ...Object.values(MCP_CONNECT_COPY),
+    ...Object.values(MCP_CONNECT_COPY).map((v) => (typeof v === "function" ? v("https://checkmyapp.dev") : v)),
     CHOOSE_COPY.retry,
     ...Object.values(SIGN_IN_ERRORS),
     CHOOSE_COPY.signedIn(store),
@@ -141,5 +208,7 @@ export function allSignInSentences(store = "my-store"): string[] {
     CHOOSE_COPY.daily,
     CHOOSE_COPY.appPage,
     ...Object.values(PICK_ERRORS),
+    ...Object.values(STORES_COPY).filter((v): v is string => typeof v === "string"),
+    `${STORES_COPY.addBefore} ${STORES_COPY.addLink}${STORES_COPY.addAfter}`,
   ];
 }

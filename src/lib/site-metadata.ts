@@ -30,6 +30,7 @@ export const PUBLIC_PATHS: `/${string}`[] = [
   "/pricing",
   "/faq",
   "/about",
+  "/privacy",
   GUIDES_PATH,
   ...GUIDES.map((g) => guidePath(g.slug)),
 ];

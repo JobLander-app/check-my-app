@@ -15,12 +15,13 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateApiKey, hashApiKey } from "@/lib/apiKeys";
 import { settingsActionFor, updateAppForTeam, type AppSettingsPatch } from "@/lib/app-settings";
 import { testAccountsFromForm } from "@/lib/test-accounts";
-import { TEAM_SCOPES, can, mintRefusal, refusal, type TeamScope } from "@/lib/scopes";
+import { can, keyScopeFor, mintRefusal, refusal } from "@/lib/scopes";
 import { recordTeamEvent } from "@/lib/team-events";
 import type { UserPlan } from "@/lib/enums";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { appRepoFromForm, mappingEventSummary, saveAppRepo } from "@/lib/github-mapping";
+import { chooseJiraProject } from "@/lib/tracker/jira-connect";
 
 // Re-point an app's tracker to a different team (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
@@ -46,6 +47,30 @@ export async function setTrackerTeam(appId: string, teamId: string, teamName: st
     subject: app.appSlug,
     summary: `pointed ${app.appSlug}'s tickets at ${teamName}`,
   });
+}
+
+// Which Jira project (and site) an app's tickets go to (CHE-438). Only the
+// value travels from the client; chooseJiraProject checks it against what the
+// grant reaches now.
+export async function setJiraProject(appId: string, value: string) {
+  await refuseSelfCheck(appPath.page(appId));
+  const { user, db, team } = await requireActionScope("integration.connect");
+  const app = await db.app.findFirst({
+    where: { ...teamOwned(team.id), id: appId },
+    select: { id: true, appSlug: true },
+  });
+  if (!app) throw new Error("app not found");
+  const env = getCloudflareContext().env as Record<string, string | undefined>;
+  const outcome = await chooseJiraProject(db, app.id, value, { clientId: env.JIRA_CLIENT_ID, clientSecret: env.JIRA_CLIENT_SECRET });
+  if (outcome !== "chosen") throw new Error(`Jira project not set: ${outcome}`);
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "integration.connected",
+    subject: app.appSlug,
+    summary: `pointed ${app.appSlug}'s tickets at Jira project ${value.split("/").pop()}`,
+  });
+  revalidatePath(appPath.section(app.id, "integrations"));
 }
 
 // Outbound integrations (CHE-53): generic webhook + Slack incoming webhook,
@@ -144,7 +169,8 @@ export async function createApiKey(
   const { user, db, team, scope } = await requireActionScope("apikey.manage");
   // CHE-263: a key carries a scope, and never one above its minter's — a member
   // who could mint an admin key would make the scope table a suggestion.
-  const wanted = (TEAM_SCOPES as string[]).includes(keyScope) ? (keyScope as TeamScope) : "member";
+  // CHE-451: "self" is the minter's own (keyScopeFor).
+  const wanted = keyScopeFor(scope, keyScope);
   const refusal = mintRefusal(scope, wanted);
   if (refusal) throw new Error(refusal);
 
@@ -221,6 +247,8 @@ export async function updateAppSettings(appId: string, section: string, formData
   const patch: AppSettingsPatch | null =
     section === "scope"
       ? {
+          // CHE-457: what the team calls the app; a blank box clears it.
+          name: text("name"),
           focusAreas: text("focusAreas"),
           writeMode: formData.get("writeMode") === "create_cleanup" ? "create_cleanup" : "read_only",
           scopeHints: text("scopeHints"),
@@ -229,7 +257,9 @@ export async function updateAppSettings(appId: string, section: string, formData
         }
       : section === "accounts"
         ? {
-            testEmail: text("testEmail"),
+            // CHE-468: a Shopify app's form carries the store password alone;
+            // a field the form does not carry is kept, never read as cleared.
+            testEmail: formData.has("testEmail") ? text("testEmail") : undefined,
             testPassword: text("testPassword") || undefined,
             // CHE-443: write-only like the login password — a blank box keeps
             // it, the Remove box clears it ("" is the clear, as in update_app).

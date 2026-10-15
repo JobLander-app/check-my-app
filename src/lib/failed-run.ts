@@ -33,8 +33,11 @@ export function publicRunError(status: string): string | null {
 // feed at the boundary covers those without a list of phrasings to keep up.
 export function publicRunState<E>(run: { status: string; verdict: string | null; events: E[] | null }) {
   const failed = run.status === "failed";
+  // CHE-454: a stopped check publishes no verdict either, whatever a step wrote
+  // before the stop; its feed stays — it says who stopped it (Codex on #329).
+  const stopped = run.status === "canceled";
   return {
-    verdict: failed ? null : run.verdict,
+    verdict: failed || stopped ? null : run.verdict,
     events: failed ? [] : run.events,
     errorMessage: publicRunError(run.status),
   };

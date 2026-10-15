@@ -25,6 +25,7 @@ import { extensionColumns, parseExtensionLink, type ExtensionOptions } from "@/l
 import { recordTeamEvent } from "@/lib/team-events";
 import { parseAllowedOriginsInput, serializeAllowedOrigins } from "@/lib/allowed-origins";
 import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
+import { checkAppName } from "@/lib/app-label";
 import {
   planAccountEdits,
   writeAccountEdits,
@@ -211,6 +212,8 @@ export async function createAppForTeam(
 // settings form maps its blank box to `undefined`, so a person saving other
 // settings never clears it by accident.
 export interface AppSettingsPatch {
+  // CHE-457: what the team calls the app; "" or null clears it (src/lib/app-label.ts).
+  name?: string | null;
   testEmail?: string | null;
   testPassword?: string | null;
   // CHE-322: add, rename, re-password or remove named accounts. Passwords here
@@ -311,6 +314,8 @@ export async function updateAppForTeam(
   if (accountPlan && !accountPlan.ok) return { error: accountPlan.error, code: "invalid_input" };
   const origins = patch.allowedOrigins === undefined ? null : parseAllowedOriginsInput(patch.allowedOrigins);
   if (origins && !origins.ok) return { error: origins.error, code: "invalid_input" };
+  const named = patch.name === undefined ? null : checkAppName(patch.name ?? "");
+  if (named && !named.ok) return { error: named.error, code: "invalid_input" };
 
   const passwordUpdate =
     patch.testPassword === undefined
@@ -329,6 +334,7 @@ export async function updateAppForTeam(
   await db.app.update({ ...alreadyScoped("already read in this request"),
     where: { id: app.id },
     data: {
+      name: named?.ok ? named.name : undefined,
       testEmail,
       scopeHints: orNull(patch.scopeHints),
       userNotes: orNull(patch.userNotes),

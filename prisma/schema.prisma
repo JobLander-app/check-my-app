@@ -63,6 +63,10 @@ model Run {
   // input like the test login: encrypted the same way, cleared with it after
   // a one-off run (clearedCredentials), and entered by code, never the model.
   storePasswordEnc     String?
+  // CHE-482: the Shopify session slot (team + connector) this check took its
+  // lease in, written when the run loads. Kept here so a stopped check gives
+  // the browser back even after its store is removed (Codex on #351).
+  sessionSlot          String?
   // CHE-436: the team's own OpenRouter key, copied from Team.openrouterKeyEnc
   // when the run is created. The agent decrypts it and uses it instead of the
   // worker binding — the team pays their own OpenRouter bill; the run is free
@@ -764,6 +768,13 @@ model Team {
   // for every team whose checks run on our key and our bill. When set, the
   // team's checks are free on our balance — their OpenRouter account pays.
   openrouterKeyEnc String?
+  // CHE-458: when the team's key was found to have no credit (a check on it got
+  // OpenRouter's 402, or the check at save did). While set, nothing starts on
+  // the key and every place says why; cleared by a new key or by the scheduler
+  // finding the key can pay again. `openrouterKeyCheckedAt` paces that
+  // re-check (once an hour per team).
+  openrouterKeyNoCreditAt DateTime?
+  openrouterKeyCheckedAt  DateTime?
 
   topUps BalanceTopUp[]
   memberships Membership[]
@@ -1001,6 +1012,9 @@ model App {
   // hoped for.
   team      Team?   @relation(fields: [teamId], references: [id])
   teamId    String?
+  // CHE-457: what the team calls the app ("Securify", "OTP+"). The address key
+  // below never changes; this is only how the app is shown (src/lib/app-label.ts).
+  name      String?
   targetUrl String
   targetKind String @default("website")
   extensionId String?
@@ -1130,7 +1144,10 @@ model TrackerIntegration {
   refreshTokenEnc String?
   tokenExpiresAt  DateTime?
   teamId          String?   // tracker team/project the tickets land in
-  externalOrg     String?   // workspace/org identifier
+  externalOrg     String?   // workspace/org identifier (Jira: the site's cloudId)
+  // CHE-438: the Jira site, https://<name>.atlassian.net — where an issue's
+  // link points. Null for Linear.
+  externalUrl     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1466,6 +1483,38 @@ model TelegramMessage {
   createdAt   DateTime @default(now())
 
   @@index([chatId, createdAt])
+}
+
+// ─── Shopify session probes (CHE-464) ────────────────────────────────────────
+// One line per hourly look at a Shopify admin from a person's session browser
+// (src/agent/session-runner.ts): is their sign-in still alive. The session
+// host's probe.jsonl, per person in a team (CHE-482). Written by the Durable
+// Object with raw statements; operator data, never read for a customer.
+model SessionProbe {
+  id          String   @id
+  teamId      String
+  // Whose sign-in: the session is one person's in the team (CHE-482). Null on
+  // lines from before, when a team had one shared session.
+  userId      String?
+  // The team's app the probe opened.
+  appId       String?
+  at          DateTime
+  // ok | login_page | captcha | 2fa | error | proxy
+  // (spikes/shopify-session/classify.mjs).
+  state       String
+  urlHost     String?
+  urlPath     String?
+  ms          Int
+  challenge   String?
+  detail      String?
+  // The residential proxy's own answer when it was the cause (402 / 407).
+  proxyStatus Int?
+  // Whether the owner was told on this line; null = nothing to tell.
+  notified    Boolean?
+  notifyError String?
+
+  @@index([teamId, at])
+  @@index([teamId, userId, at])
 }
 
 // ─── Feedback (CHE-434) ──────────────────────────────────────────────────────

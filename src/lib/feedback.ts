@@ -151,6 +151,8 @@ export type FeedbackItem = {
   // the scenario's id. An app's list mixes many runs and scenarios.
   runPublicId: string | null;
   scenarioId: string | null;
+  // The scenario's own title, so a report on a scenario says which (Codex on #320).
+  scenarioTitle: string | null;
 };
 
 const ROW = {
@@ -214,12 +216,14 @@ async function describe(db: PrismaClient, teamId: string, rows: Row[]): Promise<
     for (let i = 0; i < list.length; i += 50) out.push(...(await q(list.slice(i, i + 50))));
     return out;
   };
-  const [users, findings, steps, runs] = await Promise.all([
+  const [users, findings, steps, runs, scenarios] = await Promise.all([
     chunked(ids(rows.map((r) => r.authorId)), (part) => db.user.findMany({ where: { id: { in: part } }, select: { id: true, email: true, name: true } })),
     chunked(ids(rows.map((r) => r.findingId)), (part) => db.finding.findMany({ where: { id: { in: part } }, select: { id: true, number: true } })),
     chunked(ids(rows.map((r) => r.stepId)), (part) => db.step.findMany({ where: { id: { in: part } }, select: { id: true, label: true } })),
     chunked(ids(rows.map((r) => r.runId)), (part) => db.run.findMany({ where: { ...teamOwned(teamId), id: { in: part } }, select: { id: true, publicId: true } })),
+    chunked(ids(rows.map((r) => r.appJourneyId)), (part) => db.appJourney.findMany({ where: { id: { in: part }, app: { ...teamOwned(teamId) } }, select: { id: true, title: true } })),
   ]);
+  const scenarioTitle = new Map(scenarios.map((s) => [s.id, s.title]));
   const who = new Map(users.map((u) => [u.id, u.name?.trim() || u.email]));
   const num = new Map(findings.map((f) => [f.id, f.number]));
   const label = new Map(steps.map((s) => [s.id, s.label]));
@@ -238,7 +242,21 @@ async function describe(db: PrismaClient, teamId: string, rows: Row[]): Promise<
     stepLabel: r.stepId ? (label.get(r.stepId) ?? null) : null,
     runPublicId: r.runId ? (publicId.get(r.runId) ?? null) : null,
     scenarioId: r.appJourneyId,
+    scenarioTitle: r.appJourneyId ? (scenarioTitle.get(r.appJourneyId) ?? null) : null,
   }));
+}
+
+// The newest reports of an app, newest first, however many it has — the
+// card's own question, asked of the database rather than of the first 200 rows
+// listFeedback keeps (Codex on #320).
+export async function latestAppFeedback(db: PrismaClient, teamId: string, appId: string, limit: number): Promise<FeedbackItem[]> {
+  const rows = await db.feedback.findMany({
+    where: { ...teamOwned(teamId), appId },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    select: ROW,
+  });
+  return describe(db, teamId, rows);
 }
 
 // How a row's status reads to the team. "filed" means it reached the people

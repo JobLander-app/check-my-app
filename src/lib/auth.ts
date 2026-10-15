@@ -11,7 +11,7 @@ import { getDbFromContext } from "./db";
 import { upsertUserFromClerk } from "./users";
 import { resolveApiKeyGrant, resolveApiKeyOwner } from "./apiKeys";
 import { can } from "./scopes";
-import { ACTIVE_TEAM_COOKIE, activeTeamContext, type TeamRow } from "./teams";
+import { ACTIVE_TEAM_COOKIE, activeTeamContext, type TeamChoice, type TeamRow } from "./teams";
 import { cookies } from "next/headers";
 import { cache } from "react";
 import type { TeamScope } from "./scopes";
@@ -25,14 +25,36 @@ import type { PrismaClient } from "@/generated/prisma/client";
 // CHE-261 (T8): which team this browser last chose. A cookie is a request, not
 // an authority — activeTeamContext honours it only if the person is actually a
 // member of that team, so editing it by hand gets you your own team back.
-export async function preferredTeamId(): Promise<string | null> {
+//
+// CHE-481: and whether this browser has ever chosen at all — no cookie, as
+// opposed to one naming a team the person is not on. Only a browser that never
+// chose lets an empty personal team give way to a team the person joined
+// (chooseTeam); a stale cookie, an API key or a background call keep the
+// personal team (Codex on #352).
+export async function browserTeamChoice(): Promise<TeamChoice> {
   try {
-    return (await cookies()).get(ACTIVE_TEAM_COOKIE)?.value ?? null;
+    const value = (await cookies()).get(ACTIVE_TEAM_COOKIE)?.value;
+    return { preferred: value || null, neverChosen: value === undefined };
   } catch {
     // Read from a context with no request cookies (a background call). No
     // preference is the honest answer, and the caller falls back to personal.
-    return null;
+    return { preferred: null, neverChosen: false };
   }
+}
+
+// The other half: make `teamId` the one this browser works in. Callers check
+// membership first — the cookie is only ever honoured for a team the person is
+// on, so writing it for any other team would do nothing, and that is the point.
+export async function rememberActiveTeam(teamId: string): Promise<void> {
+  (await cookies()).set(ACTIVE_TEAM_COOKIE, teamId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    // A year: switching teams is not a security boundary — membership is. The
+    // cookie only remembers which of your own teams you were last working in.
+    maxAge: 60 * 60 * 24 * 365,
+  });
 }
 
 // Once per request (CHE-351): the app shell's layout and the page inside it
@@ -66,7 +88,7 @@ async function requireUserUncached(): Promise<{
   // Lazily, like the mirror above: an account created before teams existed, or
   // written straight by a webhook, gets its personal team on first use rather
   // than being refused.
-  const { team, scope } = await activeTeamContext(db, user, await preferredTeamId());
+  const { team, scope } = await activeTeamContext(db, user, await browserTeamChoice());
   return { user, db, team, scope };
 }
 
@@ -106,7 +128,7 @@ export async function optionalTeamContext(
   user: { id: string; name?: string | null; email: string } | null,
 ) {
   if (!user) return null;
-  return activeTeamContext(db, user, await preferredTeamId());
+  return activeTeamContext(db, user, await browserTeamChoice());
 }
 
 // Request-level owner resolution for API routes (CHE-52): a browser presents a
