@@ -42,6 +42,11 @@ export type TeamAction =
   | "ticket.create"
   | "specs.export"
   | "app.settings.write"
+  // CHE-482: connecting one of your own Shopify dev stores — signing in to it
+  // with your own Shopify account. Not a team credential (nothing anyone else
+  // could use is stored), so not app.credentials.write; it starts the store's
+  // first check and its daily one, so a reader does not.
+  | "shopify.store.connect"
   // Trusted writes: credentials, outbound integrations, destructive acts.
   | "app.credentials.write"
   | "integration.connect"
@@ -68,6 +73,7 @@ export const TEAM_ACTIONS: TeamAction[] = [
   "ticket.create",
   "specs.export",
   "app.settings.write",
+  "shopify.store.connect",
   "app.credentials.write",
   "integration.connect",
   "app.delete",
@@ -89,6 +95,8 @@ export const SPENDS_MONEY: TeamAction[] = [
   "run.recheck",
   "run.full_recheck",
   "watch.configure",
+  // A connected store's first check starts at once, and its daily one is on.
+  "shopify.store.connect",
 ];
 
 // Actions only an admin may take: they move money, hand out access, expose a
@@ -122,6 +130,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
+    "shopify.store.connect": true,
     "app.credentials.write": true,
     "integration.connect": true,
     "app.delete": true,
@@ -145,6 +154,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "ticket.create": true,
     "specs.export": true,
     "app.settings.write": true,
+    "shopify.store.connect": true,
     "app.credentials.write": false,
     "integration.connect": false,
     "app.delete": false,
@@ -168,6 +178,7 @@ const CAN: Record<TeamScope, Record<TeamAction, boolean>> = {
     "ticket.create": false,
     "specs.export": false,
     "app.settings.write": false,
+    "shopify.store.connect": false,
     "app.credentials.write": false,
     "integration.connect": false,
     "app.delete": false,

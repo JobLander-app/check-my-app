@@ -33,6 +33,8 @@ import {
   isSignOutAddress,
   isSignOutText,
   releaseSession,
+  runSessionSlot,
+  slotHolderOnTeam,
   SESSION_WAIT_MAX_SECONDS,
   SESSION_WAIT_MIN_SECONDS,
   SessionBrowser,
@@ -46,6 +48,7 @@ import {
   type SessionHost,
   type SessionSteps,
 } from "@/agent/session-browser";
+import { SESSION_SLOT_HEADER } from "@/agent/session-address";
 
 // src/agent/browser.ts reaches @cloudflare/playwright, which requires the
 // `cloudflare:workers` builtin at load time (verify-closed-door does the same).
@@ -98,29 +101,63 @@ async function launchProfile(profile: string, debugPort: number): Promise<Browse
 }
 
 async function main() {
-  // ── the configuration (CHE-464): the run's team's browser, or the kind cannot run ──
+  // ── the configuration (CHE-464, CHE-482): the browser of the run's store's
+  // connector, or the kind cannot run ──
   {
-    const asked: { name: string; team: string | null; path: string }[] = [];
+    const asked: { name: string; slot: string | null; path: string }[] = [];
     const namespace = {
       getByName: (name: string) => ({
         fetch: async (request: Request) => {
-          asked.push({ name, team: request.headers.get("X-Session-Team"), path: new URL(request.url).pathname });
+          asked.push({ name, slot: request.headers.get(SESSION_SLOT_HEADER), path: new URL(request.url).pathname });
           return Response.json({ sessionId: "s-1" });
         },
       }),
     };
     const bindings = { SESSION_RUNNER: namespace } as unknown as Parameters<typeof sessionHost>[0];
-    const host = sessionHost(bindings, "team_abc");
+    // A teammate started the check; the store was connected by u_owner.
+    const slot = runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner" } });
+    const host = sessionHost(bindings, slot);
     await askForSession(host, RUN_A);
     check(
-      "configuration: a run's requests go to its own team's browser, named by the team and saying which team",
-      asked.length === 1 && asked[0].name === "team_abc" && asked[0].team === "team_abc" && asked[0].path === "/lease",
+      "configuration: a run's requests go to the browser of whoever connected its store, named by that slot and saying it",
+      slot === "team_abc--u_owner" && asked.length === 1 && asked[0].name === slot && asked[0].slot === slot && asked[0].path === "/lease",
       JSON.stringify(asked),
     );
+    check(
+      "configuration: a run whose app has no connector has no slot",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: null } }) === null && runSessionSlot({ teamId: null, app: { ownerId: "u" } }) === null && runSessionSlot({ teamId: "team_abc", app: null }) === null,
+    );
+    check(
+      "configuration: a store whose connector left the team has no slot — their sign-in is not the team's to use (Codex on #351)",
+      runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: false } }) === null &&
+        runSessionSlot({ teamId: "team_abc", app: { ownerId: "u_owner", onTeam: true } }) === "team_abc--u_owner",
+    );
+    // Codex on #351: asked again whenever the browser is taken.
+    const members = new Set(["team_abc|u_owner"]);
+    const stub = { membership: { findFirst: async ({ where }: { where: { teamId: string; userId: string } }) => (members.has(`${where.teamId}|${where.userId}`) ? { id: "m" } : null) } };
+    const onBefore = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    members.clear();
+    const onAfter = await slotHolderOnTeam(stub, "team_abc--u_owner");
+    check(
+      "configuration: the slot's person is asked for each time — removed mid-check, their browser is not taken again",
+      onBefore && !onAfter && !(await slotHolderOnTeam(stub, null)) && !(await slotHolderOnTeam(stub, "team_abc")),
+    );
+    const workflowSource = await readFile("src/agent/workflow.ts", "utf8");
+    check(
+      "configuration: every phase that takes the browser asks first",
+      /const stillOn = await step\.do\(`session-member-\$\{phase\}`, \(\) => slotHolderOnTeam\(env\.db, run\.sessionSlot\)\);\s*if \(!stillOn\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("slotHolderOnTeam(env.db") < workflowSource.indexOf("await waitForSession("),
+    );
+    check(
+      "configuration: a session run with no slot stops before anything starts, not retried",
+      /membership\.findFirst\(\{ where: \{ teamId: r\.teamId, userId: app\.ownerId \}/.test(workflowSource) &&
+        /if \(isSession && !run\.sessionSlot\) throw new NonRetryableError\(SESSION_NO_SLOT/.test(workflowSource) &&
+        workflowSource.indexOf("!run.sessionSlot) throw") < workflowSource.indexOf('step.do("survey"'),
+    );
     for (const [what, make] of [
-      ["no team", () => sessionHost(bindings, null)],
-      ["a team id that is not one", () => sessionHost(bindings, "team abc/../x")],
-      ["no binding", () => sessionHost({} as typeof bindings, "team_abc")],
+      ["no slot", () => sessionHost(bindings, null)],
+      ["a slot that is not one", () => sessionHost(bindings, "team abc/../x")],
+      ["no binding", () => sessionHost({} as typeof bindings, "team_abc--u_owner")],
     ] as const) {
       let threw = "";
       try {
@@ -644,7 +681,9 @@ async function main() {
     const helperAt = workflow.indexOf("const sessionTurn = async");
     const helper = workflow.slice(helperAt, workflow.indexOf("// Everything below is inside the failure handler", helperAt));
     check("the workflow: a session run takes its turn in steps that sleep — and only a session run",
-      helperAt > 0 && /if \(!isSession\) return;\s*await waitForSession\(/.test(helper) && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
+      // CHE-482: between the two, the slot's person is asked for (a step that
+      // reads, never one that waits).
+      helperAt > 0 && /if \(!isSession\) return;[\s\S]{0,400}?await waitForSession\(/.test(helper) && helper.indexOf("if (!isSession) return;") < helper.indexOf("slotHolderOnTeam(") && /sleep: \(name, seconds\) => step\.sleep\(name, seconds \* 1000\)/.test(helper),
       helper.slice(0, 80));
     // Before every phase that opens the browser, under that phase's name: a
     // wait inside a phase would be a step failing and being retried.

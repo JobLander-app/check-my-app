@@ -26,15 +26,18 @@ export async function releaseCanceledLeases(
       targetKind: SESSION_KIND,
       completedAt: { gte: new Date(now.getTime() - SESSION_LEASE_SECONDS * 1000) },
     },
-    select: { id: true, teamId: true },
+    select: { id: true, sessionSlot: true },
   });
   if (stopped.length === 0) return [];
   const released: string[] = [];
-  // CHE-464: each run's lease is in its own team's browser.
+  // CHE-482: each run's lease is in the slot it recorded when it loaded — its
+  // store's connector's browser — which outlives the store itself (Codex on
+  // #351). A run stopped before it loaded never took a lease.
   for (const run of stopped) {
-    if (!run.teamId) continue;
+    const slot = run.sessionSlot;
+    if (!slot) continue;
     try {
-      if (await release(sessionHost(env.bindings, run.teamId), run.id)) released.push(run.id);
+      if (await release(sessionHost(env.bindings, slot), run.id)) released.push(run.id);
     } catch (error) {
       console.warn(`[cancel] could not release ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
     }

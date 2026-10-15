@@ -20,12 +20,12 @@ import { isSessionTarget, SessionBrowser, sessionBrowserFor, sessionHost, type S
 import { landedOutside, whereItSettled } from "./signed-out";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
 
-export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget & { teamId?: string | null }; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
+export async function launchAgentBrowser(env: AgentEnv, target?: { run: ExtensionTarget & { sessionSlot?: string | null }; phase: string; expected?: ExtensionIdentity; scenario?: ExtensionRunnerInput["scenario"] }): Promise<Browser> {
   // CHE-389: an app checked inside a signed-in session runs in the session
-  // browser — since CHE-464 its team's own. One lease per run, renewed by
-  // every phase.
+  // browser — since CHE-482 the one of whoever connected the store
+  // (runSessionSlot). One lease per run, renewed by every phase.
   if (target && isSessionTarget(target.run)) {
-    return (await SessionBrowser.open(sessionHost(env.bindings, target.run.teamId), target.run.id, connect as unknown as SessionConnect)).browser;
+    return (await SessionBrowser.open(sessionHost(env.bindings, target.run.sessionSlot), target.run.id, connect as unknown as SessionConnect)).browser;
   }
   const input = target ? extensionInput(target.run, target.phase, target.scenario) : null;
   if (input) {
