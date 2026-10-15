@@ -574,7 +574,9 @@ async function publish() {
  * idle tick ends in seconds. Writes `work=yes|no` for the workflow's later steps.
  */
 async function peek() {
-  const yes = Boolean(process.env.TICKET) || Boolean(await findWork({ release: false }));
+  // An open alarm is work too: only `work` can see the model serve again and
+  // close it, whatever is left in the queue (Codex, #353).
+  const yes = Boolean(process.env.TICKET) || Boolean(await findWork({ release: false })) || Boolean(await openAlarm());
   say(`peek: ${yes ? "work to do" : "nothing to do"}`);
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, `work=${yes ? "yes" : "no"}\n`, { flag: "a" });
   return yes;

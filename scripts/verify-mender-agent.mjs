@@ -174,6 +174,8 @@ check("the alarm is one open ticket, never in Mender's own queue",
 check("…and Mender closes it only after the model has served a request, not on the key's numbers (Codex, #353)",
   /const open = await openAlarm\(\);\s*\n\s*if \(!open\) return;\s*\n\s*const still = await modelAnswers\(\);\s*\n\s*if \(still\) return alarm\(still\);[\s\S]*?setState\(open\.id, "Done"\)/.test(agent) &&
     /chat\/completions[\s\S]*?max_tokens: 1/.test(agent));
+check("…and a tick runs while it is open, even with nothing queued (Codex, #353)",
+  /async function peek\(\) \{[\s\S]*?const yes = [^\n]*await openAlarm\(\)/.test(agent));
 
 const publishSrc = agent.slice(agent.indexOf("async function publish()"));
 check("publishing takes its targets from GitHub and Linear, not from the artifact the model could rewrite",
