@@ -54,23 +54,31 @@ check("a forbidden path is not an ask", paths("Don't touch /admin. Check /faq.")
 check("a URL's own path and words with a slash are not asks", paths("see https://example.com/faq and/or 10/13 user@x.com/y").length === 0, paths("see https://example.com/faq and/or 10/13").join());
 check("no notes, no asks", paths("").length === 0 && notePaths(null).length === 0);
 
-const walked = ["GET https://checkmyapp.dev/health/apps/a1/settings/integrations 200"];
-check("a reached place is not listed", unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join() === "/faq", unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join());
-// Codex, #345: reached means requested or navigated to, on segment boundaries.
+const walked = ['[{"kind":"click","name":"Integrations","outcome":{"urlAfter":"https://checkmyapp.dev/health/apps/a1/settings/integrations","navigated":true}}]'];
+check("a reached place is not listed — our settings section under an app's address included",
+  unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join() === "/faq", unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join());
+// Codex, #345: reached means navigated to, anchored at the route root.
+const nav = (url: string) => `[{"kind":"navigate","url":"${url}","outcome":{"urlAfter":"${url}","status":200}}]`;
 const notReached = [
   "The footer links to /faq, which answers the tracker question.",
-  "GET https://checkmyapp.dev/login?next=/faq 200",
-  "GET https://checkmyapp.dev/faq-old 200",
+  nav("https://checkmyapp.dev/login?next=/faq"),
+  nav("https://checkmyapp.dev/faq-old"),
+  nav("https://checkmyapp.dev/help/faq"),
+  // Codex, #345 round 3: a prefetch or an API call is not the page opened.
+  "GET https://checkmyapp.dev/faq?_rsc=1x2y → 200; GET https://checkmyapp.dev/api/faq → 200",
 ];
-check("prose naming /faq, a query naming it, and /faq-old do not reach /faq",
+check("prose, a query naming /faq, /faq-old, /help/faq and a prefetch of /faq do not reach /faq",
   unreachedAsked("Check /faq.", notReached).map((p) => p.path).join() === "/faq", unreachedAsked("Check /faq.", notReached).map((p) => p.path).join());
-check("a request to /faq, a deeper page under it, or a recorded navigation to it does",
-  ["GET https://checkmyapp.dev/faq 200", "GET https://checkmyapp.dev/faq/billing 200", '[{"kind":"navigate","url":"/faq","outcome":{"urlAfter":"https://checkmyapp.dev/faq","status":200}}]']
+check("a navigation to /faq or a page under it does",
+  [nav("https://checkmyapp.dev/faq"), nav("https://checkmyapp.dev/faq/billing"), '[{"kind":"navigate","url":"/faq","outcome":{"urlAfter":"https://checkmyapp.dev/faq","status":200}}]']
     .every((e) => unreachedAsked("Check /faq.", [e], { targetHost: "checkmyapp.dev" }).length === 0));
 // The excerpt the walker really writes (Step.networkLog in prod, 2026-10-15).
-check("the walker's own excerpt: a relative GET and a \"navigation to\" count",
-  unreachedAsked("Check /signup and /practice.", ["GET https://joblander.app/api/auth/verify-session → 200; navigation to https://joblander.app/practice → 200", "GET /signup → 307 → /closure; GET /pricing → 307 → /closure"], { targetHost: "joblander.app" }).length === 0,
+check("the walker's own excerpt: \"navigation to\" counts, a plain GET does not",
+  unreachedAsked("Check /signup and /practice.", ["GET https://joblander.app/api/auth/verify-session → 200; navigation to https://joblander.app/practice → 200", "GET /signup → 307 → /closure"], { targetHost: "joblander.app" }).map((p) => p.path).join() === "/signup",
   unreachedAsked("Check /signup and /practice.", ["GET https://joblander.app/api/auth/verify-session → 200; navigation to https://joblander.app/practice → 200", "GET /signup → 307 → /closure"], { targetHost: "joblander.app" }).map((p) => p.path).join());
+// Codex, #345 round 3: a bare "not" before a path excludes it.
+check("\"Check /faq, not /admin\" asks for /faq only", paths("Check /faq, not /admin").join() === "/faq", paths("Check /faq, not /admin").join());
+check("…while \"not\" further back does not swallow a later ask", paths("The banner is not shown; check /faq").join() === "/faq", paths("The banner is not shown; check /faq").join());
 // Codex, #345 round 2: only the checked app's own pages, and only where the walk stood.
 const offSite = [
   "GET https://help.vendor.example/faq → 200",

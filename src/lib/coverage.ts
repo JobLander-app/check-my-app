@@ -34,6 +34,8 @@ export interface PageRef {
   label: string;
   /** The path we can actually look for, lower-cased. */
   path: string;
+  /** Our own app's settings section, which lives under each app's address (…/apps/<id>/settings/x). */
+  nested?: boolean;
 }
 
 export function pagePaths(pages: string[]): PageRef[] {
@@ -110,6 +112,8 @@ const PHRASE_BREAK = new RegExp(String.raw`\b(?:but|however|instead|then|while|y
 /** Is the match at `index` governed by a prohibition earlier in its own phrase? */
 function forbidden(clause: string, index: number): boolean {
   const before = clause.slice(0, index);
+  // A bare "not" right before the path: "Check /faq, not /admin" (Codex, #345).
+  if (/\bnot\s+$/i.test(before)) return true;
   let start = 0;
   for (const m of before.matchAll(PHRASE_BREAK)) start = (m.index ?? 0) + m[0].length;
   return FORBIDS.test(before.slice(start));
@@ -118,10 +122,10 @@ function forbidden(clause: string, index: number): boolean {
 export function notePaths(notes: string | null | undefined, { ownApp = false }: { ownApp?: boolean } = {}): PageRef[] {
   if (!notes) return [];
   const out = new Map<string, PageRef>();
-  const add = (label: string, raw: string) => {
+  const add = (label: string, raw: string, nested = false) => {
     const path = raw.toLowerCase().replace(/[.,;:!?)]+$/, "").replace(/\/+$/, "");
     if (!path || path.includes("{")) return;
-    if (!out.has(path)) out.set(path, { label, path });
+    if (!out.has(path)) out.set(path, nested ? { label, path, nested } : { label, path });
   };
   for (const clause of notes.split(/\n+|;|\.(?=\s)/)) {
     for (const m of clause.matchAll(PATH_IN_NOTES)) {
@@ -133,21 +137,21 @@ export function notePaths(notes: string | null | undefined, { ownApp = false }: 
       if (forbidden(clause, m.index ?? 0)) continue;
       const said = m[1].trim().toLowerCase();
       const section = SETTINGS_SECTIONS.find((s) => said.startsWith(s.label.toLowerCase()) || said.startsWith(s.key));
-      if (section) add(`settings → ${section.label}`, `/settings/${section.key}`);
+      if (section) add(`settings → ${section.label}`, `/settings/${section.key}`, true);
     }
   }
   return [...out.values()];
 }
 
 // The pathnames on the checked app's own hosts that the walk actually stood on:
-// a recorded action's navigate "url" and any action's "outcome.urlAfter" (a
-// click that changed the page in a single-page app counts), and every GET in a
-// request log. Prose is not here — a step that only mentions "/faq" did not
-// open it, nor did "?next=/faq", a value typed into a field, or another site's
-// /faq the page happened to load (Codex, #345).
+// a recorded action's navigate "url", any action's "outcome.urlAfter" (a click
+// that changed the page in a single-page app counts), and a "navigation to" in
+// the walker's excerpt. Not a plain GET: a framework prefetch (GET /faq?_rsc=…)
+// or an API call is not the page being opened. Not prose, "?next=/faq", a value
+// typed into a field, or another site's /faq (Codex, #345).
 // The walker's excerpt reads "GET https://app/x → 200; navigation to
-// https://app/y → 200; GET /signup → 307 → /closure" (Step.networkLog, prod).
-const GET_IN_LOG = /\b(?:GET|navigation to|navigated to)\s+((?:https?:\/\/|\/)[^\s;,]+)/gi;
+// https://app/y → 200" (Step.networkLog, prod).
+const NAVIGATION_IN_LOG = /\b(?:navigation to|navigated to)\s+((?:https?:\/\/|\/)[^\s;,]+)/gi;
 const bare = (host: string) => host.toLowerCase().replace(/^www\./, "");
 export function visitedPaths(navigation: string[], targetHost?: string): string[] {
   const own = targetHost ? bare(targetHost) : null;
@@ -186,16 +190,17 @@ export function visitedPaths(navigation: string[], targetHost?: string): string[
       }
       continue;
     }
-    for (const m of text.matchAll(GET_IN_LOG)) add(m[1]);
+    for (const m of text.matchAll(NAVIGATION_IN_LOG)) add(m[1]);
   }
   return [...out];
 }
 
-// A place counts as reached when a visited pathname contains it on segment
-// boundaries: /faq by /faq and /faq/billing, never by /faq-old; our
-// /settings/integrations by /health/apps/a1/settings/integrations.
-function reached(path: string, visited: string[]): boolean {
-  return visited.some((v) => `${v}/`.includes(`${path}/`));
+// A place counts as reached by itself or a page under it, anchored at the route
+// root: /faq by /faq and /faq/billing, never by /faq-old or /help/faq (Codex,
+// #345). Our own settings section is the one nested exception: it lives under
+// each app, /health/apps/a1/settings/integrations.
+function reached(place: PageRef, visited: string[]): boolean {
+  return visited.some((v) => v === place.path || v.startsWith(`${place.path}/`) || (place.nested === true && `${v}/`.includes(`${place.path}/`)));
 }
 
 // Places the notes name that the walk never requested or navigated to.
@@ -206,5 +211,5 @@ export function unreachedAsked(
   options: { ownApp?: boolean; targetHost?: string } = {},
 ): PageRef[] {
   const visited = visitedPaths(navigation, options.targetHost);
-  return notePaths(notes, options).filter((p) => !reached(p.path, visited));
+  return notePaths(notes, options).filter((p) => !reached(p, visited));
 }
