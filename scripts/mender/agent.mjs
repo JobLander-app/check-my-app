@@ -279,13 +279,30 @@ async function keyProblem() {
   return { why: keyShortfall(info), info };
 }
 
-/** Before any work: the key must be able to pay for a whole ticket. */
+/** One request of a single token to the model: null when it is served, else why not. */
+async function modelAnswers() {
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
+  });
+  return r.ok ? null : `OpenRouter still refuses a request (HTTP ${r.status}: ${(await r.text()).slice(0, 200)})`;
+}
+
+/**
+ * Before any work: the key must be able to pay for a whole ticket. An open
+ * alarm closes only on a request the model actually serves: /api/v1/key does
+ * not see the account's credits, so a 402 would close and reopen it every tick
+ * (Codex, #353). While it is refused, nothing is claimed.
+ */
 async function keyServes() {
   const { why, info } = await keyProblem();
   if (why) return alarm(why);
   const open = await openAlarm();
   if (!open) return;
-  await comment(open.id, `The key serves again ($${Number(info?.limit_remaining ?? 0).toFixed(2)} left of $${info?.limit ?? "∞"}); Mender resumed.`);
+  const still = await modelAnswers();
+  if (still) return alarm(still);
+  await comment(open.id, `The model answers again ($${Number(info?.limit_remaining ?? 0).toFixed(2)} left of the key's $${info?.limit ?? "∞"}); Mender resumed.`);
   await setState(open.id, "Done");
 }
 

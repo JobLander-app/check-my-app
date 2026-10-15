@@ -171,8 +171,9 @@ check("…a refusal that is the ticket's goes on to publish, which counts the at
 check("the alarm is one open ticket, never in Mender's own queue",
   ALARM_TITLE.startsWith("[Mender]") && /if \(!\(await openAlarm\(\)\)\)/.test(agent) &&
     !/issueCreate\(input:\{[^}]*labelIds/.test(agent));
-check("…and Mender closes it once the key serves again",
-  /const open = await openAlarm\(\);\s*\n\s*if \(!open\) return;[\s\S]*?setState\(open\.id, "Done"\)/.test(agent));
+check("…and Mender closes it only after the model has served a request, not on the key's numbers (Codex, #353)",
+  /const open = await openAlarm\(\);\s*\n\s*if \(!open\) return;\s*\n\s*const still = await modelAnswers\(\);\s*\n\s*if \(still\) return alarm\(still\);[\s\S]*?setState\(open\.id, "Done"\)/.test(agent) &&
+    /chat\/completions[\s\S]*?max_tokens: 1/.test(agent));
 
 const publishSrc = agent.slice(agent.indexOf("async function publish()"));
 check("publishing takes its targets from GitHub and Linear, not from the artifact the model could rewrite",
