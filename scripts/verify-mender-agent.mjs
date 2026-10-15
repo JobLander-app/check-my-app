@@ -10,7 +10,7 @@ import { codexReviewState, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_M
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALARM_TITLE, CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -193,7 +193,7 @@ const gateSrc = agent.slice(agent.indexOf("// ─── The merge gate (CHE-486)
 const beforeGate = agent.slice(0, agent.indexOf("// ─── The merge gate (CHE-486)"));
 check("only the gate merges, and only when its decision says merge",
   !/"merge"/.test(beforeGate.replace(/\/\/.*$/gm, "")) && /if \(d\.action === "merge"\) await mergePr\(pr, d\.reason\);/.test(gateSrc) &&
-    /async function mergePr[\s\S]*?gh\(\["pr", "merge", String\(pr\.number\), "--squash", "--delete-branch"\]\)/.test(gateSrc) &&
+    /async function mergePr[\s\S]*?gh\(\["pr", "merge", String\(pr\.number\), "--squash", "--delete-branch", "--match-head-commit", pr\.headRefOid\]\)/.test(gateSrc) &&
     !/opencode|runAgent\(/.test(gateSrc));
 check("AGENTS.md's sequence runs before the patch is taken: prisma generate, both typechecks, lint, verify:all",
   ["generate", "typecheck", "agent:typecheck", "lint", "verify:all"].every((s) => CHECKS.some(([, a]) => a.includes(s))) &&
@@ -259,6 +259,24 @@ check("Codex's machine-readable review state is read for its commit",
 check("a P1 badge is a P1; a P2 is not",
   isP1("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Redact query credentials") &&
     !isP1("**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Keep alarm recovery"));
+// Codex, #356: a merge starts a deploy, and a deploy doubles a running website
+// check's cost; the gate counts production's running checks first, with the
+// deploy gate's own classification, and fails closed.
+{
+  const env = { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "a" };
+  let sql = "";
+  const answer = (n) => async (_url, init) => { sql = JSON.parse(init.body).sql; return { ok: true, status: 200, json: async () => ({ success: true, result: [{ results: [{ n }] }] }) }; };
+  const two = await checksInFlight(env, answer(2));
+  check("the checks running in production are counted with LIVE_RUN_STATUSES",
+    two === 2 && /status IN \('queued', 'connecting'.*'writing'\)/.test(sql), sql);
+  const refused = await checksInFlight(env, async () => ({ ok: false, status: 403, json: async () => ({ success: false }) })).then(() => "answered", (e) => e.message);
+  const blind = await checksInFlight({}, answer(0)).then(() => "answered", (e) => e.message);
+  check("…and an unanswerable question is not permission to merge", /D1 refused/.test(refused) && /no Cloudflare credentials/.test(blind), `${refused} | ${blind}`);
+}
+check("the merge waits for production to be idle, then is pinned to the head the gate read",
+  /async function mergePr[\s\S]*?const running = await checksInFlight\(\);[\s\S]*?"--match-head-commit", pr\.headRefOid\]/.test(gateSrc));
+check("closing a PR returns the ticket without spending another attempt",
+  /async function closePr[\s\S]*?await comment\(issue\.id, `\*\*Mender's pull request/.test(gateSrc) && !/async function closePr[\s\S]*?ATTEMPT_MARK[\s\S]*?\nfunction askReview/.test(gateSrc.replace(/\/\/.*$/gm, "")));
 check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
 const gwf = read(".github/workflows/mender-gate.yml");
 check("the gate runs on events, never on a schedule (owner: no crons)",

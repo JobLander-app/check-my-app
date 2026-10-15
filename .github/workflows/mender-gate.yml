@@ -36,7 +36,8 @@ jobs:
         (github.event.workflow_run.event == 'pull_request' && startsWith(github.event.workflow_run.head_branch, 'mender/')))) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A merge may wait up to 20 minutes for production's checks to finish.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -55,5 +56,8 @@ jobs:
           GH_TOKEN: ${{ secrets.MENDER_GH_TOKEN }}
           CODEX_REVIEW_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          # Read-only use: how many checks are running before a merge starts a deploy.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GATE_PR: ${{ inputs.pr || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || '' }}
         run: node scripts/mender/agent.mjs gate

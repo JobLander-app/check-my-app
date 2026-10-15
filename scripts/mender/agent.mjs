@@ -653,10 +653,47 @@ async function ticketOf(branch) {
   return d.issue ?? null;
 }
 
+/**
+ * How many checks are running in production now. A deploy re-runs a website
+ * check's current step and doubles what it costs, and ci.yml's own gate waits
+ * only for extension checks (CHE-272), so the merge — which starts the deploy —
+ * waits for none to be running (Codex, #356). Read with the classification the
+ * deploy gate reads, never a list of our own.
+ */
+export async function checksInFlight(env = process.env, doFetch = fetch) {
+  const { LIVE_RUN_STATUSES } = await import("../../src/lib/enums.ts");
+  const config = readFileSync(new URL("../../wrangler-agent.jsonc", import.meta.url), "utf8");
+  const database = /"database_id"\s*:\s*"([0-9a-f-]+)"/.exec(config)?.[1];
+  if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID || !database) throw new Error("no Cloudflare credentials: cannot tell whether a check is running");
+  const statuses = LIVE_RUN_STATUSES.map((s) => `'${s}'`).join(", ");
+  const r = await doFetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${database}/query`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ sql: `SELECT count(*) AS n FROM Run WHERE status IN (${statuses})` }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await r.json();
+  if (!r.ok || !body.success) throw new Error(`D1 refused the question (HTTP ${r.status})`);
+  return Number(body.result?.[0]?.results?.[0]?.n ?? 0);
+}
+
+const MERGE_WAIT_MS = Number(process.env.MENDER_MERGE_WAIT_MS ?? 20 * 60_000);
+
 async function mergePr(pr, reason) {
+  // Wait for production to be idle; still busy after the wait, the PR stays
+  // open and the next event decides again. An unanswerable question is not
+  // permission to deploy.
+  for (const deadline = Date.now() + MERGE_WAIT_MS; ;) {
+    const running = await checksInFlight();
+    if (!running) break;
+    if (Date.now() >= deadline) return say(`#${pr.number}: ${running} check(s) still running in production — left open`);
+    say(`#${pr.number}: ${running} check(s) running in production — waiting before the merge`);
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+  }
   // The personal token, so the push to main starts CI and the deploy (a merge by
-  // GITHUB_TOKEN starts no workflow). The deploy itself waits for checks in flight.
-  gh(["pr", "merge", String(pr.number), "--squash", "--delete-branch"]);
+  // GITHUB_TOKEN starts no workflow). Pinned to the head the gate inspected: a
+  // round pushed meanwhile makes this fail rather than merge unread code (Codex, #356).
+  gh(["pr", "merge", String(pr.number), "--squash", "--delete-branch", "--match-head-commit", pr.headRefOid]);
   gh(["pr", "comment", String(pr.number), "--body",
     `**Merged by the gate:** ${reason}.\n\nWhether the problem is gone is for the watch after the deploy and the next CheckMyApp check to say — not for this merge.`]);
   const issue = await ticketOf(pr.headRefName);
@@ -672,7 +709,9 @@ async function closePr(pr, reason, facts) {
     `**Closed by the gate:** ${reason}. The ticket goes back to Mender's queue with what stopped it.`]);
   const issue = await ticketOf(pr.headRefName);
   if (issue) {
-    await comment(issue.id, `${ATTEMPT_MARK}\n**Mender's pull request ${pr.url} was closed:** ${reason}.` +
+    // No attempt mark: the PR's opening already counted this attempt, and a
+    // second mark would take the ticket out of the queue at once (Codex, #356).
+    await comment(issue.id, `**Mender's pull request ${pr.url} was closed:** ${reason}.` +
       (facts.findings ? `\n\nWhat the review found on its last head:\n${facts.findings}` : "") +
       "\n\nBack to Todo; the next attempt starts from current main.");
     await setState(issue.id, "Todo");
