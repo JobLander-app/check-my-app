@@ -2650,40 +2650,36 @@ export function coerceUndrivenControl(
 // The step's own words stay — they say what was confirmed (the lookup) and
 // what was not.
 //
-// The "not carried out" must be said of the act the step names, in the same
-// sentence: "Review order details" with "payment was not submitted" is a
-// review that was done, not an order left unplaced (Codex, #354). And a step
-// whose observation says the act did happen in the end ("not saved; after
-// correction, the settings were saved successfully") is left alone.
-const WRITE_NOT_CARRIED_OUT = new RegExp(
-  [
-    String.raw`\b(?:deliberately|intentionally|purposely|on purpose)\s+(?:not|left|stopped|skipped|withheld)\b`,
-    String.raw`\bnot\s+(?:performed|pressed|submitted|clicked|saved|completed|carried out|executed|done)\b`,
-    String.raw`\b(?:did not|didn't|was not|wasn't|were not|weren't|never)\s+(?:actually\s+)?(?:perform(?:ed)?|press(?:ed)?|submit(?:ted)?|click(?:ed)?|sav(?:e|ed)|complet(?:e|ed)|add(?:ed)?|creat(?:e|ed))\b`,
-    // Passive, any verb: "the order was not placed", "the invitation was not sent".
-    String.raw`\b(?:was|were|is|are|been)\s+(?:not|never)\s+(?:\w+ed|sent|bought|made|done)\b`,
-    String.raw`\bwithout\s+(?:actually\s+)?(?:pressing|submitting|clicking|saving|adding|creating)\b`,
-    String.raw`\b(?:stopped|stopping)\s+(?:short|before)\b`,
-  ].join("|"),
-  "i",
-);
+// The "not carried out" must be said of the act the step names itself — the
+// negation on that act, not anywhere near it (Codex, #354): "Review order
+// details" with "the order totals were correct and payment was not submitted"
+// is a review that was done. And an act the observation says was done in the
+// end ("not saved; after correction, the settings were saved successfully") is
+// not one left undone; a different act being done does not count.
+
+// A negation right before the act: "did not send", "was not sent", "never
+// booked", "without adding". "does not add" describes the product and is not here.
+const NEGATED = String.raw`\b(?:did not|didn't|was not|wasn't|were not|weren't|is not|isn't|has not|hasn't|had not|hadn't|never|without)\s+(?:actually\s+|deliberately\s+|intentionally\s+)?`;
+// The act as the subject, a few words before a negated passive: "adding a
+// country was deliberately not performed", "the order was not placed".
+const NEGATED_PASSIVE = String.raw`\s+(?:\w+\s+){0,3}?(?:was|were|is|are|has been|had been)\s+(?:\w+ly\s+)?(?:not|never)\s+(?:\w+ed|sent|bought|made|done)\b`;
 
 // Verbs of CREATE_VERBS whose forms are not the stem plus an ending.
 const IRREGULAR_FORMS: Record<string, string> = { send: "send|sends|sending|sent", buy: "buy|buys|buying|bought" };
 
 /**
- * The write acts a step names, each as the pattern of its forms ("Add" → add,
- * adds, added, adding; "Sign up" → signing up; "Send" → sent) and of its being
- * done ("was added", "saved successfully").
+ * The write acts a step names, each with the pattern of its being refused and
+ * of its being done, over all its forms ("Add" → add, adds, added, adding;
+ * "Sign up" → signing up; "Send" → sent).
  */
-function namedWrites(step: ReportedStep): { said: RegExp; done: RegExp }[] {
+function namedWrites(step: ReportedStep): { refused: RegExp; done: RegExp }[] {
   const named = `${step.label ?? ""} ${step.attempted ?? ""}`.match(new RegExp(CREATE_VERBS.source, "gi")) ?? [];
   return [...new Set(named.map((v) => v.toLowerCase().replace(/\s+/g, " ")))].map((act) => {
     const [head, ...rest] = act.split(" ");
     const forms = IRREGULAR_FORMS[head] ?? String.raw`${head.replace(/e$/, "")}(?:e|es|s|ed|d|ing|ion|ation|ted|ting)?`;
     const form = String.raw`\b(?:${forms})${rest.map((w) => String.raw`\s?${w}`).join("")}\b`;
     return {
-      said: new RegExp(form, "i"),
+      refused: new RegExp(String.raw`${NEGATED}${form}|${form}${NEGATED_PASSIVE}|\b(?:stopped|stopping)\s+(?:short\s+of|before)\s+${form}`, "i"),
       done: new RegExp(String.raw`\b(?:was|were|been|got)\s+(?:then\s+|finally\s+|eventually\s+|later\s+|successfully\s+)?${form}|${form}\s+successfully|\bsuccessfully\s+${form}`, "i"),
     };
   });
@@ -2692,11 +2688,9 @@ function namedWrites(step: ReportedStep): { said: RegExp; done: RegExp }[] {
 export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "writeAllowed">): void {
   if (env.writeAllowed) return;
   if (step.status !== "ok") return;
-  const acts = namedWrites(step);
-  if (!acts.length) return;
   const sentences = (step.observed ?? "").split(/(?<=[.;!?])\s+/);
-  if (!sentences.some((s) => WRITE_NOT_CARRIED_OUT.test(s) && acts.some((act) => act.said.test(s)))) return;
-  if (sentences.some((s) => acts.some((act) => act.done.test(s)))) return;
+  const said = (re: RegExp) => sentences.some((s) => re.test(s));
+  if (!namedWrites(step).some((act) => said(act.refused) && !said(act.done))) return;
   console.warn(`[report_step] "${step.label}": ok, but the act it names was not carried out in a read-only run → skipped`);
   step.status = "skipped";
   step.unverifiedReason = "not_applicable";

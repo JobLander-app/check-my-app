@@ -99,6 +99,19 @@ for (const [label, observed] of [
   check(`"${label}" that ended performed stays ok`, s.status === "ok", s.status);
 }
 
+// Codex, #354 round 3: the negation must fall on the named act itself, an
+// active refusal of any write counts, and only the refused act's own success
+// cancels its refusal.
+const totals: ReportedStep = { ...review, observed: "The order totals were correct and payment was not submitted." };
+coerceUnperformedWrite(totals, { writeAllowed: false });
+check("an order named in a sentence whose negation is about payment stays ok", totals.status === "ok", totals.status);
+const activeSend: ReportedStep = { label: "Send invitation", status: "ok", attempted: "Filled the invite form.", observed: "The address was valid, but I did not send the invitation." };
+coerceUnperformedWrite(activeSend, { writeAllowed: false });
+check("an active refusal ('did not send') of a named write is skipped", activeSend.status === "skipped", activeSend.status);
+const twoActs: ReportedStep = { label: "Create account and send invitation", status: "ok", attempted: "Created the account, then opened the invite form.", observed: "The account was created successfully. The invitation was not sent." };
+coerceUnperformedWrite(twoActs, { writeAllowed: false });
+check("one act done does not cancel another act refused", twoActs.status === "skipped", twoActs.status);
+
 const broken: ReportedStep = { ...production(), status: "broken", observed: "Adding a country was not performed because the page crashed." };
 coerceUnperformedWrite(broken, { writeAllowed: false });
 check("a problem step is never softened", broken.status === "broken");
