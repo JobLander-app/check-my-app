@@ -347,9 +347,13 @@ const ADVISES =
 const MODAL = "(?:should|ought\\s+to|needs?\\s+to|must)";
 const BUILDER = "(?:you|we|they|the\\s+team|the\\s+developers?|developers|engineers|the\\s+owner|owners)";
 
+// …unless it is the customer who considers or tries: "Customers may consider
+// switching to a competitor" is the consequence, not advice (Codex, #346).
+const CUSTOMER = "(?:customers?|users?|visitors?|shoppers?|buyers?|people|members?|readers?|merchants?|subscribers?)";
+
 export const PRESCRIPTION_PATTERNS: RegExp[] = [
   // "Worth strengthening the crawler …", "consider switching to …"
-  new RegExp(`\\b${ADVISES}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
+  new RegExp(`(?<!\\b${CUSTOMER}\\s+(?:\\w+\\s+){0,2})\\b${ADVISES}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
   // "You should add retries", "the team needs to implement …", "Should add retries."
   new RegExp(`(?:\\b${BUILDER}\\s+|(?:^|[;:—–]|,\\s+(?:and|so|then))\\s*)${MODAL}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
   // "Add retries to the importer." — a sentence or clause that opens on the verb.
@@ -397,29 +401,28 @@ function splitProse(text: string): string[] {
 // the sentence). Null when nothing is left — there is no fallback to write:
 // a finding without a "why this matters" is complete, a finding with someone
 // else's design in it is not.
-// A finding's title is its claim, and it often opens on a control's label: "Add
-// country search drops the last letter". Opening on a build verb makes it a fix
-// only when nothing after it says what the product does — "Add retries to
-// payment" (Codex, #346). A fix tacked on after a dash or semicolon is cut and
-// the claim kept. Null: the title was only a fix, and the finding is not one.
-const SYMPTOM_PREDICATE =
-  /\b(?:is|are|was|were|does|do|did|doesn'?t|don'?t|didn'?t|has|have|had|isn'?t|aren'?t|wasn'?t|never|not|cannot|can'?t|won'?t|fails?|failed|drops?|dropped|shows?|showed|returns?|returned|breaks?|broke|crashes|crashed|hangs|hung|loads?|loaded|opens?|closes?|ignores?|loses?|lost|accepts?|rejects?|stays?|keeps?|leads?|links?|points?|sends?|sent|charges?|resets?|freezes|jumps?|overlaps?|disappears?|appears?)\b/i;
+// A finding's title is its claim, and it often opens on a control's label —
+// "Add country search drops the last letter", "Add address button
+// unresponsive" — so a verb at its start is never read as an order. A closed
+// list of symptom verbs dropped real defects (Codex, #346), and over the 500
+// most recent prod findings not one title opened on a fix. What is cut: advice
+// anywhere in the first sentence ("Consider adding retries"), a fix after a
+// separator ("Cart empties on refresh — add autosave"), and a later sentence
+// that is a fix ("Cart empties on refresh. Add autosave."). Null: the claim
+// itself was advice, and the finding is not one.
 export function titleWithoutPrescription(title: string): string | null {
-  const at = prescriptionIn(title);
-  if (!at) return title;
-  if (at.index === 0 && new RegExp(`^\\s*${BUILD_IMPERATIVE}\\b`, "i").test(title)) {
-    // Opens on the verb: a label when a predicate follows, an order when none does.
-    const rest = title.replace(new RegExp(`^\\s*${BUILD_IMPERATIVE}\\b`, "i"), "");
-    const later = prescriptionIn(rest, { openingImperative: false });
-    if (!SYMPTOM_PREDICATE.test(rest)) return null;
-    if (!later) return title;
-    const cut = titleWithoutPrescription(rest);
-    return cut ? title.slice(0, title.length - rest.length) + cut : null;
+  const [first = "", ...later] = splitProse(title);
+  const at = prescriptionIn(first, { openingImperative: false });
+  // Nothing to cut: the title stays exactly as written, punctuation and all.
+  if (!at && later.every((s) => prescriptionIn(s) === null)) return title;
+  let claim = first;
+  if (at) {
+    const prefix = first.slice(0, at.index);
+    if (!at.atBoundary && !TAIL_BREAK.test(prefix)) return null;
+    claim = prefix.replace(TAIL_BREAK, "");
   }
-  const prefix = title.slice(0, at.index);
-  if (!at.atBoundary && !TAIL_BREAK.test(prefix)) return null;
-  const head = prefix.replace(TAIL_BREAK, "").trim().replace(/[\s.,;:—–-]+$/, "");
-  return head.length >= 3 ? head : null;
+  const kept = [claim, ...later.filter((s) => prescriptionIn(s) === null)].join(" ").trim().replace(/[\s.,;:—–-]+$/, "");
+  return kept.length >= 3 ? kept : null;
 }
 
 export function stripPrescription(text: string, options: { openingImperative?: boolean } = {}): string | null {

@@ -130,12 +130,25 @@ check("…while the same verb said to the team is a fix",
 // The title and the evidence are gated too, and a control's label is not an order.
 const titled = (title: string, whatHappened = "The cart was empty after a refresh.") =>
   cleanFindingLanguage({ title, category: "broken", severity: "high", detail: { where: "Cart", whatHappened, whyItMatters: CONSEQUENCE } });
-check("a title that is only a fix is no finding", titled("Add retries to payment") === null);
+check("a title that is only advice is no finding", titled("Consider adding retries to payment") === null && titled("You should add retries to payment") === null);
 check("a title with a fix tacked on keeps its claim", titled("Cart empties on refresh — add autosave")?.title === "Cart empties on refresh",
   String(titled("Cart empties on refresh — add autosave")?.title));
-for (const t of ["Add country search drops the last letter", "Add to cart does nothing on the product page", "Save button stays disabled after a valid email"]) {
-  check(`a title opening on a control's label is kept: ${t}`, titled(t)?.title === t, String(titled(t)?.title));
+// Codex, #346 round 3: a fix in its own sentence after the claim goes too.
+check("…and so does a fix in a sentence of its own", titled("Cart empties on refresh. Add autosave.")?.title === "Cart empties on refresh",
+  String(titled("Cart empties on refresh. Add autosave.")?.title));
+// Codex, #346 round 3 (P1): a title opening on a control's label is never
+// dropped, whatever grammar the symptom has — a closed list of symptom verbs
+// lost "Add address button unresponsive". Over the 500 most recent prod
+// findings no title opened on a fix, so a verb-first title is kept as written.
+for (const t of ["Add country search drops the last letter", "Add to cart does nothing on the product page", "Save button stays disabled after a valid email",
+  "Add address button unresponsive", "Update profile action unavailable", "Add retries to payment"]) {
+  check(`a title opening on a verb is kept: ${t}`, titled(t)?.title === t, String(titled(t)?.title));
 }
+// Codex, #346 round 3: a customer considering something is the consequence, not advice.
+for (const s of ["Customers may consider switching to a competitor after repeated checkout failures.", "Users might try using another browser and give up."]) {
+  check(`a customer's reaction kept: ${s.slice(0, 50)}`, !hasPrescription(s) && stripPrescription(s) === s, String(stripPrescription(s)));
+}
+check("…while advice to the builder is still cut", hasPrescription("Consider switching to a server-side session store.") && hasPrescription("Try using a longer timeout."));
 check("a fix tacked on to the evidence is cut, the evidence stays",
   titled("Cart empties on refresh", "The cart was empty after a refresh — fix the session handling.")?.detail.whatHappened === "The cart was empty after a refresh.",
   String(titled("Cart empties on refresh", "The cart was empty after a refresh — fix the session handling.")?.detail.whatHappened));
