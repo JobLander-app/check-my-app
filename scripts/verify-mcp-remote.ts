@@ -98,6 +98,13 @@ async function seed() {
       // CHE-325: a Free team with one check left and a watch past its trial.
       { id: "team_g", name: "Last-check team", plan: "free", isPersonal: true },
     ],
+    // CHE-482: a store is connected by someone on the team.
+    membership: [
+      { id: "m_a", teamId: "team_a", userId: "u_a", scope: "admin" },
+      { id: "m_b", teamId: "team_b", userId: "u_b", scope: "admin" },
+      { id: "m_f", teamId: "team_f", userId: "u_f", scope: "admin" },
+      { id: "m_g", teamId: "team_g", userId: "u_g", scope: "admin" },
+    ],
     apiKey: [
       { id: "k_a", ownerId: "u_a", teamId: "team_a", scope: "member", keyHash: await hashApiKey(KEY_A), lastUsedAt: null },
       { id: "k_r", ownerId: "u_a", teamId: "team_a", scope: "reader", keyHash: await hashApiKey(KEY_A_READER), lastUsedAt: null },
@@ -649,14 +656,19 @@ async function main() {
     check("member: storing a login stays an admin's — refused with a sentence", login.isError && login.out.code === "forbidden", JSON.stringify(login.out));
     // Securify's agent, 2026-10-12: "an admin can do that" did not say whether
     // start_check or add_scenario would be refused next.
-    const store = await call(a, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
-    const hint = String(store.out.hint ?? "");
+    const hint = String(login.out.hint ?? "");
     check(
       "member: a refusal names this key's scope, the scope that would do, and what this key still can",
-      store.out.code === "forbidden" && store.out.key_scope === "member" && store.out.needs_scope === "admin" &&
-        hint.includes("start_check") && hint.includes("/settings/api-keys"),
-      JSON.stringify(store.out),
+      login.out.key_scope === "member" && login.out.needs_scope === "admin" && hint.includes("start_check") && hint.includes("/settings/api-keys"),
+      JSON.stringify(login.out),
     );
+    // CHE-482: a dev store is a person's own, connected with their own Shopify
+    // sign-in — a member's agent connects theirs.
+    const store = await call(a, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
+    check("member: connect_shopify_app with the member's key connects their store and hands back its sign-in page",
+      store.out.ok === true && /\/sign-in$/.test(String(store.out.sign_in_url ?? "")), JSON.stringify(store.out));
+    const readerStore = await call(reader, "connect_shopify_app", { app_url: "https://admin.shopify.com/store/dog-photos/apps/easy-block" });
+    check("reader: connecting a store is refused — it starts checks", readerStore.isError && readerStore.out.code === "forbidden", JSON.stringify(readerStore.out));
     const text = a.getInstructions() ?? "";
     check("member: a pilot team's agent is told what to report and with which call",
       text.includes(PILOT_PARAGRAPH) && !(b.getInstructions() ?? "").includes("report_check_mistake"), text.slice(-600));

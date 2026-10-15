@@ -12,7 +12,8 @@ import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
+import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
 import { trackerOffer } from "@/lib/tracker-copy";
 import { CheckPrice } from "@/components/check-price";
@@ -73,7 +74,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // the ones made before it was saved (no appId). Otherwise the header could
   // name a check the timeline does not have.
   const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
-  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction] = await Promise.all([
+  // CHE-468: a Shopify app's stores are the team's rows of the same app handle
+  // (CHE-451); one still waiting for its app to be picked has none yet.
+  const isShopify = app.targetKind === "session";
+  const shopify = isShopify ? connectedShopifyAppOf(app) : null;
+  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction, stores] = await Promise.all([
     // This app's entries alone: the page's work follows one app's history,
     // not the team's whole portfolio.
     appHealth(db, team.id, { only: app.id }),
@@ -110,6 +115,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     // GitHub in the Integrations row means a release check has arrived from
     // the app's CI — the same fact its Integrations card states (CHE-413).
     appRunsTheAction(db, team.id, app.id),
+    shopify ? storesOf(db, team.id, shopify.handle) : Promise.resolve([]),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
@@ -184,13 +190,16 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                 run.quickPagesOpened !== null
                   ? { coverage: null, said: `${quickCheckWork(run.quickPagesOpened)}.` }
                   : splitBottomLine(run.bottomLine);
+              const when = run.completedAt ? dayMonth(run.completedAt) : null;
+              // CHE-467 (owner, 2026-10-13): the whole row opens the check, not
+              // the small #id alone. One link per row — the verdict, stretched
+              // over the row — so a keyboard meets each check once; the price
+              // sits above it and keeps its own explanation.
               return (
-                <div key={run.publicId} className="grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5">
+                <div key={run.publicId} className="group relative grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5 rounded-lg hover:bg-ink-850">
                   <div className="py-3.5">
-                    <div className="text-[13px]">{run.completedAt ? dayMonth(run.completedAt) : "—"}</div>
-                    <Link href={appPath.check(app.id, run.runNumber)} className="font-mono text-xs text-accent hover:underline">
-                      #{run.runNumber}
-                    </Link>
+                    <div className="text-[13px]">{when ?? "—"}</div>
+                    <span className="font-mono text-xs text-accent group-hover:underline">#{run.runNumber}</span>
                   </div>
                   <div aria-hidden className="flex flex-col items-center self-stretch">
                     <span className={`h-[18px] w-0.5 ${i === 0 ? "bg-transparent" : "bg-ink-700"}`} />
@@ -198,11 +207,17 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                     <span className={`w-0.5 flex-1 ${i === runs.length - 1 ? "bg-transparent" : "bg-ink-700"}`} />
                   </div>
                   <div className="flex min-w-0 flex-col gap-0.5 py-3.5">
-                    <span className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"}`}>{v?.label ?? run.verdict}</span>
+                    <Link
+                      href={appPath.check(app.id, run.runNumber)}
+                      aria-label={checkRowLabel(run.runNumber, when, v?.label ?? run.verdict ?? "")}
+                      className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"} after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent`}
+                    >
+                      {v?.label ?? run.verdict}
+                    </Link>
                     {said && <span className="text-sm">{firstSentence(said)}</span>}
                     {coverage && <span className="text-xs text-fg-faint">{coverage}</span>}
                   </div>
-                  <div className="py-3.5 text-right text-sm">
+                  <div className="relative z-10 py-3.5 text-right text-sm">
                     {run.priceUsd !== null && (
                       <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={appPath.check(app.id, run.runNumber)} label={null} title={`${name}, check #${run.runNumber}`} />
                     )}
@@ -252,7 +267,12 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
 
         <section className="card px-[18px] py-1.5">
           <Row href={appPath.section(app.id, "scope")} label="What we check" value={journeysLabel(journeys)} />
-          <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          {/* CHE-468: a Shopify app's test accounts are its test stores. */}
+          {isShopify ? (
+            <Row href={appPath.section(app.id, "accounts")} label="Test stores" value={storesLabel(stores.map((s) => s.store))} />
+          ) : (
+            <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          )}
           {isExtension ? (
             // An extension is checked on request only: there is no schedule to open.
             <div className="flex items-center justify-between gap-4 border-b border-ink-800 py-3 text-sm">

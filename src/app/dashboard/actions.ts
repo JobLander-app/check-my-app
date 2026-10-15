@@ -257,7 +257,9 @@ export async function updateAppSettings(appId: string, section: string, formData
         }
       : section === "accounts"
         ? {
-            testEmail: text("testEmail"),
+            // CHE-468: a Shopify app's form carries the store password alone;
+            // a field the form does not carry is kept, never read as cleared.
+            testEmail: formData.has("testEmail") ? text("testEmail") : undefined,
             testPassword: text("testPassword") || undefined,
             // CHE-443: write-only like the login password — a blank box keeps
             // it, the Remove box clears it ("" is the clear, as in update_app).
