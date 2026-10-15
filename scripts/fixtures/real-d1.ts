@@ -44,6 +44,8 @@ export async function realD1() {
   const db = new PrismaClient({ adapter: new PrismaD1(d1 as never) });
   return {
     db,
+    // The binding itself, for code that takes a D1Database (CHE-464).
+    d1: d1 as unknown as D1Database,
     // Raw SQL, for writing a row the way a hand UPDATE did — which Prisma
     // never would.
     exec: (sql: string, ...params: unknown[]) => d1.prepare(sql).bind(...params).run(),

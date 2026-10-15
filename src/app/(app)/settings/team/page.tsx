@@ -12,6 +12,7 @@ import { Select } from "@/components/ui/select";
 import { teamBalance, usd } from "@/lib/plans";
 import { balanceLine } from "@/lib/billing-page";
 import { storedKeyView } from "@/lib/byok";
+import { byokPaused } from "@/lib/byok-credit";
 import { decryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
 import { TeamModelKey } from "@/components/team-model-key";
@@ -69,7 +70,7 @@ export default async function TeamPage() {
   // CHE-448: behind `shopify` like the rest of the Securify pilot (CHE-432).
   const showModelKey = await teamHasFeature(db, team.id, "shopify");
   const keyRow = showModelKey
-    ? await db.team.findUnique({ where: { id: team.id }, select: { openrouterKeyEnc: true } })
+    ? await db.team.findUnique({ where: { id: team.id }, select: { openrouterKeyEnc: true, openrouterKeyNoCreditAt: true } })
     : null;
   const storedKey = storedKeyView(keyRow?.openrouterKeyEnc, decryptSecret);
   const canLeave = decideLeave(
@@ -159,7 +160,7 @@ export default async function TeamPage() {
         {mayManage && <p className="mt-4 text-xs text-fg-muted">{REMOVAL_KEEPS_EVERYTHING}</p>}
       </section>
 
-      {showModelKey && <TeamModelKey stored={storedKey} mayManage={can(scope, "billing.manage")} />}
+      {showModelKey && <TeamModelKey stored={storedKey} mayManage={can(scope, "billing.manage")} noCredit={byokPaused(keyRow)} />}
 
       {mayInvite && (
         <section className="card mt-6 p-6">

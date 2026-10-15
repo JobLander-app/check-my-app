@@ -25,6 +25,7 @@
 // scripts/verify-closed-door.ts drives these exact functions.
 
 import type { AgentEnv } from "./env";
+import { RunCanceledError } from "@/lib/run-cancel";
 
 export type ClosedDoor = "unauthorized" | "forbidden";
 
@@ -136,8 +137,9 @@ export async function completeClosedDoor(
       },
     });
   }
-  await env.db.run.update({
-    where: { id: run.id },
+  // CHE-454: fenced like every write that ends a run (Codex on #329).
+  const done = await env.db.run.updateMany({
+    where: { id: run.id, status: { not: "canceled" } },
     data: {
       status: "partial",
       verdict: "unverified",
@@ -148,5 +150,6 @@ export async function completeClosedDoor(
       costUsd: 0,
     },
   });
+  if (done.count === 0) throw new RunCanceledError();
   return "unverified";
 }

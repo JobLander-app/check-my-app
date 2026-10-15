@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppName } from "@/components/app-mark";
 import { teamsOf } from "@/lib/teams";
 import { TeamSwitcher } from "@/components/team-switcher";
 import { Button } from "@/components/ui/button";
@@ -24,7 +26,7 @@ export default async function AccountSettingsPage() {
   const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
   const apps = await db.app.findMany({
     where: { ...teamOwned(team.id) },
-    select: { id: true, appSlug: true, notifiers: { where: { userId: user.id }, select: { id: true } } },
+    select: { id: true, name: true, appSlug: true, targetKind: true, targetUrl: true, notifiers: { where: { userId: user.id }, select: { id: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -62,7 +64,7 @@ export default async function AccountSettingsPage() {
           <ul className="mt-4 space-y-2">
             {apps.map((app) => (
               <li key={app.id} className="flex items-center justify-between gap-3">
-                <span className="min-w-0 break-all text-sm">{app.appSlug}</span>
+                <AppName name={appLabel(app)} kind={appKind(app)} className="text-sm" />
                 <form action={toggleOwnNotifications.bind(null, app.id)}>
                   <Button type="submit" variant="outline" className="py-1.5">
                     {app.notifiers.length > 0 ? "Stop emailing me" : "Email me"}

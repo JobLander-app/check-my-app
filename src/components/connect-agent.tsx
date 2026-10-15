@@ -109,7 +109,8 @@ function CreateAndInstall() {
               startTransition(async () => {
                 setError(null);
                 try {
-                  const created = await createApiKey("Coding agent");
+                  // The agent acts as the person who connects it: their own scope.
+                  const created = await createApiKey("Coding agent", "self");
                   setRawKey(created.rawKey);
                   router.refresh();
                 } catch (err) {

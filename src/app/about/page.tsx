@@ -48,6 +48,11 @@ export default function AboutPage() {
             sorokinvj@gmail.com
           </a>
         </p>
+        <p>
+          <Link href="/privacy" className="text-accent hover:underline">
+            Privacy policy
+          </Link>
+        </p>
       </div>
 
       <p className="mt-10 font-mono text-[13px] text-fg-faint">

@@ -71,7 +71,9 @@ export function readExtensionOptions(raw: string | null | undefined): ExtensionO
 // leaves the run finished instead — workflow.ts "fail" — since the verdict
 // may already have been delivered.) Every public loader (the verdict page,
 // loadVerdict, loadReview, latest results) reads its answer here.
+// CHE-454: a check its team stopped publishes nothing either — journeys or
+// findings it wrote before the stop are not a result (Codex on #329).
 export function extensionReportPublished(run: { targetKind: string; status: string; verdict: string | null }): boolean {
-  if (run.status === "failed") return false;
+  if (run.status === "failed" || run.status === "canceled") return false;
   return run.targetKind !== "extension" || Boolean(run.verdict && ["completed", "partial"].includes(run.status));
 }

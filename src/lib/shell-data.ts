@@ -23,13 +23,14 @@
 
 import { cache } from "react";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appKind, appLabel, type AppKind } from "@/lib/app-label";
 import { utcDayStart } from "@/lib/plans";
 import { OUR_LEFTOVERS_WHERE } from "@/lib/finding-signature";
 import { teamOwned, teamRows } from "@/lib/tenant-db";
 
 // `latestRunNumber`: the check the dot's colour and the open count come from.
-export type ShellApp = { id: string; appSlug: string; label: string; verdict: string | null; latestRunNumber: number | null };
+// `label` is what the app is called (src/lib/app-label.ts); `kind` is its mark.
+export type ShellApp = { id: string; appSlug: string; label: string; kind: AppKind; verdict: string | null; latestRunNumber: number | null };
 
 export type ShellData = {
   apps: ShellApp[];
@@ -117,7 +118,7 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
     db.app.findMany({
       where: { ...teamOwned(teamId) },
       orderBy: { createdAt: "asc" },
-      select: { id: true, appSlug: true, targetKind: true, targetUrl: true, openIssues: true },
+      select: { id: true, name: true, appSlug: true, targetKind: true, targetUrl: true, openIssues: true },
     }),
     latestChecks(db, teamId),
     db.run.findMany({
@@ -150,7 +151,8 @@ export async function loadShellData(db: PrismaClient, teamId: string, now: Date 
     apps: apps.map((a) => ({
       id: a.id,
       appSlug: a.appSlug,
-      label: a.targetKind === "extension" ? extensionDisplayName(a.targetUrl) : a.appSlug,
+      label: appLabel(a),
+      kind: appKind(a),
       verdict: verdictOf.get(a.id) ?? null,
       latestRunNumber: latestRunOf.get(a.id) ?? null,
     })),

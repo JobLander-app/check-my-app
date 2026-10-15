@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { Wordmark } from "@/components/wordmark";
 
 // The signed-in frame (CHE-351): a 240px sidebar beside the page from 900px
 // up; below that the sidebar is a drawer behind a menu button, and nothing on
@@ -45,11 +46,8 @@ export function AppShell({
         >
           ☰
         </button>
-        <Link href="/home" className="flex items-center gap-2 font-mono text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-[13px] font-semibold text-accent">
-            ✓
-          </span>
-          checkmyapp
+        <Link href="/home" className="flex min-h-6 items-center">
+          <Wordmark className="text-lg" />
         </Link>
         <div className="flex w-8 justify-end">{account}</div>
       </div>

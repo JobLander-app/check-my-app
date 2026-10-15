@@ -8,7 +8,38 @@
 export const TARGET_URL =
   "https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country";
 
-export const STATES = ["ok", "login_page", "captcha", "2fa", "error"];
+// "proxy": the residential proxy refused to carry the probe at all (CHE-453) —
+// out of paid traffic (402) or its credentials refused (407). Nothing about
+// the session: on 2026-10-12 an "error" from this told the owner to sign in
+// again, when what was needed was a top-up.
+export const STATES = ["ok", "login_page", "captcha", "2fa", "error", "proxy"];
+
+/** Pure: the proxy's own answer to a plain request → "proxy" when it is the cause, else null. */
+export function proxyState(status) {
+  return status === 402 || status === 407 ? "proxy" : null;
+}
+
+/**
+ * Pure: what the owner is told for each proxy answer. Not a sign-in either way
+ * — the session may be fine. 402 is traffic to buy; 407 is the proxy refusing
+ * our login, which no top-up fixes (Codex on #330: one text for both sent the
+ * owner to pay when the credentials were the problem).
+ */
+export function proxyMessage(status, at) {
+  const tail = "Входить в Shopify заново не нужно. Пока прокси стоит, проверки Shopify-аппов падают как наш сбой и ничего не публикуют.";
+  if (status === 407) {
+    return (
+      `Резидентный прокси session host (IPRoyal) отклоняет наш логин (${at}): ответ 407.\n` +
+      `Деньги ни при чём: учётные данные в секрете session-host-proxy (Secret Manager) не совпадают с IPRoyal — их нужно обновить и перезапустить session-proxy.\n` +
+      tail
+    );
+  }
+  return (
+    `Резидентный прокси session host (IPRoyal) не пропускает трафик (${at}): ответ 402 — кончился оплаченный трафик.\n` +
+    `Нужно пополнить IPRoyal: https://dashboard.iproyal.com/\n` +
+    tail
+  );
+}
 
 // Whatever the page settles on first: the embedded app's frame (signed in), a
 // sign-in field, a captcha, or a one-time-code field.
@@ -86,6 +117,16 @@ export function challengeKind({ hasCaptchaFrame, hasTurnstile }) {
  */
 export function shouldNotify(history, state) {
   if (state === "ok") return false;
+  // The proxy is said once per outage, at once — whether or not the session
+  // was ok before, since a top-up is needed either way. A later sign-in drop
+  // is its own message: only an earlier "proxy" line silences this one.
+  if (state === "proxy") {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].state !== "proxy") break;
+      if (history[i].notified) return false;
+    }
+    return true;
+  }
   let lastOk = -1;
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].state === "ok") {
@@ -95,7 +136,7 @@ export function shouldNotify(history, state) {
   }
   if (lastOk < 0) return false;
   const sinceOk = history.slice(lastOk + 1);
-  if (sinceOk.some((line) => line.notified)) return false;
+  if (sinceOk.some((line) => line.notified && line.state !== "proxy")) return false;
   if (state === "error") return sinceOk.length > 0 && sinceOk[sinceOk.length - 1].state === "error";
   return true;
 }
@@ -114,12 +155,14 @@ export function parseLog(text) {
 }
 
 /**
- * Open TARGET_URL in `page`, wait for it to settle, return
- * { state, url_host, url_path[, challenge] }. Never returns the query string
- * (it can carry tokens) or any page text.
+ * Open `url` (TARGET_URL unless told) in `page`, wait for it to settle, return
+ * { state, url_host, url_path[, challenge][, detail] }. Never returns the query
+ * string (it can carry tokens) or any page text; an "error" carries the page's
+ * title and its frames' names. A team's container (CHE-464) is told the
+ * address of the team's own app.
  */
-export async function observe(page, { timeoutMs = 45_000 } = {}) {
-  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+export async function observe(page, { timeoutMs = 45_000, url = TARGET_URL } = {}) {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForSelector(SETTLED, { state: "attached", timeout: timeoutMs }).catch(() => {});
   // The admin redirects to accounts.shopify.com with script, and the sign-in
   // form swaps its first step for the next; let one of those finish.
@@ -142,5 +185,19 @@ export async function observe(page, { timeoutMs = 45_000 } = {}) {
   const state = classify(signals);
   const observed = { state, url_host: final.hostname, url_path: final.pathname };
   if (state === "captcha") observed.challenge = challengeKind(signals);
+  // A page that settled on none of the above said nothing about why (the
+  // 2026-10-13 19:42 probe: the app's own address, no frame, no form, no
+  // detail). The title and the frames' names say whether it was a slow
+  // admin, an error page, or a renamed app frame — still no page text.
+  if (state === "error") observed.detail = await unsettled(page, timeoutMs);
   return observed;
+}
+
+async function unsettled(page, timeoutMs) {
+  const title = (await page.title().catch(() => "")).replace(/\s+/g, " ").trim().slice(0, 80);
+  const frames = await page
+    .locator("iframe")
+    .evaluateAll((els) => els.slice(0, 8).map((el) => el.getAttribute("name") || el.id || "unnamed"))
+    .catch(() => []);
+  return `nothing settled in ${Math.round(timeoutMs / 1000)} s: title "${title}", iframes [${frames.join(", ")}]`;
 }

@@ -18,8 +18,18 @@ import { planLabel, usd } from "@/lib/plans";
 import { RELEASE_ACTION_INSTRUCTION } from "@/lib/release-action";
 
 // 1800 since CHE-370: the sentence that offers the GitHub Action took the room
-// the app lines had under 1500.
+// the app lines had under 1500. A pilot team's paragraph (CHE-444) is added on
+// top of that budget, so it never costs the team its app lines.
 export const MAX_INSTRUCTIONS_CHARS = 1800;
+
+// CHE-444: on a `shopify` team every member's agent is told, once, what the
+// pilot asks of them — the four kinds of mistake from CHE-432 (3) and a missing
+// scenario — and which call reports each. Words about the check, never homework.
+export const PILOT_PARAGRAPH =
+  "This team helps polish CheckMyApp's Shopify checks. When a check gets something wrong — says it checked what it did " +
+  "not, gets a finding or a step wrong, misses a scenario, or takes one scenario for another — report it with " +
+  "report_check_mistake (by run_id, a finding number, a journey and step, or scenario_id). A missing scenario: " +
+  "add_scenario. A finding that is not a bug: mark_finding false_positive. list_check_mistakes shows what became of each report.";
 
 const VERDICT_WORDS: Record<string, string> = {
   all_good: "all good",
@@ -51,6 +61,8 @@ function planLine(s: PlanStatus): string {
     : "";
   parts.push(`Watched apps: ${s.watches.active}${s.watches.limit === null ? "" : ` of ${s.watches.limit}`}${trial}.`);
   parts.push(`Top up: ${s.buy_url} · Upgrade: ${s.upgrade_url}`);
+  // CHE-458: said first when it is so — nothing starts until the key can pay.
+  if (s.paused_by_team_key) parts.unshift(`${s.paused_by_team_key} Tell the user at the start of this session.`);
   return parts.join(" ");
 }
 
@@ -74,6 +86,7 @@ export function buildInstructions(
   results: LatestResults,
   plan: PlanStatus,
   runsReleaseAction: boolean,
+  pilot = false,
 ): string {
   const head =
     `CheckMyApp checks the deployed apps of team "${teamName}" the way a real user would and reports what is broken. ` +
@@ -125,5 +138,5 @@ export function buildInstructions(
     used += lines[i].length + 1;
   }
 
-  return [head, ...(kept.length ? ["Apps:", ...kept] : []), what, running, tail, planText].filter(Boolean).join("\n");
+  return [head, ...(kept.length ? ["Apps:", ...kept] : []), what, running, tail, pilot ? PILOT_PARAGRAPH : "", planText].filter(Boolean).join("\n");
 }

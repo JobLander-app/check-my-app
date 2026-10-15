@@ -115,7 +115,9 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "POST /api/integrations/github": { kind: "team", action: "integration.connect" },
   "DELETE /api/integrations/github": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/start": { kind: "team", action: "integration.connect" },
+  "GET /api/integrations/jira/start": { kind: "team", action: "integration.connect" },
   "GET /api/integrations/linear/callback": { kind: "team", action: "integration.connect" },
+  "GET /api/integrations/jira/callback": { kind: "team", action: "integration.connect" },
   // CHE-369: installing the GitHub App lets the team's deploys start checks
   // the team pays for — the same gate as a tracker.
   "GET /api/integrations/github/app/start": { kind: "team", action: "integration.connect" },
@@ -130,6 +132,8 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
 // and the same registry. Keyed "file#export".
 export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/dashboard/actions.ts#setTrackerTeam": { kind: "team", action: "integration.connect" },
+  // CHE-438: the Jira project (and site) an app's tickets go to.
+  "src/app/dashboard/actions.ts#setJiraProject": { kind: "team", action: "integration.connect" },
   "src/app/dashboard/actions.ts#setIntegrationEndpoints": { kind: "team", action: "integration.connect" },
   // CHE-369: which repository deploys an app, and whether its deploys start checks. Per app now.
   "src/app/dashboard/actions.ts#setAppGitHubRepo": { kind: "team", action: "integration.connect" },
@@ -152,10 +156,11 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   "src/app/dashboard/actions.ts#toggleOwnNotifications": { kind: "team", action: "read" },
   "src/app/onboarding/actions.ts#createApp": { kind: "team", action: "app.settings.write" },
   // CHE-333: a Shopify app is connected by the link to it in the store's admin
-  // and confirmed after the person signs in. Both save where a check of the app may act (the admin and
-  // the app's own origin) — allowed origins, so credentials.write.
-  "src/app/(app)/connect/shopify/actions.ts#connectShopifyApp": { kind: "team", action: "app.credentials.write" },
-  "src/app/(app)/health/apps/[appId]/sign-in/actions.ts#chooseShopifyApp": { kind: "team", action: "app.credentials.write" },
+  // and confirmed after the person signs in. CHE-482: each person connects
+  // their own dev stores with their own Shopify sign-in, so a member may; the
+  // origins saved are fixed or read by our host, never typed in.
+  "src/app/(app)/connect/shopify/actions.ts#connectShopifyApp": { kind: "team", action: "shopify.store.connect" },
+  "src/app/(app)/health/apps/[appId]/sign-in/actions.ts#chooseShopifyApp": { kind: "team", action: "shopify.store.connect" },
   // CHE-360: the four marks on the Issues pages, the same decision as PATCH
   // /api/findings/[id] for the team the run belongs to.
   "src/app/(app)/health/issues/actions.ts#markFinding": { kind: "team", action: "finding.mark" },
@@ -171,6 +176,9 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // CHE-329: "Run it again" on a failed run — the same re-check, same gates.
   "src/app/verdict/actions.ts#retryFailedRunAction": { kind: "row", decidedIn: "src/lib/recheck.ts" },
   "src/app/verdict/actions.ts#enableWatchAction": { kind: "row", decidedIn: "src/lib/watch-enable.ts" },
+  // CHE-454: Stop on a live check — run.start in the team the run belongs to,
+  // whichever team the person is acting as, the same rule as MCP cancel_check.
+  "src/app/run/actions.ts#stopRunAction": { kind: "row", decidedIn: "src/lib/run-cancel.ts" },
   // Accepting is not a team action — the person is not on the team yet. The
   // token they hold is the capability, and the invitation row decides
   // (src/lib/invites.ts), which is exactly what `row` means.

@@ -1,10 +1,13 @@
 // CHE-389: a check that runs inside a browser a person signed in to.
 //
 // Some products cannot be reached by signing in: the Shopify admin's sign-in
-// has a captcha, which we never solve. A person signs in once on the session
-// host (spikes/shopify-session); a run of an app whose kind is "session" then
-// works in that browser — in its own tab, through the host's session server,
-// which gives a check its own tabs and nothing else (lease.mjs there).
+// has a captcha, which we never solve. A person signs in once; a run of an app
+// whose kind is "session" then works in that browser — in its own tab, through
+// the session server, which gives a check its own tabs and nothing else
+// (spikes/shopify-session/lease.mjs). Since CHE-464 that browser is the run's
+// team's own, in a Cloudflare Container behind the team's Durable Object
+// (session-runner.ts); the address shape and every rule are the session
+// host's.
 //
 // This is the Worker's half: take the lease, connect, open tabs of our own,
 // leave. The server speaks the address shape the extension runner speaks, so
@@ -18,6 +21,8 @@
 
 import type { Browser, BrowserContext, Locator, Page } from "@cloudflare/playwright";
 import type { AgentBindings } from "./env";
+import { SESSION_SLOT_HEADER, sessionRunnerFor } from "./session-address";
+import { slotParts, storeSlot } from "@/lib/session-view";
 
 export const SESSION_KIND = "session";
 
@@ -25,27 +30,67 @@ export function isSessionTarget(run: { targetKind?: string | null }): boolean {
   return run.targetKind === SESSION_KIND;
 }
 
+export type SessionFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+// Where a run's requests to its session server go, and how. In production
+// that is the team's Durable Object, which adds the server's bearer itself;
+// the guard (scripts/verify-session-browser.ts) talks to a real server in
+// Node and holds the bearer, `token`.
 export interface SessionHost {
   url: string;
-  accessClientId: string;
-  accessClientSecret: string;
-  token: string;
+  fetch: SessionFetch;
+  token?: string;
 }
 
-// The four values arrive together or the kind cannot run at all — an internal
-// error (rule 4), never something a customer reads.
-export function sessionHost(
-  bindings: Pick<AgentBindings, "SESSION_HOST_URL" | "SESSION_ACCESS_CLIENT_ID" | "SESSION_ACCESS_CLIENT_SECRET" | "SESSION_SERVER_TOKEN">,
-): SessionHost {
-  const url = bindings.SESSION_HOST_URL?.trim().replace(/\/+$/, "");
-  const accessClientId = bindings.SESSION_ACCESS_CLIENT_ID?.trim();
-  const accessClientSecret = bindings.SESSION_ACCESS_CLIENT_SECRET?.trim();
-  const token = bindings.SESSION_SERVER_TOKEN?.trim();
-  if (!url || !/^https:\/\//.test(url) || !accessClientId || !accessClientSecret || !token) {
-    throw new Error("internal: the session host is not configured");
-  }
-  return { url, accessClientId, accessClientSecret, token };
+// The browser of the run's store: its team's, signed in as whoever connected
+// the store (CHE-482, runSessionSlot). A run with no slot, or a Worker without
+// the binding, cannot run this kind at all — an internal error (rule 4), never
+// something a customer reads.
+export function sessionHost(bindings: Pick<AgentBindings, "SESSION_RUNNER">, slot: string | null | undefined): SessionHost {
+  if (!slot) throw new Error("internal: a session check needs the slot of its store");
+  const runner = sessionRunnerFor(bindings, slot);
+  return {
+    url: "http://session",
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set(SESSION_SLOT_HEADER, slot);
+      return runner.fetch(new Request(input, { ...init, headers }));
+    },
+  };
 }
+
+// A run's slot: its team, and the person who connected the app it checks. Read
+// from the run's own team and its app's connector — never from whoever started
+// the check: a teammate's check of my store still opens it signed in as me.
+//
+// Only while that person is still on the team (Codex on #351): someone who
+// left, or was removed, takes their Shopify sign-in with them, and the team
+// must never go on opening stores with their cookies. `onTeam: false` → no
+// slot; left out, the caller has not asked, and the slot stands.
+export function runSessionSlot(run: { teamId: string | null; app?: { ownerId: string | null; onTeam?: boolean } | null }): string | null {
+  if (!run.teamId || !run.app || run.app.onTeam === false) return null;
+  return storeSlot({ teamId: run.teamId, ownerId: run.app.ownerId });
+}
+
+// Whether the person a slot belongs to is still on its team. Asked again each
+// time a run takes the browser, not only when it loaded (Codex on #351): a
+// person removed while a check runs takes their sign-in with them at once.
+export async function slotHolderOnTeam(
+  db: { membership: { findFirst(args: { where: { teamId: string; userId: string }; select: { id: true } }): Promise<{ id: string } | null> } },
+  slot: string | null | undefined,
+): Promise<boolean> {
+  const who = slot ? slotParts(slot) : null;
+  if (!who) return false;
+  return (await db.membership.findFirst({ where: { teamId: who.teamId, userId: who.userId }, select: { id: true } })) !== null;
+}
+
+// A session run that has no slot stops before it starts — our failure, never a
+// verdict (rule 4): its store was removed while the check waited, or whoever
+// connected it is no longer on the team, and someone on the team connects it
+// again with their own sign-in.
+export const SESSION_NO_SLOT =
+  "internal: this store has no Shopify sign-in to be checked in — whoever connected it is no longer on the team, " +
+  "or the store was removed while the check waited; nothing may be checked on it until someone connects it again (CHE-482)";
 
 // Another run holds the host. Not a verdict and not a failure of the product:
 // the caller waits and tries again (the Workflow step's own retry).
@@ -56,7 +101,6 @@ export class SessionBusyError extends Error {
   }
 }
 
-export type SessionFetch = (input: string, init?: RequestInit) => Promise<Response>;
 // @cloudflare/playwright's `connect`, by shape.
 export type SessionConnect = (
   endpoint: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
@@ -81,9 +125,7 @@ export function inSignedInSession(page: Page): boolean {
 
 function headers(host: SessionHost, extra?: HeadersInit): Headers {
   const out = new Headers(extra);
-  out.set("CF-Access-Client-Id", host.accessClientId);
-  out.set("CF-Access-Client-Secret", host.accessClientSecret);
-  out.set("Authorization", `Bearer ${host.token}`);
+  if (host.token) out.set("Authorization", `Bearer ${host.token}`);
   return out;
 }
 
@@ -93,7 +135,7 @@ async function call(host: SessionHost, fetchImpl: SessionFetch, method: string, 
 }
 
 // Take the lease, or renew it: the same call. → the lease's session id.
-async function lease(host: SessionHost, runId: string, fetchImpl: SessionFetch): Promise<string> {
+async function lease(host: SessionHost, runId: string, fetchImpl: SessionFetch = host.fetch): Promise<string> {
   const leased = await call(host, fetchImpl, "POST", "/lease", { ownerRunId: runId, maxDurationSeconds: SESSION_LEASE_SECONDS });
   if (leased.status === 409) {
     const held = (await leased.json().catch(() => null)) as { heldUntil?: string } | null;
@@ -135,7 +177,7 @@ export type SessionTurn = { taken: true } | { taken: false; waitSeconds: number 
 export async function askForSession(
   host: SessionHost,
   runId: string,
-  fetchImpl: SessionFetch = (input, init) => fetch(input, init),
+  fetchImpl: SessionFetch = host.fetch,
   now: () => number = Date.now,
 ): Promise<SessionTurn> {
   try {
@@ -191,12 +233,12 @@ export class SessionBrowser {
     host: SessionHost,
     runId: string,
     connect: SessionConnect,
-    fetchImpl: SessionFetch = (input, init) => fetch(input, init),
+    fetchImpl: SessionFetch = host.fetch,
   ): Promise<SessionBrowser> {
     const sessionId = await lease(host, runId, fetchImpl);
 
     // The client asks a placeholder host for /v1/devtools/browser/<id>; the
-    // request goes to the session host instead, with the three credentials.
+    // request goes to the team's browser instead.
     const endpoint = {
       fetch: (input: RequestInfo | URL, init?: RequestInit) => {
         const asked = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -390,7 +432,7 @@ export function signOutRefusal(what: string): string {
 }
 
 // End of the run: give the host back. Safe to call when nothing is held.
-export async function releaseSession(host: SessionHost, runId: string, fetchImpl: SessionFetch = (input, init) => fetch(input, init)): Promise<boolean> {
+export async function releaseSession(host: SessionHost, runId: string, fetchImpl: SessionFetch = host.fetch): Promise<boolean> {
   const response = await call(host, fetchImpl, "DELETE", "/lease", { ownerRunId: runId });
   if (!response.ok) return false;
   return ((await response.json().catch(() => null)) as { released?: boolean } | null)?.released === true;

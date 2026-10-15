@@ -28,7 +28,7 @@ import { teamRunsTheAction } from "@/lib/release-action";
 import { can, type TeamScope } from "@/lib/scopes";
 import { mcpDoor } from "@/lib/started-via";
 import { activeTeamContext } from "@/lib/teams";
-import { teamFeatures } from "@/lib/team-features";
+import { hasFeature, teamFeatures } from "@/lib/team-features";
 import { buildInstructions } from "./instructions";
 import { createRemoteTools, registerRemoteTools, type McpCaller, type McpDeps } from "./tools";
 
@@ -112,6 +112,7 @@ export async function handleMcpRequest(req: Request, deps: McpDeps): Promise<Res
         await latestResults(deps.db, caller.team.id),
         await loadPlanStatus(deps.db, { id: caller.team.id, plan: caller.team.plan as UserPlan }, deps.origin, new Date(deps.now())),
         await teamRunsTheAction(deps.db, caller.team.id),
+        hasFeature(caller.team.features, "shopify"),
       )
     : undefined;
 

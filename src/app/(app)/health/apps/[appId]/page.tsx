@@ -6,21 +6,26 @@ import { VERDICT_META } from "@/lib/status";
 import { can } from "@/lib/scopes";
 import { PLAN_LIMITS, shouldSkipWatch, usd } from "@/lib/plans";
 import type { UserPlan } from "@/lib/enums";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appKind, appLabel } from "@/lib/app-label";
+import { AppMark } from "@/components/app-mark";
 import { appPath } from "@/lib/app-shell";
 import { appHealth } from "@/lib/app-health";
 import { recurringByApp } from "@/lib/recurring";
 import { dayMonth, scheduleLabel, stripStory } from "@/lib/all-apps";
-import { accountsLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine } from "@/lib/app-page";
+import { accountsLabel, checkRowLabel, costSplit, firstSentence, integrationsLabel, journeysLabel, splitBottomLine, storesLabel } from "@/lib/app-page";
+import { connectedShopifyAppOf, storesOf } from "@/lib/shopify-stores";
 import { QUICK_COMPARISON, quickCheckWork } from "@/lib/check-price";
+import { trackerOffer } from "@/lib/tracker-copy";
 import { CheckPrice } from "@/components/check-price";
 import { RunSavedApp } from "@/components/run-saved-app";
+import { buttonClass } from "@/components/ui/button";
 import { releaseLensFor } from "@/lib/viewer-flags";
 import { appRunsTheAction } from "@/lib/release-action";
 import { releasesHref } from "@/lib/release-page";
 import { VerdictStrip } from "@/components/verdict-strip";
 import { OtherTeamApp } from "@/components/other-team-app";
-import { NeedsAttention } from "@/components/needs-attention";
+import { CARD_REPORTS, NeedsAttention } from "@/components/needs-attention";
+import { latestAppFeedback } from "@/lib/feedback";
 import { teamHasFeature } from "@/lib/team-features";
 import { causeRoute } from "@/lib/step-cause";
 import { causesOfAppsLatestRun } from "@/lib/step-cause-load";
@@ -46,9 +51,9 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
     select: {
-      id: true, ownerId: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
+      id: true, ownerId: true, name: true, appSlug: true, targetUrl: true, targetKind: true, testEmail: true,
       posthogProjectName: true, webhookUrl: true, slackWebhookUrl: true,
-      tracker: { select: { id: true } },
+      tracker: { select: { type: true } },
       watch: { select: { active: true, frequency: true, trialEndsAt: true } },
     },
   });
@@ -58,7 +63,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   if (!app) {
     const elsewhere = await db.app.findFirst({
       where: { ...memberOfRows(user.id), id: appId },
-      select: { appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+      select: { name: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
     });
     if (!elsewhere?.teamId) notFound();
     return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.page(appId)} />;
@@ -69,7 +74,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // the ones made before it was saved (no appId). Otherwise the header could
   // name a check the timeline does not have.
   const onlyOneWithSlug = (await db.app.count({ where: { ...teamOwned(team.id), appSlug: app.appSlug } })) === 1;
-  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction] = await Promise.all([
+  // CHE-468: a Shopify app's stores are the team's rows of the same app handle
+  // (CHE-451); one still waiting for its app to be picked has none yet.
+  const isShopify = app.targetKind === "session";
+  const shopify = isShopify ? connectedShopifyAppOf(app) : null;
+  const [health, recurring, runs, journeys, namedAccounts, releaseLens, releaseCount, fromAction, stores] = await Promise.all([
     // This app's entries alone: the page's work follows one app's history,
     // not the team's whole portfolio.
     appHealth(db, team.id, { only: app.id }),
@@ -106,10 +115,11 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
     // GitHub in the Integrations row means a release check has arrived from
     // the app's CI — the same fact its Integrations card states (CHE-413).
     appRunsTheAction(db, team.id, app.id),
+    shopify ? storesOf(db, team.id, shopify.handle) : Promise.resolve([]),
   ]);
   const mine = health.apps.find((a) => a.appId === app.id);
   const isExtension = app.targetKind === "extension";
-  const name = isExtension ? extensionDisplayName(app.targetUrl) : app.appSlug;
+  const name = appLabel(app);
   const meta = mine?.latest?.verdict ? VERDICT_META[mine.latest.verdict] : null;
   const watch = app.watch
     ? { active: app.watch.active, frequency: app.watch.frequency, trialEnded: shouldSkipWatch(app.watch, team.plan as UserPlan) }
@@ -121,16 +131,20 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
   // CHE-417); a reader sees the review link alone.
   const mayRun = can(scope, "run.start");
   // The same for the tracker offer: exactly what /api/integrations/linear/start
-  // asks for — the scope and a plan that carries tracker integrations. Anyone
+  // and /api/integrations/jira/start ask for — the scope and a plan that
+  // carries tracker integrations. Anyone
   // else would follow it into a refusal.
   const mayConnectTracker = can(scope, "integration.connect") && PLAN_LIMITS[team.plan as UserPlan].trackerIntegration;
   // CHE-443: what the team's admin has to act on — the unchecked steps whose
   // cause is not ours. Only for an admin of a team given `shopify`; the rest of
   // the team sees the cause on the step, not a task.
-  const attention =
-    scope === "admin" && (await teamHasFeature(db, team.id, "shopify"))
-      ? await causesOfAppsLatestRun(db, team.id, app.id)
-      : null;
+  const forAdmin = scope === "admin" && (await teamHasFeature(db, team.id, "shopify"));
+  // CHE-434 place 9: and every report a member made about the check, newest
+  // first, with where it stands (received → … → fixed / not a mistake). The two
+  // reads are independent and start together (Codex on #320).
+  const [attention, attentionReports] = forAdmin
+    ? await Promise.all([causesOfAppsLatestRun(db, team.id, app.id), latestAppFeedback(db, team.id, app.id, CARD_REPORTS)])
+    : [null, []];
   const attentionGroups = attention?.groups.filter((g) => causeRoute(g.cause) === "admin") ?? [];
 
   return (
@@ -138,7 +152,10 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       <div className="flex min-w-0 flex-col gap-6">
         <header className="flex flex-col gap-2.5">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="break-all font-mono text-[26px] font-medium leading-tight">{name}</h1>
+            <h1 className="flex min-w-0 items-center gap-2.5 break-all font-mono text-[26px] font-medium leading-tight">
+              <AppMark kind={appKind(app)} className="h-6 w-6" />
+              {name}
+            </h1>
             {meta && (
               <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-full border px-2.5 text-xs font-medium ${meta.pillClassName}`}>
                 {meta.label}
@@ -147,16 +164,15 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           </div>
           <p className="max-w-2xl text-xl leading-snug">{stripStory((mine?.verdicts ?? []).map((v) => v.verdict))}</p>
           {mine && mine.verdicts.length > 0 && <VerdictStrip verdicts={mine.verdicts} className="h-5 max-w-md" />}
+          {/* CHE-466 (owner, 2026-10-13): the way into the app's settings is a
+              button here. "Open latest review" was the check list's first row
+              again, and went. The settings pages open for every member of the
+              team (each write asks its own scope), so the button is everyone's. */}
           <div className="mt-1 flex flex-wrap items-start gap-2.5">
             {mayRun && <RunSavedApp appId={app.id} primary />}
-            {mine?.latest && (
-              <Link
-                href={appPath.check(app.id, mine.latest.runNumber)}
-                className="inline-flex h-9 items-center rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
-              >
-                Open latest review
-              </Link>
-            )}
+            <Link href={settings} className={buttonClass("primary", "h-9 px-3.5 py-0")}>
+              Settings
+            </Link>
           </div>
         </header>
 
@@ -174,13 +190,16 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                 run.quickPagesOpened !== null
                   ? { coverage: null, said: `${quickCheckWork(run.quickPagesOpened)}.` }
                   : splitBottomLine(run.bottomLine);
+              const when = run.completedAt ? dayMonth(run.completedAt) : null;
+              // CHE-467 (owner, 2026-10-13): the whole row opens the check, not
+              // the small #id alone. One link per row — the verdict, stretched
+              // over the row — so a keyboard meets each check once; the price
+              // sits above it and keeps its own explanation.
               return (
-                <div key={run.publicId} className="grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5">
+                <div key={run.publicId} className="group relative grid grid-cols-[64px_20px_minmax(0,1fr)_56px] items-start gap-3.5 rounded-lg hover:bg-ink-850">
                   <div className="py-3.5">
-                    <div className="text-[13px]">{run.completedAt ? dayMonth(run.completedAt) : "—"}</div>
-                    <Link href={appPath.check(app.id, run.runNumber)} className="font-mono text-xs text-accent hover:underline">
-                      #{run.runNumber}
-                    </Link>
+                    <div className="text-[13px]">{when ?? "—"}</div>
+                    <span className="font-mono text-xs text-accent group-hover:underline">#{run.runNumber}</span>
                   </div>
                   <div aria-hidden className="flex flex-col items-center self-stretch">
                     <span className={`h-[18px] w-0.5 ${i === 0 ? "bg-transparent" : "bg-ink-700"}`} />
@@ -188,11 +207,17 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
                     <span className={`w-0.5 flex-1 ${i === runs.length - 1 ? "bg-transparent" : "bg-ink-700"}`} />
                   </div>
                   <div className="flex min-w-0 flex-col gap-0.5 py-3.5">
-                    <span className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"}`}>{v?.label ?? run.verdict}</span>
+                    <Link
+                      href={appPath.check(app.id, run.runNumber)}
+                      aria-label={checkRowLabel(run.runNumber, when, v?.label ?? run.verdict ?? "")}
+                      className={`text-sm font-medium ${v?.textClassName ?? "text-fg-faint"} after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent`}
+                    >
+                      {v?.label ?? run.verdict}
+                    </Link>
                     {said && <span className="text-sm">{firstSentence(said)}</span>}
                     {coverage && <span className="text-xs text-fg-faint">{coverage}</span>}
                   </div>
-                  <div className="py-3.5 text-right text-sm">
+                  <div className="relative z-10 py-3.5 text-right text-sm">
                     {run.priceUsd !== null && (
                       <CheckPrice publicId={run.publicId} priceUsd={run.priceUsd} checkHref={appPath.check(app.id, run.runNumber)} label={null} title={`${name}, check #${run.runNumber}`} />
                     )}
@@ -205,7 +230,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
       </div>
 
       <aside className="flex min-w-0 flex-col gap-[18px]">
-        {attention && <NeedsAttention appId={app.id} runNumber={attention.runNumber} groups={attentionGroups} />}
+        {forAdmin && <NeedsAttention appId={app.id} runNumber={attention?.runNumber ?? null} groups={attentionGroups} reports={attentionReports} />}
         <section className="card flex flex-col gap-2 p-[18px]">
           <div className="text-[13px] text-fg-muted">This app costs</div>
           <div className="flex items-baseline gap-2">
@@ -242,7 +267,12 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
 
         <section className="card px-[18px] py-1.5">
           <Row href={appPath.section(app.id, "scope")} label="What we check" value={journeysLabel(journeys)} />
-          <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          {/* CHE-468: a Shopify app's test accounts are its test stores. */}
+          {isShopify ? (
+            <Row href={appPath.section(app.id, "accounts")} label="Test stores" value={storesLabel(stores.map((s) => s.store))} />
+          ) : (
+            <Row href={appPath.section(app.id, "accounts")} label="Test accounts" value={accountsLabel(Boolean(app.testEmail), namedAccounts)} />
+          )}
           {isExtension ? (
             // An extension is checked on request only: there is no schedule to open.
             <div className="flex items-center justify-between gap-4 border-b border-ink-800 py-3 text-sm">
@@ -259,7 +289,7 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
             href={appPath.section(app.id, "integrations")}
             label="Integrations"
             value={integrationsLabel({
-              tracker: app.tracker !== null,
+              tracker: app.tracker?.type ?? null,
               analyticsProject: app.posthogProjectName,
               github: fromAction,
               webhook: Boolean(app.webhookUrl),
@@ -272,13 +302,14 @@ export default async function AppPage({ params }: { params: Promise<{ appId: str
           <section className="card flex flex-col gap-2 p-[18px]">
             <div className="text-[15px] font-semibold">Send problems to your tracker</div>
             <div className="text-[13px] text-fg-muted">
-              Connect Linear and each problem becomes one ticket that closes itself when a later check sees the fix.
+              {/* Only a scheduled check files and re-verifies by itself (src/lib/tracker-copy.ts). */}
+              {trackerOffer(Boolean(watch?.active && !watch.trialEnded))}
             </div>
             <Link
               href={appPath.section(app.id, "integrations")}
               className="inline-flex h-9 items-center self-start rounded-lg border border-ink-600 bg-ink-850 px-3.5 text-sm text-fg hover:bg-ink-800"
             >
-              Connect Linear
+              Connect a tracker
             </Link>
           </section>
         )}

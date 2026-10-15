@@ -16,9 +16,21 @@ import { realD1 } from "./fixtures/real-d1";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SETTINGS_SECTIONS, sectionsFor, settingsSection, trackerHealth } from "../src/lib/app-settings-sections";
+import {
+  JIRA_NO_PROJECT,
+  SETTINGS_SECTIONS,
+  jiraAccountLine,
+  jiraBlockedLine,
+  sectionsFor,
+  settingsSection,
+  trackerHealth,
+  trackerIdleLine,
+  trackerSummary,
+  type TrackerHealth,
+} from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
 import { appPath } from "../src/lib/app-shell";
+import { MACHINERY_TERMS, hasEnvironmentLeak, hasHomework } from "../src/lib/verdict-language";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
@@ -34,6 +46,36 @@ const eq = (name: string, got: unknown, want: unknown) => check(name, got === wa
 eq("six sections, in the order of the sub-navigation", SETTINGS_SECTIONS.map((s) => s.key).join(","), "scope,accounts,schedule,notifications,integrations,remove");
 eq("an extension has no schedule", sectionsFor({ targetKind: "extension" }).map((s) => s.key).join(","), "scope,accounts,notifications,integrations,remove");
 eq("a website has all six", sectionsFor({ targetKind: "website" }).length, 6);
+// CHE-468 (owner, 2026-10-13): "for shopify apps test accounts are test stores".
+eq("a Shopify app's accounts section is its test stores", sectionsFor({ targetKind: "session" }).find((s) => s.key === "accounts")?.label, "Test stores");
+eq("…at the same address, in the same place", sectionsFor({ targetKind: "session" }).map((s) => s.key).join(","), SETTINGS_SECTIONS.map((s) => s.key).join(","));
+eq("…while a website's stays Test accounts", sectionsFor({ targetKind: "website" }).find((s) => s.key === "accounts")?.label, "Test accounts");
+{
+  const sectionPage = read("src/app/(app)/health/apps/[appId]/settings/[section]/page.tsx");
+  check("the section's heading is the app's own name for it (sectionsFor), not the generic list's",
+    /const meta = sectionsFor\(app\)\.find\(\(s\) => s\.key === section\)!;/.test(sectionPage));
+  check("a Shopify app's accounts section lists its stores and shows no login form",
+    /section === "accounts" && app\.targetKind === "session" && \(\s*<ShopifyStores/.test(sectionPage) &&
+      /section === "accounts" && app\.targetKind !== "session" &&/.test(sectionPage) &&
+      !/<ShopifyStores[\s\S]*?name="testEmail"[\s\S]*?\n}\n/.test(sectionPage.slice(sectionPage.indexOf("async function ShopifyStores"), sectionPage.indexOf("async function Accounts"))));
+  check("…and saving its form leaves the test login it does not carry as it was",
+    /testEmail: formData\.has\("testEmail"\) \? text\("testEmail"\) : undefined,/.test(read("src/app/dashboard/actions.ts")));
+  // Codex on #342 (R18): the section's sentences come from STORES_COPY, which
+  // verify-live-view runs through the language guards; the component writes none.
+  const stores = sectionPage.slice(sectionPage.indexOf("async function ShopifyStores"), sectionPage.indexOf("async function Accounts"));
+  const literal = [...stores.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").matchAll(/>([^<>{}]*[A-Za-z][^<>{}]*)</g)].map((m) => m[1].trim());
+  check("…its words are all STORES_COPY's — the component writes no sentence of its own", literal.length === 0 && (stores.match(/STORES_COPY\./g) ?? []).length >= 15, literal.join(" | "));
+  // Codex on #342: a Shopify app has no test login to create records as, so it
+  // is not offered the choice the run would overrule (workflow hasTestAccount).
+  check("a Shopify app is not offered record creation: What we check shows its read-only line instead",
+    /app\.targetKind === "session" \? \(\s*<div className="card space-y-1 p-5">\s*<p className="text-sm font-medium text-fg">\{STORES_COPY\.readOnlyTitle\}<\/p>\s*<p className="text-xs text-fg-faint">\{STORES_COPY\.readOnly\}<\/p>/.test(sectionPage));
+  const shopifySection = sectionsFor({ targetKind: "session" }).find((s) => s.key === "accounts");
+  const sectionWords = [shopifySection?.label ?? "", shopifySection?.what ?? ""];
+  check("the Test stores section's own label and line pass the language guards", sectionWords.every((s) => s && !MACHINERY_TERMS.test(s) && !hasEnvironmentLeak(s) && !hasHomework(s)), sectionWords.join(" | "));
+  // Codex on #342: the promise above is kept by the run, not only by the page.
+  check("…and a check of a Shopify app never writes, whatever the app's row says (the workflow's own gate)",
+    /const writeAllowed = writeMode === "create_cleanup" && hasTestAccount && !isSession;/.test(read("src/agent/workflow.ts")));
+}
 eq("an address that is not a section is none", settingsSection("billing"), null);
 eq("…nor one that only starts like one", settingsSection("scope/../remove"), null);
 eq("the address of a section", appPath.section("app1", "integrations"), "/health/apps/app1/settings/integrations");
@@ -132,6 +174,52 @@ check("…the named accounts' rows too", ["label", "email", "password", "remove"
 check("…the frequency, pause and cancel are the schedule's own controls", /<WatchSettings\s+slug=\{watch\.appSlug\}/.test(page) && /frequency: watch\.frequency/.test(page));
 check("…and the pieces with their own actions: tracker team, analytics project, extension options, removal",
   /<TeamSelect appId=\{app\.id\}/.test(page) && /<AnalyticsProject/.test(page) && /<ExtensionSettings/.test(page) && /<DeleteAppSection/.test(page) && /\/api\/integrations\/linear\/start\?appId=\$\{app\.id\}/.test(page));
+// CHE-438: Linear and Jira are the same job, so they are drawn the same way.
+// The owner, 2026-10-13: "why should Jira be different?" — Jira had grown its
+// own card without the contract, and Linear's card said problems stay on the
+// check's page even while Jira was filing them.
+const linearRow = page.search(/<TrackerRow\s+name="Linear"/);
+const jiraRow = page.search(/<TrackerRow\s+name="Jira"/);
+check("Linear and Jira are rows of one frame, and no tracker has a card of its own",
+  linearRow !== -1 && jiraRow !== -1 && /function TrackerRow\(/.test(page) && !/· issue tracker/.test(page));
+const contract = page.indexOf('name="pickupLabels"');
+const lastRowEnd = page.lastIndexOf("</TrackerRow>");
+check("the ticket contract sits under both trackers, in neither row",
+  contract > jiraRow && contract > linearRow && lastRowEnd !== -1 && lastRowEnd < contract && /<form action=\{save\}/.test(page.slice(lastRowEnd, contract)));
+// The card's sentences come from one pure module, so every variant can be
+// checked — Codex P1 on #337: sentences assembled in JSX escaped the gate.
+check("the card's sentences are the module's: the page types none of them",
+  /trackerSummary\(app\.tracker, jira \? jiraHealth : health, jiraBlockers\)/.test(page) &&
+    /idle=\{trackerIdleLine\("Linear", /.test(page) && /idle=\{trackerIdleLine\("Jira", /.test(page) &&
+    /\{jiraAccountLine\(jira !== null\)\}/.test(page) && /\{JIRA_NO_PROJECT\}/.test(page) && /jiraBlockedLine\(jira\.teamId, jiraBlockers\)/.test(page) &&
+    !/Problems stay on the check|become tickets in|Not connected\.|uses the Atlassian account|No project chosen|can&apos;t be filed/.test(page));
+// What the first line says, case by case — never a promise the rows below
+// contradict (Codex P2 on #337: an expired token or a blocked project).
+const ok: TrackerHealth = { tone: "ok", text: "" }, bad: TrackerHealth = { tone: "bad", text: "" };
+eq("summary: nothing connected", trackerSummary(null, null, []), "Not connected — problems stay on the check's page instead of becoming tickets.");
+eq("summary: Jira filing", trackerSummary({ type: "jira", teamId: "SEC" }, ok, []), "Problems found on this app become tickets in Jira.");
+eq("summary: Linear filing", trackerSummary({ type: "linear", teamId: "t" }, ok, []), "Problems found on this app become tickets in Linear.");
+eq("summary: Jira without a project", trackerSummary({ type: "jira", teamId: null }, ok, []), "Problems stay on the check's page until a project is chosen below.");
+eq("summary: an expired token files nothing", trackerSummary({ type: "linear", teamId: "t" }, bad, []), "Problems stay on the check's page until Linear is reconnected.");
+eq("summary: a project that refuses our tickets files nothing", trackerSummary({ type: "jira", teamId: "SEC" }, ok, ["Team"]), "Problems stay on the check's page until another project is chosen below.");
+eq("idle: the other tracker is named", trackerIdleLine("Linear", "Jira"), "Not connected. Connecting Linear moves this app's tickets from Jira to Linear.");
+// Codex P2 on #337: Reconnect starts the same consent as Connect.
+check("the Atlassian account is named before Reconnect too", /^Reconnect uses the Atlassian account/.test(jiraAccountLine(true)) && /^Connect uses/.test(jiraAccountLine(false)));
+// Every sentence the card can show describes the customer's tools only
+// (CLAUDE.md §1). Codex P1 on #337: the first wording said "this browser".
+const healths = [null, ok, { tone: "warn", text: "" } as TrackerHealth, bad];
+const trackers = [null, ...["linear", "jira"].flatMap((type) => [{ type, teamId: null }, { type, teamId: "SEC" }])];
+const everySentence = [
+  ...trackers.flatMap((t) => healths.flatMap((h) => [[], ["Team", "Sprint"]].map((b) => trackerSummary(t, h, b)))),
+  ...["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerIdleLine(name, other))),
+  jiraAccountLine(false), jiraAccountLine(true), JIRA_NO_PROJECT, jiraBlockedLine("SEC", ["Team", "Sprint"]),
+  "Linear or Jira, one at a time",
+];
+const leaky = [...new Set(everySentence)].filter((s) => MACHINERY_TERMS.test(s) || hasEnvironmentLeak(s));
+check(`every sentence the tracker card can show names none of our machinery (${new Set(everySentence).size} sentences)`, leaky.length === 0, leaky.join(" | "));
+check("…the fixed one is on the page as written", page.includes("Linear or Jira, one at a time"));
+check("…and the gate catches the wording it replaced", MACHINERY_TERMS.test("Connect uses the Atlassian account this browser is signed in to"));
+// Everywhere else a tracker is offered: scripts/verify-tracker-copy.ts.
 check("no field reaches into another form", !/\bform="/.test(page));
 // A <form> opened while another is open.
 let depth = 0;
@@ -141,8 +229,11 @@ for (const m of page.matchAll(/<form\b|<\/form>/g)) {
   if (depth > 1) nested = true;
 }
 check("no form is nested in another", !nested && depth === 0 && (page.match(/<form\b/g) ?? []).length >= 5, `${(page.match(/<form\b/g) ?? []).length} forms`);
-check("each section's form is saved by the action bound to that section (three sections write a field of the app; who hears about it and webhooks have their own actions)",
-  /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 3 && /<form action=\{setAppNotifiers\.bind\(null, appId\)\}/.test(page));
+// Four forms for three sections: the accounts section is one form for a
+// website or an extension and another for a Shopify app (CHE-468: its store
+// password alone), never both on one page.
+check("each section's form is saved by the action bound to that section (three sections write a field of the app — accounts in one of two forms by the app's kind; who hears about it and webhooks have their own actions)",
+  /const save = updateAppSettings\.bind\(null, app\.id, section\);/.test(page) && (page.match(/<form action=\{save\}/g) ?? []).length === 4 && /<form action=\{setAppNotifiers\.bind\(null, appId\)\}/.test(page));
 check("a section the app does not have opens the first one; an address that is no section is not found",
   /if \(!sectionsFor\(app\)\.some\(\(s\) => s\.key === section\)\) redirect\(appPath\.section\(app\.id, "scope"\)\)/.test(page) && /if \(!section\) notFound\(\)/.test(page));
 // CHE-412: the other-team state is an ordinary page of the app (breadcrumb,

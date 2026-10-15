@@ -7,6 +7,8 @@
 // its owner — customer text that passed the verdict-language gate when it was
 // written (CLAUDE.md §1), shortened, never rephrased.
 
+import { trackerName } from "./tracker/name";
+
 /**
  * The first sentence of a check's bottom line, for one row of the timeline.
  * A sentence ends at ". ", "! " or "? " followed by a capital or a quote, or at
@@ -37,16 +39,37 @@ export function splitBottomLine(text: string | null | undefined): { coverage: st
   return m ? { coverage: m[1], said: clean.slice(m[0].length) } : { coverage: null, said: clean };
 }
 
+/**
+ * CHE-467: what a check's row says to a screen reader — the one link the row
+ * is: "Check #373, 12 Oct: Not verified". The day is left out when the check
+ * has none.
+ */
+export function checkRowLabel(runNumber: number, day: string | null, verdict: string): string {
+  return `Check #${runNumber}${day ? `, ${day}` : ""}: ${verdict}`;
+}
+
 /** "None", "1 account", "3 accounts": the default login counts as one. */
 export function accountsLabel(hasDefault: boolean, named: number): string {
   const n = (hasDefault ? 1 : 0) + named;
   return n === 0 ? "None" : `${n} account${n === 1 ? "" : "s"}`;
 }
 
-/** What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413). */
-export function integrationsLabel(i: { tracker: boolean; analyticsProject: string | null; github: boolean; webhook: boolean; slack: boolean }): string {
+/**
+ * CHE-468: a Shopify app's test stores, by name — "prod-release-1",
+ * "prod-release-1, staging" — and a count once there are more than two.
+ */
+export function storesLabel(stores: string[]): string {
+  if (stores.length === 0) return "None";
+  return stores.length <= 2 ? stores.join(", ") : `${stores.length} stores`;
+}
+
+/**
+ * What the app is connected to, by name; "None" when nothing is. GitHub means a release check has arrived from its CI (CHE-413).
+ * `tracker` is the TrackerIntegration's type: the tracker is named as it is, Linear or Jira (CHE-438).
+ */
+export function integrationsLabel(i: { tracker: string | null; analyticsProject: string | null; github: boolean; webhook: boolean; slack: boolean }): string {
   const names = [
-    i.tracker ? "Linear" : null,
+    i.tracker !== null ? trackerName(i.tracker) : null,
     i.analyticsProject !== null ? "PostHog" : null,
     i.github ? "GitHub" : null,
     i.slack ? "Slack" : null,

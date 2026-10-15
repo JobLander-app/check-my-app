@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!classify.mjs
+!door.mjs
+!forwarder.mjs
+!jar.mjs
+!jar-rules.mjs
+!lease.mjs
+!probe.mjs
+!runner.mjs
+!session-server.mjs
+!viewer.mjs

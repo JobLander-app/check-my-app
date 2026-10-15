@@ -168,7 +168,8 @@ export interface Rotation {
  * A journey whose evidence has aged past `maxAgeDays` can no longer be carried
  * — carrying it would date last month's walk as tonight's — so it is due even
  * when it is green, and if the budget cannot reach it, it is deferred rather
- * than pretended about.
+ * than pretended about. On an app the survey saw unchanged (`ageCounts` false)
+ * age does neither: an old green journey is carried under its own date.
  */
 export function planRotation(args: {
   journeys: CatalogJourneyState[];
@@ -185,9 +186,20 @@ export function planRotation(args: {
   const isGreen = (j: CatalogJourneyState) => isCoverage(j);
   const ageOf = (j: CatalogJourneyState) =>
     j.lastWalkedAt ? ageInDays(j.lastWalkedAt, args.now) : Number.POSITIVE_INFINITY;
-  // Evidence we could not date, or that predates the window, cannot be carried.
+  // Evidence we could not date cannot be carried. Evidence that predates the
+  // window cannot either — unless the survey saw the app unchanged: then age
+  // alone is not a reason against it (CHE-132, the same rule the baseline gate
+  // and the walk list already follow), and the copy keeps its own walk date, so
+  // nothing is passed off as tonight's. Without this, an unchanged app whose
+  // runs are mostly smoke passes (they walk nothing, so the rotation does not
+  // advance) put every journey the budget could not reach into `deferred`, and
+  // CHE-311 told the owner the checker "cannot keep every journey checked" for
+  // a 12-journey catalog against a budget that covers 35.
   const carriable = (j: CatalogJourneyState) =>
-    isGreen(j) && Boolean(j.lastWalkedRunId) && j.lastWalkedAt !== null && ageOf(j) <= maxAgeDays;
+    isGreen(j) &&
+    Boolean(j.lastWalkedRunId) &&
+    j.lastWalkedAt !== null &&
+    (!ageCounts || ageOf(j) <= maxAgeDays);
 
   // CHE-420: a journey whose last walk left a gap of ours is not green, so it
   // lands here — walked again ahead of the rotation, because the capability
