@@ -19,8 +19,13 @@ async function main() {
   const gate = readFileSync(new URL("./deploy-gate-extension.ts", import.meta.url), "utf8");
   assert.match(gate, /LIVE_RUN_STATUSES/, "The gate must read the classification, never spell its own list");
   assert.doesNotMatch(gate, /'(queued|walking|writing)'/, "A hardcoded status in the gate is a list that will drift");
-  assert.match(gate, /targetKind = 'extension'/, "A website run re-executes a step; only an extension run dies, and only it is worth blocking a deploy for");
-  assert.match(gate, /process\.exitCode = 1/, "An unanswerable question is not permission to deploy");
+  // CHE-486: Mender's PRs merge themselves at any hour, so the deploy waits for
+  // every check in flight. Only an extension check dies, so only it fails the
+  // deploy past the wait; a website check repeats a step and is deployed over.
+  assert.doesNotMatch(gate, /WHERE targetKind = 'extension' AND/, "The gate waits for every check in flight, not only extension ones");
+  assert.match(gate, /running\.some\(run => run\.targetKind === 'extension'\)\)[\s\S]*?process\.exitCode = 1/, "Past the wait, an extension check still fails the deploy");
+  assert.match(gate, /::warning::deploy-gate: website check/, "…while website checks are deployed over, with a warning");
+  assert.match(gate, /process\.exitCode = 1;\n\}\);/, "An unanswerable question is not permission to deploy");
 
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const gateAt = workflow.indexOf("deploy-gate-extension.ts");

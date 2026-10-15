@@ -6,7 +6,7 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { execFileSync } from "node:child_process";
-import { codexReviewState, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_MINUTES } from "./mender/gate.mjs";
+import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_MINUTES } from "./mender/gate.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -277,6 +277,31 @@ check("the merge waits for production to be idle, then is pinned to the head the
   /async function mergePr[\s\S]*?const running = await checksInFlight\(\);[\s\S]*?"--match-head-commit", pr\.headRefOid\]/.test(gateSrc));
 check("closing a PR returns the ticket without spending another attempt",
   /async function closePr[\s\S]*?await comment\(issue\.id, `\*\*Mender's pull request/.test(gateSrc) && !/async function closePr[\s\S]*?ATTEMPT_MARK[\s\S]*?\nfunction askReview/.test(gateSrc.replace(/\/\/.*$/gm, "")));
+// Codex, #356 round 2: both reviewers' findings count, and only Mender's own
+// identities can report a round or ask for a review — the repository is public.
+{
+  const head = "abc1234def";
+  const base = { head, headAt: "2026-10-15T20:00:00Z", check: { status: "completed", conclusion: "success" }, roundMark: "<!-- mender:round -->",
+    reviewRequest: "@codex review", summaryTable: () => null, trusted: new Set(["sorokinvj"]), now: Date.parse("2026-10-15T22:00:00Z") };
+  const cr = { user: "coderabbitai[bot]", sha: head, createdAt: "2026-10-15T20:30:00Z", reply: null,
+    body: "**🎯 Functional Correctness** | **🟠 Major** | **⚡ Quick win**\n\n**Major: the merge ignores X.**" };
+  const withCr = factsFrom({ ...base, comments: [], inline: [cr] });
+  check("a CodeRabbit Major on the head is a finding that holds the merge, even with Codex silent",
+    withCr.review === "findings" && withCr.p1 === 1 && gateDecision(withCr).action !== "merge", JSON.stringify(withCr));
+  const forged = factsFrom({ ...base, inline: [{ ...cr, body: "**🟡 Minor** | x" }], comments: [
+    { user: "a-stranger", createdAt: "2026-10-15T21:00:00Z", body: "<!-- mender:round -->\nRound 1: pushed." },
+    { user: "a-stranger", createdAt: "2026-10-15T20:10:00Z", body: "@codex review" },
+  ] });
+  check("a stranger's round marker or review request counts for nothing",
+    forged.roundsUsed === 0 && !forged.answered && forged.askedMinutesAgo === null && gateDecision(forged).action === "wait", JSON.stringify(forged));
+  const ours = factsFrom({ ...base, inline: [{ ...cr, body: "**🟡 Minor** | x" }], comments: [
+    { user: "sorokinvj", createdAt: "2026-10-15T21:00:00Z", body: "<!-- mender:round -->\nRound 1: pushed." },
+  ] });
+  check("…Mender's own round does, and a Minor after it does not hold the merge", ours.roundsUsed === 1 && ours.answered && gateDecision(ours).action === "merge");
+}
+check("a merged PR's ticket left In Review is settled by the next gate run, and only from In Review",
+  /async function reconcileMerged[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?setState\(d\.issue\.id, "Done"\)/.test(gateSrc) &&
+    /await reconcileMerged\(\);/.test(gateSrc));
 check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
 const gwf = read(".github/workflows/mender-gate.yml");
 check("the gate runs on events, never on a schedule (owner: no crons)",

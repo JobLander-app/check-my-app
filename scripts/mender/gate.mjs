@@ -33,8 +33,61 @@ export function codexReviewState(body) {
   }
 }
 
-/** A Codex inline finding marked P1 (its badge). P2 and lower do not hold a merge after a round. */
-export const isP1 = (body) => /!\[P1 Badge\]|\bP1-orange\b/.test(String(body ?? ""));
+/**
+ * A finding that holds a merge: Codex's P1 badge, or CodeRabbit's Major or
+ * Critical badge (both reviewers' findings count; Codex, #356). P2, Minor and
+ * lower do not hold a merge once a round has answered them.
+ */
+export const isP1 = (body) => /!\[P1 Badge\]|\bP1-orange\b|\*\*(?:🟠|🔴)\s*(?:Major|Critical)\*\*/.test(String(body ?? ""));
+
+/** The reviewers whose inline findings the gate reads. */
+export const GATE_REVIEWERS = ["chatgpt-codex-connector[bot]", "coderabbitai[bot]"];
+
+/**
+ * The gate's facts from what GitHub returned for one PR. Pure, so the
+ * acceptance script runs it on real shapes.
+ *
+ * Only comments by `trusted` logins (the identities Mender and the gate post
+ * as) count as a round report or a review request: the repository is public,
+ * and anyone could otherwise post "<!-- mender:round -->" and turn a finding
+ * into a merge (Codex, #356).
+ *
+ * @param {object} p
+ * @param {string} p.head the head commit the gate inspects
+ * @param {string} p.headAt its committer date
+ * @param {{status:string, conclusion:string|null}|null} p.check the latest `check` run on the head
+ * @param {{user:string, createdAt:string, body:string}[]} p.comments the PR's issue comments
+ * @param {{user:string, sha:string, createdAt:string, body:string, reply:number|null}[]} p.inline review comments
+ * @param {Set<string>} p.trusted
+ * @param {string} p.roundMark
+ * @param {string} p.reviewRequest
+ * @param {(body:string, head:string) => string|null} p.summaryTable Codex's summary table reader (doer/review.mjs)
+ * @param {number} [p.now]
+ */
+export function factsFrom({ head, headAt, check, comments, inline, trusted, roundMark, reviewRequest, summaryTable, now = Date.now() }) {
+  const ci = !check ? "none" : check.status !== "completed" ? "pending" : check.conclusion === "success" ? "success" : "failure";
+  const onHead = inline.filter((c) => GATE_REVIEWERS.includes(c.user) && c.sha === head && !c.reply);
+  const codex = comments.filter((c) => c.user === GATE_REVIEWERS[0]);
+  const summary = codex.map((c) => codexReviewState(c.body)).find((s) => s?.commitSha === head);
+  const table = codex.map((c) => summaryTable(c.body, head)).find(Boolean);
+  const review = summary?.status === "completed" ? (summary.hasAnyFindings || onHead.length ? "findings" : "clean")
+    : summary?.status === "running" || table === "running" ? "running"
+      : table === "completed" ? (onHead.length ? "findings" : "clean")
+        : onHead.length ? "findings" : null;
+  const lastFindingAt = onHead.map((c) => c.createdAt).sort().at(-1) ?? "";
+  const ours = comments.filter((c) => trusted.has(c.user));
+  const rounds = ours.filter((c) => c.body.includes(roundMark));
+  const asks = ours.filter((c) => c.body.toLowerCase().includes(reviewRequest) && c.createdAt > headAt).map((c) => c.createdAt).sort();
+  return {
+    ci,
+    review,
+    p1: onHead.filter((c) => isP1(c.body)).length,
+    roundsUsed: rounds.length,
+    answered: Boolean(lastFindingAt) && rounds.some((c) => c.createdAt > lastFindingAt),
+    askedMinutesAgo: asks.length ? (now - Date.parse(asks[0])) / 60_000 : null,
+    findings: onHead.map((c) => `- ${c.body.split("\n").find((l) => l.trim() && !/Badge|^\*\*\S+ /.test(l)) ?? c.body.slice(0, 200)}`).join("\n"),
+  };
+}
 
 /**
  * The gate's decision for one pull request.

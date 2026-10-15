@@ -29,8 +29,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { codexReviewState, gateDecision, isP1, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
-import { codexSummaryState, REVIEW_REQUEST, REVIEWER_LOGIN } from "../doer/review.mjs";
+import { factsFrom, gateDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
+import { codexSummaryState, REVIEW_REQUEST } from "../doer/review.mjs";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
 const LABEL = "mender";
@@ -613,36 +613,55 @@ async function chainNext() {
 const pagesOf = (path, jq) => gh(["api", "--paginate", `${path}?per_page=100`, "--jq", `.[] | ${jq} | tojson`])
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
 
-/** Everything the gate decides from, for one open Mender pull request. */
-function gateFacts(repo, pr) {
+/** Everything the gate decides from, for one open Mender pull request (the reading is gate.mjs factsFrom). */
+function gateFacts(repo, pr, trusted) {
   const head = pr.headRefOid;
-  const headAt = gh(["api", `repos/${repo}/commits/${head}`, "--jq", ".commit.committer.date"]);
-  // The latest `check` job on this head (a re-run is a newer one).
-  const check = ghJson(["api", `repos/${repo}/commits/${head}/check-runs?per_page=100`, "--jq",
-    `[.check_runs[] | select(.name == "check")] | sort_by(.id) | last // null | if . == null then null else {status, conclusion} end`]);
-  const ci = !check ? "none" : check.status !== "completed" ? "pending" : check.conclusion === "success" ? "success" : "failure";
-  const comments = pagesOf(`repos/${repo}/issues/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: (.body // \"\")}");
-  const inline = pagesOf(`repos/${repo}/pulls/${pr.number}/comments`,
-    "{user: .user.login, sha: .original_commit_id, createdAt: .created_at, body: (.body // \"\"), reply: .in_reply_to_id}");
-  const onHead = inline.filter((c) => c.user === REVIEWER_LOGIN && c.sha === head && !c.reply);
-  const summary = comments.filter((c) => c.user === REVIEWER_LOGIN).map((c) => codexReviewState(c.body)).find((s) => s?.commitSha === head);
-  const table = comments.filter((c) => c.user === REVIEWER_LOGIN).map((c) => codexSummaryState(c.body, head)).find(Boolean);
-  const review = summary?.status === "completed" ? (summary.hasAnyFindings || onHead.length ? "findings" : "clean")
-    : summary?.status === "running" || table === "running" ? "running"
-      : table === "completed" ? (onHead.length ? "findings" : "clean")
-        : onHead.length ? "findings" : null;
-  const lastFindingAt = onHead.map((c) => c.createdAt).sort().at(-1) ?? "";
-  const rounds = comments.filter((c) => c.body.includes(ROUND_MARK));
-  const asks = comments.filter((c) => c.body.toLowerCase().includes(REVIEW_REQUEST) && c.createdAt > headAt).map((c) => c.createdAt).sort();
-  return {
-    ci,
-    review,
-    p1: onHead.filter((c) => isP1(c.body)).length,
-    roundsUsed: rounds.length,
-    answered: Boolean(lastFindingAt) && rounds.some((c) => c.createdAt > lastFindingAt),
-    askedMinutesAgo: asks.length ? (Date.now() - Date.parse(asks[0])) / 60_000 : null,
-    findings: onHead.map((c) => `- ${c.body.split("\n").find((l) => l.trim() && !l.includes("Badge")) ?? c.body.slice(0, 200)}`).join("\n"),
+  return factsFrom({
+    head,
+    headAt: gh(["api", `repos/${repo}/commits/${head}`, "--jq", ".commit.committer.date"]),
+    // The latest `check` job on this head (a re-run is a newer one).
+    check: ghJson(["api", `repos/${repo}/commits/${head}/check-runs?per_page=100`, "--jq",
+      `[.check_runs[] | select(.name == "check")] | sort_by(.id) | last // null | if . == null then null else {status, conclusion} end`]),
+    comments: pagesOf(`repos/${repo}/issues/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: (.body // \"\")}"),
+    inline: pagesOf(`repos/${repo}/pulls/${pr.number}/comments`,
+      "{user: .user.login, sha: .original_commit_id, createdAt: .created_at, body: (.body // \"\"), reply: .in_reply_to_id}"),
+    trusted,
+    roundMark: ROUND_MARK,
+    reviewRequest: REVIEW_REQUEST,
+    summaryTable: codexSummaryState,
+  });
+}
+
+/** The identities Mender and the gate post as: only their round reports and review requests count. */
+function trustedLogins() {
+  const login = (token) => {
+    try {
+      return execFileSync("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", env: { ...process.env, ...(token ? { GH_TOKEN: token } : {}) } }).trim();
+    } catch {
+      return "";
+    }
   };
+  return new Set([login(), login(process.env.CODEX_REVIEW_TOKEN)].filter(Boolean));
+}
+
+/**
+ * A merged Mender PR whose ticket is still In Review: the merge happened and the
+ * bookkeeping after it did not (Codex, #356). Merged PRs leave the open list, so
+ * every gate run settles the last two days' again; a ticket moved on since (a
+ * revert sends it back to Todo) is left alone.
+ */
+async function reconcileMerged() {
+  const since = Date.now() - 2 * 86_400_000;
+  const merged = ghJson(["pr", "list", "--state", "merged", "--limit", "30", "--json", "number,headRefName,url,mergedAt"])
+    .filter((p) => validBranch(p.headRefName) && Date.parse(p.mergedAt) > since);
+  for (const pr of merged) {
+    const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+    const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
+    if (d.issue?.state?.name !== "In Review") continue;
+    await comment(d.issue.id, `**Merged:** ${pr.url}.`);
+    await setState(d.issue.id, "Done");
+    say(`reconciled ${id}: merged in #${pr.number}, now Done`);
+  }
 }
 
 /** The ticket a mender/che-N-… branch belongs to, from Linear. */
@@ -732,7 +751,14 @@ async function gate() {
   const only = Number(process.env.GATE_PR) || null;
   const prs = ghJson(["pr", "list", "--state", "open", "--limit", "50", "--json", "number,headRefName,headRefOid,url,isCrossRepository,mergeable"])
     .filter((p) => validBranch(p.headRefName) && !p.isCrossRepository && (!only || p.number === only));
+  const trusted = trustedLogins();
   let failed = 0;
+  try {
+    await reconcileMerged();
+  } catch (e) {
+    failed++;
+    console.error(`[mender] gate: reconciling merged PRs failed: ${e.message}`);
+  }
   for (const pr of prs) {
     // One PR the gate cannot read or act on never holds the others.
     try {
@@ -741,7 +767,7 @@ async function gate() {
         await closePr(pr, "it conflicts with main", { findings: "" });
         continue;
       }
-      const facts = gateFacts(repo, pr);
+      const facts = gateFacts(repo, pr, trusted);
       const d = gateDecision(facts);
       say(`gate #${pr.number} ${pr.headRefOid.slice(0, 7)}: ${d.action} — ${d.reason}`);
       if (d.action === "ask") askReview(pr);
