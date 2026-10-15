@@ -31,20 +31,43 @@ function check(name: string, ok: boolean, detail = "") {
 const NOTES =
   "Check the Issue tracker card on an app's settings → Integrations, the tracker card on the app's own page, " +
   "and the tracker answer on /faq.";
-const paths = (n: string) => notePaths(n).map((p) => p.path);
+// Run #387 checked checkmyapp.dev — our own app, where "settings → Integrations" is our address.
+const OWN = { ownApp: true };
+const paths = (n: string) => notePaths(n, OWN).map((p) => p.path);
 
 check("notes name /faq and settings → Integrations", JSON.stringify(paths(NOTES)) === JSON.stringify(["/faq", "/settings/integrations"]), JSON.stringify(paths(NOTES)));
+// Codex, #345: our settings routes say nothing about a customer's app.
+check("on a customer's app, \"settings → Integrations\" is not turned into our address",
+  notePaths(NOTES).map((p) => p.path).join() === "/faq", notePaths(NOTES).map((p) => p.path).join());
+// Codex, #345: a prohibition governs its own phrase, not the rest of the sentence.
+check("\"Don't touch /admin, but check /faq\" still asks for /faq",
+  paths("Don't touch /admin, but check /faq").join() === "/faq", paths("Don't touch /admin, but check /faq").join());
+check("\"Avoid /billing and open /pricing\": the second phrase is its own ask",
+  paths("Avoid /billing and open /pricing").join() === "/pricing", paths("Avoid /billing and open /pricing").join());
+check("\"Don't touch /admin and /billing, /team; check /faq\": a list of paths stays forbidden",
+  paths("Don't touch /admin and /billing, /team; check /faq").join() === "/faq", paths("Don't touch /admin and /billing, /team; check /faq").join());
 check("backticks, parentheses, trailing punctuation", JSON.stringify(paths("Open `/roles` (and /ru/about). Then /pricing.")) === JSON.stringify(["/roles", "/ru/about", "/pricing"]), JSON.stringify(paths("Open `/roles` (and /ru/about). Then /pricing.")));
 check("a forbidden path is not an ask", paths("Don't touch /admin. Check /faq.").join() === "/faq", paths("Don't touch /admin. Check /faq.").join());
 check("a URL's own path and words with a slash are not asks", paths("see https://example.com/faq and/or 10/13 user@x.com/y").length === 0, paths("see https://example.com/faq and/or 10/13").join());
 check("no notes, no asks", paths("").length === 0 && notePaths(null).length === 0);
 
 const walked = ["GET https://checkmyapp.dev/health/apps/a1/settings/integrations 200"];
-check("a reached place is not listed", unreachedAsked(NOTES, walked).map((p) => p.path).join() === "/faq", unreachedAsked(NOTES, walked).map((p) => p.path).join());
+check("a reached place is not listed", unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join() === "/faq", unreachedAsked(NOTES, walked, OWN).map((p) => p.path).join());
+// Codex, #345: reached means requested or navigated to, on segment boundaries.
+const notReached = [
+  "The footer links to /faq, which answers the tracker question.",
+  "GET https://checkmyapp.dev/login?next=/faq 200",
+  "GET https://checkmyapp.dev/faq-old 200",
+];
+check("prose naming /faq, a query naming it, and /faq-old do not reach /faq",
+  unreachedAsked("Check /faq.", notReached).map((p) => p.path).join() === "/faq", unreachedAsked("Check /faq.", notReached).map((p) => p.path).join());
+check("a request to /faq, a deeper page under it, or a recorded navigation to it does",
+  ["GET https://checkmyapp.dev/faq 200", "GET https://checkmyapp.dev/faq/billing 200", '[{"kind":"navigate","url":"/faq"}]']
+    .every((e) => unreachedAsked("Check /faq.", [e]).length === 0));
 
 const mapped = ["Old verdict (`/verdict/cmusv2ctt0003sa0nrln3804k`)", "Pricing (`/pricing`)"];
 const evidence = ["GET https://checkmyapp.dev/pricing 200"];
-const sentence = coverageSentence(unreachedPages(mapped, evidence), mapped.length, unreachedAsked(NOTES, evidence));
+const sentence = coverageSentence(unreachedPages(mapped, evidence), mapped.length, unreachedAsked(NOTES, evidence, OWN));
 check(
   "the asked-for places are said first, then the mapped ones",
   sentence !== null &&
@@ -54,7 +77,7 @@ check(
 );
 check(
   "with no mapped pages the asked-for places are still said",
-  (coverageSentence([], 0, unreachedAsked(NOTES, evidence)) ?? "").startsWith("Asked for in your notes"),
+  (coverageSentence([], 0, unreachedAsked(NOTES, evidence, OWN)) ?? "").startsWith("Asked for in your notes"),
 );
 check("notes naming nothing leave the sentence as it was", coverageSentence(unreachedPages(mapped, evidence), mapped.length, unreachedAsked("Be gentle with the test account.", evidence)) === "Not opened this run: /verdict/cmusv2ctt0003sa0nrln3804k — so nothing here speaks to it.");
 check("nothing unreached, nothing said", coverageSentence([], 2, []) === null);

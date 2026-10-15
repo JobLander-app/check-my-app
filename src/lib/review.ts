@@ -26,6 +26,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { extensionReportPublished } from "@/lib/extension-target";
 import { normalizeAnatomy } from "@/lib/anatomy";
 import { unreachedAsked, unreachedPages } from "@/lib/coverage";
+import { isSelfHost } from "@/agent/self-hosts";
 import type { Priority } from "@/lib/issue-priority";
 import { historyAsOf, priorityFromHistory, priorityOfCheckAlone } from "@/lib/finding-priority";
 import { parseJson } from "@/lib/json";
@@ -398,7 +399,10 @@ export function buildReview(run: ReviewSource, origin: string, priorities: Map<n
   const evidence = steps.flatMap((s) => [s.networkLog ?? "", s.observed ?? ""]);
   // CHE-476: what the notes asked for comes first — it is the part of the
   // product the owner wanted spoken to, not just a page discovery happened on.
-  const asked = unreachedAsked(run.userNotes, evidence).map((p) => p.path);
+  // Reached only by a request or a navigation, never by prose; "settings → X"
+  // is our own address and is read only on our own app.
+  const navigation = steps.flatMap((s) => [s.networkLog ?? "", s.actions ?? ""]);
+  const asked = unreachedAsked(run.userNotes, navigation, { ownApp: isSelfHost(run.appSlug) }).map((p) => p.path);
   const pages_not_opened = [
     ...asked,
     ...unreachedPages(pages, evidence).map((p) => p.path).filter((p) => !asked.includes(p)),

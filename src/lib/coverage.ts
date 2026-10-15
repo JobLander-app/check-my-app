@@ -89,16 +89,32 @@ function listOf(pages: PageRef[]): string {
 // The addresses a person's notes name. Only the owner's own words count — never
 // scope hints, which say where a check may NOT go. Two shapes are read:
 //   - a path written out: "/faq", "`/roles`", "(/pricing)";
-//   - an app's settings section written as "settings → Integrations", which is
-//     the address /settings/integrations.
-// A path inside a clause that forbids it ("don't touch /admin") is not an ask.
+//   - on our own app only, a settings section written as "settings →
+//     Integrations", which is our address /settings/integrations. A customer's
+//     app has its own routes, and ours say nothing about where its Integrations
+//     screen lives (Codex, #345).
+// A path a prohibition governs ("don't touch /admin") is not an ask. The
+// prohibition reaches to the next "but", "however", "instead", "then", or an
+// "and"/comma that opens a new phrase rather than a list of paths: "Don't touch
+// /admin, but check /faq" asks for /faq (Codex, #345); "Don't touch /admin and
+// /billing" asks for neither.
 // Anything else the notes describe in words ("the card on the app's page") has
 // no address to look for here and is not claimed either way.
 const PATH_IN_NOTES = /(?<![\w/:.@%-])(\/[\w~%.-]+(?:\/[\w~%.-]*)*)/g;
 const FORBIDS = /\b(?:don'?t|do not|never|avoid|skip|except|without|exclude|excluding|ignore|not touch)\b/i;
 const SECTION_IN_NOTES = /\bsettings\s*(?:→|->|›|»|>)\s*([A-Za-z][A-Za-z ]{0,30})/gi;
+// Where a prohibition stops governing what follows it.
+const PHRASE_BREAK = /\b(?:but|however|instead|then|while)\b|(?:,|\band\b)(?=\s+[a-z])/gi;
 
-export function notePaths(notes: string | null | undefined): PageRef[] {
+/** Is the match at `index` governed by a prohibition earlier in its own phrase? */
+function forbidden(clause: string, index: number): boolean {
+  const before = clause.slice(0, index);
+  let start = 0;
+  for (const m of before.matchAll(PHRASE_BREAK)) start = (m.index ?? 0) + m[0].length;
+  return FORBIDS.test(before.slice(start));
+}
+
+export function notePaths(notes: string | null | undefined, { ownApp = false }: { ownApp?: boolean } = {}): PageRef[] {
   if (!notes) return [];
   const out = new Map<string, PageRef>();
   const add = (label: string, raw: string) => {
@@ -108,11 +124,12 @@ export function notePaths(notes: string | null | undefined): PageRef[] {
   };
   for (const clause of notes.split(/\n+|;|\.(?=\s)/)) {
     for (const m of clause.matchAll(PATH_IN_NOTES)) {
-      if (FORBIDS.test(clause.slice(0, m.index))) continue;
+      if (forbidden(clause, m.index ?? 0)) continue;
       add(m[1], m[1]);
     }
+    if (!ownApp) continue;
     for (const m of clause.matchAll(SECTION_IN_NOTES)) {
-      if (FORBIDS.test(clause.slice(0, m.index))) continue;
+      if (forbidden(clause, m.index ?? 0)) continue;
       const said = m[1].trim().toLowerCase();
       const section = SETTINGS_SECTIONS.find((s) => said.startsWith(s.label.toLowerCase()) || said.startsWith(s.key));
       if (section) add(`settings → ${section.label}`, `/settings/${section.key}`);
@@ -121,9 +138,38 @@ export function notePaths(notes: string | null | undefined): PageRef[] {
   return [...out.values()];
 }
 
-// Places the notes name that no step reached — same evidence, same conservative
-// substring test as unreachedPages.
-export function unreachedAsked(notes: string | null | undefined, evidence: string[]): PageRef[] {
-  const haystack = evidence.filter(Boolean).join("\n").toLowerCase();
-  return notePaths(notes).filter((p) => !haystack.includes(p.path));
+// The pathnames the walk actually requested or navigated to: every absolute URL
+// in a request log or a step's recorded actions, plus an action's relative
+// "url". Prose is not here — a step that only mentions "/faq" did not open it,
+// and neither did a request whose query says "?next=/faq" (Codex, #345).
+const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
+const RELATIVE_URL_FIELD = /"url"\s*:\s*"(\/[^"]*)"/g;
+export function visitedPaths(navigation: string[]): string[] {
+  const out = new Set<string>();
+  const add = (raw: string) => {
+    try {
+      out.add(new URL(raw, "https://x.invalid").pathname.toLowerCase().replace(/\/+$/, "") || "/");
+    } catch {
+      /* not a URL */
+    }
+  };
+  for (const text of navigation.filter(Boolean)) {
+    for (const m of text.matchAll(URL_IN_TEXT)) add(m[0]);
+    for (const m of text.matchAll(RELATIVE_URL_FIELD)) add(m[1]);
+  }
+  return [...out];
+}
+
+// A place counts as reached when a visited pathname contains it on segment
+// boundaries: /faq by /faq and /faq/billing, never by /faq-old; our
+// /settings/integrations by /health/apps/a1/settings/integrations.
+function reached(path: string, visited: string[]): boolean {
+  return visited.some((v) => `${v}/`.includes(`${path}/`));
+}
+
+// Places the notes name that the walk never requested or navigated to.
+// `navigation` is request logs and recorded actions, never prose.
+export function unreachedAsked(notes: string | null | undefined, navigation: string[], options: { ownApp?: boolean } = {}): PageRef[] {
+  const visited = visitedPaths(navigation);
+  return notePaths(notes, options).filter((p) => !reached(p.path, visited));
 }
