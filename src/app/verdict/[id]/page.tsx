@@ -2,7 +2,8 @@ import { getDbFromContext } from "@/lib/db";
 import { VERDICT_META } from "@/lib/status";
 import { VerdictView } from "@/components/verdict-view";
 import { OG_IMAGE, canonical } from "@/lib/site-metadata";
-import { extensionDisplayName } from "@/lib/extension-target";
+import { appLabel } from "@/lib/app-label";
+import { extensionReportPublished } from "@/lib/extension-target";
 import { publicRow } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
@@ -19,9 +20,15 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   const run = await prisma.run.findUnique({ ...publicRow(),
     where: { publicId: id },
-    select: { appSlug: true, targetKind: true, targetUrl: true, extensionEvidence: true, verdict: true, _count: { select: { findings: true } } },
+    select: {
+      appSlug: true, targetKind: true, targetUrl: true, extensionEvidence: true, verdict: true, status: true,
+      app: { select: { name: true } },
+      _count: { select: { findings: true } },
+    },
   });
-  if (!run) return {};
+  // The link preview publishes only what the page would: nothing for a check
+  // that failed or was stopped (CHE-454, Codex on #329).
+  if (!run || !extensionReportPublished(run)) return {};
 
   const label = run.verdict ? (VERDICT_META[run.verdict]?.label ?? null) : null;
   const n = run._count.findings;
@@ -30,7 +37,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       ? "Nothing to fix was found."
       : `${n} thing${n === 1 ? "" : "s"} to fix ${n === 1 ? "was" : "were"} found.`;
 
-  const name = run.targetKind === "extension" ? extensionDisplayName(run.targetUrl, run.extensionEvidence) : run.appSlug;
+  const name = appLabel({ ...run, name: run.app?.name }, run.extensionEvidence);
   const title = label ? `${name} — ${label}` : name;
   const description = `${found} Open the check to see what someone using ${name} runs into, and where.`;
   // The image travels with the page: Next replaces the layout's openGraph

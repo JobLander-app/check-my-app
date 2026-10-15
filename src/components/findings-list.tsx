@@ -269,8 +269,8 @@ function FindingRow({
         <div className="flex flex-wrap items-center gap-2 border-t border-ink-700 px-4 py-3">
           {/* Loop C triage: "That's fine" mutes it for future runs (noise
               filter), "Watch it" makes the next run verify it FIRST, and
-              "Create Ticket" files it into the owner's Linear with the
-              onboarding TicketPolicy parameters. */}
+              "Create Ticket" files it into the app's tracker (Linear or
+              Jira) with the onboarding TicketPolicy parameters. */}
           {canMark && (
             <>
               <TriageButton

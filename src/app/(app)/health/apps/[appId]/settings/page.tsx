@@ -19,7 +19,7 @@ export default async function AppSettingsPage({ params }: { params: Promise<{ ap
   // your teams. The page offers the switch and nothing else; nobody's is 404.
   const elsewhere = await db.app.findFirst({
     where: { ...memberOfRows(user.id), id: appId },
-    select: { id: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
+    select: { id: true, name: true, appSlug: true, targetUrl: true, targetKind: true, teamId: true, team: { select: { name: true } } },
   });
   if (!elsewhere?.teamId) notFound();
   return <OtherTeamApp app={{ ...elsewhere, teamId: elsewhere.teamId }} acting={team.name} to={appPath.settings(appId)} />;

@@ -160,6 +160,31 @@ async function main() {
     const unchanged = planRotation({ journeys, now: NOW, budget: 1, ageCounts: false });
     check("on an unchanged app the failing one is what the budget buys",
       titles(unchanged.walk).join() === "bad", titles(unchanged.walk).join());
+    // CHE-311: meetbashar.com's runs are mostly smoke passes that walk nothing,
+    // so its journeys age past the window together. On an unchanged app they
+    // were then "deferred" and filed as "cannot keep every journey checked".
+    check("…and the old green one is carried under its own date, not deferred",
+      titles(unchanged.carry).join() === "old-but-green" && unchanged.deferred.length === 0,
+      `carry=${titles(unchanged.carry).join()} deferred=${titles(unchanged.deferred).join()}`);
+    check("with age counting, the same old journey still cannot be carried",
+      titles(planRotation({ journeys, now: NOW, budget: 1, ageCounts: true }).deferred).join() === "old-but-green");
+
+    const catalog12 = Array.from({ length: 12 }, (_, i) =>
+      journey({ title: `m${i}`, lastWalkedAt: daysAgo(FULL_RUN_MAX_AGE_DAYS + 1 + i) }),
+    );
+    const quiet = planRotation({ journeys: catalog12, now: NOW, ageCounts: false });
+    check("twelve expired greens on an unchanged app: five walked, seven carried, none deferred",
+      quiet.walk.length === JOURNEY_WALK_BUDGET && quiet.carry.length === 12 - JOURNEY_WALK_BUDGET && quiet.deferred.length === 0,
+      `walk=${quiet.walk.length} carry=${quiet.carry.length} deferred=${quiet.deferred.length}`);
+    // Undated evidence stays unusable whatever the survey said.
+    const undated = planRotation({
+      journeys: [journey({ title: "no-source", lastWalkedRunId: null })],
+      now: NOW,
+      budget: 0,
+      ageCounts: false,
+    });
+    check("an unchanged app still never carries a journey with no run behind it",
+      titles(undated.deferred).join() === "no-source" && undated.carry.length === 0);
   }
 
   // CHE-232: the rotation used to be consulted only by partial mode, which is

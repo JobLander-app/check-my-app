@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { getDbFromContext } from "@/lib/db";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getOptionalUser } from "@/lib/auth";
-import { LinearTracker } from "@/lib/tracker/linear";
-import { freshLinearToken } from "@/lib/tracker/token";
+import { trackerCreds, trackerFor, trackerName } from "@/lib/tracker/factory";
 import { decideTicketAction } from "@/lib/tracker/decision";
 import { draftForFinding, dedupKeyForFinding, ticketPriority } from "@/lib/tracker/file";
 import { PRIORITY_META } from "@/lib/issue-priority";
@@ -38,27 +37,21 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
   if (!app.tracker) {
     return NextResponse.json(
-      { error: "linear_not_connected", message: "Connect Linear from your dashboard first." },
-      { status: 409 },
-    );
-  }
-  if (!app.tracker.teamId) {
-    return NextResponse.json(
-      { error: "no_team", message: "Pick a Linear team on your dashboard first." },
+      { error: "linear_not_connected", message: "Connect a tracker (Linear or Jira) on the app's Integrations first." },
       { status: 409 },
     );
   }
 
   const policy = app.policy;
 
-  const cfEnv = getCloudflareContext().env as Record<string, string | undefined>;
-  const tracker = new LinearTracker(
-    await freshLinearToken(prisma, app.tracker, {
-      clientId: cfEnv.LINEAR_CLIENT_ID,
-      clientSecret: cfEnv.LINEAR_CLIENT_SECRET,
-    }),
-    app.tracker.teamId,
-  );
+  // CHE-438: Linear or Jira, as the app connected it.
+  const tracker = await trackerFor(prisma, app.tracker, trackerCreds(getCloudflareContext().env as unknown as Record<string, unknown>));
+  if (!tracker) {
+    return NextResponse.json(
+      { error: "no_team", message: `Pick where ${trackerName(app.tracker.type)} tickets go on the app's Integrations first.` },
+      { status: 409 },
+    );
+  }
   const dedupKey = dedupKeyForFinding(finding, finding.run);
 
   try {

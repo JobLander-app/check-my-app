@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { pageMetadata } from "@/lib/site-metadata";
 import { ANON_RUNS_PER_DAY, ANON_RUNS_PER_DAY_SITE, PLAN_LIMITS, TOPUP_AMOUNTS_USD, usd } from "@/lib/plans";
+import { trackerFaqAnswer } from "@/lib/tracker-copy";
 
 export const metadata = pageMetadata({
   title: "FAQ",
@@ -11,7 +12,8 @@ export const metadata = pageMetadata({
 });
 
 // Public FAQ · /faq (CHE-63). Answers must stay accurate — no overpromising.
-// API keys and MCP come with every plan (CHE-316); trackers are Linear-only today.
+// API keys and MCP come with every plan (CHE-316); the tracker answer is
+// computed from PLAN_LIMITS (src/lib/tracker-copy.ts, CHE-438).
 type Faq = {
   q: string;
   a: ReactNode;
@@ -141,7 +143,7 @@ const FAQS: Faq[] = [
   },
   {
     q: "Which trackers are supported?",
-    a: <>Linear today (GitHub next), on Growth and above.</>,
+    a: <>{trackerFaqAnswer(PLAN_LIMITS)}</>,
   },
 ];
 

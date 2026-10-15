@@ -200,6 +200,7 @@ const DOORS: Array<{ file: string; fn: string; gate: RegExp; lookup: RegExp }> =
   { file: "src/lib/app-settings.ts", fn: "updateAppForTeam", gate: /^/, lookup: /where: \{ \.\.\.teamOwned\(actor\.teamId\), id: appId \}/ },
   { file: "src/lib/watch-enable.ts", fn: "enableWatchForApp", gate: /^/, lookup: /where: \{ \.\.\.teamOwned\(user\.teamId\), id: appId \}/ },
   { file: "src/app/dashboard/actions.ts", fn: "setTrackerTeam", gate: /requireActionScope\("integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
+  { file: "src/app/dashboard/actions.ts", fn: "setJiraProject", gate: /requireActionScope\("integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
   { file: "src/app/dashboard/actions.ts", fn: "setIntegrationEndpoints", gate: /requireActionScope\("integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
   { file: "src/app/dashboard/actions.ts", fn: "deleteApp", gate: /requireActionScope\("app\.delete"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },
   { file: "src/app/api/integrations/linear/start/route.ts", fn: "GET", gate: /can\(scope, "integration\.connect"\)/, lookup: /where: \{ \.\.\.teamOwned\(team\.id\), id: appId \}/ },

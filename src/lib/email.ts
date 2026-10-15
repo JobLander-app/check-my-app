@@ -5,6 +5,7 @@
 
 import { VERDICT_META } from "@/lib/status";
 import { BALANCE_PATH } from "@/lib/balance-links";
+import { INVITE_MAIL, inviteMailScope } from "@/lib/invite-copy";
 
 // The bottom line is model-written prose about the customer's product; it goes
 // into HTML mail, so it gets escaped rather than trusted.
@@ -467,13 +468,10 @@ export async function sendTeamInvite({
   from,
   replyTo,
 }: TeamInviteArgs): Promise<string | null> {
-  const subject = `${invitedBy} added you to ${teamName} on CheckMyApp`;
-  const whatTheyCanDo =
-    scope === "admin"
-      ? "You will be able to run checks, change settings, manage the team and its billing."
-      : scope === "member"
-        ? "You will be able to run checks, change an app's settings and act on what we find."
-        : "You will be able to read everything the team's checks find. Running a check is left to the others.";
+  // CHE-481: every sentence is INVITE_MAIL's (src/lib/invite-copy.ts), under
+  // the language guards in scripts/verify-invites.ts.
+  const subject = INVITE_MAIL.subject(invitedBy, teamName);
+  const whatTheyCanDo = inviteMailScope(scope);
 
   if (!apiKey || !from) {
     console.log(`[email:dev] to=${to} subject="${subject}" url=${acceptUrl}`);
@@ -482,7 +480,7 @@ export async function sendTeamInvite({
 
   // Opening the link is safe by design (a mail scanner may do it); only the
   // Join button on that page creates the membership.
-  const why = `You get this because ${invitedBy} entered this address. If you weren't expecting it, ignore this mail — nothing happens unless you choose Join on the invitation page.`;
+  const why = INVITE_MAIL.why(invitedBy);
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -493,17 +491,18 @@ export async function sendTeamInvite({
       ...replyToField(replyTo),
       html: htmlDocument(
         subject,
-        `<p><strong>${escapeHtml(invitedBy)}</strong> added you to <strong>${escapeHtml(teamName)}</strong> on CheckMyApp.</p>` +
-          `<p>CheckMyApp uses your team's apps the way a visitor would, every day, and tells you what broke.</p>` +
+        `<p>${escapeHtml(INVITE_MAIL.lead(invitedBy, teamName))}</p>` +
+          `<p>${escapeHtml(INVITE_MAIL.about)}</p>` +
           `<p>${escapeHtml(whatTheyCanDo)}</p>` +
-          `<p><a href="${acceptUrl}">Join ${escapeHtml(teamName)} →</a></p>` +
-          `<p style="color:#666">The link works for 7 days.</p><p style="color:#666">— CheckMyApp</p>`,
+          `<p><a href="${acceptUrl}">${escapeHtml(INVITE_MAIL.join(teamName))} →</a></p>` +
+          `<p style="color:#666">${escapeHtml(INVITE_MAIL.newHere)}</p>` +
+          `<p style="color:#666">${escapeHtml(INVITE_MAIL.lasts)}</p><p style="color:#666">— CheckMyApp</p>`,
         escapeHtml(why),
       ),
       text:
-        `${invitedBy} added you to ${teamName} on CheckMyApp.\n\n` +
-        `CheckMyApp uses your team's apps the way a visitor would, every day, and tells you what broke.\n\n` +
-        `${whatTheyCanDo}\n\nJoin ${teamName}: ${acceptUrl}\n\nThe link works for 7 days.\n\n— CheckMyApp\n\n${why}`,
+        `${INVITE_MAIL.lead(invitedBy, teamName)}\n\n` +
+        `${INVITE_MAIL.about}\n\n` +
+        `${whatTheyCanDo}\n\n${INVITE_MAIL.join(teamName)}: ${acceptUrl}\n\n${INVITE_MAIL.newHere}\n\n${INVITE_MAIL.lasts}\n\n— CheckMyApp\n\n${why}`,
     }),
   });
   if (!res.ok) {
@@ -515,4 +514,73 @@ export async function sendTeamInvite({
   } catch {
     return null;
   }
+}
+
+export interface FeedbackAnswerArgs {
+  to: string;
+  appSlug: string;
+  // The author's own words, quoted back so they know which report this is.
+  theirWords: string;
+  outcome: "fixed" | "wont_fix";
+  // What we found, when the check was right. Required for wont_fix.
+  answer?: string | null;
+  // Where to look: the verdict the report was about, or the app.
+  url: string;
+  apiKey?: string;
+  from?: string;
+  replyTo?: string;
+  idempotencyKey?: string;
+}
+
+// The words of a feedback answer, shared by the mail and its guard (CHE-441).
+export function feedbackAnswerCopy(a: Pick<FeedbackAnswerArgs, "appSlug" | "outcome" | "answer">): { subject: string; lead: string; detail: string } {
+  if (a.outcome === "fixed") {
+    return {
+      subject: `Fixed: what you reported on ${a.appSlug}`,
+      lead: `You told us the check of ${a.appSlug} got something wrong. We fixed it.`,
+      detail: "The next check of the app runs with the fix.",
+    };
+  }
+  return {
+    subject: `About what you reported on ${a.appSlug}`,
+    lead: `You told us the check of ${a.appSlug} got something wrong. We looked into it, and this time the check was right.`,
+    detail: a.answer ?? "",
+  };
+}
+
+// CHE-441: one mail to the person who reported a mistake of the check, when it
+// is settled — fixed, or the check was right and here is what we found. The
+// idempotency key is the row's, so a retried tick never mails twice.
+export async function sendFeedbackAnswer(args: FeedbackAnswerArgs): Promise<void> {
+  const copy = feedbackAnswerCopy(args);
+  if (!args.apiKey || !args.from) {
+    console.log(`[email:dev] to=${args.to} subject="${copy.subject}" url=${args.url}`);
+    return;
+  }
+  const quote = args.theirWords.replace(/\s+/g, " ").trim().slice(0, 500);
+  const why = "You get this because you reported this on CheckMyApp. Nothing else will follow about it.";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+      ...(args.idempotencyKey ? { "Idempotency-Key": args.idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from: args.from,
+      to: [args.to],
+      subject: copy.subject,
+      ...replyToField(args.replyTo),
+      html: htmlDocument(
+        copy.subject,
+        `<p>${escapeHtml(copy.lead)}</p>` +
+          `<blockquote style="margin:12px 0;padding-left:12px">${escapeHtml(quote)}</blockquote>` +
+          (copy.detail ? `<p>${escapeHtml(copy.detail)}</p>` : "") +
+          `<p><a href="${escapeHtml(args.url)}">Open it on CheckMyApp</a></p><p>— CheckMyApp</p>`,
+        escapeHtml(why),
+      ),
+      text: `${copy.lead}\n\n> ${quote}\n\n${copy.detail ? `${copy.detail}\n\n` : ""}Open it on CheckMyApp: ${args.url}\n\n— CheckMyApp\n\n${why}`,
+    }),
+  });
+  await refuseUnlessRepeat(res, args.idempotencyKey);
 }

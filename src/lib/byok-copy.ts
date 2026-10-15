@@ -3,9 +3,15 @@
 // the verdict-language guards). It states the key's status; it never tells the
 // team what to do about it.
 
+import { BYOK_NO_CREDIT } from "@/lib/byok-credit";
+
 export type StoredKey = { masked: string } | { unreadable: true } | null;
 
-export function keyStatusLine(stored: StoredKey): { text: string; tone: "normal" | "broken" } {
+export function keyStatusLine(stored: StoredKey, noCredit = false): { text: string; tone: "normal" | "broken" } {
+  // CHE-458: a key that cannot pay is the first thing said about it.
+  if (stored && "masked" in stored && noCredit) {
+    return { text: `${BYOK_NO_CREDIT} The key is ${stored.masked}.`, tone: "broken" };
+  }
   if (!stored) {
     return {
       text: "No key yet. With the team's own OpenRouter key, checks run on it: the model is paid from that OpenRouter account, and checks cost the team nothing here.",
