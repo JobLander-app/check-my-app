@@ -902,6 +902,8 @@ async function executeToolUnscrubbed(
         // drive is our gap. Before classifyUnverified, which leaves an
         // already-reasoned skipped step alone.
         coerceUndrivenControl(step, env);
+        // A step named for an act this run did not carry out is not "ok".
+        coerceUnperformedWrite(step, env);
         if (env.undrivenControls) env.undrivenControls.length = 0;
         // CHE-372: a step on the store's locked password page is about access
         // or our own hands, never the store. Before classifyUnverified, which
@@ -2631,6 +2633,42 @@ export function coerceUndrivenControl(
   step.observed = observed
     ? `${observed}${/[.!?]$/.test(observed) ? "" : "."} This control could not be exercised this run.`
     : UNVERIFIABLE_FALLBACK;
+}
+
+// A step that names the act of adding, creating or saving and was never
+// carried out is not "ok" (pilot feedback CHE-480). Securify's "Use the Add
+// country search field" was reported ok in a read-only run: the walker typed
+// into the field, did not add a country — and its own observed text said so
+// ("adding a country was deliberately not performed"). The journey then read
+// "Everything on the Block Countries journey works" and the member, who
+// manages blocked countries for a living, answered "it was not really
+// checked". The read-only instructions already say a create step is reported
+// "skipped"; a sentence in a prompt is a request, so the step is written
+// skipped/not_applicable here, and the journey rolls up to "partly verified"
+// (execution.ts journeyStatus) instead of "Works". Only a run that may not
+// create: where it may, a step that did not add is the walker's own business.
+// The step's own words stay — they say what was confirmed (the lookup) and
+// what was not.
+const WRITE_NAMED = CREATE_VERBS;
+const WRITE_NOT_CARRIED_OUT = new RegExp(
+  [
+    String.raw`\b(?:deliberately|intentionally|purposely|on purpose)\s+(?:not|left|stopped|skipped|withheld)\b`,
+    String.raw`\bnot\s+(?:performed|pressed|submitted|clicked|saved|completed|carried out|executed|done)\b`,
+    String.raw`\b(?:did not|didn't|was not|wasn't|were not|weren't|never)\s+(?:actually\s+)?(?:perform(?:ed)?|press(?:ed)?|submit(?:ted)?|click(?:ed)?|sav(?:e|ed)|complet(?:e|ed)|add(?:ed)?|creat(?:e|ed))\b`,
+    String.raw`\bwithout\s+(?:actually\s+)?(?:pressing|submitting|clicking|saving|adding|creating)\b`,
+    String.raw`\b(?:stopped|stopping)\s+(?:short|before)\b`,
+  ].join("|"),
+  "i",
+);
+
+export function coerceUnperformedWrite(step: ReportedStep, env: Pick<ToolEnv, "writeAllowed">): void {
+  if (env.writeAllowed) return;
+  if (step.status !== "ok") return;
+  if (!WRITE_NAMED.test(step.label ?? "") && !WRITE_NAMED.test(step.attempted ?? "")) return;
+  if (!WRITE_NOT_CARRIED_OUT.test(step.observed ?? "")) return;
+  console.warn(`[report_step] "${step.label}": ok, but the act it names was not carried out in a read-only run → skipped`);
+  step.status = "skipped";
+  step.unverifiedReason = "not_applicable";
 }
 
 export function coerceUnreachable(step: ReportedStep, env: Pick<ToolEnv, "targetOrigin" | "allowedOrigins">): void {
