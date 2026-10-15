@@ -49,6 +49,10 @@
       "entrypoint": "Mailer"
     }
   ],
+  // CHE-486: every invocation of this worker goes to the monitor as it ends
+  // (wrangler-monitor.jsonc) — a page that answered 5xx or threw becomes a
+  // production error filed for Mender. CI deploys the monitor before this.
+  "tail_consumers": [{ "service": "checkmyapp-monitor" }],
   "observability": {
     "enabled": true
   }

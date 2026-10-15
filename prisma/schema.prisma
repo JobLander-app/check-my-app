@@ -1562,3 +1562,27 @@ model Feedback {
   @@index([appJourneyId])
   @@index([status])
 }
+
+// CHE-486 part 3: an error in production, one row per signature (worker,
+// error name, normalised message, the function it came from — no line
+// numbers). The monitor worker tails web and agent; the agent counts here and
+// files one ticket per signature for Mender (src/agent/prod-errors.ts).
+model ProdError {
+  signature       String    @id
+  script          String
+  name            String
+  message         String
+  frame           String?
+  path            String?
+  count           Int       @default(0)
+  firstSeenAt     DateTime
+  lastSeenAt      DateTime
+  // The ticket for it; a recurrence after Done replaces it with the new one.
+  issueIdentifier String?
+  // When its ticket last heard of it — at most once an hour.
+  lastToldAt      DateTime?
+  // Its ticket was Canceled: ruled not-a-bug, counted and never filed again.
+  settled         Boolean   @default(false)
+
+  @@index([lastSeenAt])
+}

@@ -30,8 +30,16 @@
   "vars": {
     "APP_URL": "https://checkmyapp.dev",
     "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>",
-    "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>"
+    "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>",
+    // CHE-486: production errors are recorded by signature; "on" files them as
+    // tickets for Mender. Recorded first, so the real signatures are looked at
+    // before any of them can wake anything.
+    "PROD_ERROR_FILING": "record"
   },
+  // CHE-486: every invocation of this worker goes to the monitor as it ends
+  // (wrangler-monitor.jsonc); the errors among them come back to
+  // ProdErrorIntake below, by signature.
+  "tail_consumers": [{ "service": "checkmyapp-monitor" }],
   "browser": {
     "binding": "MYBROWSER"
   },

@@ -23,6 +23,9 @@ const LIVE_HOST = "live.checkmyapp.dev";
 // CHE-341: the web worker sends team invites through this entrypoint (service
 // binding MAILER in wrangler.jsonc), so the mail key lives in one worker only.
 export { Mailer } from "./mailer";
+// CHE-486: the monitor worker hands production errors in here (service binding
+// AGENT, entrypoint ProdErrorIntake in wrangler-monitor.jsonc).
+export { ProdErrorIntake } from "./prod-error-intake";
 
 export default {
   async fetch(req: Request, env: AgentBindings): Promise<Response> {
