@@ -184,10 +184,13 @@ async function main() {
   // unsubscribe or a form post is listed to the model but never replayed: a
   // second request could consume it, and an anonymous GET is not the request
   // the page made.
+  // (On the chat subdomain, so each IS what the chat step is about — only the
+  // kind of request keeps it from being asked again.)
+  const CHAT = "https://chat.joblander.app";
   for (const [what, url, method, resourceType] of [
-    ["a GET magic link (a document)", `${ORIGIN}/auth/chat-magic?token=s3cr3t`, "GET", "document"],
-    ["a POST from a script", `${ORIGIN}/api/chat/session`, "POST", "fetch"],
-    ["a GET xhr", `${ORIGIN}/api/chat/unsubscribe?id=42`, "GET", "xhr"],
+    ["a GET magic link (a document)", `${CHAT}/auth/magic?token=s3cr3t`, "GET", "document"],
+    ["a POST from a script", `${CHAT}/api/session`, "POST", "fetch"],
+    ["a GET xhr", `${CHAT}/api/unsubscribe?id=42`, "GET", "xhr"],
   ] as const) {
     const { env, emit } = stubEnv();
     emit("requestfailed", failedRequest(url, "net::ERR_CONNECTION_RESET", method, resourceType));
@@ -195,9 +198,39 @@ async function main() {
     const step = await reportStep(env, CHAT_STEP);
     const log = await executeTool(env, "get_network_log", {});
     globalThis.fetch = realFetch;
+    const u = new URL(url);
     check(`${what} is listed to the model but never asked again; the step stays a gap of ours`,
-      asked.length === 0 && step.status === "skipped" && step.unverifiedReason === "our_capability" && log.includes(url),
+      asked.length === 0 && step.status === "skipped" && step.unverifiedReason === "our_capability" && log.includes(`${u.origin}${u.pathname}`),
       `${asked.length} asked, ${step.status}`);
+    // Codex, #344 round 2: what the model is shown carries no query value.
+    if (u.search) check(`…and the model is shown it without its query`, !log.includes(u.search) && !/s3cr3t|id=42/.test(log), log.split("\n").filter((l) => l.includes(u.pathname)).join(" | "));
+  }
+
+  // Codex, #344 round 2: a word the asset's path happens to share is not what a
+  // step is about. A broken background image is not a login step's cause.
+  {
+    const { env, emit } = stubEnv();
+    emit("requestfailed", failedRequest(`${ORIGIN}/images/login-background.png`, "net::ERR_CONNECTION_RESET", "GET", "image"));
+    const asked = stubFetch(() => ({ status: 404 }));
+    const step = await reportStep(env, {
+      label: "Log in with the test account",
+      status: "skipped",
+      unverifiedReason: "our_capability",
+      attempted: "Filled the login form and pressed Log in",
+      observed: "The login form could not be submitted and could not be confirmed.",
+    });
+    globalThis.fetch = realFetch;
+    check("an asset sharing only a path word (login-background.png) is not asked about a login step",
+      asked.length === 0 && step.status === "skipped" && step.unverifiedReason === "our_capability", `${asked.length} asked, ${step.status}`);
+    const named = await (async () => {
+      const again = stubEnv();
+      again.emit("requestfailed", failedRequest(`${ORIGIN}/images/login-background.png`, "net::ERR_CONNECTION_RESET", "GET", "image"));
+      stubFetch(() => ({ status: 404 }));
+      const s = await reportStep(again.env, { ...CHAT_STEP, label: "Login page background", observed: "login-background.png did not load and could not be confirmed." });
+      globalThis.fetch = realFetch;
+      return s;
+    })();
+    check("…but a step that names the file is about it", named.status === "broken", named.status);
   }
 
   // …and a static resource carrying a token is asked as it was, but the

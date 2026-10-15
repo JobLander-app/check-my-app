@@ -2685,32 +2685,40 @@ export function noteOwnRequestFailure(
   map.set(url.href, { browserReason, probeable });
 }
 
-// What a step has to say to be about this request: the host it names, or a word
-// that only this URL carries — "chat" and "sdk" for chat.joblander.app/packs/
-// js/sdk.js. Run #6ynou: five steps in four journeys were about that script and
-// called it a gap of ours, one of them after probing chatwoot.com, a host the
-// page never loaded from.
-const GENERIC_URL_WORDS = new Set([
-  "www", "packs", "static", "assets", "asset", "cdn", "api", "app", "dist", "min", "bundle", "main", "index",
-  "public", "mjs", "cjs", "map", "html", "json", "css", "js", "com", "org", "net", "dev", "io",
-]);
-function urlWords(url: URL, targetOrigin: string): string[] {
+// What a step has to say to be about this request — something only this request
+// carries: the subdomain it is served from when that is not the product's own
+// host ("chat" for chat.joblander.app, or the host itself), its file name
+// ("sdk.js"), or its path. Run #6ynou: five steps in four journeys were about
+// that script and called it a gap of ours, one of them after probing
+// chatwoot.com, a host the page never loaded from. A word that merely occurs in
+// the path is not enough: /images/login-background.png is not what a login step
+// is about (Codex, #344).
+const GENERIC_HOST_WORDS = new Set(["www", "static", "assets", "asset", "cdn", "api", "app", "dev", "com", "org", "net", "io"]);
+function hostWords(url: URL, targetOrigin: string): string[] {
   const own = bareHost(new URL(targetOrigin).hostname).split(".");
   const labels = bareHost(url.hostname).split(".");
   while (labels.length && own.length && labels[labels.length - 1] === own[own.length - 1]) {
     labels.pop();
     own.pop();
   }
-  const words = [...labels, ...url.pathname.split(/[/._-]+/)]
-    .map((w) => w.toLowerCase())
-    .filter((w) => /^[a-z0-9]{3,}$/.test(w) && !/^\d+$/.test(w) && !GENERIC_URL_WORDS.has(w));
-  return [...new Set(words)];
+  return labels.map((w) => w.toLowerCase()).filter((w) => /^[a-z0-9]{3,}$/.test(w) && !/^\d+$/.test(w) && !GENERIC_HOST_WORDS.has(w));
 }
 
 function stepIsAbout(text: string, url: URL, targetOrigin: string): boolean {
   const lower = text.toLowerCase();
-  if (lower.includes(url.hostname.toLowerCase())) return true;
-  return urlWords(url, targetOrigin).some((w) => new RegExp(`\\b${w}\\b`, "i").test(text));
+  const ownHost = bareHost(new URL(targetOrigin).hostname) === bareHost(url.hostname);
+  if (!ownHost && lower.includes(url.hostname.toLowerCase())) return true;
+  const file = url.pathname.split("/").pop() ?? "";
+  if (/\.[a-z0-9]{1,5}$/i.test(file) && lower.includes(file.toLowerCase())) return true;
+  if (url.pathname.length > 1 && lower.includes(url.pathname.toLowerCase())) return true;
+  return hostWords(url, targetOrigin).some((w) => new RegExp(`\\b${w}\\b`, "i").test(text));
+}
+
+// A failed request as the model is shown it: its address without the query,
+// which can carry a signed token (Codex, #344).
+function shownUrl(href: string): string {
+  const u = new URL(href);
+  return `${u.origin}${u.pathname}${u.search ? "?…" : ""}`;
 }
 
 // The exact URL the page asked for, asked again from here. Failing means no
@@ -3103,7 +3111,7 @@ function withinMs<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
 function drainLogs(env: ToolEnv): string {
   const net = env.networkLog.splice(0).slice(-60);
   const cons = env.consoleLog.splice(0).slice(-30);
-  const failed = [...(env.ownRequestFailures?.entries() ?? [])].map(([url, f]) => `${url} → no answer (${f.browserReason})`);
+  const failed = [...(env.ownRequestFailures?.entries() ?? [])].map(([url, f]) => `${shownUrl(url)} → no answer (${f.browserReason})`);
   return [
     "NETWORK (recent):",
     net.length ? net.join("\n") : "(none)",
