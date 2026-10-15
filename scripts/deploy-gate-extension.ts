@@ -11,8 +11,11 @@
 // doubles what that step costs. That used to be avoided by a convention —
 // "merge only when D1 shows nothing in flight" — and a convention fails when
 // nobody is there to keep it. Since CHE-486 Mender's pull requests merge
-// themselves at any hour, so the deploy waits for website checks too; past the
-// wait it deploys anyway, because a repeated step costs money and loses nothing.
+// themselves at any hour, so the deploy waits for every check, website ones
+// too, and does not deploy over one (Codex, #356): past the wait it fails, and
+// the next push deploys. A check started more than STALE_HOURS ago is not "in
+// flight" but stuck, and is not waited for — one hung row must not hold every
+// deploy forever; the orphan sweep is what ends it.
 //
 // The same rule with nobody to remember it. It also outlives any convention: a
 // scheduled check appears on no announcement at all.
@@ -24,8 +27,9 @@
 import { readFileSync } from "node:fs";
 import { LIVE_RUN_STATUSES } from "../src/lib/enums";
 
-const WAIT_MS = Number(process.env.DEPLOY_GATE_WAIT_MS ?? 25 * 60 * 1000);
+const WAIT_MS = Number(process.env.DEPLOY_GATE_WAIT_MS ?? 60 * 60 * 1000);
 const POLL_MS = Number(process.env.DEPLOY_GATE_POLL_MS ?? 30_000);
+const STALE_HOURS = 3;
 
 interface LiveRun { runNumber: number; status: string; appSlug: string; targetKind: string }
 
@@ -41,7 +45,10 @@ async function liveRuns(account: string, token: string, database: string): Promi
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/d1/database/${database}/query`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ sql: `SELECT runNumber, status, appSlug, targetKind FROM Run WHERE status IN (${statuses})` }),
+    body: JSON.stringify({
+      sql: `SELECT runNumber, status, appSlug, targetKind FROM Run WHERE status IN (${statuses}) ` +
+        `AND createdAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${STALE_HOURS} hours')`,
+    }),
   });
   if (!response.ok) throw new Error(`D1 refused the question (HTTP ${response.status}); the gate cannot tell whether a run is in flight`);
   const body = await response.json() as { success: boolean; result?: { results: LiveRun[] }[]; errors?: unknown };
@@ -65,14 +72,12 @@ async function main() {
     }
     const names = running.map(run => `#${run.runNumber} ${run.appSlug} (${run.targetKind}, ${run.status})`).join(", ");
     if (Date.now() >= deadline) {
-      if (running.some(run => run.targetKind === 'extension')) {
-        console.error(`deploy-gate: still in flight after ${Math.round(WAIT_MS / 60_000)} minutes: ${names}.`);
-        console.error("Deploying now would kill an extension check and leave a paid session with nobody to stop it. Re-run this job when the check is done, or cancel the run deliberately.");
-        process.exitCode = 1;
-        return;
-      }
-      // Website checks only: each repeats its current step, at a cost, and loses nothing.
-      console.log(`::warning::deploy-gate: website check(s) still running after ${Math.round(WAIT_MS / 60_000)} minutes (${names}); deploying — each repeats its current step.`);
+      console.error(`deploy-gate: still in flight after ${Math.round(WAIT_MS / 60_000)} minutes: ${names}.`);
+      console.error(running.some(run => run.targetKind === 'extension')
+        ? "Deploying now would kill an extension check and leave a paid session with nobody to stop it."
+        : "Deploying now would make each of these checks repeat its current step, at a cost.");
+      console.error("Not deployed. The next push to main deploys this commit too; or re-run this job when the checks are done.");
+      process.exitCode = 1;
       return;
     }
     console.log(`deploy-gate: waiting for ${names}…`);

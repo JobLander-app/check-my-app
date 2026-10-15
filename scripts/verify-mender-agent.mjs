@@ -299,9 +299,10 @@ check("closing a PR returns the ticket without spending another attempt",
   ] });
   check("…Mender's own round does, and a Minor after it does not hold the merge", ours.roundsUsed === 1 && ours.answered && gateDecision(ours).action === "merge");
 }
-check("a merged PR's ticket left In Review is settled by the next gate run, and only from In Review",
-  /async function reconcileMerged[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?setState\(d\.issue\.id, "Done"\)/.test(gateSrc) &&
+check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
+  /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?setState\(d\.issue\.id, "Todo"\)/.test(gateSrc) &&
     /await reconcileMerged\(\);/.test(gateSrc));
+check("a check stuck for hours holds no merge (the deploy gate's staleness rule)", /createdAt > strftime\('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 hours'\)/.test(agent));
 check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
 const gwf = read(".github/workflows/mender-gate.yml");
 check("the gate runs on events, never on a schedule (owner: no crons)",

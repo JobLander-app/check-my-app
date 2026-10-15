@@ -23,8 +23,10 @@ async function main() {
   // every check in flight. Only an extension check dies, so only it fails the
   // deploy past the wait; a website check repeats a step and is deployed over.
   assert.doesNotMatch(gate, /WHERE targetKind = 'extension' AND/, "The gate waits for every check in flight, not only extension ones");
-  assert.match(gate, /running\.some\(run => run\.targetKind === 'extension'\)\)[\s\S]*?process\.exitCode = 1/, "Past the wait, an extension check still fails the deploy");
-  assert.match(gate, /::warning::deploy-gate: website check/, "…while website checks are deployed over, with a warning");
+  // Codex, #356: past the wait it fails for any check — never deploys over one.
+  assert.match(gate, /if \(Date\.now\(\) >= deadline\) \{[\s\S]*?process\.exitCode = 1;\s*\n\s*return;\s*\n\s*\}/, "Past the wait the deploy fails, whatever kind of check is still running");
+  assert.doesNotMatch(gate, /::warning::deploy-gate|deploying —/, "…it never deploys over a running check");
+  assert.match(gate, /createdAt > strftime\('%Y-%m-%dT%H:%M:%fZ', 'now', '-\$\{STALE_HOURS\} hours'\)/, "A check stuck for hours is not waited for: one hung row must not hold every deploy");
   assert.match(gate, /process\.exitCode = 1;\n\}\);/, "An unanswerable question is not permission to deploy");
 
   const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");

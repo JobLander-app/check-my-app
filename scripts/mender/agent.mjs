@@ -648,19 +648,26 @@ function trustedLogins() {
  * A merged Mender PR whose ticket is still In Review: the merge happened and the
  * bookkeeping after it did not (Codex, #356). Merged PRs leave the open list, so
  * every gate run settles the last two days' again; a ticket moved on since (a
- * revert sends it back to Todo) is left alone.
+ * revert sends it back to Todo) is left alone. A PR the gate closed is the same
+ * story the other way: its ticket goes back to Todo (Codex, #356).
  */
 async function reconcileMerged() {
   const since = Date.now() - 2 * 86_400_000;
-  const merged = ghJson(["pr", "list", "--state", "merged", "--limit", "30", "--json", "number,headRefName,url,mergedAt"])
-    .filter((p) => validBranch(p.headRefName) && Date.parse(p.mergedAt) > since);
-  for (const pr of merged) {
+  const settled = ghJson(["pr", "list", "--state", "closed", "--limit", "50", "--json", "number,headRefName,url,mergedAt,closedAt"])
+    .filter((p) => validBranch(p.headRefName) && Date.parse(p.closedAt) > since);
+  for (const pr of settled) {
     const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
     const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
     if (d.issue?.state?.name !== "In Review") continue;
-    await comment(d.issue.id, `**Merged:** ${pr.url}.`);
-    await setState(d.issue.id, "Done");
-    say(`reconciled ${id}: merged in #${pr.number}, now Done`);
+    if (pr.mergedAt) {
+      await comment(d.issue.id, `**Merged:** ${pr.url}.`);
+      await setState(d.issue.id, "Done");
+      say(`reconciled ${id}: merged in #${pr.number}, now Done`);
+    } else {
+      await comment(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
+      await setState(d.issue.id, "Todo");
+      say(`reconciled ${id}: #${pr.number} closed, back to Todo`);
+    }
   }
 }
 
@@ -688,7 +695,9 @@ export async function checksInFlight(env = process.env, doFetch = fetch) {
   const r = await doFetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${database}/query`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ sql: `SELECT count(*) AS n FROM Run WHERE status IN (${statuses})` }),
+    // A check started hours ago is stuck, not running (the deploy gate's rule):
+    // one hung row must not hold every merge.
+    body: JSON.stringify({ sql: `SELECT count(*) AS n FROM Run WHERE status IN (${statuses}) AND createdAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 hours')` }),
     signal: AbortSignal.timeout(30_000),
   });
   const body = await r.json();
