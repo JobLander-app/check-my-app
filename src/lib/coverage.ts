@@ -95,16 +95,17 @@ function listOf(pages: PageRef[]): string {
 //     screen lives (Codex, #345).
 // A path a prohibition governs ("don't touch /admin") is not an ask. The
 // prohibition reaches to the next "but", "however", "instead", "then", or an
-// "and"/comma that opens a new phrase rather than a list of paths: "Don't touch
+// "and"/comma that opens a new request ("…, and check /faq"): "Don't touch
 // /admin, but check /faq" asks for /faq (Codex, #345); "Don't touch /admin and
-// /billing" asks for neither.
+// also /billing" and "Avoid sensitive pages, including /billing" ask for neither.
 // Anything else the notes describe in words ("the card on the app's page") has
 // no address to look for here and is not claimed either way.
 const PATH_IN_NOTES = /(?<![\w/:.@%-])(\/[\w~%.-]+(?:\/[\w~%.-]*)*)/g;
 const FORBIDS = /\b(?:don'?t|do not|never|avoid|skip|except|without|exclude|excluding|ignore|not touch)\b/i;
 const SECTION_IN_NOTES = /\bsettings\s*(?:→|->|›|»|>)\s*([A-Za-z][A-Za-z ]{0,30})/gi;
 // Where a prohibition stops governing what follows it.
-const PHRASE_BREAK = /\b(?:but|however|instead|then|while)\b|(?:,|\band\b)(?=\s+[a-z])/gi;
+const ASK_VERB = String.raw`(?:check|open|visit|look|test|verify|go|see|walk|try|review|focus|cover|confirm|ensure|make\s+sure)`;
+const PHRASE_BREAK = new RegExp(String.raw`\b(?:but|however|instead|then|while|yet)\b|(?:,|\band\b)(?=\s+(?:please\s+)?${ASK_VERB}\b)`, "gi");
 
 /** Is the match at `index` governed by a prohibition earlier in its own phrase? */
 function forbidden(clause: string, index: number): boolean {
@@ -138,24 +139,54 @@ export function notePaths(notes: string | null | undefined, { ownApp = false }: 
   return [...out.values()];
 }
 
-// The pathnames the walk actually requested or navigated to: every absolute URL
-// in a request log or a step's recorded actions, plus an action's relative
-// "url". Prose is not here — a step that only mentions "/faq" did not open it,
-// and neither did a request whose query says "?next=/faq" (Codex, #345).
-const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
-const RELATIVE_URL_FIELD = /"url"\s*:\s*"(\/[^"]*)"/g;
-export function visitedPaths(navigation: string[]): string[] {
+// The pathnames on the checked app's own hosts that the walk actually stood on:
+// a recorded action's navigate "url" and any action's "outcome.urlAfter" (a
+// click that changed the page in a single-page app counts), and every GET in a
+// request log. Prose is not here — a step that only mentions "/faq" did not
+// open it, nor did "?next=/faq", a value typed into a field, or another site's
+// /faq the page happened to load (Codex, #345).
+// The walker's excerpt reads "GET https://app/x → 200; navigation to
+// https://app/y → 200; GET /signup → 307 → /closure" (Step.networkLog, prod).
+const GET_IN_LOG = /\b(?:GET|navigation to|navigated to)\s+((?:https?:\/\/|\/)[^\s;,]+)/gi;
+const bare = (host: string) => host.toLowerCase().replace(/^www\./, "");
+export function visitedPaths(navigation: string[], targetHost?: string): string[] {
+  const own = targetHost ? bare(targetHost) : null;
   const out = new Set<string>();
-  const add = (raw: string) => {
+  const add = (raw: unknown) => {
+    if (typeof raw !== "string" || !raw) return;
+    let path: string;
     try {
-      out.add(new URL(raw, "https://x.invalid").pathname.toLowerCase().replace(/\/+$/, "") || "/");
+      if (raw.startsWith("/")) {
+        // A relative address is on the app itself; only its query and fragment go.
+        path = raw.split(/[?#]/)[0];
+      } else {
+        const url = new URL(raw);
+        const host = bare(url.hostname);
+        if (own && host !== own && !host.endsWith(`.${own}`)) return;
+        path = url.pathname;
+      }
     } catch {
-      /* not a URL */
+      return;
     }
+    out.add(path.toLowerCase().replace(/\/+$/, "") || "/");
   };
   for (const text of navigation.filter(Boolean)) {
-    for (const m of text.matchAll(URL_IN_TEXT)) add(m[0]);
-    for (const m of text.matchAll(RELATIVE_URL_FIELD)) add(m[1]);
+    const actions = (() => {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        return Array.isArray(parsed) ? (parsed as { kind?: string; url?: unknown; outcome?: { urlAfter?: unknown } }[]) : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (actions) {
+      for (const a of actions) {
+        if (a?.kind === "navigate") add(a.url);
+        add(a?.outcome?.urlAfter);
+      }
+      continue;
+    }
+    for (const m of text.matchAll(GET_IN_LOG)) add(m[1]);
   }
   return [...out];
 }
@@ -169,7 +200,11 @@ function reached(path: string, visited: string[]): boolean {
 
 // Places the notes name that the walk never requested or navigated to.
 // `navigation` is request logs and recorded actions, never prose.
-export function unreachedAsked(notes: string | null | undefined, navigation: string[], options: { ownApp?: boolean } = {}): PageRef[] {
-  const visited = visitedPaths(navigation);
+export function unreachedAsked(
+  notes: string | null | undefined,
+  navigation: string[],
+  options: { ownApp?: boolean; targetHost?: string } = {},
+): PageRef[] {
+  const visited = visitedPaths(navigation, options.targetHost);
   return notePaths(notes, options).filter((p) => !reached(p.path, visited));
 }

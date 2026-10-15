@@ -176,6 +176,8 @@ export interface ReviewSource {
   // CHE-476: read and not shown — the addresses the owner's notes name are
   // counted in coverage. Absent on a source that predates the column.
   userNotes?: string | null;
+  // Read and not shown: whose pages a request in the walk's logs is on.
+  targetUrl?: string | null;
   deploySha: string | null;
   deployEnv: string | null;
   startedAt: Date;
@@ -202,6 +204,7 @@ export const REVIEW_SELECT = {
   bottomLine: true,
   anatomy: true,
   userNotes: true,
+  targetUrl: true,
   deploySha: true,
   deployEnv: true,
   startedAt: true,
@@ -402,7 +405,8 @@ export function buildReview(run: ReviewSource, origin: string, priorities: Map<n
   // Reached only by a request or a navigation, never by prose; "settings → X"
   // is our own address and is read only on our own app.
   const navigation = steps.flatMap((s) => [s.networkLog ?? "", s.actions ?? ""]);
-  const asked = unreachedAsked(run.userNotes, navigation, { ownApp: isSelfHost(run.appSlug) }).map((p) => p.path);
+  const targetHost = run.targetUrl && URL.canParse(run.targetUrl) ? new URL(run.targetUrl).hostname : run.appSlug;
+  const asked = unreachedAsked(run.userNotes, navigation, { ownApp: isSelfHost(targetHost), targetHost }).map((p) => p.path);
   const pages_not_opened = [
     ...asked,
     ...unreachedPages(pages, evidence).map((p) => p.path).filter((p) => !asked.includes(p)),

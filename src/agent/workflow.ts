@@ -1239,7 +1239,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
           const note = coverageSentence(
             unreachedPages(pages, evidence),
             pages.length,
-            unreachedAsked(run.userNotes, navigation, { ownApp: isSelfUrl(run.targetUrl, env.bindings.SELF_CHECK_HOSTS) }),
+            unreachedAsked(run.userNotes, navigation, {
+              ownApp: isSelfUrl(run.targetUrl, env.bindings.SELF_CHECK_HOSTS),
+              targetHost: URL.canParse(run.targetUrl) ? new URL(run.targetUrl).hostname : undefined,
+            }),
           );
           return note ? [carriedAware, note].filter(Boolean).join(" ") : carriedAware;
         })();
