@@ -30,7 +30,7 @@ import { assertCanStartRun, watchTrialState } from "@/lib/plans";
 import { releaseActionHint, teamRunsTheAction } from "@/lib/release-action";
 import { loadReview } from "@/lib/review";
 import { loadRunStatus, loadVerdict, type RunStatusPayload } from "@/lib/run-read";
-import { can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
+import { TEAM_SCOPES, can, refusal, type TeamAction, type TeamScope } from "@/lib/scopes";
 import { startCheck } from "@/lib/start-check";
 import { startSavedApp } from "@/lib/start-saved-app";
 import { appSlugFromUrl } from "@/lib/utils";
@@ -39,13 +39,19 @@ import { EXTENSION_ON_DEMAND, configureWatch, enableWatchForApp } from "@/lib/wa
 import { BALANCE_PATH, PRICING_PATH, appCanRun, loadPlanStatus } from "@/lib/plan-status";
 import { explainRunPrice } from "@/lib/check-price";
 import { appPriceRange, teamBalance } from "@/lib/plans";
+import { byokRefusal } from "@/lib/byok-credit";
 import { captureBalanceExhausted, isBalanceExhausted } from "@/lib/balance-events";
 import { teamOwned } from "@/lib/tenant-db";
+import { recountOpenIssuesOfRun } from "@/lib/open-issues";
+import { FINDING_MARKS } from "@/lib/validation";
+import { cancelRun } from "@/lib/run-cancel";
 import { DEFAULT_ACCOUNT_LABEL, MAX_EXTRA_ACCOUNTS, normalizeAccountLabel } from "@/lib/test-accounts";
 import { MAX_ALLOWED_ORIGINS, parseAllowedOrigins } from "@/lib/allowed-origins";
 import { hasFeature, type TeamFeature } from "@/lib/team-features";
 import type { McpDoor } from "@/lib/started-via";
 import { connectApp } from "@/lib/shopify-connect";
+import { appOnStore, connectedShopifyAppOf, scenariosToCarry, shopifyAppOf, storesOf } from "@/lib/shopify-stores";
+import { shopifyAdminUrl } from "@/lib/session-view";
 import { MCP_CONNECT_COPY } from "@/lib/sign-in-copy";
 import { appPath } from "@/lib/app-shell";
 import { FEEDBACK_REASONS, FEEDBACK_TEXT_MAX, STATUS_LABEL, giveFeedback, listFeedback, type FeedbackTarget } from "@/lib/feedback";
@@ -95,6 +101,8 @@ export interface McpDeps {
   // The origin links are built against — the one the request came to.
   origin: string;
   trigger: (runId: string) => Promise<void>;
+  // CHE-454: stops a run's Workflow instance (cancel_check).
+  terminate?: (runId: string) => Promise<void>;
   siteCap: () => number;
   ephemeralTtlDays: () => number;
   capture?: typeof captureServer;
@@ -179,6 +187,7 @@ export const toolSchemas = {
   },
   update_app: {
     app_id: appId,
+    name: z.string().max(200).optional().describe("What the team calls the app, shown instead of its address (at most 60 characters); \"\" clears it"),
     scenarios: z.string().max(2000).optional().describe("Replaces the app's scenarios; \"\" clears them"),
     limits: z.string().max(2000).optional().describe("Replaces the limits; \"\" clears them"),
     notes: z.string().max(2000).optional().describe("Replaces the notes; \"\" clears them"),
@@ -230,6 +239,9 @@ export const toolSchemas = {
       .max(20)
       .optional()
       .describe("With app_id: team scenario ids (from list_scenarios) to check this time, besides the daily ones"),
+    // CHE-451: a Shopify app on one of its stores, instead of app_id.
+    shopify_app: z.string().min(1).optional().describe("Or: a connected Shopify app's handle (list_apps shopify_app), with store"),
+    store: z.string().min(1).optional().describe("With shopify_app: which store to check it on, e.g. 'my-staging-store'"),
   },
   // CHE-435: the app's scenarios, edited by id.
   list_scenarios: { app_id: appId },
@@ -244,6 +256,7 @@ export const toolSchemas = {
     daily: z.boolean().optional().describe("true (default): checked by every check of the app. false: only when a check names it"),
     replaces: z.string().min(1).optional().describe("scenario_id of a scenario the check found that is really this one; it is retired"),
     run_now: z.boolean().optional().describe("Also start a check of the app now that covers it (spends the team's balance)"),
+    all_stores: z.boolean().optional().describe("For a Shopify app on several stores: add it on every store of that app, not only this one"),
   },
   update_scenario: {
     scenario_id: z.string().min(1).describe("From list_scenarios or get_review"),
@@ -253,6 +266,8 @@ export const toolSchemas = {
   },
   remove_scenario: { scenario_id: z.string().min(1).describe("A team scenario's id; it is retired, its history kept") },
   get_check_status: { run_id: runId },
+  // CHE-454: stop a check that should not run on.
+  cancel_check: { run_id: runId },
   wait_for_run: { run_id: runId },
   wait_for_review: { run_id: runId },
   get_verdict: {
@@ -265,6 +280,15 @@ export const toolSchemas = {
     frequency: frequency.default("daily").describe("daily, every_6h or manual"),
   },
   disable_watch: { app_id: appId },
+  // CHE-451: another dev store of a Shopify app the team already checks.
+  add_store: {
+    shopify_app: z.string().min(1).describe("The app's handle, as list_apps shows it in shopify_app"),
+    store: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9][a-z0-9-]*$/)
+      .describe("The store's name as in admin.shopify.com/store/<name>, e.g. 'my-staging-store'"),
+  },
   // CHE-434: scenario_id or run_id names where the check got it wrong.
   report_check_mistake: {
     run_id: z.string().min(1).optional().describe("The check (run id)"),
@@ -279,6 +303,14 @@ export const toolSchemas = {
           "scenario_wrong: it is really a different scenario (scenarios only) · other",
       ),
     text: z.string().min(1).max(FEEDBACK_TEXT_MAX).describe("What really happened, or what the check should have done"),
+  },
+  // CHE-444: what the team decided about a finding, as the verdict page's buttons do.
+  mark_finding: {
+    run_id: runId,
+    finding: z.number().int().positive().describe("The finding's number, e.g. 3 for #003"),
+    mark: z
+      .enum(FINDING_MARKS)
+      .describe("known: fine as it is, not reported again · watch: check it first next time · fixed · false_positive: not a bug · none: clear the mark"),
   },
   list_check_mistakes: {
     app_id: z.string().min(1).optional().describe("Every report on any check or scenario of this app"),
@@ -302,6 +334,8 @@ export type FailureCode =
   | "quota_free"
   | "quota_site"
   | "quota_balance"
+  // CHE-458: the team's own OpenRouter key cannot pay; nothing to buy from us.
+  | "byok_no_credit"
   | "ephemeral_requires_owner";
 
 // CHE-325: the refusals an upgrade answers carry `upgrade_url`, so the agent
@@ -320,7 +354,29 @@ const HINTS: Partial<Record<FailureCode, string>> = {
   plan_limit: "The team's plan does not allow this. Do not retry; tell the user what the plan allows and give them upgrade_url.",
   not_found: "Not one of this team's apps or runs. list_apps and latest_results show what exists.",
   forbidden: "This API key cannot do that. An admin of the team can issue a key with more access.",
+  byok_no_credit:
+    "The team's checks run on its own OpenRouter key, and that OpenRouter account has no credit. Tell the user; checks start again on their own once it has credit. Do not retry.",
 };
+
+// What a key of each scope can still do, said with every refusal (CHE-444) —
+// naming only the tools this team is offered: the pilot's tools are registered
+// for a team given `shopify` alone (registerRemoteTools), and a refusal must
+// not send an agent to a call it does not have (CodeRabbit on #317).
+export function memberToolsSentence(scope: TeamScope, pilot: boolean): string {
+  if (scope === "reader") {
+    return `It reads everything: list_apps, latest_results, get_review, get_verdict${pilot ? ", list_scenarios, list_check_mistakes" : ""}.`;
+  }
+  if (scope === "member") {
+    return pilot
+      ? "It reads everything and also starts checks (start_check), adds and edits scenarios, reports mistakes of the check, marks findings, " +
+          "and connects the user's own Shopify dev stores (connect_shopify_app, add_store); storing a login takes an admin key."
+      : "It reads everything and also starts checks (start_check); storing a login takes an admin key.";
+  }
+  return "";
+}
+
+// Least privilege first: a refusal names the smallest scope that would do.
+const SCOPES_UP: readonly TeamScope[] = ["reader", "member", "admin"];
 
 export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   const { db, origin } = deps;
@@ -363,9 +419,27 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
   // CHE-325: what the plan allows and what is left, next to the apps it bounds.
   const planStatus = () => loadPlanStatus(db, { id: team.id, plan }, origin, new Date(deps.now()));
 
+  // CHE-444: a refusal says which key this is, which key would do, and what
+  // this one still can — an agent told only "an admin can do that" cannot tell
+  // whether start_check or add_scenario will be refused next (Securify's agent,
+  // 2026-10-12, on connect_shopify_app).
   function deny(action: TeamAction): ToolResult | null {
     if (can(caller.scope, action)) return null;
-    return fail("forbidden", refusal(caller.scope, action) ?? "Not allowed", HINTS.forbidden);
+    const needs = SCOPES_UP.find((s) => can(s, action)) ?? "admin";
+    const canStill = memberToolsSentence(caller.scope, hasFeature(team.features, "shopify"));
+    return text(
+      {
+        ok: false,
+        code: "forbidden",
+        error: refusal(caller.scope, action) ?? "Not allowed",
+        key_scope: caller.scope,
+        needs_scope: needs,
+        hint:
+          `This is a ${caller.scope} key; this call needs ${needs === "admin" ? "an admin" : `a ${needs}`} key. ` +
+          `${canStill} An admin of the team mints keys at ${origin}/settings/api-keys.`,
+      },
+      true,
+    );
   }
 
   // The team's run, or nothing. Reads below go through the shared loaders,
@@ -423,6 +497,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
+          name: true,
           appSlug: true,
           targetUrl: true,
           targetKind: true,
@@ -438,6 +513,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           // CHE-322: label and email only. The password column is not selected,
           // so no later edit to the mapping below can leak it.
           testAccounts: { orderBy: { createdAt: "asc" }, select: { label: true, email: true } },
+          // CHE-482: a store's checks open it signed in as whoever connected it.
+          owner: { select: { email: true } },
           watch: { select: { active: true, frequency: true, nextRunAt: true, trialEndsAt: true } },
           runs: {
             orderBy: { createdAt: "desc" },
@@ -450,17 +527,35 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // now — the gate's own decision, so "paused" here is what the scheduler
       // will do on the next tick.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
+      // CHE-458: a team key that cannot pay stops every app alike.
+      const keyPaused = Boolean(await byokRefusal(db, team.id));
       const perApp = new Map(
         await Promise.all(
           apps.map(async (a) => {
             const [range, can] = await Promise.all([
               appPriceRange(db, { id: team.id, plan }, a.appSlug),
-              appCanRun(db, { id: team.id, plan }, balance, a.appSlug),
+              appCanRun(db, { id: team.id, plan }, balance, a.appSlug, keyPaused),
             ]);
             return [a.id, { range, can }] as const;
           }),
         ),
       );
+      const byHandle = new Map<string, { appId: string; store: string; by: string | null }[]>();
+      for (const a of apps) {
+        // Only a connected store is another store of the app (a pending one has
+        // not had its app confirmed yet).
+        const of = connectedShopifyAppOf(a);
+        if (of) byHandle.set(of.handle, [...(byHandle.get(of.handle) ?? []), { appId: a.id, store: of.store, by: a.owner?.email ?? null }]);
+      }
+      const shopifyFields = (id: string, slug: string, targetUrl: string, by: string | null) => {
+        const of = shopifyAppOf({ appSlug: slug, targetUrl });
+        if (!of) return {};
+        const others = (byHandle.get(of.handle) ?? [])
+          .filter((s) => s.appId !== id)
+          .map((s) => ({ store: s.store, app_id: s.appId, signed_in_as: s.by }));
+        // signed_in_as: whose Shopify sign-in this store's checks use (CHE-482).
+        return { shopify_app: of.handle, store: of.store, signed_in_as: by, other_stores: others };
+      };
       return text({
         ok: true,
         team: team.name,
@@ -472,6 +567,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
           return {
             app_id: a.id,
             app: a.appSlug,
+            // CHE-457: what the team calls it — the name people see, or null.
+            name: a.name,
             url: a.targetUrl,
             kind: a.targetKind,
             scenarios: a.focusAreas,
@@ -490,6 +587,9 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
             ],
             // CHE-372: whether a store password is stored — never the password.
             has_store_password: Boolean(a.storePasswordEnc),
+            // CHE-451: a Shopify app on several stores — which app and store
+            // this is, and the same app's other stores in the team.
+            ...shopifyFields(a.id, a.appSlug, a.targetUrl, a.owner?.email ?? null),
             // What a check of this app usually costs; null until it has a
             // history (plan.typical_check_price_usd covers it until then).
             usual_price_usd: money?.range ? { low: money.range.low, high: money.range.high } : null,
@@ -501,9 +601,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
                     ? "paused"
                     : trial.kind === "ended"
                       ? "trial_ended"
-                      : money && !money.can.ok
-                        ? "paused_balance"
-                        : "active",
+                      : money?.can.why === "team_key"
+                        ? // CHE-458: the team's own OpenRouter key, not our balance.
+                          "paused_team_key"
+                        : money?.can.why === "balance"
+                          ? "paused_balance"
+                          : "active",
                   frequency: a.watch.frequency,
                   next_run_at: a.watch.active ? a.watch.nextRunAt : null,
                   trial_days_left: trial.kind === "active" ? trial.daysLeft : null,
@@ -521,16 +624,24 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
     // the admin and hands the person a page: they sign in there, the app is
     // picked up, and its first check starts from that page.
     async connect_shopify_app(args: { app_url: string }): Promise<ToolResult> {
-      const denied = deny("app.credentials.write");
+      // CHE-482: the store is the key holder's own, opened with their own
+      // Shopify sign-in — a member connects theirs.
+      const denied = deny("shopify.store.connect");
       if (denied) return denied;
       const result = await connectApp(db, { userId: caller.user.id, teamId: team.id, plan }, args.app_url);
       if ("error" in result) {
         const code = result.code === "duplicate" ? "invalid_input" : result.code;
-        return fail(code, result.error, HINTS[code]);
+        // The only refusal of this kind is a key whose person left the team: a
+        // key with more access would not help — the user's own key would.
+        return fail(code, result.error, code === "forbidden" ? MCP_CONNECT_COPY.ownKey(deps.origin) : HINTS[code]);
       }
       if (result.connected) {
         return text({ ok: true, app_id: result.appId, store: result.store, app: result.handle, already_connected: true, hint: MCP_CONNECT_COPY.alreadyConnected });
       }
+      // CHE-451: the same Shopify app on another store of the team — say so,
+      // and how many of its scenarios this store gets once the app is picked.
+      const siblings = (await storesOf(db, team.id, result.handle)).filter((s) => s.appId !== result.appId);
+      const carry = siblings.length ? await scenariosToCarry(db, team.id, result.appId, result.handle) : 0;
       return text({
         ok: true,
         app_id: result.appId,
@@ -538,7 +649,32 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         app: result.handle,
         sign_in_url: `${deps.origin}${appPath.signIn(result.appId)}`,
         hint: MCP_CONNECT_COPY.signIn,
+        ...(siblings.length
+          ? {
+              other_stores: siblings.map((s) => ({ store: s.store, app_id: s.appId })),
+              scenarios_coming: carry,
+              same_app_note: `${result.handle} is already connected on ${siblings.map((s) => s.store).join(", ")}; once the app is picked on this store, its ${carry} team scenario${carry === 1 ? "" : "s"} come${carry === 1 ? "s" : ""} with it.`,
+            }
+          : {}),
       });
+    },
+
+    // CHE-451: the same Shopify app on one more dev store. Named for what the
+    // agent is doing — adding a store — not "connect an app", which it is not.
+    async add_store(args: { shopify_app: string; store: string }): Promise<ToolResult> {
+      const denied = deny("shopify.store.connect");
+      if (denied) return denied;
+      const known = await storesOf(db, team.id, args.shopify_app);
+      if (known.length === 0) {
+        return fail(
+          "not_found",
+          `No Shopify app ${args.shopify_app} is connected in this team. connect_shopify_app with the link to the app in a store's admin connects it first.`,
+          HINTS.not_found,
+        );
+      }
+      const already = known.find((s) => s.store === args.store);
+      if (already) return text({ ok: true, app_id: already.appId, store: args.store, app: args.shopify_app, already_connected: true, other_stores: known.filter((s) => s.store !== args.store).map((s) => ({ store: s.store, app_id: s.appId })) });
+      return this.connect_shopify_app({ app_url: shopifyAdminUrl(args.store, args.shopify_app) });
     },
 
     async create_app(args: {
@@ -587,7 +723,18 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       // promise the scheduler then silently breaks — seen live 2026-09-28 on a
       // Free team with $0 left. Say what will happen and hand over both ways out.
       const balance = await teamBalance(db, { id: team.id, plan }, new Date(deps.now()));
-      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug);
+      const keyPaused = await byokRefusal(db, team.id);
+      const can = await appCanRun(db, { id: team.id, plan }, balance, result.app.appSlug, Boolean(keyPaused));
+      // CHE-458: the team's own key cannot pay — the check waits for it, not for us.
+      if (can.why === "team_key") {
+        return text({
+          ok: true,
+          app_id: result.app.id,
+          app: result.app.appSlug,
+          paused_by_team_key: keyPaused,
+          hint: `Saved, with a recurring check — but it waits: ${keyPaused} Tell the user.`,
+        });
+      }
       if (!can.ok) {
         return text({
           ok: true,
@@ -616,6 +763,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
 
     async update_app(args: {
       app_id: string;
+      name?: string;
       scenarios?: string;
       limits?: string;
       notes?: string;
@@ -634,6 +782,8 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return fail("invalid_input", 'The default account is removed with test_email "" and test_password "".');
       }
       const patch: AppSettingsPatch = {
+        // CHE-457: "" clears it, as on the settings page.
+        name: args.name,
         focusAreas: args.scenarios,
         scopeHints: args.limits,
         userNotes: args.notes,
@@ -675,9 +825,31 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       deploy_env?: string;
       ephemeral?: boolean;
       scenarios?: string[];
+      shopify_app?: string;
+      store?: string;
     }): Promise<ToolResult> {
       const denied = deny("run.start");
       if (denied) return denied;
+      // CHE-451: `shopify_app` + `store` names the same saved app as its app_id.
+      if (args.shopify_app || args.store) {
+        if (args.app_id || args.url) return fail("invalid_input", "Name the app one way: app_id, or shopify_app with store, or url.");
+        if (!args.shopify_app || !args.store) {
+          const stores = args.shopify_app ? (await storesOf(db, team.id, args.shopify_app)).map((s) => s.store) : [];
+          return fail("invalid_input", `shopify_app goes with store${stores.length ? `: ${args.shopify_app} is connected on ${stores.join(", ")}` : ""}.`);
+        }
+        const appId = await appOnStore(db, team.id, args.shopify_app, args.store);
+        if (!appId) {
+          const stores = (await storesOf(db, team.id, args.shopify_app)).map((s) => s.store);
+          return fail(
+            "not_found",
+            stores.length
+              ? `${args.shopify_app} is not connected on ${args.store}; it is on ${stores.join(", ")}. add_store adds ${args.store}.`
+              : `No Shopify app ${args.shopify_app} is connected in this team. connect_shopify_app adds one.`,
+            HINTS.not_found,
+          );
+        }
+        args = { ...args, app_id: appId, shopify_app: undefined, store: undefined };
+      }
       if (Boolean(args.app_id) === Boolean(args.url)) {
         return fail("invalid_input", "Pass app_id (a saved app) or url (a one-off check), not both and not neither.");
       }
@@ -777,6 +949,18 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         hint: "Call wait_for_run (or wait_for_review) until it finishes, or poll get_check_status.",
         ...(releaseAction ? { every_release: releaseAction } : {}),
       });
+    },
+
+    async cancel_check(args: { run_id: string }): Promise<ToolResult> {
+      const result = await cancelRun(
+        db,
+        { userId: caller.user.id, teamId: team.id, scope: caller.scope, name: caller.user.name?.trim() || caller.user.email },
+        args.run_id,
+        deps.terminate ?? (async () => {}),
+        new Date(deps.now()),
+      );
+      if (!result.ok) return fail(result.code, result.error, result.code === "not_found" ? HINTS.not_found : undefined);
+      return text({ ok: true, run_id: args.run_id, status: "canceled", was: result.was, price_usd: 0, note: "Stopped: nothing was published and it costs nothing." });
     },
 
     async get_check_status(args: { run_id: string }): Promise<ToolResult> {
@@ -964,6 +1148,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       return text({ ok: true, report_id: result.id, about: result.kind, status: STATUS_LABEL.open });
     },
 
+    async mark_finding(args: { run_id: string; finding: number; mark: (typeof FINDING_MARKS)[number] }): Promise<ToolResult> {
+      const denied = deny("finding.mark");
+      if (denied) return denied;
+      const run = await db.run.findFirst({
+        where: { ...teamOwned(team.id), publicId: args.run_id },
+        select: { id: true, appId: true, teamId: true, appSlug: true },
+      });
+      if (!run) return runNotFound();
+      const finding = await db.finding.findFirst({ where: { runId: run.id, number: args.finding }, select: { id: true } });
+      if (!finding) return fail("not_found", `Check ${args.run_id} has no finding #${String(args.finding).padStart(3, "0")}.`, HINTS.not_found);
+      await db.finding.update({ where: { id: finding.id }, data: { mark: args.mark } });
+      // The same follow-up as the verdict page's buttons: Issues counts what is open.
+      await recountOpenIssuesOfRun(db, run);
+      return text({ ok: true, run_id: args.run_id, finding: args.finding, mark: args.mark });
+    },
+
     async list_check_mistakes(args: { app_id?: string; scenario_id?: string; run_id?: string }): Promise<ToolResult> {
       const denied = deny("read");
       if (denied) return denied;
@@ -1010,7 +1210,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
       });
     },
 
-    async add_scenario(args: { app_id: string; title: string; description?: string; daily?: boolean; replaces?: string; run_now?: boolean }): Promise<ToolResult> {
+    async add_scenario(args: { app_id: string; title: string; description?: string; daily?: boolean; replaces?: string; run_now?: boolean; all_stores?: boolean }): Promise<ToolResult> {
       if (args.run_now) {
         const denied = deny("run.start");
         if (denied) return denied;
@@ -1023,7 +1223,22 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         ? await replaceScenario(db, actor(), args.replaces, input)
         : await addScenario(db, actor(), { appId: args.app_id, ...input });
       if (!added.ok) return fail(added.code, added.error, added.code === "not_found" ? HINTS.not_found : undefined);
-      if (!args.run_now) return text({ ok: true, scenario_id: added.id, daily: args.daily ?? true });
+      // CHE-451: the same scenario on the app's other stores, once per store.
+      const alsoOn: { store: string; scenario_id: string }[] = [];
+      if (args.all_stores) {
+        const own = await db.app.findFirst({ where: { ...teamOwned(team.id), id: args.app_id }, select: { appSlug: true, targetUrl: true } });
+        const of = own ? shopifyAppOf(own) : null;
+        if (of) {
+          for (const s of (await storesOf(db, team.id, of.handle)).filter((x) => x.appId !== args.app_id)) {
+            const has = ((await listScenarios(db, team.id, s.appId)) ?? []).some((x) => x.title.trim().toLowerCase() === args.title.trim().toLowerCase());
+            if (has) continue;
+            const copy = await addScenario(db, actor(), { appId: s.appId, ...input });
+            if (copy.ok) alsoOn.push({ store: s.store, scenario_id: copy.id });
+          }
+        }
+      }
+      const stores = alsoOn.length ? { also_on: alsoOn } : {};
+      if (!args.run_now) return text({ ok: true, scenario_id: added.id, daily: args.daily ?? true, ...stores });
       const started = await startSavedApp(
         db,
         { id: caller.user.id, teamId: team.id, plan },
@@ -1032,7 +1247,7 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         { scenarios: [added.id] },
       );
       if ("error" in started) {
-        return text({ ok: true, scenario_id: added.id, check: { started: false, error: started.error, code: started.code ?? null } });
+        return text({ ok: true, scenario_id: added.id, ...stores, check: { started: false, error: started.error, code: started.code ?? null } });
       }
       // A check that was already running was planned before this scenario
       // existed: it is that run, and it does not cover the new one.
@@ -1040,11 +1255,12 @@ export function createRemoteTools(caller: McpCaller, deps: McpDeps) {
         return text({
           ok: true,
           scenario_id: added.id,
+          ...stores,
           check: { started: false, run_id: started.publicId, already_running: true, covers_this_scenario: false, ...urls(started.publicId) },
           hint: `A check of this app was already running and does not cover this scenario. When it ends, call start_check with app_id and scenarios: ["${added.id}"].`,
         });
       }
-      return text({ ok: true, scenario_id: added.id, check: { started: true, run_id: started.publicId, covers_this_scenario: true, ...urls(started.publicId) } });
+      return text({ ok: true, scenario_id: added.id, ...stores, check: { started: true, run_id: started.publicId, covers_this_scenario: true, ...urls(started.publicId) } });
     },
 
     async update_scenario(args: { scenario_id: string; title?: string; description?: string; daily?: boolean }): Promise<ToolResult> {
@@ -1096,7 +1312,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "signs in as (label and email — never a password), whether a store password is stored (has_store_password), " +
     "recurring-check state, what a check of it usually costs " +
     "(usual_price_usd) and whether one can run now, and the last run; plus `plan`: the team's balance, what a check " +
-    "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. Start here.",
+    "typically costs, watched apps, trial, buy_url (top up) and upgrade_url. A Shopify app also carries shopify_app (its " +
+    "handle), store, and other_stores: the same app connected on the team's other stores. Start here.",
   create_app:
     "Add an app. Pass its URL; scenarios, limits, notes and test logins are optional and can be changed later " +
     "with update_app. test_email/test_password is the default account; test_accounts adds named ones (\"admin\", " +
@@ -1111,22 +1328,29 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(the result's hint says which, with buy_url and upgrade_url). isError with code plan_limit when the plan does " +
     "not allow it.",
   connect_shopify_app: MCP_CONNECT_COPY.description,
+  add_store: MCP_CONNECT_COPY.addStore,
   update_app:
-    "Change a saved app: scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
+    "Change a saved app: its name, scenarios, limits, notes, test logins, store password, allowed origins, verdict email. Only the fields you " +
     "pass change; \"\" clears a field (for test_password and store_password: removes the stored password). " +
     "test_accounts adds or updates named accounts by label; remove_test_accounts deletes them. When a verdict says " +
     "the store password is needed or was not accepted, set it here.",
   start_check:
     "Start a check. With app_id: checks a saved app using its stored test logins, scenarios and limits — the usual " +
     "call after a deploy (add deploy_sha and deploy_env so the verdict names the build, and notes for what just " +
-    "shipped). With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
+    "shipped). A Shopify app on several stores can be named by shopify_app and store instead of app_id. " +
+    "With url: a one-off check of any address; set ephemeral: true for a PR preview. A check takes about " +
     "20–40 minutes and spends the team's balance (its price is on wait_for_run / get_review when it finishes); " +
     "follow it with wait_for_run or get_check_status. Refusals carry a stable code (quota_balance, quota_free, " +
     "quota_site, plan_limit, not_found, forbidden, invalid_input) — do not retry a quota refusal; quota_balance and " +
     "quota_free carry buy_url and upgrade_url for the user.",
   get_check_status:
     "Status of a run: phase (queued/connecting/surface_scan/discovery/walking/anatomy/writing), terminal state " +
-    "(completed/partial/failed), verdict when done, and the latest progress events.",
+    "(completed/partial/failed/canceled), verdict when done, and the latest progress events.",
+  cancel_check:
+    "Stop a check that is still running — started by mistake, on the wrong store or app, or no longer needed. It stops " +
+    "at once, publishes nothing and costs nothing; its status becomes canceled. A check that has finished cannot be " +
+    "stopped, nor can an extension check or one allowed to create test records — they clean up at their own end. " +
+    "Needs a key that can start checks (member or admin).",
   wait_for_run:
     "Wait for a run to finish, then return its verdict (bottom line, findings by severity, verdict URL) and its " +
     "price with the work it paid for (price_usd, journeys_walked, steps_walked, price_explanation). Each call " +
@@ -1160,6 +1384,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "(scenario_wrong), or another mistake of the check (other). Name it by run_id — optionally with a finding number, " +
     "or a journey position and step position as get_review lists them — or by scenario_id from get_review. The words " +
     "go to the CheckMyApp team as they are; list_check_mistakes shows what happened to each.",
+  mark_finding:
+    "Record what the team decided about a finding, as the verdict page's buttons do: known (fine as it is — not " +
+    "reported again), watch (checked first next time), fixed, false_positive (not a bug), or none to clear it. " +
+    "Name it by run_id and the finding's number.",
   list_check_mistakes:
     "Every reported mistake of the check on an app, a scenario or a check — who reported it, what, and its status " +
     "(received, with the CheckMyApp team, being fixed, fixed, not a mistake of the check).",
@@ -1170,7 +1398,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     "Add a scenario to an app, in the team's words: a title and what a user does and what should happen. daily: true " +
     "(default) puts it in every check of the app; daily: false keeps it for the checks that name it (start_check " +
     "scenarios). run_now also starts a check now that covers it. If a scenario the check found is really a different " +
-    "one, pass its scenario_id as replaces.",
+    "one, pass its scenario_id as replaces. For a Shopify app on several stores, all_stores: true adds it on every " +
+    "store of that app (a store connected later gets the app's scenarios too).",
   update_scenario:
     "Change a scenario by id: a team scenario's title and description; any scenario's description and whether it is " +
     "checked every time (daily).",
@@ -1193,12 +1422,16 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       { description: DESCRIPTIONS.connect_shopify_app, inputSchema: toolSchemas.connect_shopify_app },
       (a) => tools.connect_shopify_app(a),
     );
+    server.registerTool("add_store", { description: DESCRIPTIONS.add_store, inputSchema: toolSchemas.add_store }, (a) => tools.add_store(a));
   }
   server.registerTool("update_app", { description: DESCRIPTIONS.update_app, inputSchema: toolSchemas.update_app }, (a) =>
     tools.update_app(a),
   );
   server.registerTool("start_check", { description: DESCRIPTIONS.start_check, inputSchema: toolSchemas.start_check }, (a) =>
     tools.start_check(a),
+  );
+  server.registerTool("cancel_check", { description: DESCRIPTIONS.cancel_check, inputSchema: toolSchemas.cancel_check }, (a) =>
+    tools.cancel_check(a),
   );
   server.registerTool(
     "get_check_status",
@@ -1242,6 +1475,9 @@ export function registerRemoteTools(server: McpServer, tools: RemoteTools, featu
       "list_check_mistakes",
       { description: DESCRIPTIONS.list_check_mistakes, inputSchema: toolSchemas.list_check_mistakes },
       (a) => tools.list_check_mistakes(a),
+    );
+    server.registerTool("mark_finding", { description: DESCRIPTIONS.mark_finding, inputSchema: toolSchemas.mark_finding }, (a) =>
+      tools.mark_finding(a),
     );
     server.registerTool("list_scenarios", { description: DESCRIPTIONS.list_scenarios, inputSchema: toolSchemas.list_scenarios }, (a) =>
       tools.list_scenarios(a),

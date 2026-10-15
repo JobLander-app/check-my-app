@@ -37,3 +37,16 @@ export async function triggerRun(runId: string): Promise<void> {
     );
   }
 }
+
+// CHE-454: stop a run's Workflow instance — no further step runs, nothing more
+// is spent. The instance carries the run's id (CHE-423). An instance that is
+// gone or already finished is nothing to stop. Locally there is no binding:
+// the fenced writes in the workflow stop it at its next phase instead.
+export async function terminateRun(runId: string): Promise<void> {
+  const { env } = getCloudflareContext();
+  const e = env as unknown as { CHECK_RUN?: Workflow };
+  if (!e.CHECK_RUN) return;
+  const instance = await e.CHECK_RUN.get(runId).catch(() => null);
+  if (!instance) return;
+  await instance.terminate();
+}

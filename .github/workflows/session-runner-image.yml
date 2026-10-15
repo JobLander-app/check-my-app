@@ -1,0 +1,63 @@
+name: Session runner image
+
+# CHE-464: the image every team's Shopify session browser runs
+# (spikes/shopify-session/Dockerfile, runner.mjs). The deploy builds it too,
+# but a broken image found there is found on main. Here it is built and booted
+# on the pull request that changes it: Chrome comes up, the session server
+# answers, a jar goes in and comes back out, a check gets its lease, and the
+# probe runs in it end to end.
+
+on:
+  pull_request:
+    paths:
+      - "spikes/shopify-session/**"
+      - ".github/workflows/session-runner-image.yml"
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t session-runner spikes/shopify-session
+      - name: Boot it, give it a jar, lease it, probe through it
+        run: |
+          set -euo pipefail
+          T="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          V="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          # A Cloudflare container is a VM of its own, where Chrome's sandbox
+          # works (CHE-461 measured it); Docker's default seccomp profile
+          # forbids the namespaces it needs, so it is lifted for this harness.
+          docker run -d --name sr --security-opt seccomp=unconfined -e SESSION_SERVER_TOKEN="$T" -e SESSION_VIEW_SECRET="$V" -e SESSION_SLOT=team_ci -p 9090:9090 -p 9091:9091 session-runner
+          ask() { curl -sS -o /tmp/out -w '%{http_code}' -H "Authorization: Bearer $T" -H 'Content-Type: application/json' "$@"; }
+          for i in $(seq 1 60); do
+            code="$(ask http://127.0.0.1:9090/ready || true)"
+            [ "$code" = 200 ] && break
+            sleep 2
+          done
+          echo "ready: $code $(cat /tmp/out)"; [ "$code" = 200 ]
+          grep -q '"jarLoaded":false' /tmp/out
+          code="$(ask -X POST -d '{"ownerRunId":"run-ci-000001","maxDurationSeconds":120}' http://127.0.0.1:9090/lease)"
+          echo "lease before the jar: $code"; [ "$code" = 503 ]
+          exp=$(( $(date +%s) + 3600 ))
+          code="$(ask -X PUT -d "{\"cookies\":[{\"name\":\"_merchant_essential\",\"value\":\"ci-not-a-session\",\"domain\":\".shopify.com\",\"path\":\"/\",\"secure\":true,\"httpOnly\":true,\"expires\":$exp},{\"name\":\"theirs\",\"value\":\"x\",\"domain\":\".example.com\",\"path\":\"/\"}]}" http://127.0.0.1:9090/jar)"
+          echo "jar in: $code $(cat /tmp/out)"; [ "$code" = 200 ]; grep -q '"loaded":1' /tmp/out
+          code="$(ask http://127.0.0.1:9090/jar)"
+          echo "jar out: $code"; [ "$code" = 200 ]; grep -q '_merchant_essential' /tmp/out; ! grep -q '"theirs"' /tmp/out
+          code="$(ask -X POST -d '{"ownerRunId":"run-ci-000001","maxDurationSeconds":120}' http://127.0.0.1:9090/lease)"
+          echo "lease: $code"; [ "$code" = 200 ]
+          code="$(ask -X DELETE -d '{"ownerRunId":"run-ci-000001"}' http://127.0.0.1:9090/lease)"
+          echo "release: $code"; [ "$code" = 200 ]
+          code="$(ask -X POST -d '{"url":"https://admin.shopify.com/store/ci-store/apps/ci-app"}' --max-time 240 http://127.0.0.1:9090/probe)"
+          echo "probe: $code $(cat /tmp/out)"; [ "$code" = 200 ]
+          # Whatever Shopify shows a runner's address, the probe ran in the
+          # image: a line with a state, and no sign of a missing piece.
+          grep -q '"state":"' /tmp/out
+          ! grep -Eq 'Cannot find|ERR_MODULE|SyntaxError|is not a function|not an admin address' /tmp/out
+          code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/ready)"
+          echo "no bearer: $code"; [ "$code" = 401 ]
+      - name: The container's own log (never a cookie value)
+        if: always()
+        run: |
+          docker logs sr 2>&1 | tail -50
+          ! docker logs sr 2>&1 | grep -q 'ci-not-a-session'

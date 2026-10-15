@@ -8,10 +8,12 @@
 // spends its team's balance (CHE-327) — a team whose balance is used is paused.
 
 import { nextRunNumber } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import { TERMINAL_RUN_STATUSES, type UserPlan, type WatchFrequency } from "@/lib/enums";
 import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
+import { releaseCanceledLeases, settleCanceledPrices } from "./canceled-leases";
 import { dispatchMender } from "./mender-dispatch";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
@@ -21,6 +23,8 @@ import { captureBalanceExhausted } from "@/lib/balance-events";
 import { isPrivateTarget } from "@/lib/private-target";
 import { isPendingShopifyApp } from "@/lib/session-view";
 import { teamByokKeyEnc } from "@/lib/byok";
+import { recheckPausedKeys } from "@/lib/byok-credit";
+import { decryptSecret } from "@/lib/crypto";
 import { focusForRun, mergeFocus } from "@/lib/scenarios";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
 
@@ -52,6 +56,23 @@ const TRIAL_RECHECK_HOURS = 1;
 // added later is classified once, in enums.ts, and everything that asks "is
 // anything still running" follows without being edited.
 const TERMINAL_STATUSES = TERMINAL_RUN_STATUSES;
+
+// Which watches are due this tick. CHE-458: a team whose own key cannot pay is
+// left out of the window altogether — its watches stay due and come back the
+// tick its key can pay again. Read into the window, a skipped watch would keep
+// its place at the front and starve every watch behind it (CodeRabbit on #332).
+export function dueWatchWhere(now: Date) {
+  return {
+    active: true,
+    frequency: { not: "manual" },
+    AND: [
+      { OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }] },
+      { OR: [{ teamId: null }, { team: { OR: [{ openrouterKeyEnc: null }, { openrouterKeyNoCreditAt: null }] } }] },
+    ],
+  } satisfies Prisma.WatchWhereInput;
+}
+
+export const DUE_WATCH_CANDIDATES = CANDIDATE_LIMIT;
 
 export interface TickResult {
   started: string[];
@@ -85,6 +106,33 @@ export async function runDueWatches(
     console.warn(`[janitor] ephemeral sweep failed: ${err instanceof Error ? err.message : err}`);
   }
 
+  // CHE-458: a team whose own OpenRouter key could not pay — asked again once
+  // an hour, before the due watches are read, so a key topped up since starts
+  // its watches in this same tick.
+  try {
+    const resumed = await recheckPausedKeys(env.db, now, decryptSecret);
+    if (resumed.length) console.log(`[byok] key can pay again: ${resumed.join(", ")}`);
+  } catch (err) {
+    console.warn(`[byok] re-check of paused keys failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // CHE-454: a stopped Shopify check frees the signed-in browser before the
+  // due watches are read, so one waiting for it can start in this tick.
+  try {
+    const released = await releaseCanceledLeases(env, now);
+    if (released.length) console.log(`[session] released ${released.length} stopped check(s)`);
+  } catch (err) {
+    console.warn(`[session] release of stopped checks failed: ${err instanceof Error ? err.message : err}`);
+  }
+  // …and a stopped check whose price is not yet 0 is zeroed here, its bought
+  // balance returned, whatever happened to the stop's own request.
+  try {
+    const settled = await settleCanceledPrices(env.db);
+    if (settled.length) console.log(`[cancel] zeroed ${settled.length} stopped check(s)`);
+  } catch (err) {
+    console.warn(`[cancel] settling stopped checks failed: ${err instanceof Error ? err.message : err}`);
+  }
+
   // CHE-423: a run whose hand-off to the workflow threw is still `queued` with
   // nothing behind it, and counts as in flight for its watch and its app until
   // somebody ends it. Before the due watches are read, so a watch it was
@@ -103,11 +151,7 @@ export async function runDueWatches(
   }
 
   const due = await env.db.watch.findMany({
-    where: {
-      active: true,
-      frequency: { not: "manual" },
-      OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }],
-    },
+    where: dueWatchWhere(now),
     // SQLite sorts NULL first, so watches that have never fired go to the front.
     orderBy: { nextRunAt: "asc" },
     take: CANDIDATE_LIMIT,
@@ -198,6 +242,10 @@ export async function runDueWatches(
         if (!admitted.ok) {
           skipped++;
           console.log(`[scheduler] watch ${watch.id} (${watch.appSlug}) skipped — ${admitted.reason}`);
+          // CHE-458: the team's own key cannot pay. The watch is not paused and
+          // nobody is mailed about a balance: it stays due, and starts on the
+          // first tick after the key can pay again (recheckPausedKeys).
+          if (admitted.code === "byok_no_credit") continue;
           await pauseBalanceUsedUp(env, bindings, { ...watch, teamId: watch.teamId, plan, reason: admitted.reason }, now);
           continue;
         }

@@ -30,7 +30,7 @@ import { seatGate } from "@/lib/seats";
 import { syncTeamSeats } from "@/lib/billing-sync";
 import { getStripeEnv } from "@/lib/stripe";
 import { saveTeamKey } from "@/lib/byok";
-import { encryptSecret } from "@/lib/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { teamHasFeature } from "@/lib/team-features";
 import { renameTeam } from "@/lib/team-name";
 import type { UserPlan } from "@/lib/enums";
@@ -196,13 +196,13 @@ export async function renameTeamAction(_prev: TeamNameFormState, formData: FormD
 // CHE-448: the team's own OpenRouter key (BYOK, CHE-436). Admin only — the key
 // decides who pays for the model, the same decision as billing. Checked with
 // OpenRouter before it is stored, so a typo never becomes a week of failed runs.
-export type ByokFormState = { error?: string; saved?: string } | null;
+export type ByokFormState = { error?: string; saved?: string; noCredit?: boolean } | null;
 
 export async function setTeamByokAction(_prev: ByokFormState, formData: FormData): Promise<ByokFormState> {
   await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("billing.manage");
   if (!(await teamHasFeature(db, team.id, "shopify"))) return { error: "This team cannot use its own key yet." };
-  const saved = await saveTeamKey(db, team.id, String(formData.get("key") ?? ""), { encrypt: encryptSecret });
+  const saved = await saveTeamKey(db, team.id, String(formData.get("key") ?? ""), { encrypt: encryptSecret, decrypt: decryptSecret });
   if (!saved.ok) return { error: saved.reason };
   const masked = saved.masked;
   await recordTeamEvent(db, {
@@ -212,14 +212,15 @@ export async function setTeamByokAction(_prev: ByokFormState, formData: FormData
     subject: masked,
     summary: `set the team's OpenRouter key (${masked}); new checks run on it`,
   });
-  revalidatePath("/settings/team");
-  return { saved: masked };
+  revalidatePath("/", "layout");
+  return { saved: masked, noCredit: saved.noCredit };
 }
 
 export async function removeTeamByokAction(): Promise<void> {
   await refuseSelfCheck("/settings/team");
   const { user, db, team } = await requireActionScope("billing.manage");
-  await db.team.update({ where: { id: team.id }, data: { openrouterKeyEnc: null } });
+  // CHE-458: with the key gone, its pause goes too — checks are paid from the balance.
+  await db.team.update({ where: { id: team.id }, data: { openrouterKeyEnc: null, openrouterKeyNoCreditAt: null } });
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,

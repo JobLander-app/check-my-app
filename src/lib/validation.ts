@@ -106,8 +106,12 @@ export const updateLensSchema = z.object({
 });
 
 // Loop C — finding triage from the verdict page (feeds Daily Check noise filter).
+// The marks a team may put on a finding — the verdict page's buttons and the
+// MCP mark_finding tool (CHE-444) accept the same list.
+export const FINDING_MARKS = ["none", "known", "fixed", "false_positive", "watch"] as const;
+
 export const markFindingSchema = z.object({
-  mark: z.enum(["none", "known", "fixed", "false_positive", "watch"]),
+  mark: z.enum(FINDING_MARKS),
 });
 
 // Enable Daily Watch from the verdict footer (Loop B).

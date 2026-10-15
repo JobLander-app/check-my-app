@@ -30,7 +30,41 @@ async function main() {
   assert.ok(gateAt < migrationsAt && gateAt < deployAt, "The gate runs before anything that touches production");
   assert.equal(workflow.slice(0, gateAt).includes("jobs:\n  check"), true, "The gate belongs to the deploy job, not the check job — a red check would block every merge");
 
-  console.log("deploy gate: statuses classified once, the gate reads them, and it runs before production is touched");
+  // CHE-471: deploys queue on one group and run in the order their checks
+  // finish, so an older commit can deploy after a newer one and take it back
+  // out of production (04beb87 over 445f241, 2026-10-13). A deploy whose commit
+  // is no longer main's tip stops before it touches anything.
+  const deployJob = workflow.slice(workflow.indexOf("\n  deploy:\n"));
+  const steps = deployJob.split(/\n      - /).slice(1);
+  const stepWith = (marker: string) => {
+    const found = steps.filter(step => step.includes(marker));
+    assert.equal(found.length, 1, `Exactly one deploy step must contain ${marker}`);
+    return found[0];
+  };
+  // Asked twice: before anything (a superseded deploy waits for nothing), and
+  // again after the extension gate, which can hold the job 25 minutes while a
+  // newer commit merges and queues behind it.
+  const newest = stepWith("id: newest");
+  const still = stepWith("id: still");
+  for (const [name, step] of [["newest", newest], ["still", still]] as const) {
+    assert.match(step, /commits\/main/, `The ${name} step must ask GitHub for main's tip`);
+    assert.match(step, /\$GITHUB_SHA/, `…and compare it with the commit this deploy would ship (${name})`);
+    assert.doesNotMatch(step, /\|\|\s*(true|:)|continue-on-error/, `A tip lookup that cannot fail silently (${name}): a swallowed error would skip every deploy without a red run`);
+  }
+  assert.ok(steps.indexOf(newest) < steps.indexOf(stepWith("id: creds")), "The newest-commit step answers before the deploy decides it is ready");
+  assert.match(stepWith("id: creds"), /steps\.newest\.outputs\.yes == 'true'/, "Ready means credentials and the newest commit");
+  const gateStep = stepWith("deploy-gate-extension.ts");
+  assert.match(gateStep, /if: steps\.creds\.outputs\.ready == 'true'/, "The extension gate runs only when this deploy is ready");
+  assert.match(still, /if: steps\.creds\.outputs\.ready == 'true'/, "The second look runs only for a deploy that was ready");
+  assert.ok(steps.indexOf(gateStep) < steps.indexOf(still), "The second look comes after the gate's wait");
+  for (const marker of ["d1 migrations apply", "wrangler deploy --config", "opennextjs-cloudflare build", "opennextjs-cloudflare deploy", "sync-plans-notion"]) {
+    const step = stepWith(marker);
+    assert.ok(steps.indexOf(still) < steps.indexOf(step), `The second look comes before ${marker}`);
+    assert.match(step, /if: steps\.still\.outputs\.yes == 'true'/, `${marker} must run only when this commit is still main's tip after the wait`);
+  }
+  assert.match(stepWith("CLOUDFLARE_API_TOKEN not set"), /steps\.newest\.outputs\.yes == 'true'/, "A superseded deploy must not claim the token is missing");
+
+  console.log("deploy gate: statuses classified once, the gate reads them, it runs before production is touched, and only main's tip deploys");
 }
 
 main();
