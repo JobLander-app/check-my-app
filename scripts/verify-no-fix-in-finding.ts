@@ -116,6 +116,32 @@ const NOT_FIXES = [
 ];
 for (const s of NOT_FIXES) check(`kept: ${s.slice(0, 60)}`, !hasPrescription(s) && stripPrescription(s) === s);
 
+// ─── Codex, #346 round 2 ───────────────────────────────────────────────────────
+// The product behaviour a user expects is how to know the problem is gone, even
+// with a build verb in it; "should" is a fix only when said to the builder.
+for (const s of ["The app should restore the saved cart when a customer returns.", "The checkout needs to add tax before showing the total."]) {
+  check(`expected behaviour kept: ${s.slice(0, 50)}`, !hasPrescription(s) && stripPrescription(s) === s, String(stripPrescription(s)));
+}
+check("…while the same verb said to the team is a fix",
+  hasPrescription("The team should restore the saved cart from local storage.") &&
+    stripPrescription("Customers lose their cart on return; you need to restore it from local storage.") === "Customers lose their cart on return.",
+  String(stripPrescription("Customers lose their cart on return; you need to restore it from local storage.")));
+
+// The title and the evidence are gated too, and a control's label is not an order.
+const titled = (title: string, whatHappened = "The cart was empty after a refresh.") =>
+  cleanFindingLanguage({ title, category: "broken", severity: "high", detail: { where: "Cart", whatHappened, whyItMatters: CONSEQUENCE } });
+check("a title that is only a fix is no finding", titled("Add retries to payment") === null);
+check("a title with a fix tacked on keeps its claim", titled("Cart empties on refresh — add autosave")?.title === "Cart empties on refresh",
+  String(titled("Cart empties on refresh — add autosave")?.title));
+for (const t of ["Add country search drops the last letter", "Add to cart does nothing on the product page", "Save button stays disabled after a valid email"]) {
+  check(`a title opening on a control's label is kept: ${t}`, titled(t)?.title === t, String(titled(t)?.title));
+}
+check("a fix tacked on to the evidence is cut, the evidence stays",
+  titled("Cart empties on refresh", "The cart was empty after a refresh — fix the session handling.")?.detail.whatHappened === "The cart was empty after a refresh.",
+  String(titled("Cart empties on refresh", "The cart was empty after a refresh — fix the session handling.")?.detail.whatHappened));
+check("evidence opening on a control's label stays",
+  titled("Search drops input", "Add country search dropped the last letter typed.")?.detail.whatHappened === "Add country search dropped the last letter typed.");
+
 // A finding with nothing to cut comes back untouched.
 const clean = finding(CONSEQUENCE);
 check("a clean finding is unchanged", JSON.stringify(cleanFindingLanguage(clean)) === JSON.stringify(clean));

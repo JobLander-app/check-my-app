@@ -335,35 +335,53 @@ const BUILD_IMPERATIVE =
 // "worth"/"consider"/"should"… followed straight by an implementation verb.
 // "Users should be able to add …" and "could not add" do not match: the verb
 // must follow the recommending word directly (one adverb allowed).
-const RECOMMENDS =
-  "(?:worth|consider|recommend(?:ed|s)?:?|suggest(?:ed|s)?:?|should|ought\\s+to|needs?\\s+to|" +
+// Advice whoever says it: "worth …", "consider …", "try …".
+const ADVISES =
+  "(?:worth|consider|recommend(?:ed|s)?:?|suggest(?:ed|s)?:?|" +
   "would\\s+(?:be\\s+)?(?:better|wise|good)\\s+to|(?:you|they|the\\s+team)\\s+(?:may|might|could)\\s+want\\s+to|try)";
+// "should", "needs to" is a fix only when it is said to the builder — "you
+// should add retries", "the team needs to implement …", or with no subject at
+// all. "The app should restore the saved cart" and "the checkout needs to add
+// tax before the total" are the product behaviour a user expects: how to know
+// the problem is gone, which a finding is asked to say (Codex, #346).
+const MODAL = "(?:should|ought\\s+to|needs?\\s+to|must)";
+const BUILDER = "(?:you|we|they|the\\s+team|the\\s+developers?|developers|engineers|the\\s+owner|owners)";
 
 export const PRESCRIPTION_PATTERNS: RegExp[] = [
-  // "Worth strengthening the crawler …", "should add retries", "consider switching to …"
-  new RegExp(`\\b${RECOMMENDS}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
+  // "Worth strengthening the crawler …", "consider switching to …"
+  new RegExp(`\\b${ADVISES}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
+  // "You should add retries", "the team needs to implement …", "Should add retries."
+  new RegExp(`(?:\\b${BUILDER}\\s+|(?:^|[;:—–]|,\\s+(?:and|so|then))\\s*)${MODAL}\\s+(?:\\w+ly\\s+)?${BUILD_VERB}\\b`, "i"),
   // "Add retries to the importer." — a sentence or clause that opens on the verb.
   // "Add to cart …" and "Use of …" are a label and a noun, not an order.
   new RegExp(`(?:^\\s*|[;:—–]\\s+|,\\s+(?:and|so|then)\\s+)${BUILD_IMPERATIVE}\\b(?!\\s+(?:to\\s+cart|of)\\b)`, "i"),
 ];
+const IMPERATIVE = 2;
 
 // The earliest prescription in one sentence, if any: where it starts, and
 // whether that is already past a clause boundary (a clause-opening match
-// begins at its own separator).
-export function prescriptionIn(sentence: string): { index: number; atBoundary: boolean } | null {
+// begins at its own separator). `openingImperative: false` reads a sentence
+// that may open on a control's label — a title, the evidence ("Add country
+// search drops the last letter") — so only a verb after a separator counts there.
+export function prescriptionIn(
+  sentence: string,
+  { openingImperative = true }: { openingImperative?: boolean } = {},
+): { index: number; atBoundary: boolean } | null {
   let best: { index: number; atBoundary: boolean } | null = null;
   PRESCRIPTION_PATTERNS.forEach((re, i) => {
     const m = re.exec(sentence);
     if (!m) return;
-    const hit = { index: m.index, atBoundary: i === 1 && m.index > 0 };
+    if (i === IMPERATIVE && m.index === 0 && !openingImperative) return;
+    // A match that begins on its own separator ("…; should add …", "… — add …").
+    const hit = { index: m.index, atBoundary: m.index > 0 && /^[;:—–,]/.test(m[0]) };
     if (!best || hit.index < best.index) best = hit;
   });
   return best;
 }
 
-export function hasPrescription(text: string | null | undefined): boolean {
+export function hasPrescription(text: string | null | undefined, options: { openingImperative?: boolean } = {}): boolean {
   if (!text) return false;
-  return splitProse(text).some((s) => prescriptionIn(s) !== null);
+  return splitProse(text).some((s) => prescriptionIn(s, options) !== null);
 }
 
 // "e.g." and "i.e." end no sentence: cutting at them leaves the second half of
@@ -379,10 +397,35 @@ function splitProse(text: string): string[] {
 // the sentence). Null when nothing is left — there is no fallback to write:
 // a finding without a "why this matters" is complete, a finding with someone
 // else's design in it is not.
-export function stripPrescription(text: string): string | null {
+// A finding's title is its claim, and it often opens on a control's label: "Add
+// country search drops the last letter". Opening on a build verb makes it a fix
+// only when nothing after it says what the product does — "Add retries to
+// payment" (Codex, #346). A fix tacked on after a dash or semicolon is cut and
+// the claim kept. Null: the title was only a fix, and the finding is not one.
+const SYMPTOM_PREDICATE =
+  /\b(?:is|are|was|were|does|do|did|doesn'?t|don'?t|didn'?t|has|have|had|isn'?t|aren'?t|wasn'?t|never|not|cannot|can'?t|won'?t|fails?|failed|drops?|dropped|shows?|showed|returns?|returned|breaks?|broke|crashes|crashed|hangs|hung|loads?|loaded|opens?|closes?|ignores?|loses?|lost|accepts?|rejects?|stays?|keeps?|leads?|links?|points?|sends?|sent|charges?|resets?|freezes|jumps?|overlaps?|disappears?|appears?)\b/i;
+export function titleWithoutPrescription(title: string): string | null {
+  const at = prescriptionIn(title);
+  if (!at) return title;
+  if (at.index === 0 && new RegExp(`^\\s*${BUILD_IMPERATIVE}\\b`, "i").test(title)) {
+    // Opens on the verb: a label when a predicate follows, an order when none does.
+    const rest = title.replace(new RegExp(`^\\s*${BUILD_IMPERATIVE}\\b`, "i"), "");
+    const later = prescriptionIn(rest, { openingImperative: false });
+    if (!SYMPTOM_PREDICATE.test(rest)) return null;
+    if (!later) return title;
+    const cut = titleWithoutPrescription(rest);
+    return cut ? title.slice(0, title.length - rest.length) + cut : null;
+  }
+  const prefix = title.slice(0, at.index);
+  if (!at.atBoundary && !TAIL_BREAK.test(prefix)) return null;
+  const head = prefix.replace(TAIL_BREAK, "").trim().replace(/[\s.,;:—–-]+$/, "");
+  return head.length >= 3 ? head : null;
+}
+
+export function stripPrescription(text: string, options: { openingImperative?: boolean } = {}): string | null {
   const out: string[] = [];
   for (const s of splitProse(text)) {
-    const at = prescriptionIn(s);
+    const at = prescriptionIn(s, options);
     if (at === null) {
       out.push(s);
       continue;
@@ -390,7 +433,7 @@ export function stripPrescription(text: string): string | null {
     const prefix = s.slice(0, at.index);
     if (!at.atBoundary && !TAIL_BREAK.test(prefix)) continue;
     const head = prefix.replace(TAIL_BREAK, "").trim();
-    if (head.length < 20 || prescriptionIn(head) !== null) continue;
+    if (head.length < 20 || prescriptionIn(head, options) !== null) continue;
     out.push(/[.!?]$/.test(head) ? head : `${head}.`);
   }
   const joined = out.join(" ").replace(/\s+/g, " ").trim();

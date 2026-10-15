@@ -31,6 +31,7 @@ import {
   hasHomework,
   hasPrescription,
   stripPrescription,
+  titleWithoutPrescription,
   isSelfCheckRefusalStep,
   type RefusalContextStep,
   stripEnvironmentLeak,
@@ -480,9 +481,17 @@ export function ownGuardRefusals(
 export function cleanFindingLanguage(f: SynthesizedFinding): SynthesizedFinding | null {
   const detail = f.detail ?? {};
   if (hasEnvironmentLeak(f.title)) return null;
-  const whatHappened = hasEnvironmentLeak(detail.whatHappened)
+  // Rule 9 in the title and the evidence too (Codex, #346): a fix tacked on is
+  // cut and the claim stays; a title or evidence that WAS only a fix is no
+  // finding. Both may open on a control's label ("Add country search drops
+  // …"), so a verb at their very start is not read as an order.
+  const LABELS_FIRST = { openingImperative: false };
+  const title = titleWithoutPrescription(f.title);
+  if (!title) return null;
+  let whatHappened = hasEnvironmentLeak(detail.whatHappened)
     ? stripEnvironmentLeak(detail.whatHappened)
     : (detail.whatHappened ?? null);
+  if (whatHappened && hasPrescription(whatHappened, LABELS_FIRST)) whatHappened = stripPrescription(whatHappened, LABELS_FIRST);
   if (detail.whatHappened && !whatHappened) return null;
   let whyItMatters: string | null = detail.whyItMatters ?? null;
   if (whyItMatters && hasHomework(whyItMatters)) whyItMatters = stripHomework(whyItMatters);
@@ -504,6 +513,7 @@ export function cleanFindingLanguage(f: SynthesizedFinding): SynthesizedFinding 
   const { whyItMatters: _written, ...rest } = detail;
   return {
     ...f,
+    title,
     detail: {
       ...rest,
       ...(where !== undefined ? { where } : {}),
