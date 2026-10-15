@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALARM_TITLE, CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -111,22 +111,39 @@ check("a ticket's branch is a valid one, whatever its title",
 // reported every refusal in an `error` event Mender never read, and two tickets
 // were marked "unfinished" with an empty report. The event below is what
 // opencode-ai@1.18.35 printed for a refused key (headers dropped).
-const refused = (statusCode, message) => ({ type: "error", sessionID: "ses_x",
-  error: { name: "APIError", data: { message, statusCode, isRetryable: false, responseBody: JSON.stringify({ error: { message, code: statusCode } }) } } });
+const refused = (statusCode, message, metadata) => ({ type: "error", sessionID: "ses_x",
+  error: { name: "APIError", data: { message, statusCode, isRetryable: false, responseBody: JSON.stringify({ error: { message, code: statusCode, ...(metadata ? { metadata } : {}) } }) } } });
 const turn = (events) => events.reduce(readEvent, { session: null, cost: 0, steps: 0, text: "", error: null });
-check("OpenCode's error event is read: a refused key is the key's fault, not the ticket's",
-  turn([refused(401, "User not found.")]).error?.keyRefused === true &&
-    [402, 403].every((s) => turnError(refused(s, "Key limit exceeded"))?.keyRefused === true) &&
-    turnError(refused(400, "context length exceeded"))?.keyRefused === false &&
+check("OpenCode's error event is read: 401, 402 and 403 are refusals; a 400 is not",
+  turn([refused(401, "User not found.")]).error?.refused === true &&
+    [402, 403].every((s) => turnError(refused(s, "Key limit exceeded"))?.refused === true) &&
+    turnError(refused(400, "context length exceeded"))?.refused === false &&
     turnError({ type: "step_finish", part: { cost: 0.1 } }) === null);
+check("…OpenRouter's own word that the key or account is spent makes it ours; a guardrail's 403 does not (Codex, #353)",
+  turnError(refused(402, "Insufficient credits"))?.ours === true &&
+    turnError(refused(403, "Key limit exceeded", { limit_source: "openrouter_key_limit" }))?.ours === true &&
+    turnError(refused(403, "Flagged by the content filter"))?.ours === false);
 check("…and a turn that also did work keeps its steps and cost",
   (() => { const t = turn([{ type: "step_finish", sessionID: "s", part: { cost: 0.69 } }, refused(403, "Key limit exceeded")]);
     return t.steps === 1 && t.cost === 0.69 && t.error?.status === 403; })());
 {
+  const healthy = async () => ({ why: null });
+  const spent = async () => ({ why: "the OpenRouter key has $0.00 left of its $30 limit" });
+  let asked = 0;
+  const counting = async () => { asked++; return { why: null }; };
+  const guardrail = turnError(refused(403, "Flagged by the content filter"));
+  check("a guardrail's 403 with a key that can pay is the ticket's, and counts as its attempt",
+    (await ourRefusal(guardrail, healthy)) === null);
+  check("…the same 403 with a spent key is ours",
+    /\$0\.00 left[\s\S]*HTTP 403: Flagged/.test((await ourRefusal(guardrail, spent)) ?? ""));
+  check("…and a 402 is ours without asking the key",
+    /HTTP 402/.test((await ourRefusal(turnError(refused(402, "Insufficient credits")), counting)) ?? "") && asked === 0);
+}
+{
   let calls = 0;
   const r = await runAgent("ticket", async () => { calls++; return { session: "s", cost: 0, steps: 0, text: "", error: turnError(refused(403, "Key limit exceeded")) }; });
-  check("a refused key ends the run on its first refusal, not after eight empty turns",
-    calls === 1 && r.status === "key refused" && r.error.status === 403, `${calls} calls, ${r.status}`);
+  check("a refusal ends the run at once, not after eight empty turns",
+    calls === 1 && r.status === "refused" && r.error.status === 403, `${calls} calls, ${r.status}`);
   calls = 0;
   const other = await runAgent("ticket", async () => { calls++; return { session: "s", cost: 0, steps: 0, text: "", error: turnError(refused(400, "context length exceeded")) }; });
   check("…any other error is kept, so the ticket says why the report is empty",
@@ -142,10 +159,15 @@ const agent = read("scripts/mender/agent.mjs");
 const workSrc = agent.slice(agent.indexOf("async function work()"), agent.indexOf("// ─── Publishing"));
 check("the key is asked before any ticket is claimed or released",
   workSrc.indexOf("await keyServes();") > 0 && workSrc.indexOf("await keyServes();") < workSrc.indexOf("findWork()"));
-const stopped = workSrc.slice(workSrc.indexOf('if (r.status === "key refused") {'), workSrc.indexOf("const patch = r.status", workSrc.indexOf('if (r.status === "key refused") {')));
+const ticketPath = workSrc.slice(workSrc.indexOf("const { issue } = job;"));
+const stopped = ticketPath.slice(ticketPath.indexOf("if (ours) {"), ticketPath.indexOf("const patch = r.status"));
 check("a ticket stopped by the key goes back to Todo without counting as an attempt, and the tick fails",
-  /setState\(issue\.id, "Todo"\);\s*return alarm\(/.test(stopped) && !/ATTEMPT_MARK/.test(stopped) &&
+  /const ours = r\.status === "refused" \? await ourRefusal\(r\.error\) : null;/.test(ticketPath) &&
+    /setState\(issue\.id, "Todo"\);\s*return alarm\(/.test(stopped) && !/ATTEMPT_MARK/.test(stopped) &&
     /async function alarm\([\s\S]*?throw new Error/.test(agent));
+check("…a refusal that is the ticket's goes on to publish, which counts the attempt",
+  /if \(r\.status === "refused"\) r\.status = `refused by OpenRouter/.test(ticketPath) &&
+    /const ours = r\.status === "refused" \? await ourRefusal\(r\.error\) : null;\s*\n\s*if \(ours\) return alarm\(/.test(workSrc));
 check("the alarm is one open ticket, never in Mender's own queue",
   ALARM_TITLE.startsWith("[Mender]") && /if \(!\(await openAlarm\(\)\)\)/.test(agent) &&
     !/issueCreate\(input:\{[^}]*labelIds/.test(agent));

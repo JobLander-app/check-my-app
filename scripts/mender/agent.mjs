@@ -213,8 +213,12 @@ export function stranded(issues, openTickets) {
 // before claiming anything, the ticket keeps its attempts, and one alarm sits on
 // the board until the key serves again — Mender closes it then.
 
-/** OpenRouter will not serve the key: unknown (401), unpaid or over its limit (402, 403). */
-export const KEY_REFUSED = [401, 402, 403];
+/**
+ * OpenRouter refused the request: an unknown key (401), no money (402), a key
+ * over its limit — or a guardrail on the prompt (403; Codex, #353). Whether a
+ * refusal is the key's or the ticket's is decided by `ourRefusal`.
+ */
+export const REFUSED = [401, 402, 403];
 export const ALARM_TITLE = "[Mender] OpenRouter does not serve Mender's key";
 
 /** OpenCode's `error` event (`opencode run --format json`), as what Mender needs of it. */
@@ -222,7 +226,21 @@ export function turnError(event) {
   if (event?.type !== "error") return null;
   const status = Number(event.error?.data?.statusCode) || null;
   const message = String(event.error?.data?.message ?? event.error?.name ?? "unknown error").slice(0, 300);
-  return { status, message, keyRefused: KEY_REFUSED.includes(status) };
+  // OpenRouter names a spent key or account itself: 402, or `limit_source` in the body.
+  const ours = status === 402 || /openrouter_(key_limit|credits)/.test(String(event.error?.data?.responseBody ?? ""));
+  return { status, message, refused: REFUSED.includes(status), ours };
+}
+
+/**
+ * A refusal mid-run: why it is ours (the key or the account), or null when it is
+ * the ticket's — a guardrail on its prompt, with the key still able to pay. A
+ * ticket's refusal counts as its attempt, so it cannot hold the queue forever.
+ */
+export async function ourRefusal(error, askKey = keyProblem) {
+  const answered = `OpenRouter answered HTTP ${error.status}: ${error.message}`;
+  if (error.ours) return answered;
+  const { why } = await askKey();
+  return why ? `${why} (${answered})` : null;
 }
 
 /** Why the key cannot pay for one more ticket, from GET /api/v1/key's `data`; null when it can. */
@@ -253,13 +271,18 @@ async function alarm(reason) {
   throw new Error(`Mender stopped: ${reason}`);
 }
 
+/** What OpenRouter says of the key now: why it cannot pay for one more ticket (null if it can), and its numbers. */
+async function keyProblem() {
+  const r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}` } });
+  if (!r.ok) return { why: `OpenRouter refused the key (HTTP ${r.status})`, info: null };
+  const info = (await r.json()).data;
+  return { why: keyShortfall(info), info };
+}
+
 /** Before any work: the key must be able to pay for a whole ticket. */
 async function keyServes() {
-  const r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}` } });
-  if (!r.ok) return alarm(`OpenRouter refused the key (HTTP ${r.status})`);
-  const info = (await r.json()).data;
-  const short = keyShortfall(info);
-  if (short) return alarm(short);
+  const { why, info } = await keyProblem();
+  if (why) return alarm(why);
   const open = await openAlarm();
   if (!open) return;
   await comment(open.id, `The key serves again ($${Number(info?.limit_remaining ?? 0).toFixed(2)} left of $${info?.limit ?? "∞"}); Mender resumed.`);
@@ -309,8 +332,8 @@ function failingChecks() {
 
 /**
  * Turns until the agent says it is done or blocked and the checks pass, within
- * budget. A refused key ends the run at once: every further turn would be
- * refused too. Any other error is kept, so the ticket says why a turn was empty.
+ * budget. A refusal ends the run at once: every further turn would be refused
+ * too. Any other error is kept, so the ticket says why a turn was empty.
  */
 export async function runAgent(prompt, run = opencode) {
   let session = null, cost = 0, steps = 0, text = "", message = prompt, error = null;
@@ -318,7 +341,7 @@ export async function runAgent(prompt, run = opencode) {
     const r = await run(message, session);
     session = r.session; cost += r.cost; steps += r.steps; text = r.text || text; error = r.error ?? error;
     say(`turn ${turn + 1}: ${r.steps} steps, $${r.cost.toFixed(4)} (total $${cost.toFixed(4)})${r.error ? ` — OpenCode error ${r.error.status ?? ""}: ${r.error.message}` : ""}`);
-    if (r.error?.keyRefused) return { status: "key refused", text, cost, steps, error };
+    if (r.error?.refused) return { status: "refused", text, cost, steps, error };
     if (/MENDER_BLOCKED/.test(text)) return { status: "blocked", text, cost, steps };
     if (/MENDER_SPLIT/.test(text)) return { status: "split", text, cost, steps };
     if (/MENDER_ANSWERED/.test(text)) return { status: "answered", text, cost, steps };
@@ -355,8 +378,10 @@ async function work() {
     const baseSha = sh("git", ["rev-parse", "HEAD"]);
     const findings = job.pending.map((c) => `- ${c.body.slice(0, 2000)}`).join("\n");
     const r = await runAgent(`This branch is the pull request ${job.pr.url} for ${job.ticket ?? "its ticket"}. Review round ${job.round}: CodeRabbit left these comments. Follow .mender/MENDER.md "Review rounds".\n\n${findings}`);
-    // The round is not spent: publish never runs, and the next tick takes it again.
-    if (r.status === "key refused") return alarm(`OpenRouter refused the key during review round ${job.round} on #${job.pr.number} (HTTP ${r.error.status}: ${r.error.message})`);
+    // Ours: the round is not spent (publish never runs) and the next tick takes it
+    // again. The ticket's: it is an ordinary round that pushed nothing.
+    const ours = r.status === "refused" ? await ourRefusal(r.error) : null;
+    if (ours) return alarm(`${ours}, during review round ${job.round} on #${job.pr.number}`);
     const patch = r.status === "done" ? patchFrom(baseSha) : "";
     writeFileSync(PATCH, patch);
     return writeFileSync(OUT, JSON.stringify({ ...job, pending: undefined, baseSha, result: r, changed: patch.length > 0 }));
@@ -368,12 +393,14 @@ async function work() {
   const capped = issue.comments.nodes.some((c) => c.body.includes(CAP_NOTE));
   const r = await runAgent(`Your ticket is ${issue.identifier} (${issue.url}). Read it with the Linear tools, follow .mender/MENDER.md, and do it.` +
     (capped ? ` A previous attempt reached the $${BUDGET} cap: split the ticket first (.mender/MENDER.md "Too big for one pull request").` : ""));
-  if (r.status === "key refused") {
-    const why = `OpenRouter refused the key (HTTP ${r.error.status}: ${r.error.message})`;
-    await comment(issue.id, `**Mender stopped on its own key, not on this ticket:** ${why}. Back to Todo; this is not counted as an attempt.`);
+  const ours = r.status === "refused" ? await ourRefusal(r.error) : null;
+  if (ours) {
+    await comment(issue.id, `**Mender stopped on its own key, not on this ticket:** ${ours}. Back to Todo; this is not counted as an attempt.`);
     await setState(issue.id, "Todo");
-    return alarm(`${why} on ${issue.identifier}`);
+    return alarm(`${ours}, on ${issue.identifier}`);
   }
+  // The key can pay: OpenRouter refused this ticket's prompt, and that is its attempt.
+  if (r.status === "refused") r.status = `refused by OpenRouter (HTTP ${r.error.status}: ${r.error.message})`;
   const patch = r.status === "done" ? patchFrom(baseSha) : "";
   writeFileSync(PATCH, patch);
   writeFileSync(OUT, JSON.stringify({ kind: "ticket", issue, baseSha, result: r, changed: patch.length > 0 }));
