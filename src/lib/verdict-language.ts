@@ -318,11 +318,20 @@ const BUILD_VERB =
   "replac(?:e|ing)|switch(?:ing)?|migrat(?:e|ing)|introduc(?:e|ing)|configur(?:e|ing)|wrap(?:ping)?|debounc(?:e|ing)|cach(?:e|ing)|" +
   "let(?:ting)?|allow(?:ing)?|fix(?:ing)?|patch(?:ing)?|updat(?:e|ing)|adjust(?:ing)?|tweak(?:ing)?|rework(?:ing)?|" +
   "pin(?:ning)?|disabl(?:e|ing)|enforc(?:e|ing)|validat(?:e|ing)|sanitiz(?:e|ing)|escap(?:e|ing)|throttl(?:e|ing)|" +
-  "retry(?:ing)?|reorder(?:ing)?|us(?:e|ing)|expos(?:e|ing)|renam(?:e|ing)|mov(?:e|ing)|remov(?:e|ing))";
-// The same verbs as a bare imperative opening a clause. Base forms only.
+  "retry(?:ing)?|reorder(?:ing)?|us(?:e|ing)|expos(?:e|ing)|renam(?:e|ing)|mov(?:e|ing)|remov(?:e|ing)|" +
+  // Codex, #346: the fixes our own verdicts already wrote (che-354-meetbashar.json).
+  "swap(?:ping)?|hid(?:e|ing)|(?:double-|re-)?decod(?:e|ing)|encod(?:e|ing)|normaliz(?:e|ing)|strip(?:ping)?|drop(?:ping)?|" +
+  "run(?:ning)?|redirect(?:ing)?|re-?enabl(?:e|ing)|enabl(?:e|ing)|restor(?:e|ing)|dedup(?:e|ing|licate|licating)?|resiz(?:e|ing)|compress(?:ing)?)";
+// The same verbs as a bare imperative opening a clause. Base forms only, with
+// the prefixes a fix is written with ("double-decode", "re-enable").
 const BUILD_IMPERATIVE =
-  "(?:strengthen|improve|add|implement|seed|build|refactor|rewrite|replace|switch|migrate|introduce|configure|wrap|debounce|cache|" +
-  "let|allow|fix|patch|update|adjust|tweak|rework|pin|disable|enforce|validate|sanitize|escape|throttle|retry|reorder|use|expose|rename|move|remove)";
+  "(?:(?:double-|re-)?(?:strengthen|improve|add|implement|seed|build|refactor|rewrite|replace|switch|migrate|introduce|configure|wrap|debounce|cache|" +
+  "let|allow|fix|patch|update|adjust|tweak|rework|pin|disable|enforce|validate|sanitize|escape|throttle|retry|reorder|use|expose|rename|move|remove|" +
+  // Not "redirect" or "enable": "Redirect loops …", "Enable notifications
+  // toggle …" open findings as a noun and a label.
+  "swap|hide|decode|encode|normalize|strip|drop|restore|dedupe|deduplicate|resize|compress)" +
+  // "Run" opens our own sentences as a noun ("Run #387 found…"); only the verb is a fix.
+  "|run(?!\\s*#|\\s+\\d))(?!-)";
 // "worth"/"consider"/"should"… followed straight by an implementation verb.
 // "Users should be able to add …" and "could not add" do not match: the verb
 // must follow the recommending word directly (one adverb allowed).

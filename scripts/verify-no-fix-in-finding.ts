@@ -71,6 +71,31 @@ check(
   stripPrescription("Visitors who refresh lose their cart; fix the session handling.") === "Visitors who refresh lose their cart.",
 );
 
+// Codex, #346: the fixes our own verdicts already published
+// (scripts/fixtures/che-354-meetbashar.json, findings 1, 2 and 2 of the later run).
+const PUBLISHED = [
+  {
+    text: "The source citation is the credibility of this whole product; swap 4EjTHkgOgG8 for a live upload of the same talk (or hide the two entries) so the \"watch the source\" promise holds.",
+    kept: "The source citation is the credibility of this whole product.",
+  },
+  {
+    text: "These quotes are the proof that the answer is grounded; double-decode the excerpt text before rendering so readers see clean, quotable sentences.",
+    kept: "These quotes are the proof that the answer is grounded.",
+  },
+  {
+    text: "Citations are the trust mechanism of the whole product; a dead source makes the grounded answer look fabricated. Run a validation pass over the citation corpus to flag or drop video IDs that no longer resolve before they're served in answers.",
+    kept: "Citations are the trust mechanism of the whole product; a dead source makes the grounded answer look fabricated.",
+  },
+  {
+    text: "Because the whole product's credibility rests on 'every claim is watchable,' a visible dead source undermines trust — swap 4EjTHkgOgG8 for the correct clip (or remove both references).",
+    kept: "Because the whole product's credibility rests on 'every claim is watchable,' a visible dead source undermines trust.",
+  },
+];
+for (const { text, kept } of PUBLISHED) {
+  const out = stripPrescription(text);
+  check(`published fix is cut, consequence kept: ${kept.slice(0, 50)}`, hasPrescription(text) && out === kept, String(out));
+}
+
 // ─── What a user expects, and the product's own words, are not fixes ──────────
 const NOT_FIXES = [
   CONSEQUENCE,
@@ -81,6 +106,13 @@ const NOT_FIXES = [
   "Customers who cannot reach the dashboard stop trusting the verdict.",
   "The page needs a visible error when the payment is declined.",
   "Use of the coupon field is blocked for signed-out visitors.",
+  // "Run" as our own noun is not an order.
+  "Run #387 found the same dead link on both guides.",
+  "Run 380 walked twelve journeys and all of them worked.",
+  // Nor a word that only opens like a fix: a hyphenated noun, a noun, a label.
+  "Drop-down menus close as soon as the page scrolls.",
+  "Redirect loops send signed-in visitors back to the login page.",
+  "Enable notifications toggle does nothing when pressed.",
 ];
 for (const s of NOT_FIXES) check(`kept: ${s.slice(0, 60)}`, !hasPrescription(s) && stripPrescription(s) === s);
 
