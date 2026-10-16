@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
-import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, wakeMender } from "../src/agent/mender-dispatch";
+import { deliverOwedWake, dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, OWED_WAKE_KEY, wakeMender } from "../src/agent/mender-dispatch";
 
 // The generated Prisma client is the workerd build, which plain Node cannot
 // load, so the scheduler's database is the in-memory stand-in the other verify
@@ -62,7 +62,9 @@ async function main() {
 
   // The database is the stub above, empty: the sweeps and the due-watch read
   // find nothing to do, so the tick is only its own wiring.
-  const bindings = (token?: string) => ({ MENDER_DISPATCH_TOKEN: token }) as unknown as AgentBindings;
+  // The evidence bucket the tick reads an owed wake from: none until the owed-wake check below.
+  let owedStore: object | undefined;
+  const bindings = (token?: string) => ({ MENDER_DISPATCH_TOKEN: token, EVIDENCE: owedStore }) as unknown as AgentBindings;
 
   const realFetch = globalThis.fetch;
   const realWarn = console.warn;
@@ -108,21 +110,48 @@ async function main() {
     woke === "dispatched" && refused === "failed" && down === "failed" && none === "no-token" &&
       said.some((s) => s.includes("woken: run failure CHE-1")) && said.some((s) => s.includes("CHE-3") && s.includes("network down")), said.join(" | "));
 
+  // Codex, #357/#358: a refused wake is owed, not forgotten. The tick delivers it
+  // once; with nothing owed the tick starts nothing (above).
+  {
+    const store = new Map<string, string>();
+    const EVIDENCE = {
+      async put(k: string, v: string) { store.set(k, v); },
+      async get(k: string) { const v = store.get(k); return v === undefined ? null : { text: async () => v }; },
+      async delete(k: string) { store.delete(k); },
+    };
+    console.log = () => {};
+    console.warn = () => {};
+    await wakeMender({ MENDER_DISPATCH_TOKEN: "t", EVIDENCE }, "prod error CHE-9", async () => new Response("{}", { status: 502 }));
+    const owed = store.has(OWED_WAKE_KEY);
+    const stillRefused = await deliverOwedWake({ MENDER_DISPATCH_TOKEN: "t", EVIDENCE }, async () => new Response("{}", { status: 502 }));
+    const keptAfterRefusal = store.has(OWED_WAKE_KEY);
+    owedStore = EVIDENCE;
+    await tick("t", () => new Response(null, { status: 204 }));
+    const deliveredOnTick = dispatches();
+    await tick("t", () => new Response(null, { status: 204 }));
+    console.log = realLog;
+    console.warn = realWarn;
+    check("a refused wake is owed; refused again it stays; the next tick delivers it once and clears it",
+      owed && stillRefused === "failed" && keptAfterRefusal && deliveredOnTick === 1 && !store.has(OWED_WAKE_KEY) && dispatches() === 0,
+      `owed ${owed}, kept ${keptAfterRefusal}, tick ${deliveredOnTick}, after ${dispatches()}`);
+  }
+
   // Every place that files a ticket for Mender wakes it, right after filing —
   // read from the syntax tree, so a call in a comment, a string or the wrong
   // function does not count (CodeRabbit, #357). That the feedback wake follows
   // a created ticket is verify-feedback's, run for real.
   const sites = (file: string) => {
     const sf = ts.createSourceFile(file, readFileSync(new URL(`../src/agent/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-    const found: { fn: string; guard: string; reason: string }[] = [];
+    const found: { fn: string; guard: string; reason: string; inFinally: boolean }[] = [];
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "wakeMender") {
-        let fn = "", guard = "";
+        let fn = "", guard = "", inFinally = false;
         for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
           if (!guard && ts.isIfStatement(up) && up.thenStatement.pos <= node.pos && node.end <= up.thenStatement.end) guard = up.expression.getText(sf);
+          if (ts.isTryStatement(up) && up.finallyBlock && up.finallyBlock.pos <= node.pos && node.end <= up.finallyBlock.end) inFinally = true;
           if (ts.isFunctionDeclaration(up) && up.name) { fn = up.name.text; break; }
         }
-        found.push({ fn, guard, reason: node.arguments[1]?.getText(sf) ?? "" });
+        found.push({ fn, guard, reason: node.arguments[1]?.getText(sf) ?? "", inFinally });
       }
       ts.forEachChild(node, visit);
     };
@@ -145,12 +174,13 @@ async function main() {
   const labelled = initOf(failures.sf, "labelled");
   const ticket = initOf(failures.sf, "ticket");
   const shape = JSON.stringify({ gaps, failures: failures.found, feedback, labelled, ticket });
-  check("a checker gap wakes Mender once, after the gaps are filed, when one was filed or created",
-    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && /created\.length/.test(gaps[0].guard) && /icon === "ok"/.test(gaps[0].guard) &&
+  check("a checker gap wakes Mender once, after the gaps are filed, for a ticket created or put back in its queue — never for one settled as not-a-bug",
+    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && gaps[0].guard === "created.length || relabelled.length" &&
       /checker gap/.test(gaps[0].reason) && initOf(gapSites.sf, "noting") === "noteCreated(tracker, created)" &&
-      /tracker: noting/.test(gapSites.sf.getFullText()), shape);
+      /tracker: noting/.test(gapSites.sf.getFullText()) &&
+      /await tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\);\s*\n\s*relabelled\.push\(outcome\.identifier\);/.test(gapSites.sf.getFullText()), shape);
   check("a run failure wakes Mender once, for a new ticket, a recurrence that holds Mender's label, or a ticket created before its bookkeeping failed",
-    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "ticket" &&
+    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "ticket" && failures.found[0].inFinally &&
       ticket === "forMender ?? created[0] ?? null" && /outcome\.kind === "created"/.test(labelled) &&
       /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(labelled) &&
       /tracker: noteCreated\(tracker, created\)/.test(failures.sf.getFullText()), shape);
@@ -168,7 +198,8 @@ async function main() {
       noted.join() === "CHE-7" && (await wrapped.addComment()) === "CHE-", noted.join());
   }
   check("a pilot report wakes Mender once per tick, for every ticket created",
-    feedback.length === 1 && feedback[0].fn === "fileOpenFeedback" && feedback[0].guard === "created.length" && /created\.join/.test(feedback[0].reason), shape);
+    feedback.length === 1 && feedback[0].fn === "fileOpenFeedback" && feedback[0].guard === "created.length" && feedback[0].inFinally &&
+      /created\.join/.test(feedback[0].reason), shape);
   check("a run failure is filed under Mender's label",
     /selfPolicy\(self, "\[Checker failure\] \{verdict\}", \[MENDER_LABEL\]\)/.test(failures.sf.getFullText()));
 

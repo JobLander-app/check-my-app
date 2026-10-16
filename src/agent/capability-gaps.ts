@@ -304,8 +304,11 @@ export async function fileCapabilityGaps(
   }
 
   const notes: CapabilityNote[] = [];
-  // Every ticket created, even one whose ledger row then failed (Codex, #357).
+  // What Mender is woken for: every ticket created, even one whose ledger row
+  // then failed, and a recurrence put back in its queue. A gap settled as
+  // not-a-bug wakes nobody (Codex, #357).
   const created: string[] = [];
+  const relabelled: string[] = [];
   const noting = noteCreated(tracker, created);
   for (const [cls, examples] of byCapability) {
     const { label, why } = GAP_CLASSES[cls];
@@ -352,6 +355,7 @@ export async function fileCapabilityGaps(
       if (outcome.kind === "commented") {
         try {
           await tracker.addLabel(outcome.identifier, MENDER_LABEL);
+          relabelled.push(outcome.identifier);
         } catch (err) {
           const text = err instanceof Error ? err.message : String(err);
           console.warn(`[capability] labelling ${outcome.identifier} for Mender failed: ${text}`);
@@ -385,7 +389,7 @@ export async function fileCapabilityGaps(
     }
   }
   // CHE-486: the ticket is the event that wakes Mender — no clock.
-  if (created.length || notes.some((n) => n.icon === "ok")) await wakeMender(env.bindings, `checker gap(s) from run #${run.runNumber}`);
+  if (created.length || relabelled.length) await wakeMender(env.bindings, `checker gap(s) ${[...created, ...relabelled].join(", ")} from run #${run.runNumber}`);
   return notes;
 }
 

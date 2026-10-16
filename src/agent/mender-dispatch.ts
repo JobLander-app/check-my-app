@@ -56,22 +56,51 @@ export function noteCreated<T extends { createIssue(draft: never): Promise<{ ide
   });
 }
 
+/** Where a wake GitHub refused is kept until it is delivered (the evidence bucket; one small object). */
+export const OWED_WAKE_KEY = "system/mender-wake-owed.json";
+
+type Outbox = {
+  put(key: string, value: string): Promise<unknown>;
+  get(key: string): Promise<{ text(): Promise<string> } | null>;
+  delete(key: string): Promise<unknown>;
+};
+type WakeBindings = { MENDER_DISPATCH_TOKEN?: string; EVIDENCE?: Outbox };
+
 /**
  * Wake Mender because something was just filed for it. Never throws: a ticket
- * that exists is not undone by a GitHub that did not answer — the next event
- * wakes Mender again, and every tick takes the oldest work first.
+ * that exists is not undone by a GitHub that did not answer. Nor is the wake
+ * forgotten (Codex, #357/#358): it is owed, and the scheduler's next tick
+ * delivers it (deliverOwedWake).
  */
-export async function wakeMender(
-  bindings: { MENDER_DISPATCH_TOKEN?: string },
-  why: string,
-  doFetch?: Fetch,
-): Promise<"dispatched" | "no-token" | "failed"> {
+export async function wakeMender(bindings: WakeBindings, why: string, doFetch?: Fetch): Promise<"dispatched" | "no-token" | "failed"> {
   try {
     const result = await dispatchMender(bindings, doFetch);
     if (result === "dispatched") console.log(`[mender] woken: ${why}`);
     return result;
   } catch (err) {
-    console.warn(`[mender] could not be woken (${why}): ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[mender] could not be woken (${why}): ${err instanceof Error ? err.message : String(err)} — owed to the next tick`);
+    await bindings.EVIDENCE?.put(OWED_WAKE_KEY, JSON.stringify({ why, at: new Date().toISOString() })).catch(() => {});
     return "failed";
   }
+}
+
+/**
+ * A wake GitHub refused, delivered on the scheduler's tick. A retry of an event
+ * that happened, never a clock: with nothing owed the tick starts nothing (the
+ * owner's rule, 2026-10-15 — no crons). Delivered, the debt is cleared; refused
+ * again, it stays for the next tick.
+ */
+export async function deliverOwedWake(bindings: WakeBindings, doFetch?: Fetch): Promise<"none" | "dispatched" | "no-token" | "failed"> {
+  const owed = await bindings.EVIDENCE?.get(OWED_WAKE_KEY).catch(() => null);
+  if (!owed) return "none";
+  const why = await owed.text().then((t) => (JSON.parse(t) as { why?: string }).why ?? "an owed wake", () => "an owed wake");
+  const result = await dispatchMender(bindings, doFetch).catch((err: unknown) => {
+    console.warn(`[mender] the owed wake (${why}) was refused again: ${err instanceof Error ? err.message : String(err)}`);
+    return "failed" as const;
+  });
+  if (result === "dispatched") {
+    await bindings.EVIDENCE?.delete(OWED_WAKE_KEY).catch(() => {});
+    console.log(`[mender] woken on the tick, owed since: ${why}`);
+  }
+  return result;
 }
