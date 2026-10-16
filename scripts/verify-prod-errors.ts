@@ -9,7 +9,8 @@
 //   3. a new signature is filed for Mender and wakes it; a repeat within the
 //      hour costs nothing; an open ticket hears of it hourly; back after Done is
 //      a recurrence; Canceled is settled; a failing tracker throws nothing;
-//   4. recording-only unless PROD_ERROR_FILING is "on";
+//   4. recording-only unless PROD_ERROR_FILING is "on" — and in production it is
+//      on, so an error is the trigger;
 //   5. the wiring: both workers tail into the monitor, the monitor hands off to
 //      the agent's ProdErrorIntake, CI deploys the monitor first.
 //
@@ -188,7 +189,7 @@ async function main() {
   check("the monitor hands off to the agent's ProdErrorIntake, has no cron and no database",
     /"name": "checkmyapp-monitor"/.test(monitor) && /"entrypoint": "ProdErrorIntake"/.test(monitor) && !/crons|d1_databases/.test(monitor) &&
       /export \{ ProdErrorIntake \} from "\.\/prod-error-intake";/.test(read("src/agent/index.ts")));
-  check("recording is the default until the real signatures are seen", /"PROD_ERROR_FILING": "record"/.test(read("wrangler-agent.jsonc")));
+  check("in production an error files its ticket: the loop's trigger is on", /"PROD_ERROR_FILING": "on"/.test(read("wrangler-agent.jsonc")));
   check("CI deploys the monitor before the workers that name it",
     /run: npx wrangler deploy --config wrangler-monitor\.jsonc && npx wrangler deploy --config wrangler-agent\.jsonc/.test(read(".github/workflows/ci.yml")));
 

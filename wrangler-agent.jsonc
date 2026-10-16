@@ -31,10 +31,12 @@
     "APP_URL": "https://checkmyapp.dev",
     "EMAIL_FROM": "CheckMyApp <verdicts@checkmyapp.dev>",
     "EMAIL_REPLY_TO": "CheckMyApp <hello@checkmyapp.dev>",
-    // CHE-486: production errors are recorded by signature; "on" files them as
-    // tickets for Mender. Recorded first, so the real signatures are looked at
-    // before any of them can wake anything.
-    "PROD_ERROR_FILING": "record"
+    // CHE-486: production errors are recorded by signature and, "on", filed as
+    // tickets for Mender — the error is the trigger (owner, 2026-10-15). Any
+    // other value only records. Switched on 2026-10-16: the 24 hours before had
+    // no worker exception and no 5xx on checkmyapp.dev, so there was no noise
+    // for a recording phase to find.
+    "PROD_ERROR_FILING": "on"
   },
   // CHE-486: every invocation of this worker goes to the monitor as it ends
   // (wrangler-monitor.jsonc); the errors among them come back to
