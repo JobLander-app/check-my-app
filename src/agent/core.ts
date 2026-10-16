@@ -52,7 +52,13 @@ export interface AgentLoopArgs {
   // no screenshot and no trail, so whatever it saw could not be said at all
   // (a journey signed in on a preview app, run #337, re-filed every run since).
   // Asking costs one turn; not asking costs the whole journey's coverage.
-  untilSatisfied?: { satisfied: () => boolean; note: string; maxNudges: number };
+  //
+  // Asking in prose is not a guarantee — a model that repeats its stop after the
+  // note leaves the same empty walk. So the turn after a note is sent with
+  // `tool_choice` naming `requireTool`: the API then cannot answer in prose, it
+  // has to produce that call. (Not with adaptive thinking, which the API refuses
+  // to combine with a forced tool; walks run with thinking off.)
+  untilSatisfied?: { satisfied: () => boolean; note: string; maxNudges: number; requireTool: string };
 }
 
 export interface AgentLoopResult {
@@ -111,6 +117,8 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     untilSatisfied,
   } = args;
   let nudges = 0;
+  // Set by a nudge, spent by the very next request.
+  let forceTool: string | null = null;
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: task }];
   const transcript: TranscriptEntry[] = [];
   let iterations = 0;
@@ -128,6 +136,9 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
 
   while (iterations < cap) {
     iterations += 1;
+    const toolChoice: Anthropic.ToolChoice | undefined =
+      forceTool && thinking !== "adaptive" ? { type: "tool", name: forceTool } : undefined;
+    forceTool = null;
 
     // Prompt caching: breakpoint on the system block caches tools+system
     // (stable for the whole loop); the top-level marker auto-caches the last
@@ -146,6 +157,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
         cache_control: { type: "ephemeral" },
         system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
         tools,
+        ...(toolChoice ? { tool_choice: toolChoice } : {}),
         messages,
       }),
     );
@@ -180,6 +192,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
           content: response.content.length ? response.content : [{ type: "text", text: "(no reply)" }],
         });
         messages.push({ role: "user", content: untilSatisfied.note });
+        forceTool = untilSatisfied.requireTool;
         continue;
       }
       endedBy = "model";

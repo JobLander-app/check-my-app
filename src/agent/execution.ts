@@ -393,6 +393,9 @@ export async function walkOneJourney(args: {
         untilSatisfied: {
           satisfied: () => stepOrder > 0,
           maxNudges: 1,
+          // The note asks; this makes the next turn a report_step call, so the
+          // model cannot answer the note with the same prose again.
+          requireTool: "report_step",
           note:
             "You have not called report_step for this journey. Nothing you saw can be recorded " +
             "until you do. Call report_step now for what you did and saw — a screenshot first for " +

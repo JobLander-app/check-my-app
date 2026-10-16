@@ -1,5 +1,6 @@
 // A walk that stops talking before it has called report_step is asked once,
-// before it ends, to report what it did.
+// before it ends, to report what it did — and the turn after that request is a
+// forced report_step call, so repeating the prose is not an available answer.
 //
 // Run #337 (a signed-in journey on a preview app) and every run after it ended
 // a journey in prose with zero steps, and each filed "Checker walks a journey
@@ -10,9 +11,10 @@
 // Through the real path (walkOneJourney, real D1, real Chromium, scripted model):
 //   1. the model ends in prose, then reports a step when asked → the journey has
 //      that step, no unrecorded_walk step, and the model was asked exactly once;
-//   2. the model ends in prose and stays silent when asked → still the fixed
-//      coverage sentence and the unrecorded_walk step, and it was asked once
-//      only (the nudge is bounded);
+//   2. the model ends in prose and ignores the request (answers it with the
+//      same prose) → the next request carries tool_choice report_step, so the
+//      step is recorded anyway and the journey is not an unrecorded walk; the
+//      model was asked once only (the nudge is bounded);
 //   3. a model that reports on its own is never asked.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-walk-must-report.ts
@@ -48,24 +50,30 @@ function check(name: string, ok: boolean, detail = "") {
 
 const CLAIM = "The practice interview module did not open for the signed-in user.";
 
-type Mode = "reports_when_asked" | "silent" | "reports_first";
+type Mode = "reports_when_asked" | "ignores_request" | "reports_first";
 
 function scriptedModel(mode: Mode) {
   let calls = 0;
   let asked = 0;
+  let forced = 0;
   const message = (content: Anthropic.ContentBlock[], stop: Anthropic.Message["stop_reason"]) =>
     ({ id: `m${calls}`, type: "message", role: "assistant", model: "scripted", stop_reason: stop, stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 1 } as Anthropic.Usage, content }) as Anthropic.Message;
   const report = (id: string) =>
     message([{ type: "tool_use", id, name: "report_step",
       input: { label: "Open the module", status: "broken", attempted: "Open the practice interview module.", observed: "The module page stays empty." } }], "tool_use");
-  const create = async (params: { tools?: unknown; messages?: Anthropic.MessageParam[] }): Promise<Anthropic.Message> => {
+  const create = async (params: { tools?: unknown; messages?: Anthropic.MessageParam[]; tool_choice?: Anthropic.ToolChoice }): Promise<Anthropic.Message> => {
     calls += 1;
     if (!params.tools) return message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
     const last = params.messages?.[params.messages.length - 1];
     const wasAsked = last?.role === "user" && typeof last.content === "string" && last.content.includes("report_step");
     if (wasAsked) {
       asked += 1;
+      // The API's side of tool_choice: a named tool is the only thing it can return.
+      if (params.tool_choice?.type === "tool" && params.tool_choice.name === "report_step") {
+        forced += 1;
+        return report("tu_forced");
+      }
       return mode === "reports_when_asked" ? report("tu_asked") : message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
     }
     if (mode === "reports_first" && calls === 1) return report("tu_first");
@@ -73,7 +81,7 @@ function scriptedModel(mode: Mode) {
   };
   const client = { messages: { create } } as unknown as Anthropic;
   const llm: LlmConfig = { navClient: client, synthClient: client, structClient: client, navModel: "scripted", synthModel: "scripted", structModel: "scripted", navVision: false };
-  return { llm, asked: () => asked };
+  return { llm, asked: () => asked, forced: () => forced };
 }
 
 async function main() {
@@ -107,7 +115,7 @@ async function main() {
         index: 0,
       });
       const journey = await db.journey.findFirst({ where: { runId }, include: { steps: true } });
-      return { steps: journey?.steps ?? [], summary: journey?.summary ?? null, asked: model.asked() };
+      return { steps: journey?.steps ?? [], summary: journey?.summary ?? null, asked: model.asked(), forced: model.forced() };
     };
 
     const asked = await walk("reports_when_asked");
@@ -117,10 +125,12 @@ async function main() {
     check("…and the journey is not filed as an unrecorded walk",
       !asked.steps.some((s) => s.gapClass === "unrecorded_walk") && asked.summary !== HOMEWORK_FALLBACK, String(asked.summary));
 
-    const silent = await walk("silent");
-    check("a walk that stays silent when asked is asked once only, and is still the unrecorded walk",
-      silent.asked === 1 && silent.steps.length === 1 && silent.steps[0].gapClass === "unrecorded_walk" && silent.summary === HOMEWORK_FALLBACK,
-      JSON.stringify({ asked: silent.asked, steps: silent.steps.map((s) => s.gapClass), summary: silent.summary }));
+    const ignored = await walk("ignores_request");
+    check("a walk that answers the request with the same prose is made to report: the next request forces report_step",
+      ignored.asked === 1 && ignored.forced === 1 && ignored.steps.length === 1 && ignored.steps[0].label === "Open the module",
+      JSON.stringify({ asked: ignored.asked, forced: ignored.forced, steps: ignored.steps.map((s) => [s.label, s.gapClass]) }));
+    check("…and that journey is not filed as an unrecorded walk",
+      !ignored.steps.some((s) => s.gapClass === "unrecorded_walk") && ignored.summary !== HOMEWORK_FALLBACK, String(ignored.summary));
 
     const first = await walk("reports_first");
     check("a walk that reports on its own is never asked", first.asked === 0 && first.steps.length === 1, String(first.asked));
