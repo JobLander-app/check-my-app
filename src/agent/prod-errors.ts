@@ -78,6 +78,10 @@ export async function intakeProdErrors(
   const now = opts.now ?? new Date();
   const filing = env.bindings.PROD_ERROR_FILING?.trim().toLowerCase() === "on";
   const filed: string[] = [];
+  // The ticket the watch looks at, with its own error's time — not when the
+  // intake got to it (CodeRabbit, #360), and never another ticket's (Codex,
+  // #360). The latest error of the batch: if any of them came after a deploy, it did.
+  let watched: { identifier: string; at: number } | null = null;
   const told: string[] = [];
   let board: GapBoard | null | undefined = opts.board;
   for (const r of reports) {
@@ -120,6 +124,8 @@ export async function intakeProdErrors(
       // next. Recording it is tried twice (Codex, #358); if both fail, the log
       // names the ticket, and the next report within the hour still only counts.
       filed.push(issue.identifier);
+      const at = Number.isFinite(r.at) ? r.at : now.getTime();
+      if (!watched || at > watched.at) watched = { identifier: issue.identifier, at };
       let recorded = false;
       for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
         recorded = await db.prodError.update({ where: { signature: r.signature }, data: { issueIdentifier: issue.identifier, lastToldAt: now } })
@@ -135,6 +141,6 @@ export async function intakeProdErrors(
   // A new error may be the last deploy's: the watch looks at it first and wakes
   // Mender either way (CHE-486 part 4). One watch per batch — it judges the
   // deploy, and its wake covers every ticket filed with it.
-  if (filed.length) await watchDeploy(env.bindings, filed[0], now);
+  if (watched) await watchDeploy(env.bindings, watched.identifier, new Date(watched.at));
   return { filed, told, recorded: reports.length };
 }

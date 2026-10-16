@@ -34,6 +34,7 @@ export interface ProdErrorReport {
   path: string | null;
   /** Occurrences in this batch. */
   count: number;
+  /** When it last happened in this batch (the tail event's time). */
   at: number;
 }
 
@@ -56,7 +57,11 @@ export function normalizeMessage(message: string): string {
         return `${PLACEHOLDER}url`;
       }
     })
-    .replace(/"[^"]{0,200}"|'[^']{0,200}'|`[^`]{0,200}`/g, `"${PLACEHOLDER}"`)
+    // Any length, and escaped quotes inside count as inside: a long quoted value
+    // or a serialised object is customer data all the same (Codex, #360). A
+    // stray escaped quote left after that is the start of one too.
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, `"${PLACEHOLDER}"`)
+    .replace(/\\["'`][^\s]*/g, `"${PLACEHOLDER}"`)
     // A person's address or a credential is never part of a signature, and the
     // message goes on our board: emails, then anything token-shaped.
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, `${PLACEHOLDER}@${PLACEHOLDER}`)
@@ -123,8 +128,11 @@ export function reportsFrom(events: TraceLike[]): ProdErrorReport[] {
     const frame = frameOf(stack);
     const signature = [script, name, message, frame ?? ""].join(" | ");
     const known = out.get(signature);
-    if (known) known.count++;
-    else out.set(signature, { signature, script, name, message, frame, path, count: 1, at });
+    if (known) {
+      known.count++;
+      // The latest occurrence: if any came after a deploy, the watch must see it (Codex, #360).
+      known.at = Math.max(known.at, at);
+    } else out.set(signature, { signature, script, name, message, frame, path, count: 1, at });
   };
   for (const e of events) {
     const script = e.scriptName ?? "unknown";

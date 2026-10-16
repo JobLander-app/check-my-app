@@ -9,7 +9,8 @@
 //   3. a new signature is filed for Mender and wakes it; a repeat within the
 //      hour costs nothing; an open ticket hears of it hourly; back after Done is
 //      a recurrence; Canceled is settled; a failing tracker throws nothing;
-//   4. recording-only unless PROD_ERROR_FILING is "on";
+//   4. recording-only unless PROD_ERROR_FILING is "on" — and in production it is
+//      on, so an error is the trigger;
 //   5. the wiring: both workers tail into the monitor, the monitor hands off to
 //      the agent's ProdErrorIntake, CI deploys the monitor first.
 //
@@ -46,6 +47,16 @@ async function main() {
   const alpha = normalizeMessage("Upstream said: Bearer FAKEabcdefFAKEghijkl and apikey=FAKEonlylettersFAKE then FAKEopaqueFAKEopaqueFAKEopaqueFAKEopaque");
   check("…nor one with no digit in it: after its name, or long and opaque", !/FAKE/.test(alpha) && /Bearer #/.test(alpha), alpha);
   check("…while an error's own name survives", normalizeMessage("PrismaClientKnownRequestError: query failed") === "PrismaClientKnownRequestError: query failed");
+  // Codex, #360: a quoted value of any length is customer data.
+  const longQuoted = normalizeMessage(`Invalid value "${"customer said: the checkout is broken on my phone ".repeat(8)}" for field note`);
+  check("…nor a quoted value, however long", !/customer said|checkout/.test(longQuoted) && /Invalid value "#" for field note/.test(longQuoted), longQuoted);
+  const escaped = [
+    normalizeMessage('Invalid value "{\\"note\\":\\"private text\\"}" for field'),
+    normalizeMessage('Bad body {"note":"private text","email":"x"}'),
+    normalizeMessage("Unexpected token in \\\"private text"),
+    normalizeMessage("Inspected { note: 'private text', n: 'it\\'s private' }"),
+  ];
+  check("…nor a serialised one with escaped quotes inside, or a stray escaped quote", escaped.every((m) => !/private/.test(m)), escaped.join(" | "));
   check("the frame is the function, never its line", frameOf("E\n    at loadVerdict (index.js:1:2)") === "loadVerdict" && frameOf("E\n    at async handle (x.js:9:9)") === "handle");
   const [r1] = reportsFrom([exception("boom 1", 1234)]);
   const [r2] = reportsFrom([exception("boom 2", 9876)]);
@@ -65,6 +76,9 @@ async function main() {
     names === "checkmyapp-agent/exceededCpu×1, checkmyapp-web/HTTP 500×1, checkmyapp-web/TypeError×2", names);
   const p500 = reports.find((r) => r.name === "HTTP 500");
   check("a 5xx page is named by the error it logged, normalised", p500?.message === "Error: prisma query failed for app #" && p500.path === "/health/apps/#", `${p500?.message} @ ${p500?.path}`);
+  // Codex, #360: a signature repeated in one batch keeps its latest time.
+  const [twice] = reportsFrom([{ ...exception("again"), eventTimestamp: 1_000 }, { ...exception("again"), eventTimestamp: 5_000 }, { ...exception("again"), eventTimestamp: 3_000 }]);
+  check("…and a repeat in one batch keeps the latest time it happened", twice.count === 3 && twice.at === 5_000, `${twice.count} @ ${twice.at}`);
 
   // 3 — the action table.
   const now = new Date("2026-10-16T12:00:00Z");
@@ -132,9 +146,10 @@ async function main() {
     first.filed.length === 1 && created[0]?.labelNames.includes("mender") && created[0].labelNames.includes(PROD_ERROR_LABEL) &&
       created[0].title.startsWith("[Prod error] checkmyapp-web: TypeError:") && dispatched.length === 1, JSON.stringify(created[0]?.title));
   // CHE-486 part 4: through the watch, which judges the last deploy and wakes Mender itself.
-  check("…through the watch, with the ticket and the time it was seen",
-    dispatched[0]?.endsWith("/actions/workflows/mender-watch.yml/dispatches") &&
-      JSON.stringify(JSON.parse(bodies[0] ?? "{}").inputs) === JSON.stringify({ watch: first.filed[0], seen: now.toISOString() }), `${dispatched[0]} ${bodies[0]}`);
+  // …and the time is the error's own, not when the intake got to it (CodeRabbit, #360).
+  check("…through the watch, with the ticket and the time the error happened",
+    dispatched[0]?.endsWith("/actions/workflows/mender-watch.yml/dispatches") && report.at !== now.getTime() &&
+      JSON.stringify(JSON.parse(bodies[0] ?? "{}").inputs) === JSON.stringify({ watch: first.filed[0], seen: new Date(report.at).toISOString() }), `${dispatched[0]} ${bodies[0]}`);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + 60_000) });
   check("a repeat within the hour costs nothing: no ticket, no comment, nobody woken", created.length === 1 && comments.length === 0 && dispatched.length === 1);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + TELL_EVERY_MS + 1) });
@@ -165,6 +180,19 @@ async function main() {
   await intakeProdErrors(env("on"), [other], { board, now: new Date(now.getTime() + 60_000) });
   check("…and lets its claim go: the next report files it, without waiting out the hour",
     created.some((d) => d.title.includes("checkmyapp-agent: RangeError")));
+  // Codex, #360: two new signatures in one batch — the watch gets one ticket
+  // with that ticket's own time, the later error's.
+  {
+    const early = { ...reportsFrom([exception("early one", 1, "checkmyapp-web", "EvalError")])[0], at: Date.parse("2026-10-16T11:50:00Z") };
+    const late = { ...reportsFrom([exception("late one", 1, "checkmyapp-web", "TypeError")])[0], at: Date.parse("2026-10-16T12:05:00Z") };
+    const sentBefore = bodies.length;
+    const pair = await intakeProdErrors(env("on"), [late, early], { board, now: new Date(now.getTime() + 9 * TELL_EVERY_MS) });
+    const lateTicket = pair.filed[0];
+    const inputs = JSON.parse(bodies[sentBefore] ?? "{}").inputs;
+    check("two new errors in one batch: one watch, for one ticket, with that ticket's own time",
+      pair.filed.length === 2 && bodies.length === sentBefore + 1 &&
+        JSON.stringify(inputs) === JSON.stringify({ watch: lateTicket, seen: new Date(late.at).toISOString() }), JSON.stringify({ filed: pair.filed, inputs }));
+  }
   // Codex, #358: the ticket exists but recording it hiccups once — it is retried, and Mender is woken.
   const [third] = reportsFrom([exception("w", 1, "checkmyapp-web", "URIError")]);
   const realUpdate = db.prodError.update;
@@ -188,7 +216,7 @@ async function main() {
   check("the monitor hands off to the agent's ProdErrorIntake, has no cron and no database",
     /"name": "checkmyapp-monitor"/.test(monitor) && /"entrypoint": "ProdErrorIntake"/.test(monitor) && !/crons|d1_databases/.test(monitor) &&
       /export \{ ProdErrorIntake \} from "\.\/prod-error-intake";/.test(read("src/agent/index.ts")));
-  check("recording is the default until the real signatures are seen", /"PROD_ERROR_FILING": "record"/.test(read("wrangler-agent.jsonc")));
+  check("in production an error files its ticket: the loop's trigger is on", /"PROD_ERROR_FILING": "on"/.test(read("wrangler-agent.jsonc")));
   check("CI deploys the monitor before the workers that name it",
     /run: npx wrangler deploy --config wrangler-monitor\.jsonc && npx wrangler deploy --config wrangler-agent\.jsonc/.test(read(".github/workflows/ci.yml")));
 
