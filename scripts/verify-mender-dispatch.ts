@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
-import { deliverOwedWake, dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, OWED_WAKE_KEY, wakeMender } from "../src/agent/mender-dispatch";
+import { deliverOwedWake, dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, OWED_WAKE_KEY, wakeMender, WATCH_WORKFLOW, watchDeploy } from "../src/agent/mender-dispatch";
 
 // The generated Prisma client is the workerd build, which plain Node cannot
 // load, so the scheduler's database is the in-memory stand-in the other verify
@@ -140,11 +140,11 @@ async function main() {
   // read from the syntax tree, so a call in a comment, a string or the wrong
   // function does not count (CodeRabbit, #357). That the feedback wake follows
   // a created ticket is verify-feedback's, run for real.
-  const sites = (file: string) => {
+  const sites = (file: string, callee = "wakeMender") => {
     const sf = ts.createSourceFile(file, readFileSync(new URL(`../src/agent/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
     const found: { fn: string; guard: string; reason: string; inFinally: boolean }[] = [];
     const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "wakeMender") {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === callee) {
         let fn = "", guard = "", inFinally = false;
         for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
           if (!guard && ts.isIfStatement(up) && up.thenStatement.pos <= node.pos && node.end <= up.thenStatement.end) guard = up.expression.getText(sf);
@@ -184,6 +184,33 @@ async function main() {
       ticket === "forMender ?? created[0] ?? null" && /outcome\.kind === "created"/.test(labelled) &&
       /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(labelled) &&
       /tracker: noteCreated\(tracker, created\)/.test(failures.sf.getFullText()), shape);
+  // CHE-486 part 4: a new kind of failure goes to the watch first, which wakes Mender itself.
+  const watched = sites("run-failures.ts", "watchDeploy").found;
+  check("a new kind of run failure starts the watch, once, for the ticket created; a recurrence only wakes Mender",
+    watched.length === 1 && watched[0].fn === "fileRunFailure" && watched[0].guard === "created.length" && watched[0].inFinally &&
+      /if \(created\.length\) await watchDeploy\(env\.bindings, created\[0\], new Date\(\)\);\s*\n\s*else if \(ticket\) await wakeMender\(/.test(failures.sf.getFullText()),
+    JSON.stringify(watched));
+  {
+    const sent: { url: string; body: string }[] = [];
+    const ok = async (url: string, init: RequestInit) => (sent.push({ url, body: String(init.body) }), new Response(null, { status: 204 }));
+    const realLog = console.log, realWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    const seen = new Date("2026-10-16T12:00:00Z");
+    const started = await watchDeploy({ MENDER_DISPATCH_TOKEN: "t" }, "CHE-901", seen, ok);
+    const asWatch = sent[0];
+    sent.length = 0;
+    let calls = 0;
+    const refusedThenOk = async (url: string, init: RequestInit) => (++calls === 1 ? new Response("{}", { status: 422 }) : ok(url, init));
+    const fellBack = await watchDeploy({ MENDER_DISPATCH_TOKEN: "t" }, "CHE-902", seen, refusedThenOk);
+    console.log = realLog;
+    console.warn = realWarn;
+    check("the watch is mender-watch.yml on main with the ticket and the time it was seen",
+      started === "dispatched" && asWatch?.url === `https://api.github.com/repos/${MENDER_REPO}/actions/workflows/${WATCH_WORKFLOW}/dispatches` &&
+        JSON.stringify(JSON.parse(asWatch.body)) === JSON.stringify({ ref: "main", inputs: { watch: "CHE-901", seen: "2026-10-16T12:00:00.000Z" } }), asWatch?.body);
+    check("…and a watch GitHub refused falls back to waking Mender, so the ticket is never left alone",
+      fellBack === "dispatched" && sent.length === 1 && sent[0].url.endsWith(`/workflows/${MENDER_WORKFLOW}/dispatches`), JSON.stringify(sent));
+  }
   // noteCreated itself: the created ticket is noted before anything after it can fail.
   {
     const noted: string[] = [];

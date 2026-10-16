@@ -48,7 +48,7 @@ import { fileFindingTicket, type TicketFinding } from "@/lib/tracker/file";
 import { MENDER_LABEL, ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
 import { isOwnRun, silenceReason } from "./notify-verdict";
 import type { AgentEnv } from "./env";
-import { noteCreated, wakeMender } from "./mender-dispatch";
+import { noteCreated, wakeMender, watchDeploy } from "./mender-dispatch";
 
 export type FailureOwner =
   | { kind: "ours"; signature: string }
@@ -283,6 +283,10 @@ export async function fileRunFailure(
     return { icon: "warn", text: `Couldn't file run failure: ${text}` };
   } finally {
     const ticket = forMender ?? created[0] ?? null;
-    if (ticket) await wakeMender(env.bindings, `run failure ${ticket}`);
+    // A new kind of failure may be the last deploy's: the watch looks at it
+    // first, and wakes Mender either way (CHE-486 part 4). A recurrence on an
+    // open ticket is not new, and only wakes Mender.
+    if (created.length) await watchDeploy(env.bindings, created[0], new Date());
+    else if (ticket) await wakeMender(env.bindings, `run failure ${ticket}`);
   }
 }

@@ -323,7 +323,7 @@ check("the gate runs on events, never on a schedule (owner: no crons)",
   !/schedule:|cron:/.test(gwf) && /workflow_run:\s*\n\s*workflows: \["CI \/ Deploy", "Mender"\]/.test(gwf) && /issue_comment:/.test(gwf) &&
     /github\.event\.comment\.user\.login == 'chatgpt-codex-connector\[bot\]'/.test(gwf) && /startsWith\(github\.event\.workflow_run\.head_branch, 'mender\/'\)/.test(gwf));
 check("…from main's files, with the personal token (a GITHUB_TOKEN merge starts no deploy), and no model",
-  /ref: main/.test(gwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(gwf) && /agent\.mjs \$\{\{ inputs\.watch && 'watch' \|\| 'gate' \}\}/.test(gwf) && !/opencode|OPENROUTER/.test(gwf) &&
+  /ref: main/.test(gwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(gwf) && /agent\.mjs gate/.test(gwf) && !/opencode|OPENROUTER/.test(gwf) &&
     /group: mender-gate/.test(gwf));
 
 // ─── The watch (CHE-486 part 4) ──────────────────────────────────────────────
@@ -381,10 +381,13 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
     rmSync(root, { recursive: true, force: true });
   }
 }
-check("the watch runs in the gate's workflow and concurrency group, on dispatch with the error's ticket, and wakes Mender either way",
-  /watch:\s*\n\s*description:/.test(read(".github/workflows/mender-gate.yml")) &&
-    /WATCH_TICKET: \$\{\{ inputs\.watch \}\}/.test(read(".github/workflows/mender-gate.yml")) &&
-    /run: node scripts\/mender\/agent\.mjs \$\{\{ inputs\.watch && 'watch' \|\| 'gate' \}\}/.test(read(".github/workflows/mender-gate.yml")) &&
+// Its own workflow and concurrency group: GitHub keeps one pending run per
+// group, so a watch queued behind the gate would be dropped by the next gate event.
+const wwf = read(".github/workflows/mender-watch.yml");
+check("the watch runs in its own workflow and group, on dispatch with the error's ticket, with the personal token and no clock, and wakes Mender either way",
+  /group: mender-watch/.test(wwf) && /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*watch:/.test(wwf) && !/schedule:|cron:/.test(wwf) &&
+    /WATCH_TICKET: \$\{\{ inputs\.watch \}\}/.test(wwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(wwf) &&
+    /run: node scripts\/mender\/agent\.mjs watch/.test(wwf) && /ref: main/.test(wwf) && !/watch/.test(read(".github/workflows/mender-gate.yml")) &&
     /async function watch\(\)[\s\S]*?setState\(issue\.id, "Todo"\)[\s\S]*?setState\(error\.id, "Done"\)[\s\S]*?"workflow", "run", "mender-agent\.yml"/.test(read("scripts/mender/agent.mjs")));
 // Codex, #359: the checkout keeps no credential, so the revert fetches through
 // the authenticated URL; each step after the push is its own, and the wake runs

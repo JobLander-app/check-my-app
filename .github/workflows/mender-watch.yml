@@ -1,0 +1,52 @@
+# The watch (CHE-486 part 4). Mender's pull requests merge themselves, so what
+# protects production is what happens after the merge. Owner, 2026-10-15: «все
+# равно монитор на следующем тике все поймает». The agent worker dispatches this
+# when it files a ticket for a new production error or a new kind of failed
+# check, with the time it was seen. If that came within 30 minutes of a deploy
+# that carried only Mender's changes, they are reverted on main and their
+# tickets go back to Mender (gate.mjs watchDecision; agent.mjs `watch`).
+# Mender is woken either way. No model runs here, and nothing on a timer.
+#
+# Its own concurrency group, not the gate's: GitHub keeps one pending run per
+# group, so a watch queued behind the gate would be dropped by the next gate
+# event. A revert that meets a merge just landed retries from the new tip.
+
+name: Mender watch
+
+on:
+  workflow_dispatch:
+    inputs:
+      watch:
+        description: "The ticket filed for a new production error (CHE-123)"
+        required: true
+      seen:
+        description: "When the error was first seen (ISO time); empty = now"
+        required: false
+
+concurrency:
+  group: mender-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The personal token: a revert pushed by GITHUB_TOKEN would start no CI,
+      # so it would never deploy.
+      - name: Watch
+        env:
+          GH_TOKEN: ${{ secrets.MENDER_GH_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          WATCH_TICKET: ${{ inputs.watch }}
+          WATCH_SEEN: ${{ inputs.seen }}
+        run: node scripts/mender/agent.mjs watch

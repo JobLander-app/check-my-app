@@ -801,9 +801,8 @@ async function gate() {
 // ─── The watch (CHE-486 part 4): a new error right after Mender's deploy ─────
 //
 // Woken by the agent worker when it files a new "[Prod error]" or "[Checker
-// failure]" ticket (WATCH_TICKET, seen at WATCH_SEEN), in the gate's own
-// concurrency group so a revert never races a merge. The decision is gate.mjs
-// watchDecision; this reads the deploys and acts.
+// failure]" ticket (WATCH_TICKET, seen at WATCH_SEEN), in mender-watch.yml. The
+// decision is gate.mjs watchDecision; this reads the deploys and acts.
 
 /**
  * The deploys of main, newest first: CI / Deploy runs whose `wrangler deploy`
