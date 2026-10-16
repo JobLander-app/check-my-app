@@ -32,7 +32,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { factsFrom, gateDecision, watchDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
+import { factsFrom, gateDecision, mergeHold, watchDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
 import { codexSummaryState, REVIEW_REQUEST } from "../doer/review.mjs";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
@@ -727,17 +727,26 @@ export async function checksInFlight(env = process.env, doFetch = fetch) {
   return Number(body.result?.[0]?.results?.[0]?.n ?? 0);
 }
 
-const MERGE_WAIT_MS = Number(process.env.MENDER_MERGE_WAIT_MS ?? 20 * 60_000);
+const MERGE_WAIT_MS = Number(process.env.MENDER_MERGE_WAIT_MS ?? 40 * 60_000);
+
+/** Whether main is deploying now, and when it last deployed. */
+function mainState() {
+  const deploying = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "5", "--json", "status",
+    "--jq", '[.[] | select(.status != "completed")] | length']) > 0;
+  return { deploying, deployedAt: deploysOfMain(1)[0]?.deployedAt ?? null };
+}
 
 async function mergePr(pr, reason) {
-  // Wait for production to be idle; still busy after the wait, the PR stays
+  // Wait for production to be idle, and for the last deploy to have had its
+  // whole watch (gate.mjs mergeHold); still held after the wait, the PR stays
   // open and the next event decides again. An unanswerable question is not
   // permission to deploy.
   for (const deadline = Date.now() + MERGE_WAIT_MS; ;) {
     const running = await checksInFlight();
-    if (!running) break;
-    if (Date.now() >= deadline) return say(`#${pr.number}: ${running} check(s) still running in production — left open`);
-    say(`#${pr.number}: ${running} check(s) running in production — waiting before the merge`);
+    const hold = running ? `${running} check(s) running in production` : mergeHold(mainState());
+    if (!hold) break;
+    if (Date.now() >= deadline) return say(`#${pr.number}: ${hold} — left open`);
+    say(`#${pr.number}: ${hold} — waiting before the merge`);
     await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
   // The personal token, so the push to main starts CI and the deploy (a merge by

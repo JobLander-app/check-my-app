@@ -144,6 +144,21 @@ export function gateDecision({ ci, review, p1 = 0, roundsUsed = 0, answered = fa
 export const WATCH_MINUTES = 30;
 
 /**
+ * Why the next merge must wait, or null when it may go. One merge, one deploy,
+ * one whole watch: main is not deploying, and the last deploy has been watched
+ * for WATCH_MINUTES. Otherwise two merges share a deploy, or an error meant for
+ * the first lands after the second and the wrong change is reverted.
+ *
+ * @param {{deploying:boolean, deployedAt:number|null, now?:number}} m
+ */
+export function mergeHold({ deploying, deployedAt, now = Date.now() }) {
+  if (deploying) return "main is still deploying the last merge";
+  if (!deployedAt) return null;
+  const left = WATCH_MINUTES - (now - deployedAt) / 60_000;
+  return left > 0 ? `the last deploy is ${Math.round(WATCH_MINUTES - left)} of its ${WATCH_MINUTES} watched minutes in` : null;
+}
+
+/**
  * @param {object} w
  * @param {number} w.seenAt when the error was first seen (ms)
  * @param {{sha:string, deployedAt:number}|null} w.deploy the deploy that put main's current code in production

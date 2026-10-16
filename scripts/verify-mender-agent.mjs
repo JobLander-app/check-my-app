@@ -6,7 +6,7 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { execFileSync } from "node:child_process";
-import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_MINUTES, WATCH_MINUTES, watchDecision } from "./mender/gate.mjs";
+import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, mergeHold, REVIEW_SILENCE_MINUTES, WATCH_MINUTES, watchDecision } from "./mender/gate.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -346,6 +346,21 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
   // every older commit too, so what it carried is unknown and nothing is reverted.
   check("…nor is anything reverted when what the deploy carried is unknown", W(10, null).action === "keep" && /unknown/.test(W(10, null).reason));
 }
+// One merge, one deploy, one whole watch: otherwise an error meant for the first
+// merge lands after the second, and the wrong change is reverted.
+{
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  const held = mergeHold({ deploying: true, deployedAt: now - 60 * 60_000, now });
+  const watching = mergeHold({ deploying: false, deployedAt: now - 10 * 60_000, now });
+  check("the next merge waits while main deploys, and until the last deploy has had its whole watch",
+    /deploying/.test(held ?? "") && /10 of its 30 watched minutes/.test(watching ?? "") &&
+      mergeHold({ deploying: false, deployedAt: now - (WATCH_MINUTES + 1) * 60_000, now }) === null && mergeHold({ deploying: false, deployedAt: null, now }) === null,
+    `${held} | ${watching}`);
+  const src = read("scripts/mender/agent.mjs");
+  check("…and mergePr asks it before every merge, with production's running checks",
+    /async function mergePr[\s\S]*?const hold = running \? [^\n]*: mergeHold\(mainState\(\)\);\s*\n\s*if \(!hold\) break;[\s\S]*?"pr", "merge"/.test(src) &&
+      /timeout-minutes: 50/.test(read(".github/workflows/mender-gate.yml")));
+}
 // revertOnMain on a real repository: a bare "origin", a person's commit and a
 // Mender commit on main; the watch's checkout reverts Mender's alone.
 {
@@ -392,7 +407,7 @@ const wwf = read(".github/workflows/mender-watch.yml");
 check("the watch runs in its own workflow and group, on dispatch with the error's ticket, with the personal token and no clock, and wakes Mender either way",
   /group: mender-watch/.test(wwf) && /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*watch:/.test(wwf) && !/schedule:|cron:/.test(wwf) &&
     /WATCH_TICKET: \$\{\{ inputs\.watch \}\}/.test(wwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(wwf) &&
-    /run: node scripts\/mender\/agent\.mjs watch/.test(wwf) && /ref: main/.test(wwf) && !/watch/.test(read(".github/workflows/mender-gate.yml")) &&
+    /run: node scripts\/mender\/agent\.mjs watch/.test(wwf) && /ref: main/.test(wwf) && !/inputs\.watch|agent\.mjs watch/.test(read(".github/workflows/mender-gate.yml")) &&
     /async function watch\(\)[\s\S]*?setState\(issue\.id, "Todo"\)[\s\S]*?setState\(error\.id, "Done"\)[\s\S]*?"workflow", "run", "mender-agent\.yml"/.test(read("scripts/mender/agent.mjs")));
 // Codex, #359: the checkout keeps no credential, so the revert fetches through
 // the authenticated URL; each step after the push is its own, and the wake runs
