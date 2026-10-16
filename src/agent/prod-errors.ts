@@ -3,11 +3,13 @@
 // board, labelled for Mender, and Mender is woken by it — an error in
 // production is the trigger, never a clock (owner, 2026-10-15).
 //
-//   - a new signature → "[Prod error] …" ticket, Mender woken;
+//   - a new signature → "[Prod error] …" ticket; the watch (part 4) looks at
+//     the last deploy, reverts it if it was Mender's alone and came just before,
+//     and wakes Mender either way;
 //   - a repeat while the ticket is open → counted; the ticket hears of it at
 //     most once an hour (a hot path can throw thousands of times a minute);
 //   - back after the ticket was Done → a new "recurrence" ticket naming the old
-//     one (the fix did not hold), Mender woken;
+//     one (the fix did not hold), and the watch as for a new one;
 //   - the ticket Canceled → ruled not-a-bug: counted, never filed again.
 //
 // PROD_ERROR_FILING = "on" files tickets; anything else only records the
@@ -21,7 +23,7 @@ import { prodErrorAction, type ProdErrorReport } from "@/lib/prod-error";
 import type { TicketDraft } from "@/lib/tracker/types";
 import { MENDER_LABEL, ourBoard, type GapBoard } from "./capability-gaps";
 import type { AgentEnv } from "./env";
-import { wakeMender } from "./mender-dispatch";
+import { watchDeploy } from "./mender-dispatch";
 
 export const PROD_ERROR_LABEL = "prod-error";
 
@@ -130,6 +132,9 @@ export async function intakeProdErrors(
       if (claim) await db.prodError.updateMany({ where: { signature: claim.signature, lastToldAt: now }, data: { lastToldAt: claim.lastToldAt } }).catch(() => {});
     }
   }
-  if (filed.length) await wakeMender(env.bindings, `prod error(s) ${filed.join(", ")}`);
+  // A new error may be the last deploy's: the watch looks at it first and wakes
+  // Mender either way (CHE-486 part 4). One watch per batch — it judges the
+  // deploy, and its wake covers every ticket filed with it.
+  if (filed.length) await watchDeploy(env.bindings, filed[0], now);
   return { filed, told, recorded: reports.length };
 }
