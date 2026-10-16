@@ -316,6 +316,8 @@ check("without the reviewer's token the gate run fails rather than leave a PR on
   /function askReview[\s\S]*?if \(!token\) throw new Error\(/.test(gateSrc));
 check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
   /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?await backToTodo\(d\.issue\.id, /.test(gateSrc) &&
+    // Codex, #361: a ticket on a newer attempt (an open Mender PR) is skipped, before Linear is even asked.
+    /const current = new Set\(ghJson\(\["pr", "list", "--state", "open"[\s\S]*?for \(const pr of settled\) \{\s*\n\s*const id = ticketIdOf\(pr\.headRefName\);\s*\n\s*if \(current\.has\(id\)\) continue;/.test(gateSrc) &&
     /await reconcileMerged\(\);/.test(gateSrc));
 // 2026-10-16: the gate closed #325 and CHE-447 sat in Todo an hour and a half —
 // closing deploys nothing, so no deploy woke Mender. Every place that sends a

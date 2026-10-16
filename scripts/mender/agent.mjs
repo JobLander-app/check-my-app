@@ -699,8 +699,15 @@ async function reconcileMerged() {
   const since = Date.now() - 2 * 86_400_000;
   const settled = ghJson(["pr", "list", "--state", "closed", "--limit", "50", "--json", "number,headRefName,url,mergedAt,closedAt"])
     .filter((p) => validBranch(p.headRefName) && Date.parse(p.closedAt) > since);
+  // A ticket with an open Mender PR is on a newer attempt: its old closed PR
+  // says nothing about it any more (Codex, #361 — otherwise the retry's own PR
+  // would send its ticket back to Todo and wake Mender again, in a loop).
+  const ticketIdOf = (branch) => branch.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+  const current = new Set(ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "headRefName"])
+    .filter((p) => validBranch(p.headRefName)).map((p) => ticketIdOf(p.headRefName)));
   for (const pr of settled) {
-    const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+    const id = ticketIdOf(pr.headRefName);
+    if (current.has(id)) continue;
     const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
     if (d.issue?.state?.name !== "In Review") continue;
     if (pr.mergedAt) {
