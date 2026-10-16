@@ -678,8 +678,9 @@ function trustedLogins() {
  * Closing a PR deploys nothing, so no deploy would (CHE-447 sat in Todo an hour
  * and a half after #325 was closed, 2026-10-16); and waking at once, not at the
  * end of the run, means a later failure or a merge's long wait cannot lose it
- * (Codex, #361). The wake is tried three times; a dispatch that still fails
- * fails the gate run, loudly.
+ * (Codex, #361). The wake is tried three times. If it still fails, the ticket
+ * goes back to In Review, where the next gate run's reconciliation finds it
+ * and tries again (Codex, #361 round 3), and this run fails, loudly.
  */
 async function backToTodo(issueId, body) {
   await comment(issueId, body);
@@ -689,7 +690,10 @@ async function backToTodo(issueId, body) {
       gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
       return;
     } catch (e) {
-      if (attempt >= 3) throw new Error(`the ticket is back in Todo but Mender could not be woken: ${e.message}`);
+      if (attempt >= 3) {
+        await setState(issueId, "In Review").catch(() => {});
+        throw new Error(`Mender could not be woken, so the ticket stays In Review for the next gate run: ${e.message}`);
+      }
       await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
     }
   }

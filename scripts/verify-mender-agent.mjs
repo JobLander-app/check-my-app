@@ -345,6 +345,8 @@ check("a closed PR's ticket left In Review is settled by the next gate run — m
       calls.closePr?.length === 1 && calls.reconcileMerged?.length === 1 &&
       /await setState\(issueId, "Todo"\);[\s\S]*?gh\(\["workflow", "run", "mender-agent\.yml", "--ref", "main"\]\)/.test(fnText("backToTodo")) &&
       /attempt >= 3/.test(fnText("backToTodo")) && /publish: \(\) => publish\(\)\.then\(chainNext\)/.test(agent) &&
+      // Codex, #361 round 3: a wake that never went out leaves the ticket where reconciliation retries it.
+      /if \(attempt >= 3\) \{\s*\n\s*await setState\(issueId, "In Review"\)/.test(fnText("backToTodo")) &&
       /"workflow", "run", "mender-agent\.yml", "--ref", "main"\]\);\s*\n\s*say\(sha \?/.test(fnText("watch")),
     JSON.stringify({ todo, calls }));
 }
