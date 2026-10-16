@@ -4,6 +4,6 @@
     "types": ["@cloudflare/workers-types"],
     "noEmit": true
   },
-  "include": ["src/agent/**/*.ts", "src/lib/**/*.ts"],
+  "include": ["src/agent/**/*.ts", "src/lib/**/*.ts", "src/monitor/**/*.ts"],
   "exclude": ["node_modules"]
 }

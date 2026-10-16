@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // CHE-486 part 3: the monitor. A Tail Worker on checkmyapp-web and
+  // checkmyapp-agent (their `tail_consumers`): it receives every invocation of
+  // theirs as it ends, keeps the ones that went wrong and hands them to the
+  // agent's ProdErrorIntake. No cron, no secret, no database of its own — an
+  // error in production is its only trigger (owner, 2026-10-15).
+  "name": "checkmyapp-monitor",
+  "main": "src/monitor/index.ts",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  // CI deploys this before the agent and the web worker: they name it as their
+  // tail consumer, so it has to exist first. The entrypoint it points at ships
+  // with the agent a step later; until then a hand-off fails and is logged.
+  "services": [
+    {
+      "binding": "AGENT",
+      "service": "checkmyapp-agent",
+      "entrypoint": "ProdErrorIntake"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

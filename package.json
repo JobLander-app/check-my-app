@@ -172,7 +172,8 @@
     "verify:feedback": "tsx --tsconfig tsconfig.json scripts/verify-feedback.ts",
     "verify:scenarios": "tsx --tsconfig tsconfig.json scripts/verify-scenarios.ts",
     "team:byok": "node --env-file=.env --import tsx scripts/team-byok.ts",
-    "verify:byok": "tsx --tsconfig tsconfig.json scripts/verify-byok.ts"
+    "verify:byok": "tsx --tsconfig tsconfig.json scripts/verify-byok.ts",
+    "verify:prod-errors": "tsx --tsconfig tsconfig.json scripts/verify-prod-errors.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",

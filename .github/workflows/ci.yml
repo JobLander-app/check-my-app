@@ -110,10 +110,12 @@ jobs:
       # Apply D1 migrations to the remote database before deploying.
       - if: steps.still.outputs.yes == 'true'
         run: npx wrangler d1 migrations apply checkmyapp --remote
-      # Deploy the agent worker first (it defines the CheckRunWorkflow the web
-      # worker binds to cross-worker).
+      # The monitor first (CHE-486): the agent and web workers name it as their
+      # tail consumer, so it has to exist before them. Then the agent worker (it
+      # defines the CheckRunWorkflow the web worker binds to cross-worker, and
+      # the ProdErrorIntake the monitor hands errors to).
       - if: steps.still.outputs.yes == 'true'
-        run: npx wrangler deploy --config wrangler-agent.jsonc
+        run: npx wrangler deploy --config wrangler-monitor.jsonc && npx wrangler deploy --config wrangler-agent.jsonc
       # Build + deploy the web worker (OpenNext). The build must run with the
       # same .env as a local deploy: Next.js bakes NEXT_PUBLIC_* AND server env
       # (Clerk keys etc.) into the workerd bundle at build time — without them

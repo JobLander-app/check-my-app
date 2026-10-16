@@ -111,6 +111,9 @@ export interface AgentBindings {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_WEBHOOK_SECRET?: string;
+  // CHE-486: "on" files production errors (src/agent/prod-errors.ts) as tickets
+  // for Mender; anything else only records their signatures.
+  PROD_ERROR_FILING?: string;
 }
 
 export interface AgentEnv {
