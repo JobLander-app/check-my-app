@@ -47,6 +47,9 @@ async function main() {
   const alpha = normalizeMessage("Upstream said: Bearer FAKEabcdefFAKEghijkl and apikey=FAKEonlylettersFAKE then FAKEopaqueFAKEopaqueFAKEopaqueFAKEopaque");
   check("…nor one with no digit in it: after its name, or long and opaque", !/FAKE/.test(alpha) && /Bearer #/.test(alpha), alpha);
   check("…while an error's own name survives", normalizeMessage("PrismaClientKnownRequestError: query failed") === "PrismaClientKnownRequestError: query failed");
+  // Codex, #360: a quoted value of any length is customer data.
+  const longQuoted = normalizeMessage(`Invalid value "${"customer said: the checkout is broken on my phone ".repeat(8)}" for field note`);
+  check("…nor a quoted value, however long", !/customer said|checkout/.test(longQuoted) && /Invalid value "#" for field note/.test(longQuoted), longQuoted);
   check("the frame is the function, never its line", frameOf("E\n    at loadVerdict (index.js:1:2)") === "loadVerdict" && frameOf("E\n    at async handle (x.js:9:9)") === "handle");
   const [r1] = reportsFrom([exception("boom 1", 1234)]);
   const [r2] = reportsFrom([exception("boom 2", 9876)]);
@@ -133,9 +136,10 @@ async function main() {
     first.filed.length === 1 && created[0]?.labelNames.includes("mender") && created[0].labelNames.includes(PROD_ERROR_LABEL) &&
       created[0].title.startsWith("[Prod error] checkmyapp-web: TypeError:") && dispatched.length === 1, JSON.stringify(created[0]?.title));
   // CHE-486 part 4: through the watch, which judges the last deploy and wakes Mender itself.
-  check("…through the watch, with the ticket and the time it was seen",
-    dispatched[0]?.endsWith("/actions/workflows/mender-watch.yml/dispatches") &&
-      JSON.stringify(JSON.parse(bodies[0] ?? "{}").inputs) === JSON.stringify({ watch: first.filed[0], seen: now.toISOString() }), `${dispatched[0]} ${bodies[0]}`);
+  // …and the time is the error's own, not when the intake got to it (CodeRabbit, #360).
+  check("…through the watch, with the ticket and the time the error happened",
+    dispatched[0]?.endsWith("/actions/workflows/mender-watch.yml/dispatches") && report.at !== now.getTime() &&
+      JSON.stringify(JSON.parse(bodies[0] ?? "{}").inputs) === JSON.stringify({ watch: first.filed[0], seen: new Date(report.at).toISOString() }), `${dispatched[0]} ${bodies[0]}`);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + 60_000) });
   check("a repeat within the hour costs nothing: no ticket, no comment, nobody woken", created.length === 1 && comments.length === 0 && dispatched.length === 1);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + TELL_EVERY_MS + 1) });

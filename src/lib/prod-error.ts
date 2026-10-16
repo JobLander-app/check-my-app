@@ -56,7 +56,8 @@ export function normalizeMessage(message: string): string {
         return `${PLACEHOLDER}url`;
       }
     })
-    .replace(/"[^"]{0,200}"|'[^']{0,200}'|`[^`]{0,200}`/g, `"${PLACEHOLDER}"`)
+    // Any length: a long quoted value is customer data all the same (Codex, #360).
+    .replace(/"[^"]*"|'[^']*'|`[^`]*`/g, `"${PLACEHOLDER}"`)
     // A person's address or a credential is never part of a signature, and the
     // message goes on our board: emails, then anything token-shaped.
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, `${PLACEHOLDER}@${PLACEHOLDER}`)
