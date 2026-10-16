@@ -76,6 +76,9 @@ async function main() {
     names === "checkmyapp-agent/exceededCpu×1, checkmyapp-web/HTTP 500×1, checkmyapp-web/TypeError×2", names);
   const p500 = reports.find((r) => r.name === "HTTP 500");
   check("a 5xx page is named by the error it logged, normalised", p500?.message === "Error: prisma query failed for app #" && p500.path === "/health/apps/#", `${p500?.message} @ ${p500?.path}`);
+  // Codex, #360: a signature repeated in one batch keeps its latest time.
+  const [twice] = reportsFrom([{ ...exception("again"), eventTimestamp: 1_000 }, { ...exception("again"), eventTimestamp: 5_000 }, { ...exception("again"), eventTimestamp: 3_000 }]);
+  check("…and a repeat in one batch keeps the latest time it happened", twice.count === 3 && twice.at === 5_000, `${twice.count} @ ${twice.at}`);
 
   // 3 — the action table.
   const now = new Date("2026-10-16T12:00:00Z");
