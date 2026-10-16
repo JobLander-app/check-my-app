@@ -677,6 +677,7 @@ async function reconcileMerged() {
   const since = Date.now() - 2 * 86_400_000;
   const settled = ghJson(["pr", "list", "--state", "closed", "--limit", "50", "--json", "number,headRefName,url,mergedAt,closedAt"])
     .filter((p) => validBranch(p.headRefName) && Date.parse(p.closedAt) > since);
+  let requeued = 0;
   for (const pr of settled) {
     const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
     const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
@@ -688,9 +689,11 @@ async function reconcileMerged() {
     } else {
       await comment(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
       await setState(d.issue.id, "Todo");
+      requeued++;
       say(`reconciled ${id}: #${pr.number} closed, back to Todo`);
     }
   }
+  return requeued;
 }
 
 /** The ticket a mender/che-N-… branch belongs to, from Linear. */
@@ -796,8 +799,12 @@ async function gate() {
     .filter((p) => validBranch(p.headRefName) && !p.isCrossRepository && (!only || p.number === only));
   const trusted = trustedLogins();
   let failed = 0;
+  // Tickets this run sent back to Todo. Closing a PR deploys nothing, so no
+  // deploy will wake Mender for them: the gate does (CHE-447 sat in Todo for
+  // an hour and a half after #325 was closed, 2026-10-16).
+  let requeued = 0;
   try {
-    await reconcileMerged();
+    requeued += await reconcileMerged();
   } catch (e) {
     failed++;
     console.error(`[mender] gate: reconciling merged PRs failed: ${e.message}`);
@@ -808,6 +815,7 @@ async function gate() {
       // A branch main has moved under: the next attempt starts from main instead.
       if (pr.mergeable === "CONFLICTING") {
         await closePr(pr, "it conflicts with main", { findings: "" });
+        requeued++;
         continue;
       }
       const facts = gateFacts(repo, pr, trusted);
@@ -817,10 +825,22 @@ async function gate() {
       // A job re-run finishes as a workflow run, which wakes the gate again.
       if (d.action === "rerun") gh(["api", "-X", "POST", `repos/${repo}/actions/jobs/${facts.checkId}/rerun`]);
       if (d.action === "merge") await mergePr(pr, d.reason);
-      if (d.action === "close") await closePr(pr, d.reason, facts);
+      if (d.action === "close") {
+        await closePr(pr, d.reason, facts);
+        requeued++;
+      }
     } catch (e) {
       failed++;
       console.error(`[mender] gate #${pr.number}: ${e.message}`);
+    }
+  }
+  if (requeued) {
+    try {
+      gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+      say(`${requeued} ticket(s) back in Mender's queue — Mender woken`);
+    } catch (e) {
+      failed++;
+      console.error(`[mender] gate: waking Mender for ${requeued} requeued ticket(s) failed: ${e.message}`);
     }
   }
   if (failed) throw new Error(`the gate could not decide ${failed} pull request(s)`);

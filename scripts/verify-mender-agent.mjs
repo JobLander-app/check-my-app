@@ -315,7 +315,18 @@ check("without the reviewer's token the gate run fails rather than leave a PR on
   /function askReview[\s\S]*?if \(!token\) throw new Error\(/.test(gateSrc));
 check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
   /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?setState\(d\.issue\.id, "Todo"\)/.test(gateSrc) &&
-    /await reconcileMerged\(\);/.test(gateSrc));
+    /requeued \+= await reconcileMerged\(\);/.test(gateSrc));
+// 2026-10-16: the gate closed #325 and CHE-447 sat in Todo an hour and a half —
+// closing deploys nothing, so no deploy woke Mender. Every requeue counts, and
+// the gate wakes Mender for them.
+{
+  const gateFn = gateSrc.slice(gateSrc.indexOf("async function gate()"));
+  const body = gateFn.slice(0, gateFn.indexOf("\n}\n"));
+  check("every ticket the gate sends back to Todo wakes Mender: a closed PR, a conflicting one, one reconciled",
+    (body.match(/await closePr\([^)]*\);\s*\n\s*requeued\+\+;/g) ?? []).length === 2 && /requeued \+= await reconcileMerged\(\);/.test(body) &&
+      /if \(requeued\) \{[\s\S]*?gh\(\["workflow", "run", "mender-agent\.yml", "--ref", "main"\]\)/.test(body) &&
+      /setState\(d\.issue\.id, "Todo"\);\s*\n\s*requeued\+\+;[\s\S]*?return requeued;/.test(gateSrc), body.slice(-300));
+}
 check("a check stuck for hours holds no merge (the deploy gate's staleness rule)", /createdAt > strftime\('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 hours'\)/.test(agent));
 check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
 const gwf = read(".github/workflows/mender-gate.yml");
