@@ -134,6 +134,19 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
   // with the harness off this is BROWSER_TOOLS, byte for byte.
   const tools = browserToolsFor(env);
 
+  // Spends one nudge when the loop is about to end with the requirement unmet,
+  // and arranges the request that follows: one turn past the cap if need be
+  // (the forced call must have a turn of its own — a walk that spent every
+  // allowed turn on navigation would otherwise end empty exactly then), and
+  // `tool_choice` on it. maxNudges bounds how often the cap is passed.
+  const askAgain = (): string | null => {
+    if (!untilSatisfied || untilSatisfied.satisfied() || nudges >= untilSatisfied.maxNudges) return null;
+    nudges += 1;
+    if (iterations >= cap) cap = iterations + 1;
+    forceTool = untilSatisfied.requireTool;
+    return untilSatisfied.note;
+  };
+
   while (iterations < cap) {
     iterations += 1;
     const toolChoice: Anthropic.ToolChoice | undefined =
@@ -183,21 +196,15 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     }
 
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
-      if (untilSatisfied && !untilSatisfied.satisfied() && nudges < untilSatisfied.maxNudges) {
-        nudges += 1;
-        // A stop on the last allowed turn would otherwise leave no turn for the
-        // forced call, and the walk would end empty exactly when the model spent
-        // every earlier turn on navigation. The request is allowed one turn past
-        // the cap; maxNudges bounds how often that can happen.
-        if (iterations >= cap) cap = iterations + 1;
-        console.warn(`[agent] iter ${iterations}: the model stopped before the required call — asking again (${nudges}/${untilSatisfied.maxNudges})`);
+      const note = askAgain();
+      if (note) {
+        console.warn(`[agent] iter ${iterations}: the model stopped before the required call — asking again (${nudges}/${untilSatisfied?.maxNudges})`);
         // An assistant turn may not be empty; keep whatever it said.
         messages.push({
           role: "assistant",
           content: response.content.length ? response.content : [{ type: "text", text: "(no reply)" }],
         });
-        messages.push({ role: "user", content: untilSatisfied.note });
-        forceTool = untilSatisfied.requireTool;
+        messages.push({ role: "user", content: note });
         continue;
       }
       endedBy = "model";
@@ -264,7 +271,17 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
       }
     }
 
-    messages.push({ role: "user", content: results });
+    // The turn that ran out the cap may itself have been a tool call, not a
+    // stop: the loop would end here and the walk would be filed as empty. The
+    // request rides in the same user message as the results it follows (the
+    // API wants tool results first, text after), and gets the turn past the cap.
+    const userTurn: Anthropic.ContentBlockParam[] = [...results];
+    const outOfTurns = iterations >= cap ? askAgain() : null;
+    if (outOfTurns) {
+      console.warn(`[agent] iter ${iterations}: out of turns before the required call — asking (${nudges}/${untilSatisfied?.maxNudges})`);
+      userTurn.push({ type: "text", text: outOfTurns });
+    }
+    messages.push({ role: "user", content: userTurn });
 
     // CHE-130: every screenshot used to stay in context for the whole walk and
     // was re-read on every iteration — a full joblander walk cost $2.31 with

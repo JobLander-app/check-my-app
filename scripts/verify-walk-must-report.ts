@@ -9,8 +9,9 @@
 // model end the walk on its own say-so while nothing was recorded.
 //
 // Through the real path (walkOneJourney, real D1, real Chromium, scripted model):
-//   1. the model ends in prose, then reports a step when asked → the journey has
-//      that step, no unrecorded_walk step, and the model was asked exactly once;
+//   1. the model opens the page, ends in prose, then reports a step when asked →
+//      the journey has that step, no unrecorded_walk step, and the model was
+//      asked exactly once;
 //   2. the model ends in prose and ignores the request (answers it with the
 //      same prose) → the next request carries tool_choice report_step, so the
 //      step is recorded anyway and the journey is not an unrecorded walk; the
@@ -18,7 +19,11 @@
 //   3. a model that reports on its own is never asked;
 //   4. a model that spends every allowed turn reading pages and only then stops
 //      is still made to report: the forced call has a turn of its own past the
-//      cap, so the zero-step outcome is not reachable by running out of turns.
+//      cap, so the zero-step outcome is not reachable by running out of turns;
+//   5. the same when the last allowed turn is itself a tool call, not a stop;
+//   6. a model that never touched the page and is forced to report cannot put a
+//      defect on the customer: with no action, response or screenshot behind it
+//      the step is not recorded and the journey is an unrecorded walk, as before.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-walk-must-report.ts
 
@@ -54,9 +59,9 @@ function check(name: string, ok: boolean, detail = "") {
 
 const CLAIM = "The practice interview module did not open for the signed-in user.";
 
-type Mode = "reports_when_asked" | "ignores_request" | "reports_first" | "stops_on_last_turn";
+type Mode = "reports_when_asked" | "ignores_request" | "reports_first" | "stops_on_last_turn" | "ends_on_tool_call" | "never_browses";
 
-function scriptedModel(mode: Mode) {
+function scriptedModel(mode: Mode, target: string) {
   let calls = 0;
   let asked = 0;
   let forced = 0;
@@ -71,7 +76,9 @@ function scriptedModel(mode: Mode) {
     calls += 1;
     if (!params.tools) return message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
     const last = params.messages?.[params.messages.length - 1];
-    const wasAsked = last?.role === "user" && typeof last.content === "string" && last.content.includes("report_step");
+    const lastText = last?.role !== "user" ? "" : typeof last.content === "string" ? last.content
+      : last.content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
+    const wasAsked = lastText.includes("report_step");
     if (wasAsked) {
       asked += 1;
       // The API's side of tool_choice: a named tool is the only thing it can return.
@@ -81,9 +88,16 @@ function scriptedModel(mode: Mode) {
       }
       return mode === "reports_when_asked" ? report("tu_asked") : message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
     }
-    if (mode === "reports_first" && calls === 1) return report("tu_first");
-    // Every turn but the last allowed one is spent reading; the last is a stop.
-    if (mode === "stops_on_last_turn" && browsed < walkingIterationCap(1) - 1) {
+    // Every mode but never_browses opens the page first: that is the evidence.
+    if (mode !== "never_browses" && calls === 1) {
+      browsed += 1;
+      return message([{ type: "tool_use", id: "tu_open", name: "navigate", input: { url: target } }], "tool_use");
+    }
+    if (mode === "reports_first" && calls === 2) return report("tu_first");
+    // Every turn but the last allowed one is spent reading; the last is a stop
+    // (stops_on_last_turn) or one more read (ends_on_tool_call).
+    const spendAll = mode === "ends_on_tool_call";
+    if ((mode === "stops_on_last_turn" || spendAll) && browsed < walkingIterationCap(1) - (spendAll ? 0 : 1)) {
       browsed += 1;
       return message([{ type: "tool_use", id: `tu_read_${browsed}`, name: "read_page", input: {} }], "tool_use");
     }
@@ -115,7 +129,7 @@ async function main() {
       n += 1;
       const runId = `run_${mode}`;
       await db.run.create({ data: { id: runId, runNumber: n, ownerId: "ann", teamId: "team_a", targetUrl: target, appSlug: "127.0.0.1", status: "walking" } as never });
-      const model = scriptedModel(mode);
+      const model = scriptedModel(mode, target);
       await walkOneJourney({
         env,
         llm: model.llm,
@@ -125,7 +139,7 @@ async function main() {
         index: 0,
       });
       const journey = await db.journey.findFirst({ where: { runId }, include: { steps: true } });
-      return { steps: journey?.steps ?? [], summary: journey?.summary ?? null, asked: model.asked(), forced: model.forced() };
+      return { steps: journey?.steps ?? [], summary: journey?.summary ?? null, status: journey?.status, asked: model.asked(), forced: model.forced() };
     };
 
     const asked = await walk("reports_when_asked");
@@ -151,6 +165,20 @@ async function main() {
       JSON.stringify({ asked: last.asked, forced: last.forced, steps: last.steps.map((s) => [s.label, s.gapClass]) }));
     check("…and that journey is not filed as an unrecorded walk",
       !last.steps.some((s) => s.gapClass === "unrecorded_walk") && last.summary !== HOMEWORK_FALLBACK, String(last.summary));
+
+    const ran = await walk("ends_on_tool_call");
+    check("a walk whose last allowed turn is a tool call is asked in that same turn, and the forced report_step follows",
+      ran.asked === 1 && ran.forced === 1 && ran.steps.length === 1 && ran.steps[0].label === "Open the module",
+      JSON.stringify({ asked: ran.asked, forced: ran.forced, steps: ran.steps.map((s) => [s.label, s.gapClass]) }));
+    check("…and that journey is not filed as an unrecorded walk",
+      !ran.steps.some((s) => s.gapClass === "unrecorded_walk") && ran.summary !== HOMEWORK_FALLBACK, String(ran.summary));
+
+    const blind = await walk("never_browses");
+    check("a walk that never touched the page is forced to report, and the defect it reports is not recorded",
+      blind.asked === 1 && blind.forced === 1 && !blind.steps.some((s) => s.status === "broken"),
+      JSON.stringify({ asked: blind.asked, forced: blind.forced, steps: blind.steps.map((s) => [s.label, s.status, s.gapClass]) }));
+    check("…and it stays the unrecorded walk of ours, with the fixed coverage sentence",
+      blind.steps.length === 1 && blind.steps[0].gapClass === "unrecorded_walk" && blind.summary === unrecordedWalkSummary(0, blind.status), String(blind.summary));
   } finally {
     await real.close?.();
     await browser.close();

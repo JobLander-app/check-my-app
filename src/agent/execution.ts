@@ -265,6 +265,25 @@ export async function walkOneJourney(args: {
         // time (a control our hands could not drive) is evidence, not a guess.
         // Captured before adjudication, which may hand back a different object.
         const machineClass = reported.gapClass;
+        // The first step of a walk that has done nothing a machine saw — no
+        // action, no page response, no console line, no screenshot — has no
+        // evidence behind a defect. The model may have been made to call
+        // report_step (untilSatisfied below), and a forced call produces a
+        // defect as readily as a true one: "the module stays empty", about a
+        // page nobody opened. That is not recorded; the walk then ends as an
+        // unrecorded walk, our gap and not the customer's finding.
+        if (
+          stepOrder === 0 &&
+          reported.status !== "ok" &&
+          reported.status !== "skipped" &&
+          !actionTrail.length &&
+          !toolEnv.networkLog.length &&
+          !toolEnv.consoleLog.length &&
+          !lastScreenshot
+        ) {
+          console.warn(`[walk] "${proposed.title}": a ${reported.status} step with nothing behind it (no action, response or screenshot) — not recorded`);
+          return;
+        }
         // CHE-393: the same — read at report time by the tool, kept past the
         // judge, settled against what this journey already knew (one browser
         // context: a session seen earlier is still there on a page that says
