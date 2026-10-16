@@ -13,7 +13,7 @@
 import { shapeExtensionDiscovery } from "../src/agent/extension-discovery";
 import type { ExtensionSession } from "../src/agent/extension-contract";
 import { decideMetric, MIN_NOTE_CHARS, MIN_PRICE } from "../src/agent/journey-metrics";
-import { journeyMetric } from "../src/agent/journey-catalog";
+import { conversionEarned, journeyMetric, recordWalk } from "../src/agent/journey-catalog";
 import { hasEnvironmentLeak, hasHomework, hasNarration } from "../src/lib/verdict-language";
 import type { AgentEnv } from "../src/agent/env";
 
@@ -74,6 +74,30 @@ async function main() {
   // The model's own numbers keep moving a stored price, as before.
   const moved = await journeyMetric(envWith(stored), "aj1", { price: 9, conversion: 30, note: "one confirmation was removed from starting a session" });
   check("a model that names a change still moves the stored price", moved?.price === 9);
+
+  // A scripted conversion is a guess made before the walk. A walk that did not
+  // finish must not leave it behind as "likely to finish".
+  async function written(status: string, seeded: boolean) {
+    let data: Record<string, unknown> = {};
+    const env = {
+      db: {
+        appJourney: {
+          findUnique: async () => ({ aliases: "[]", consecutiveBad: 0, failingSince: null, surface: null, scenario: null, price: null, conversion: null, funnelStages: null, funnelDriftAt: null }),
+          update: async (args: { data: Record<string, unknown> }) => { data = args.data; },
+        },
+      },
+    } as unknown as AgentEnv;
+    await recordWalk(env, { appJourneyId: "aj1", runId: "r1", runNumber: 1, title: "Email sign-in", status, plan: [], metric: scripted, seeded });
+    return data;
+  }
+  const broken = await written("failed", true);
+  check("a failed scripted walk stores no conversion", broken.conversion === null, String(broken.conversion));
+  check("a failed scripted walk still stores the price", broken.price === scripted.price, String(broken.price));
+  const finished = await written("ok", true);
+  check("a finished scripted walk stores the scripted conversion", finished.conversion === scripted.conversion, String(finished.conversion));
+  const modelled = await written("failed", false);
+  check("a model's own conversion is not touched by this rule", modelled.conversion === scripted.conversion, String(modelled.conversion));
+  check("conversionEarned: scripted + failed is not earned", !conversionEarned(true, "failed") && conversionEarned(true, "ok") && conversionEarned(false, "failed"));
 
   if (failures) {
     console.log(`\n${failures} check(s) failed`);

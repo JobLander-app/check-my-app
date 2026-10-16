@@ -325,6 +325,8 @@ export async function recordWalk(
     metric?: JourneyMetric | null;
     /** CHE-238: the funnel this walk implies, or why there is none. */
     funnel?: DerivedFunnel | null;
+    /** The metric is a script's opening value, not something this walk measured. */
+    seeded?: boolean;
     /** CHE-420: this walk left a step of ours unverified (our_capability). */
     gap?: boolean;
     at?: Date;
@@ -353,7 +355,7 @@ export async function recordWalk(
   const walked = args.status !== "skipped";
   const healthy = HEALTHY.has(args.status);
   const consecutiveBad = !walked ? row.consecutiveBad : healthy ? 0 : row.consecutiveBad + 1;
-  const metric = metricUpdate(row, args, at);
+  const metric = metricUpdate(row, args, at, healthy);
   const funnel = funnelUpdate(row, args, at, walked);
 
   await env.db.appJourney.update({
@@ -396,6 +398,11 @@ export async function recordWalk(
       ...metric,
     },
   });
+}
+
+/** Whether a scripted journey's conversion survives the walk's outcome. */
+export function conversionEarned(seeded: boolean, status: string): boolean {
+  return !seeded || HEALTHY.has(status);
 }
 
 /**
@@ -527,11 +534,25 @@ async function storedMetric(env: AgentEnv, appJourneyId: string): Promise<Journe
  */
 function metricUpdate(
   row: { price: number | null; conversion: number | null },
-  args: { metric?: JourneyMetric | null; runId: string },
+  args: { metric?: JourneyMetric | null; runId: string; seeded?: boolean },
   at: Date,
+  healthy: boolean,
 ): Record<string, unknown> {
   const metric = args.metric;
   if (!metric) return {};
+  // A scripted journey's conversion is a guess made before anything was walked.
+  // A walk that did not finish has shown it is not 70 of 100, so only the price
+  // (the actions the script has the person do) opens the journey, and the
+  // conversion stays empty until a walk that finishes can stand behind it.
+  if (args.seeded && !healthy) {
+    return {
+      price: metric.price,
+      conversion: null,
+      metricNote: metric.note.slice(0, 300),
+      metricRunId: args.runId,
+      metricAt: at,
+    };
+  }
   const moved = row.price !== metric.price || row.conversion !== metric.conversion;
   return {
     price: metric.price,
