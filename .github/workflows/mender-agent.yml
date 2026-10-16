@@ -1,7 +1,8 @@
 # Mender — the OpenCode agent that takes CHE tickets (owner, 2026-10-07; CHE-445,
-# the ticket that names this workflow). Label a CHE issue `mender`; within half
-# an hour Mender reads it (Linear + Notion over MCP), opens a PR, asks CodeRabbit
-# to review, works through up to three review rounds, and reports on the ticket.
+# the ticket that names this workflow). Label a CHE issue `mender`; at the event
+# that files it, or at the next deploy of main, Mender reads it (Linear + Notion
+# over MCP), opens a PR, asks CodeRabbit to review, works through up to three
+# review rounds, and reports on the ticket.
 # The PR merges itself (mender-gate.yml, CHE-486; owner 2026-10-15). It used to
 # wait for a person, and ten PRs waited for days. scripts/mender/agent.mjs is the
 # whole procedure.
@@ -18,8 +19,9 @@
 name: Mender
 
 on:
-  schedule:
-    - cron: "7,37 * * * *"
+  # No timer (owner, 2026-10-15: no crons; CHE-486). Mender is started by the
+  # event that has work for it: a ticket filed for it (the agent worker's
+  # wakeMender, src/agent/mender-dispatch.ts), a review on its PR, its own chain.
   workflow_dispatch:
     inputs:
       ticket:
@@ -31,6 +33,14 @@ on:
   # always from main's files.
   pull_request_review:
     types: [submitted]
+  # The safety net, still with no clock: after every deploy of main, one look at
+  # the queue (peek ends an idle look in seconds). A wake GitHub refused, a
+  # ticket labelled `mender` by hand, a key raised after an alarm — the next
+  # deploy picks each up (CodeRabbit, #357).
+  workflow_run:
+    workflows: ["CI / Deploy"]
+    types: [completed]
+    branches: [main]
 
 # One unit of work at a time: two ticks would take the same ticket.
 concurrency:

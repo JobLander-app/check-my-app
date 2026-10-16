@@ -14,7 +14,6 @@ import { admitTeamCheck, shouldSkipWatch, utcMonthStart } from "@/lib/plans";
 import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
 import { releaseCanceledLeases, settleCanceledPrices } from "./canceled-leases";
-import { dispatchMender } from "./mender-dispatch";
 import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepSelfCheckLeftovers, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { recipientsForApp } from "@/lib/recipients";
@@ -27,6 +26,7 @@ import { recheckPausedKeys } from "@/lib/byok-credit";
 import { decryptSecret } from "@/lib/crypto";
 import { focusForRun, mergeFocus } from "@/lib/scenarios";
 import { makeAgentEnv, type AgentEnv, type AgentBindings } from "./env";
+import { deliverOwedWake } from "./mender-dispatch";
 
 // The cron fires every 15 minutes and a full run costs real money, so cap the
 // fan-out per tick rather than the number of watches we're willing to hold.
@@ -144,17 +144,20 @@ export async function runDueWatches(
   // nothing behind it, and counts as in flight for its watch and its app until
   // somebody ends it. Before the due watches are read, so a watch it was
   // blocking is looked at in this same tick.
-  // CHE-445: Mender's clock. Never fails the tick.
-  try {
-    await dispatchMender(env.bindings);
-  } catch (err) {
-    console.warn(`[mender] dispatch failed: ${err instanceof Error ? err.message : err}`);
-  }
-
   try {
     await sweepOrphanedRuns(env, now);
   } catch (err) {
     console.warn(`[orphan-runs] sweep failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // CHE-486: Mender is no longer woken by this clock, but by the ticket filed
+  // for it (mender-dispatch.ts wakeMender) — owner 2026-10-15, no crons. The
+  // tick only delivers a wake GitHub refused at the time; with none owed it
+  // starts nothing.
+  try {
+    await deliverOwedWake(bindings);
+  } catch (err) {
+    console.warn(`[mender] delivering an owed wake failed: ${err instanceof Error ? err.message : err}`);
   }
 
   const due = await env.db.watch.findMany({

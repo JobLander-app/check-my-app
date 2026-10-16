@@ -17,6 +17,7 @@ import { freshLinearToken } from "@/lib/tracker/token";
 import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
+import { noteCreated, wakeMender } from "./mender-dispatch";
 import type { RouteRefusal } from "./llm";
 import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, MACHINE_DECIDED_CLASSES, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
@@ -303,6 +304,12 @@ export async function fileCapabilityGaps(
   }
 
   const notes: CapabilityNote[] = [];
+  // What Mender is woken for: every ticket created, even one whose ledger row
+  // then failed, and a recurrence put back in its queue. A gap settled as
+  // not-a-bug wakes nobody (Codex, #357).
+  const created: string[] = [];
+  const relabelled: string[] = [];
+  const noting = noteCreated(tracker, created);
   for (const [cls, examples] of byCapability) {
     const { label, why } = GAP_CLASSES[cls];
     const observationExamples = privateAudit ? [...examples, `Original step labels, observations and actions are retained in private R2 evidence: ${privateAuditKey}.`] : examples;
@@ -334,7 +341,7 @@ export async function fileCapabilityGaps(
     try {
       const outcome = await fileFindingTicket({
         db: env.db,
-        tracker,
+        tracker: noting,
         appId: self.id,
         finding,
         run: ticketRun,
@@ -348,6 +355,7 @@ export async function fileCapabilityGaps(
       if (outcome.kind === "commented") {
         try {
           await tracker.addLabel(outcome.identifier, MENDER_LABEL);
+          relabelled.push(outcome.identifier);
         } catch (err) {
           const text = err instanceof Error ? err.message : String(err);
           console.warn(`[capability] labelling ${outcome.identifier} for Mender failed: ${text}`);
@@ -380,6 +388,8 @@ export async function fileCapabilityGaps(
       notes.push({ icon: "warn", text: `Couldn't file our checker gap "${label}": ${text}` });
     }
   }
+  // CHE-486: the ticket is the event that wakes Mender — no clock.
+  if (created.length || relabelled.length) await wakeMender(env.bindings, `checker gap(s) ${[...created, ...relabelled].join(", ")} from run #${run.runNumber}`);
   return notes;
 }
 

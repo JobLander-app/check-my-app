@@ -14,6 +14,7 @@ import { ourBoard, type GapBoard } from "./capability-gaps";
 import { REASON_LABEL, type FeedbackReason } from "@/lib/feedback";
 import { systemWide } from "@/lib/tenant-db";
 import type { AgentEnv } from "./env";
+import { wakeMender } from "./mender-dispatch";
 
 const PER_TICK = 10;
 export const CLAIM_LEASE_MS = 30 * 60 * 1000;
@@ -40,38 +41,50 @@ export async function fileOpenFeedback(
     return { filed: [], failed: due.length };
   }
   const filed: string[] = [];
+  // Every ticket that exists now, recorded or not: Mender is woken for a ticket,
+  // not for a row (Codex, #357).
+  const created: string[] = [];
   let failed = 0;
-  for (const row of due) {
-    const claimed = await env.db.feedback.updateMany({
-      where: { id: row.id, status: row.status, claimedAt: row.claimedAt },
-      data: { status: "filing", claimedAt: now },
-    });
-    if (claimed.count !== 1) continue;
-    // Every write below is fenced on this tick's own claim: a tick slower than
-    // the lease must not undo the claim of the tick that took the row over.
-    const mine = { id: row.id, status: "filing", claimedAt: now };
-    let identifier: string | null = null;
-    try {
-      const issue = await board.tracker.createIssue(await draftFor(env, board, row));
-      identifier = issue.identifier;
-    } catch (err) {
-      failed++;
-      await env.db.feedback.updateMany({ where: mine, data: { status: "open", claimedAt: null } }).catch(() => {});
-      console.warn(`[feedback] could not file ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
+  // A later row that throws (its claim, a D1 hiccup) must not take the wake for
+  // the tickets already made with it (Codex, #357): the wake is in `finally`.
+  try {
+    for (const row of due) {
+      const claimed = await env.db.feedback.updateMany({
+        where: { id: row.id, status: row.status, claimedAt: row.claimedAt },
+        data: { status: "filing", claimedAt: now },
+      });
+      if (claimed.count !== 1) continue;
+      // Every write below is fenced on this tick's own claim: a tick slower than
+      // the lease must not undo the claim of the tick that took the row over.
+      const mine = { id: row.id, status: "filing", claimedAt: now };
+      let identifier: string | null = null;
+      try {
+        const issue = await board.tracker.createIssue(await draftFor(env, board, row));
+        identifier = issue.identifier;
+        created.push(identifier);
+      } catch (err) {
+        failed++;
+        await env.db.feedback.updateMany({ where: mine, data: { status: "open", claimedAt: null } }).catch(() => {});
+        console.warn(`[feedback] could not file ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      // The ticket exists. Record it. If even that fails twice, the row stays
+      // claimed, never open; after the lease it is filed again, and this log
+      // line names the first ticket so triage can fold the two together.
+      let recorded: "yes" | "lost" | "failed" = "failed";
+      for (let attempt = 0; attempt < 2 && recorded === "failed"; attempt++) {
+        recorded = await env.db.feedback
+          .updateMany({ where: mine, data: { status: "filed", issueIdentifier: identifier } })
+          .then((r) => (r.count === 1 ? "yes" : "lost"), () => "failed" as const);
+      }
+      if (recorded === "yes") filed.push(identifier);
+      else if (recorded === "lost") console.warn(`[feedback] ${row.id} was taken over by another tick after ${identifier} was made — a duplicate for triage`);
+      else console.warn(`[feedback] filed ${row.id} as ${identifier} but could not record it; the row stays claimed`);
     }
-    // The ticket exists. Record it. If even that fails twice, the row stays
-    // claimed, never open; after the lease it is filed again, and this log
-    // line names the first ticket so triage can fold the two together.
-    let recorded: "yes" | "lost" | "failed" = "failed";
-    for (let attempt = 0; attempt < 2 && recorded === "failed"; attempt++) {
-      recorded = await env.db.feedback
-        .updateMany({ where: mine, data: { status: "filed", issueIdentifier: identifier } })
-        .then((r) => (r.count === 1 ? "yes" : "lost"), () => "failed" as const);
-    }
-    if (recorded === "yes") filed.push(identifier);
-    else if (recorded === "lost") console.warn(`[feedback] ${row.id} was taken over by another tick after ${identifier} was made — a duplicate for triage`);
-    else console.warn(`[feedback] filed ${row.id} as ${identifier} but could not record it; the row stays claimed`);
+  } finally {
+    // CHE-486: the report is filed for Mender (labelled `mender`), and the
+    // ticket is what wakes it — no clock.
+    if (created.length) await wakeMender(env.bindings, `pilot feedback ${created.join(", ")}`);
   }
   return { filed, failed };
 }

@@ -1,19 +1,24 @@
-// CHE-445: the worker's cron is Mender's clock (GitHub fired the workflow's
-// own schedule every 4–7 h). Without a token it does nothing; with one it asks
-// GitHub for exactly one run of mender-agent.yml on main; a refusal is an
-// error the scheduler logs and survives.
+// CHE-445, CHE-486: how Mender is started. It used to be the worker's cron (a
+// clock); owner, 2026-10-15: «главное чтобы не было кронов, а триггерами
+// монитора были ошибки в проде». Now the ticket filed for Mender wakes it, at
+// the place that files it (wakeMender), and nothing does on a timer.
+//
+// Without a token dispatch does nothing; with one it asks GitHub for exactly
+// one run of mender-agent.yml on main; a refusal is an error that wakeMender
+// logs and survives.
 //
 // The scheduler half is behavioural: it runs the real runDueWatches against a
 // database with no rows and a fetch that records what leaves the worker, so it
-// fails if the call is removed, moved behind an early return, or wrapped so it
-// never runs — which a regex over the source cannot tell (CHE-449).
+// fails if a dispatch is put back on the clock (CHE-449).
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-mender-dispatch.ts
 
 import Module from "node:module";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
-import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW } from "../src/agent/mender-dispatch";
+import { deliverOwedWake, dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, OWED_WAKE_KEY, wakeMender } from "../src/agent/mender-dispatch";
 
 // The generated Prisma client is the workerd build, which plain Node cannot
 // load, so the scheduler's database is the in-memory stand-in the other verify
@@ -57,7 +62,9 @@ async function main() {
 
   // The database is the stub above, empty: the sweeps and the due-watch read
   // find nothing to do, so the tick is only its own wiring.
-  const bindings = (token?: string) => ({ MENDER_DISPATCH_TOKEN: token }) as unknown as AgentBindings;
+  // The evidence bucket the tick reads an owed wake from: none until the owed-wake check below.
+  let owedStore: object | undefined;
+  const bindings = (token?: string) => ({ MENDER_DISPATCH_TOKEN: token, EVIDENCE: owedStore }) as unknown as AgentBindings;
 
   const realFetch = globalThis.fetch;
   const realWarn = console.warn;
@@ -83,22 +90,125 @@ async function main() {
   };
   const dispatches = () => sent.filter((u) => u.includes("/actions/workflows/") && u.endsWith("/dispatches")).length;
 
+  // CHE-486: no clock. A tick with a token and nothing filed starts no Mender.
   const active = await tick("t", () => new Response(null, { status: 204 }));
-  check("a tick with a token dispatches Mender exactly once", dispatches() === 1 && active.threw === null,
+  check("the scheduler's tick no longer starts Mender (no crons)", dispatches() === 0 && active.threw === null,
     `${dispatches()} dispatch(es)${active.threw ? `, tick threw: ${active.threw}` : ""}`);
 
-  const idle = await tick(undefined, () => new Response(null, { status: 204 }));
-  check("a tick without a token dispatches nothing", dispatches() === 0 && idle.threw === null);
+  // wakeMender: the event's own call, which never throws.
+  const said: string[] = [];
+  const realLog = console.log;
+  console.log = (...args: unknown[]) => void said.push(args.join(" "));
+  console.warn = (...args: unknown[]) => void said.push(args.join(" "));
+  const woke = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-1", ok);
+  const refused = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-2", async () => new Response("{}", { status: 403 }));
+  const down = await wakeMender({ MENDER_DISPATCH_TOKEN: "t" }, "run failure CHE-3", async () => { throw new Error("network down"); });
+  const none = await wakeMender({}, "run failure CHE-4", ok);
+  console.log = realLog;
+  console.warn = realWarn;
+  check("waking Mender says why, and a refused or unreachable GitHub is logged, never thrown",
+    woke === "dispatched" && refused === "failed" && down === "failed" && none === "no-token" &&
+      said.some((s) => s.includes("woken: run failure CHE-1")) && said.some((s) => s.includes("CHE-3") && s.includes("network down")), said.join(" | "));
 
-  const refused = await tick("t", () => new Response("{}", { status: 403 }));
-  check("a refused dispatch is logged and does not fail the tick",
-    dispatches() === 1 && refused.threw === null && warned.some((w) => w.includes("[mender]")),
-    refused.threw ? `tick threw: ${refused.threw}` : warned.join(" | "));
+  // Codex, #357/#358: a refused wake is owed, not forgotten. The tick delivers it
+  // once; with nothing owed the tick starts nothing (above).
+  {
+    const store = new Map<string, string>();
+    const EVIDENCE = {
+      async put(k: string, v: string) { store.set(k, v); },
+      async get(k: string) { const v = store.get(k); return v === undefined ? null : { text: async () => v }; },
+      async delete(k: string) { store.delete(k); },
+    };
+    console.log = () => {};
+    console.warn = () => {};
+    await wakeMender({ MENDER_DISPATCH_TOKEN: "t", EVIDENCE }, "prod error CHE-9", async () => new Response("{}", { status: 502 }));
+    const owed = store.has(OWED_WAKE_KEY);
+    const stillRefused = await deliverOwedWake({ MENDER_DISPATCH_TOKEN: "t", EVIDENCE }, async () => new Response("{}", { status: 502 }));
+    const keptAfterRefusal = store.has(OWED_WAKE_KEY);
+    owedStore = EVIDENCE;
+    await tick("t", () => new Response(null, { status: 204 }));
+    const deliveredOnTick = dispatches();
+    await tick("t", () => new Response(null, { status: 204 }));
+    console.log = realLog;
+    console.warn = realWarn;
+    check("a refused wake is owed; refused again it stays; the next tick delivers it once and clears it",
+      owed && stillRefused === "failed" && keptAfterRefusal && deliveredOnTick === 1 && !store.has(OWED_WAKE_KEY) && dispatches() === 0,
+      `owed ${owed}, kept ${keptAfterRefusal}, tick ${deliveredOnTick}, after ${dispatches()}`);
+  }
 
-  const down = await tick("t", () => Promise.reject(new Error("network down")));
-  check("an unreachable GitHub does not fail the tick",
-    dispatches() === 1 && down.threw === null && warned.some((w) => w.includes("[mender]")),
-    down.threw ? `tick threw: ${down.threw}` : warned.join(" | "));
+  // Every place that files a ticket for Mender wakes it, right after filing —
+  // read from the syntax tree, so a call in a comment, a string or the wrong
+  // function does not count (CodeRabbit, #357). That the feedback wake follows
+  // a created ticket is verify-feedback's, run for real.
+  const sites = (file: string) => {
+    const sf = ts.createSourceFile(file, readFileSync(new URL(`../src/agent/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+    const found: { fn: string; guard: string; reason: string; inFinally: boolean }[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "wakeMender") {
+        let fn = "", guard = "", inFinally = false;
+        for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
+          if (!guard && ts.isIfStatement(up) && up.thenStatement.pos <= node.pos && node.end <= up.thenStatement.end) guard = up.expression.getText(sf);
+          if (ts.isTryStatement(up) && up.finallyBlock && up.finallyBlock.pos <= node.pos && node.end <= up.finallyBlock.end) inFinally = true;
+          if (ts.isFunctionDeclaration(up) && up.name) { fn = up.name.text; break; }
+        }
+        found.push({ fn, guard, reason: node.arguments[1]?.getText(sf) ?? "", inFinally });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return { sf, found };
+  };
+  const gapSites = sites("capability-gaps.ts");
+  const gaps = gapSites.found;
+  const failures = sites("run-failures.ts");
+  const feedback = sites("feedback-filing.ts").found;
+  const initOf = (sf: ts.SourceFile, name: string) => {
+    let init = "";
+    const visit = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) init = node.initializer?.getText(sf) ?? "";
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return init;
+  };
+  const labelled = initOf(failures.sf, "labelled");
+  const ticket = initOf(failures.sf, "ticket");
+  const shape = JSON.stringify({ gaps, failures: failures.found, feedback, labelled, ticket });
+  check("a checker gap wakes Mender once, after the gaps are filed, for a ticket created or put back in its queue — never for one settled as not-a-bug",
+    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && gaps[0].guard === "created.length || relabelled.length" &&
+      /checker gap/.test(gaps[0].reason) && initOf(gapSites.sf, "noting") === "noteCreated(tracker, created)" &&
+      /tracker: noting/.test(gapSites.sf.getFullText()) &&
+      /await tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\);\s*\n\s*relabelled\.push\(outcome\.identifier\);/.test(gapSites.sf.getFullText()), shape);
+  check("a run failure wakes Mender once, for a new ticket, a recurrence that holds Mender's label, or a ticket created before its bookkeeping failed",
+    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "ticket" && failures.found[0].inFinally &&
+      ticket === "forMender ?? created[0] ?? null" && /outcome\.kind === "created"/.test(labelled) &&
+      /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(labelled) &&
+      /tracker: noteCreated\(tracker, created\)/.test(failures.sf.getFullText()), shape);
+  // noteCreated itself: the created ticket is noted before anything after it can fail.
+  {
+    const noted: string[] = [];
+    class Tracker {
+      prefix = "CHE-";
+      async createIssue() { return { identifier: `${this.prefix}7` }; }
+      async addComment() { return this.prefix; }
+    }
+    const wrapped = noteCreated(new Tracker() as unknown as { createIssue(d: never): Promise<{ identifier: string }>; addComment(): Promise<string> }, noted);
+    await wrapped.createIssue({} as never);
+    check("noteCreated notes each created ticket and leaves the tracker's other methods working",
+      noted.join() === "CHE-7" && (await wrapped.addComment()) === "CHE-", noted.join());
+  }
+  check("a pilot report wakes Mender once per tick, for every ticket created",
+    feedback.length === 1 && feedback[0].fn === "fileOpenFeedback" && feedback[0].guard === "created.length" && feedback[0].inFinally &&
+      /created\.join/.test(feedback[0].reason), shape);
+  check("a run failure is filed under Mender's label",
+    /selfPolicy\(self, "\[Checker failure\] \{verdict\}", \[MENDER_LABEL\]\)/.test(failures.sf.getFullText()));
+
+  const wf = readFileSync(new URL("../.github/workflows/mender-agent.yml", import.meta.url), "utf8");
+  check("Mender's workflow has no schedule", !/^\s*schedule:|cron:/m.test(wf));
+  // The safety net without a clock: a wake GitHub refused, a ticket labelled by
+  // hand, a key raised after an alarm — each is picked up at the next deploy.
+  check("…and looks at its queue after every deploy of main",
+    /workflow_run:\s*\n\s*workflows: \["CI \/ Deploy"\]\s*\n\s*types: \[completed\]\s*\n\s*branches: \[main\]/.test(wf));
 
   console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);
