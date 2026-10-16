@@ -56,8 +56,11 @@ export function normalizeMessage(message: string): string {
         return `${PLACEHOLDER}url`;
       }
     })
-    // Any length: a long quoted value is customer data all the same (Codex, #360).
-    .replace(/"[^"]*"|'[^']*'|`[^`]*`/g, `"${PLACEHOLDER}"`)
+    // Any length, and escaped quotes inside count as inside: a long quoted value
+    // or a serialised object is customer data all the same (Codex, #360). A
+    // stray escaped quote left after that is the start of one too.
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, `"${PLACEHOLDER}"`)
+    .replace(/\\["'`][^\s]*/g, `"${PLACEHOLDER}"`)
     // A person's address or a credential is never part of a signature, and the
     // message goes on our board: emails, then anything token-shaped.
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, `${PLACEHOLDER}@${PLACEHOLDER}`)

@@ -50,6 +50,13 @@ async function main() {
   // Codex, #360: a quoted value of any length is customer data.
   const longQuoted = normalizeMessage(`Invalid value "${"customer said: the checkout is broken on my phone ".repeat(8)}" for field note`);
   check("…nor a quoted value, however long", !/customer said|checkout/.test(longQuoted) && /Invalid value "#" for field note/.test(longQuoted), longQuoted);
+  const escaped = [
+    normalizeMessage('Invalid value "{\\"note\\":\\"private text\\"}" for field'),
+    normalizeMessage('Bad body {"note":"private text","email":"x"}'),
+    normalizeMessage("Unexpected token in \\\"private text"),
+    normalizeMessage("Inspected { note: 'private text', n: 'it\\'s private' }"),
+  ];
+  check("…nor a serialised one with escaped quotes inside, or a stray escaped quote", escaped.every((m) => !/private/.test(m)), escaped.join(" | "));
   check("the frame is the function, never its line", frameOf("E\n    at loadVerdict (index.js:1:2)") === "loadVerdict" && frameOf("E\n    at async handle (x.js:9:9)") === "handle");
   const [r1] = reportsFrom([exception("boom 1", 1234)]);
   const [r2] = reportsFrom([exception("boom 2", 9876)]);
@@ -170,6 +177,19 @@ async function main() {
   await intakeProdErrors(env("on"), [other], { board, now: new Date(now.getTime() + 60_000) });
   check("…and lets its claim go: the next report files it, without waiting out the hour",
     created.some((d) => d.title.includes("checkmyapp-agent: RangeError")));
+  // Codex, #360: two new signatures in one batch — the watch gets one ticket
+  // with that ticket's own time, the later error's.
+  {
+    const early = { ...reportsFrom([exception("early one", 1, "checkmyapp-web", "EvalError")])[0], at: Date.parse("2026-10-16T11:50:00Z") };
+    const late = { ...reportsFrom([exception("late one", 1, "checkmyapp-web", "TypeError")])[0], at: Date.parse("2026-10-16T12:05:00Z") };
+    const sentBefore = bodies.length;
+    const pair = await intakeProdErrors(env("on"), [late, early], { board, now: new Date(now.getTime() + 9 * TELL_EVERY_MS) });
+    const lateTicket = pair.filed[0];
+    const inputs = JSON.parse(bodies[sentBefore] ?? "{}").inputs;
+    check("two new errors in one batch: one watch, for one ticket, with that ticket's own time",
+      pair.filed.length === 2 && bodies.length === sentBefore + 1 &&
+        JSON.stringify(inputs) === JSON.stringify({ watch: lateTicket, seen: new Date(late.at).toISOString() }), JSON.stringify({ filed: pair.filed, inputs }));
+  }
   // Codex, #358: the ticket exists but recording it hiccups once — it is retried, and Mender is woken.
   const [third] = reportsFrom([exception("w", 1, "checkmyapp-web", "URIError")]);
   const realUpdate = db.prodError.update;
