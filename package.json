@@ -134,6 +134,7 @@
     "verify:extension-billing": "node scripts/verify-extension-billing.mjs",
     "verify:extension-result": "node scripts/verify-extension-result.mjs",
     "verify:extension-discovery": "tsx --tsconfig tsconfig.json scripts/verify-extension-discovery.ts",
+    "verify:extension-journey-pricing": "tsx --tsconfig tsconfig.json scripts/verify-extension-journey-pricing.ts",
     "verify:extension-session-view": "node scripts/verify-extension-session-view.mjs",
     "verify:extension-replay": "tsx --tsconfig tsconfig.json scripts/verify-extension-replay.ts",
     "verify:extension-artifact": "tsx scripts/verify-extension-artifact.ts",

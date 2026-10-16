@@ -71,6 +71,8 @@ export interface ProposedMetric {
   price: number | null;
   conversion: number | null;
   note: string;
+  // Set by a scripted journey (extension-discovery.ts): see RawMetric.seedOnly.
+  seedOnly?: boolean;
 }
 
 // CHE-133: the map from the last full check of a watched app, and the two

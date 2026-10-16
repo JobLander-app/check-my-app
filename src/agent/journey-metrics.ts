@@ -234,6 +234,12 @@ export interface RawMetric {
   price?: unknown;
   conversion?: unknown;
   note?: unknown;
+  /**
+   * True when the numbers come from a script we wrote for a journey, not from
+   * a model that watched it. They may only open a journey that has no price —
+   * once one is stored, only a walk that names a change may move it.
+   */
+  seedOnly?: boolean;
 }
 
 export interface MetricDecision {

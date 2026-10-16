@@ -34,7 +34,7 @@ import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "./summary";
-import { journeyMetric, leftOurGap, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
+import { conversionEarned, journeyMetric, leftOurGap, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
 import { ExtensionRuntimeError } from "./extension-error";
@@ -170,6 +170,7 @@ export async function walkOneJourney(args: {
     // what changed; `null` when this run had nothing to say (a re-walk, a
     // model that skipped the field).
     const metric = await journeyMetric(env, identity.appJourneyId, proposed.metric);
+    const seeded = proposed.metric?.seedOnly === true;
 
     const journey = await env.db.journey.create({
       data: {
@@ -498,6 +499,10 @@ export async function walkOneJourney(args: {
       // where the journey actually landed, not where it stood mid-wrap-up.
       // Best-effort by contract: the catalog is how the app remembers, never
       // how a run succeeds.
+      if (metric && !conversionEarned(seeded, journeyStatus(stepStatuses))) {
+        await env.db.journey.update({ where: { id: journey.id }, data: { conversion: null } })
+          .catch((err) => console.warn(`[journey] unearned conversion not withdrawn: ${errText(err)}`));
+      }
       await recordWalk(env, {
         appJourneyId: identity.appJourneyId,
         runId: run.id,
@@ -508,6 +513,7 @@ export async function walkOneJourney(args: {
         surface: proposed.surface,
         scenario: proposed.extensionScenario,
         metric,
+        seeded,
         // CHE-238: the funnel is the pages this walk actually moved through.
         // The customer is never asked to define one.
         funnel: funnelFromWalk(walkedSteps),
@@ -530,6 +536,10 @@ export async function walkOneJourney(args: {
       });
       // An aborted walk is still what we know about this journey today — the
       // catalog records the status that landed, streak included.
+      if (metric && !conversionEarned(seeded, abortedStatus)) {
+        await env.db.journey.update({ where: { id: journey.id }, data: { conversion: null } })
+          .catch((err) => console.warn(`[journey] unearned conversion not withdrawn: ${errText(err)}`));
+      }
       await recordWalk(env, {
         appJourneyId: identity.appJourneyId,
         runId: run.id,
@@ -540,6 +550,7 @@ export async function walkOneJourney(args: {
         surface: proposed.surface,
         scenario: proposed.extensionScenario,
         metric,
+        seeded,
         funnel: funnelFromWalk(walkedSteps),
         gap: leftOurGap(walkedSteps),
       }).catch((e) => console.warn(`[journey] catalog not updated: ${errText(e)}`));
