@@ -6,6 +6,7 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { execFileSync } from "node:child_process";
+import ts from "typescript";
 import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, mergeHold, REVIEW_SILENCE_MINUTES, WATCH_MINUTES, watchDecision } from "./mender/gate.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -276,7 +277,7 @@ check("a P1 badge is a P1; a P2 is not",
 check("the merge waits for production to be idle, then is pinned to the head the gate read",
   /async function mergePr[\s\S]*?const running = await checksInFlight\(\);[\s\S]*?"--match-head-commit", pr\.headRefOid\]/.test(gateSrc));
 check("closing a PR returns the ticket without spending another attempt",
-  /async function closePr[\s\S]*?await comment\(issue\.id, `\*\*Mender's pull request/.test(gateSrc) && !/async function closePr[\s\S]*?ATTEMPT_MARK[\s\S]*?\nfunction askReview/.test(gateSrc.replace(/\/\/.*$/gm, "")));
+  /async function closePr[\s\S]*?await backToTodo\(issue\.id, `\*\*Mender's pull request/.test(gateSrc) && !/async function closePr[\s\S]*?ATTEMPT_MARK[\s\S]*?\nfunction askReview/.test(gateSrc.replace(/\/\/.*$/gm, "")));
 // Codex, #356 round 2: both reviewers' findings count, and only Mender's own
 // identities can report a round or ask for a review — the repository is public.
 {
@@ -314,8 +315,41 @@ check("…the re-run is of that job, and the gate reads how many runs the head h
 check("without the reviewer's token the gate run fails rather than leave a PR on \"ask\" forever, or merge it unasked",
   /function askReview[\s\S]*?if \(!token\) throw new Error\(/.test(gateSrc));
 check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
-  /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?setState\(d\.issue\.id, "Todo"\)/.test(gateSrc) &&
+  /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?await backToTodo\(d\.issue\.id, /.test(gateSrc) &&
+    // Codex, #361: a ticket on a newer attempt (an open Mender PR) is skipped, before Linear is even asked.
+    /const current = new Set\(ghJson\(\["pr", "list", "--state", "open"[\s\S]*?for \(const pr of settled\) \{\s*\n\s*const id = ticketIdOf\(pr\.headRefName\);\s*\n\s*if \(current\.has\(id\)\) continue;/.test(gateSrc) &&
     /await reconcileMerged\(\);/.test(gateSrc));
+// 2026-10-16: the gate closed #325 and CHE-447 sat in Todo an hour and a half —
+// closing deploys nothing, so no deploy woke Mender. Every place that sends a
+// ticket back to Todo is enumerated from the syntax tree (CodeRabbit, #361),
+// and each one is known to wake Mender: the gate's through backToTodo, which
+// wakes at once (Codex, #361); Mender's own tick through chainNext; the watch
+// at its end; a stopped key not at all (Mender cannot mend its own key).
+{
+  const sf = ts.createSourceFile("agent.mjs", agent, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const todo = {};
+  const calls = {};
+  const enclosing = (n) => { for (let up = n.parent; up; up = up.parent) if (ts.isFunctionDeclaration(up) && up.name) return up.name.text; return "?"; };
+  const visit = (n) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+      const fn = enclosing(n);
+      if (n.expression.text === "setState" && n.arguments[1] && ts.isStringLiteral(n.arguments[1]) && n.arguments[1].text === "Todo") todo[fn] = (todo[fn] ?? 0) + 1;
+      if (n.expression.text === "backToTodo") (calls[fn] ??= []).push("backToTodo");
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  const fnText = (name) => { let t = ""; const v = (n) => { if (ts.isFunctionDeclaration(n) && n.name?.text === name) t = n.getText(sf); ts.forEachChild(n, v); }; v(sf); return t; };
+  check("every place that sends a ticket back to Todo is known, and the gate's wake Mender at once",
+    JSON.stringify(todo) === JSON.stringify({ findWork: 1, work: 1, publish: 2, backToTodo: 1, watch: 1 }) &&
+      calls.closePr?.length === 1 && calls.reconcileMerged?.length === 1 &&
+      /await setState\(issueId, "Todo"\);[\s\S]*?gh\(\["workflow", "run", "mender-agent\.yml", "--ref", "main"\]\)/.test(fnText("backToTodo")) &&
+      /attempt >= 3/.test(fnText("backToTodo")) && /publish: \(\) => publish\(\)\.then\(chainNext\)/.test(agent) &&
+      // Codex, #361 round 3: a wake that never went out leaves the ticket where reconciliation retries it.
+      /if \(attempt >= 3\) \{\s*\n\s*await setState\(issueId, "In Review"\)/.test(fnText("backToTodo")) &&
+      /"workflow", "run", "mender-agent\.yml", "--ref", "main"\]\);\s*\n\s*say\(sha \?/.test(fnText("watch")),
+    JSON.stringify({ todo, calls }));
+}
 check("a check stuck for hours holds no merge (the deploy gate's staleness rule)", /createdAt > strftime\('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 hours'\)/.test(agent));
 check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
 const gwf = read(".github/workflows/mender-gate.yml");

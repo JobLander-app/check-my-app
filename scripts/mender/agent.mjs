@@ -673,12 +673,45 @@ function trustedLogins() {
  * revert sends it back to Todo) is left alone. A PR the gate closed is the same
  * story the other way: its ticket goes back to Todo (Codex, #356).
  */
+/**
+ * The gate sends a ticket back to Mender's queue, and wakes Mender at once.
+ * Closing a PR deploys nothing, so no deploy would (CHE-447 sat in Todo an hour
+ * and a half after #325 was closed, 2026-10-16); and waking at once, not at the
+ * end of the run, means a later failure or a merge's long wait cannot lose it
+ * (Codex, #361). The wake is tried three times. If it still fails, the ticket
+ * goes back to In Review, where the next gate run's reconciliation finds it
+ * and tries again (Codex, #361 round 3), and this run fails, loudly.
+ */
+async function backToTodo(issueId, body) {
+  await comment(issueId, body);
+  await setState(issueId, "Todo");
+  for (let attempt = 1; ; attempt++) {
+    try {
+      gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+      return;
+    } catch (e) {
+      if (attempt >= 3) {
+        await setState(issueId, "In Review").catch(() => {});
+        throw new Error(`Mender could not be woken, so the ticket stays In Review for the next gate run: ${e.message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+    }
+  }
+}
+
 async function reconcileMerged() {
   const since = Date.now() - 2 * 86_400_000;
   const settled = ghJson(["pr", "list", "--state", "closed", "--limit", "50", "--json", "number,headRefName,url,mergedAt,closedAt"])
     .filter((p) => validBranch(p.headRefName) && Date.parse(p.closedAt) > since);
+  // A ticket with an open Mender PR is on a newer attempt: its old closed PR
+  // says nothing about it any more (Codex, #361 — otherwise the retry's own PR
+  // would send its ticket back to Todo and wake Mender again, in a loop).
+  const ticketIdOf = (branch) => branch.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+  const current = new Set(ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "headRefName"])
+    .filter((p) => validBranch(p.headRefName)).map((p) => ticketIdOf(p.headRefName)));
   for (const pr of settled) {
-    const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
+    const id = ticketIdOf(pr.headRefName);
+    if (current.has(id)) continue;
     const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
     if (d.issue?.state?.name !== "In Review") continue;
     if (pr.mergedAt) {
@@ -686,9 +719,8 @@ async function reconcileMerged() {
       await setState(d.issue.id, "Done");
       say(`reconciled ${id}: merged in #${pr.number}, now Done`);
     } else {
-      await comment(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
-      await setState(d.issue.id, "Todo");
-      say(`reconciled ${id}: #${pr.number} closed, back to Todo`);
+      await backToTodo(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
+      say(`reconciled ${id}: #${pr.number} closed, back to Todo, Mender woken`);
     }
   }
 }
@@ -770,12 +802,11 @@ async function closePr(pr, reason, facts) {
   if (issue) {
     // No attempt mark: the PR's opening already counted this attempt, and a
     // second mark would take the ticket out of the queue at once (Codex, #356).
-    await comment(issue.id, `**Mender's pull request ${pr.url} was closed:** ${reason}.` +
+    await backToTodo(issue.id, `**Mender's pull request ${pr.url} was closed:** ${reason}.` +
       (facts.findings ? `\n\nWhat the review found on its last head:\n${facts.findings}` : "") +
       "\n\nBack to Todo; the next attempt starts from current main.");
-    await setState(issue.id, "Todo");
   }
-  say(`closed #${pr.number}: ${reason}`);
+  say(`closed #${pr.number}: ${reason}${issue ? "; Mender woken" : ""}`);
 }
 
 /** Codex answers only an identity linked to a ChatGPT account, so it is asked with the owner's token (CHE-155). */
