@@ -1,8 +1,8 @@
 # Mender — the OpenCode agent that takes CHE tickets (owner, 2026-10-07; CHE-445,
 # the ticket that names this workflow). Label a CHE issue `mender`; at the event
 # that files it, or at the next deploy of main, Mender reads it (Linear + Notion
-# over MCP), opens a PR, asks CodeRabbit
-# to review, works through up to three review rounds, and reports on the ticket.
+# over MCP), opens a PR, asks CodeRabbit to review, works through up to three
+# review rounds, and reports on the ticket.
 # The PR merges itself (mender-gate.yml, CHE-486; owner 2026-10-15). It used to
 # wait for a person, and ten PRs waited for days. scripts/mender/agent.mjs is the
 # whole procedure.
