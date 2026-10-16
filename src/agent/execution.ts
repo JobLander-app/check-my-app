@@ -257,6 +257,7 @@ export async function walkOneJourney(args: {
       ...(await credentialToolEnv(env, run)),
       networkLog: [],
       consoleLog: [],
+      walkEvidence: { network: [], console: [] },
       actionTrail,
       undrivenControls,
       // CHE-171: a 404 on an address outside this set is not a defect.
@@ -269,12 +270,13 @@ export async function walkOneJourney(args: {
       },
       onReportStep: async (reported) => {
         // A step that only exists because the walk was asked to report needs
-        // evidence from the walk (an ok: that it acted; a negative one: an
-        // error the step names); without it nothing is written, and the walk
-        // is the unrecorded one it was before it was asked.
+        // evidence from the walk (an ok: an action it names that ended well; a
+        // negative one: an error it names, from the walk's retained record);
+        // without it nothing is written, and the walk is the unrecorded one
+        // it was before it was asked.
         if (nudgedToReport && !nudgedStepStands(reported, {
-          networkLog: toolEnv.networkLog,
-          consoleLog: toolEnv.consoleLog,
+          networkLog: toolEnv.walkEvidence?.network ?? [],
+          consoleLog: toolEnv.walkEvidence?.console ?? [],
           ownOrigins: [toolEnv.targetOrigin, ...(toolEnv.allowedOrigins ?? [])],
           actionTrail,
         })) {

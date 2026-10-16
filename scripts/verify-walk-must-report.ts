@@ -21,8 +21,17 @@
 //      was observed), the walk stays the unrecorded one;
 //   7. asked, reports broken, and the only error in the walk is an unrelated
 //      404 the step does not name → NOT stored as broken;
-//   8. the evidence rule itself: 429, a foreign origin, a bare 200 and an
-//      error the step does not name are not.
+//   8. asked, reports ok for a step the walk never went to (it only opened the
+//      homepage) → NOT stored as ok;
+//   9. asked after reading the error through get_network_log (which empties
+//      the rolling logs), reports broken → still stored: the evidence is the
+//      walk's retained record;
+//  10. asked, the product's own homepage answered 500 → stored as broken;
+//  11. asked, the walk's only console error is an unrelated "Failed to load
+//      module script" and the step says "module" → NOT stored as broken;
+//  12. the evidence rule itself: 429, a foreign origin, a bare 200, an error
+//      the step does not name, and a console error that shares only a common
+//      word are not.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-walk-must-report.ts
 
@@ -37,7 +46,8 @@ import { realD1 } from "./fixtures/real-d1";
 import type { LlmConfig } from "@/agent/llm";
 import type { AgentEnv } from "@/agent/env";
 import { HOMEWORK_FALLBACK } from "@/lib/verdict-language";
-import { hasPositiveEvidence, WALK_MUST_REPORT_NOTE } from "@/agent/nudged-report";
+import { hasPositiveEvidence, nudgedStepStands, WALK_MUST_REPORT_NOTE } from "@/agent/nudged-report";
+import type { ReportedStep } from "@/agent/tools";
 
 const moduleLoader = Module as unknown as { _load: (request: string, ...rest: unknown[]) => unknown };
 const realLoad = moduleLoader._load;
@@ -52,7 +62,7 @@ function check(name: string, ok: boolean, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  →  ${detail}` : ""}`);
 }
 
-type Turn = { navigate: string } | { report: "ok" | "broken"; observed: string } | { say: string };
+type Turn = { navigate: string } | { network: true } | { report: "ok" | "broken"; observed: string } | { say: string };
 
 // Plays `turns` in order, one per walking call; counts how often the nudge
 // arrived. A call without tools is the summary request.
@@ -70,6 +80,9 @@ function scriptedModel(turns: Turn[]) {
     const turn = turns[Math.min(calls - 1, turns.length - 1)];
     if ("navigate" in turn) {
       return message([{ type: "tool_use", id: `tu_${calls}`, name: "navigate", input: { url: turn.navigate } }], "tool_use");
+    }
+    if ("network" in turn) {
+      return message([{ type: "tool_use", id: `tu_${calls}`, name: "get_network_log", input: {} }], "tool_use");
     }
     if ("report" in turn) {
       return message([{ type: "tool_use", id: `tu_${calls}`, name: "report_step",
@@ -96,13 +109,22 @@ async function main() {
       return;
     }
     res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(req.url?.startsWith("/broken")
+    res.end(req.url?.startsWith("/module-error")
+      ? "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><script>console.error('Failed to load module script')</script>"
+      : req.url?.startsWith("/broken")
       ? "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><script>fetch('/api/practice')</script>"
       : req.url?.startsWith("/unrelated")
       ? "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><script>fetch('/api/missing')</script>"
       : "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><p>Start a mock interview</p>");
   });
+  // A product whose homepage itself answers 500.
+  const down = http.createServer((_req, res) => {
+    res.writeHead(500, { "Content-Type": "text/html" });
+    res.end("<!doctype html><meta charset=utf-8><title>Error</title><h1>Something went wrong</h1>");
+  });
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", () => resolve()));
+  await new Promise<void>((resolve) => down.listen(0, "127.0.0.1", () => resolve()));
+  const downTarget = `http://127.0.0.1:${(down.address() as { port: number }).port}/`;
   const origin = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
   const target = `${origin}/`;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -116,16 +138,16 @@ async function main() {
     const env = { db, bindings: {} } as unknown as AgentEnv;
     let runNumber = 0;
 
-    const walk = async (id: string, turns: Turn[]) => {
+    const walk = async (id: string, turns: Turn[], targetUrl = target) => {
       runNumber += 1;
-      await db.run.create({ data: { id, runNumber, ownerId: "ann", teamId: "team_a", targetUrl: target, appSlug: "127.0.0.1", status: "walking" } as never });
+      await db.run.create({ data: { id, runNumber, ownerId: "ann", teamId: "team_a", targetUrl, appSlug: "127.0.0.1", status: "walking" } as never });
       const model = scriptedModel(turns);
       const feed: string[] = [];
       await walkOneJourney({
         env,
         llm: model.llm,
         browser: browser as never,
-        run: { id, runNumber, appSlug: "127.0.0.1", targetUrl: target, testEmail: null, testPasswordEnc: null, scopeHints: null, userNotes: null, focusAreas: null },
+        run: { id, runNumber, appSlug: "127.0.0.1", targetUrl, testEmail: null, testPasswordEnc: null, scopeHints: null, userNotes: null, focusAreas: null },
         proposed: { title: "Open the practice module", steps: ["Open the module"] },
         index: 0,
         onProgress: async (note) => { feed.push(note); },
@@ -135,7 +157,7 @@ async function main() {
     };
     const shape = (steps: { status: string; gapClass: string | null }[]) => JSON.stringify(steps.map((s) => [s.status, s.gapClass]));
 
-    const asked = await walk("run_asked", [{ navigate: target }, { say: "Done." }, { report: "ok", observed: "The module opens." }, { say: "Done." }]);
+    const asked = await walk("run_asked", [{ navigate: `${origin}/practice` }, { say: "Done." }, { report: "ok", observed: "The practice module opens." }, { say: "Done." }]);
     check("silent, then asked: the step it reports is recorded and no unrecorded-walk gap is left",
       asked.nudges === 1 && asked.steps.length === 1 && asked.steps[0].status === "ok" && asked.steps[0].gapClass !== "unrecorded_walk",
       `${asked.nudges} nudge(s), ${shape(asked.steps)}`);
@@ -146,6 +168,13 @@ async function main() {
     check("asked after doing nothing, reports ok: not stored as ok — the unrecorded-walk step",
       idle.nudges === 1 && idle.steps.length === 1 && idle.steps[0].status === "skipped" && idle.steps[0].gapClass === "unrecorded_walk",
       shape(idle.steps));
+
+    // The walk opened the homepage and nothing else; a step about another page
+    // is not backed by that.
+    const elsewhere = await walk("run_elsewhere", [{ navigate: target }, { say: "Done." }, { report: "ok", observed: "The checkout completes." }, { say: "Done." }]);
+    check("asked, reports ok for a step the walk never went to: not stored as ok — the unrecorded-walk step",
+      elsewhere.nudges === 1 && elsewhere.steps.length === 1 && elsewhere.steps[0].status === "skipped" && elsewhere.steps[0].gapClass === "unrecorded_walk",
+      shape(elsewhere.steps));
 
     const stubborn = await walk("run_stubborn", [{ say: "Done." }]);
     check("silent when asked too: asked once, and the walk is still the unrecorded-walk gap",
@@ -170,6 +199,23 @@ async function main() {
       evidenced.nudges === 1 && evidenced.steps.length === 1 && evidenced.steps[0].status === "broken",
       shape(evidenced.steps));
 
+    // get_network_log empties the rolling logs; the error it returned is still
+    // the walk's evidence.
+    const read = await walk("run_read", [{ navigate: `${origin}/broken` }, { network: true }, { say: "Done." }, { report: "broken", observed: "The practice module could not load its data: /api/practice answered 500." }, { say: "Done." }]);
+    check("asked after reading the error through get_network_log, reports broken: still stored as broken",
+      read.nudges === 1 && read.steps.length === 1 && read.steps[0].status === "broken",
+      shape(read.steps));
+
+    const rootDown = await walk("run_root_down", [{ navigate: downTarget }, { say: "Done." }, { report: "broken", observed: "The practice module is unreachable: the app's own homepage answered 500." }, { say: "Done." }], downTarget);
+    check("asked, the product's own homepage answered 500: stored as broken",
+      rootDown.nudges === 1 && rootDown.steps.length === 1 && rootDown.steps[0].status === "broken",
+      shape(rootDown.steps));
+
+    const moduleError = await walk("run_module_error", [{ navigate: `${origin}/module-error` }, { say: "Done." }, { report: "broken", observed: "The practice module stayed empty." }, { say: "Done." }]);
+    check("asked, reports broken while the walk's only console error is an unrelated 'module script' failure: not stored as broken",
+      moduleError.nudges === 1 && moduleError.steps.length === 1 && moduleError.steps[0].status === "skipped" && moduleError.steps[0].gapClass === "unrecorded_walk",
+      shape(moduleError.steps));
+
     // An error elsewhere in the walk (a 404) that the step does not name is no
     // evidence for what the step claims.
     const unrelated = await walk("run_unrelated", [{ navigate: `${origin}/unrelated` }, { say: "Done." }, { report: "broken", observed: "The practice module stayed empty." }, { say: "Done." }]);
@@ -189,12 +235,33 @@ async function main() {
       !hasPositiveEvidence({ networkLog: [`GET ${origin}/api → 500`], consoleLog: [], ownOrigins: own1, words: "/api/x answered 500." }));
     check("evidence: generic exception words are not",
       !hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: analyticsWidget is undefined"], ownOrigins: own1, words: "the page threw: practicemodule is undefined" }));
+    check("evidence: a shared common word is not a match",
+      !hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Failed to load module script"], ownOrigins: own1, words: "the practice module stayed empty" }));
+    check("evidence: the product's root answering 500 counts when the walk stood on it",
+      hasPositiveEvidence({ networkLog: [`GET ${origin}/ → 500`], consoleLog: [], ownOrigins: own1, words: "the homepage answered 500",
+        actionTrail: [{ kind: "navigate", url: origin, outcome: { urlAfter: `${origin}/`, status: 500 } }] }));
+    check("evidence: the root answering 500 does not count for a walk that never stood on it",
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/ → 500`], consoleLog: [], ownOrigins: own1, words: "the homepage answered 500", actionTrail: [] }));
     check("evidence: a console error counts",
       hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: practiceModule is undefined"], ownOrigins: own1, words: "the page threw: practicemodule is undefined" }));
     check("evidence: a console error the step does not name is not",
       !hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: analyticsWidget is undefined"], ownOrigins: own1, words }));
     check("evidence: a bare 200 and a warning do not",
       !hasPositiveEvidence({ networkLog: [`GET ${origin}/ → 200`], consoleLog: ["[warning] deprecated"], ownOrigins: own1, words }));
+    const step = (status: ReportedStep["status"], observed: string): ReportedStep => ({ label: "Open the module", status, attempted: "Open the module.", observed });
+    const nav = (path: string, status = 200) => ({ kind: "navigate" as const, url: `${origin}${path}`, outcome: { urlAfter: `${origin}${path}`, status } });
+    const ev = (actionTrail: Parameters<typeof nudgedStepStands>[1]["actionTrail"], networkLog: string[] = []) => ({ networkLog, consoleLog: [], ownOrigins: own1, actionTrail });
+    check("ok: an action the step names, ended well, stands",
+      nudgedStepStands(step("ok", "The practice module opens."), ev([nav("/practice")])));
+    check("ok: only the homepage visited, a step about checkout does not stand",
+      !nudgedStepStands(step("ok", "Checkout completes."), ev([nav("/")])));
+    check("ok: a control the step names counts",
+      nudgedStepStands(step("ok", "Start interview opens the session."), ev([{ kind: "click", name: "Start interview", outcome: { urlAfter: `${origin}/`, navigated: false, requests: 0, mutations: 1 } }])));
+    check("ok: the named page answered an error — does not stand",
+      !nudgedStepStands(step("ok", "The practice module opens."), ev([nav("/practice", 500)])));
+    check("ok: the named page failed on a later request — does not stand",
+      !nudgedStepStands(step("ok", "The practice module opens."), ev([nav("/practice")], [`GET ${origin}/practice → 500`])));
+    check("ok: no action at all does not stand", !nudgedStepStands(step("ok", "The practice module opens."), ev([])));
     check("evidence: 429 is our own request volume, never evidence",
       !hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 429`], consoleLog: [], ownOrigins: own1, words: "answered 429 /api/x" }));
     check("evidence: another origin's 500 is not the product's",
@@ -203,6 +270,7 @@ async function main() {
     await real?.dispose();
     await browser?.close();
     site.close();
+    down.close();
   }
   console.log(failures ? `\nverify-walk-must-report: ${failures} FAILED` : "\nverify-walk-must-report: all passed");
   process.exit(failures ? 1 : 0);

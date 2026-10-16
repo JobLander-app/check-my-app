@@ -68,6 +68,13 @@ export interface ToolEnv {
   activeAccount?: string;
   networkLog: string[]; // rolling window of "METHOD url → status"
   consoleLog: string[]; // rolling window of console messages
+  // What the walk's own answers and console said that could be held against the
+  // product — error answers ("METHOD url → status", 4xx/5xx but not 429) and
+  // "[error]" console lines — kept for the whole walk. The two logs above are
+  // emptied by get_network_log (drainLogs), so a walk that inspected the very
+  // error it then reports would otherwise have none left to be judged on.
+  // Present only where a caller reads it (execution.ts, nudged-report.ts).
+  walkEvidence?: { network: string[]; console: string[] };
   onScreenshot?: (buffer: Buffer) => Promise<string>; // returns storage URL
   onReportStep?: (step: ReportedStep) => Promise<void>;
   onWriteTest?: (test: { title: string; content: string }) => Promise<void>;
@@ -3636,6 +3643,10 @@ export function attachLogCapture(env: ToolEnv): void {
   env.page.on("response", (res) => {
     env.networkLog.push(`${res.request().method()} ${res.url()} → ${res.status()}`);
     if (env.networkLog.length > 200) env.networkLog.splice(0, 100);
+    if (env.walkEvidence && res.status() >= 400 && res.status() !== 429) {
+      env.walkEvidence.network.push(`${res.request().method()} ${res.url()} → ${res.status()}`);
+      if (env.walkEvidence.network.length > 200) env.walkEvidence.network.splice(0, 100);
+    }
     // The same URL answered after it had failed (a retry): the earlier failure
     // is no longer evidence of anything (Codex, #344).
     if (env.ownRequestFailures?.size && res.status() < 400) forgetOwnRequestFailure(env, res.url());
@@ -3646,5 +3657,9 @@ export function attachLogCapture(env: ToolEnv): void {
   env.page.on("console", (msg) => {
     env.consoleLog.push(`[${msg.type()}] ${msg.text().slice(0, 300)}`);
     if (env.consoleLog.length > 100) env.consoleLog.splice(0, 50);
+    if (env.walkEvidence && msg.type() === "error") {
+      env.walkEvidence.console.push(`[error] ${msg.text().slice(0, 300)}`);
+      if (env.walkEvidence.console.length > 100) env.walkEvidence.console.splice(0, 50);
+    }
   });
 }
