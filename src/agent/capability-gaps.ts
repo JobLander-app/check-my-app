@@ -17,7 +17,7 @@ import { freshLinearToken } from "@/lib/tracker/token";
 import { parseJson } from "@/lib/json";
 import { findOrphans } from "./cleanup";
 import type { AgentEnv } from "./env";
-import { wakeMender } from "./mender-dispatch";
+import { noteCreated, wakeMender } from "./mender-dispatch";
 import type { RouteRefusal } from "./llm";
 import { GAP_CLASSES, classifyGap, gapEvidenceText, isGapClass, isJudgementNotAction, MACHINE_DECIDED_CLASSES, type GapClass } from "./gap-classes";
 import type { RecordedAction } from "./tools";
@@ -304,6 +304,9 @@ export async function fileCapabilityGaps(
   }
 
   const notes: CapabilityNote[] = [];
+  // Every ticket created, even one whose ledger row then failed (Codex, #357).
+  const created: string[] = [];
+  const noting = noteCreated(tracker, created);
   for (const [cls, examples] of byCapability) {
     const { label, why } = GAP_CLASSES[cls];
     const observationExamples = privateAudit ? [...examples, `Original step labels, observations and actions are retained in private R2 evidence: ${privateAuditKey}.`] : examples;
@@ -335,7 +338,7 @@ export async function fileCapabilityGaps(
     try {
       const outcome = await fileFindingTicket({
         db: env.db,
-        tracker,
+        tracker: noting,
         appId: self.id,
         finding,
         run: ticketRun,
@@ -382,7 +385,7 @@ export async function fileCapabilityGaps(
     }
   }
   // CHE-486: the ticket is the event that wakes Mender — no clock.
-  if (notes.some((n) => n.icon === "ok")) await wakeMender(env.bindings, `checker gap(s) from run #${run.runNumber}`);
+  if (created.length || notes.some((n) => n.icon === "ok")) await wakeMender(env.bindings, `checker gap(s) from run #${run.runNumber}`);
   return notes;
 }
 

@@ -48,7 +48,7 @@ import { fileFindingTicket, type TicketFinding } from "@/lib/tracker/file";
 import { MENDER_LABEL, ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
 import { isOwnRun, silenceReason } from "./notify-verdict";
 import type { AgentEnv } from "./env";
-import { wakeMender } from "./mender-dispatch";
+import { noteCreated, wakeMender } from "./mender-dispatch";
 
 export type FailureOwner =
   | { kind: "ours"; signature: string }
@@ -157,6 +157,10 @@ export async function fileRunFailure(
   facts: { message: string; budget: boolean; phase: string | null; afterVerdict?: boolean },
   opts: { board?: GapBoard; probe?: (url: string) => Promise<boolean> } = {},
 ): Promise<CapabilityNote | null> {
+  // The ticket to wake Mender for: the one filed and in Mender's queue, or one
+  // created before the bookkeeping after it failed (Codex, #357).
+  const created: string[] = [];
+  let forMender: string | null = null;
   try {
     const run = await env.db.run.findUnique({
       where: { id: runId },
@@ -237,7 +241,7 @@ export async function fileRunFailure(
 
     const outcome = await fileFindingTicket({
       db: env.db,
-      tracker,
+      tracker: noteCreated(tracker, created),
       appId: self.id,
       finding,
       run: {
@@ -258,12 +262,12 @@ export async function fileRunFailure(
     // A recurrence on a ticket somebody took the label off gets it back. Mender
     // is woken for a ticket in its queue: a label that failed is said, and the
     // next recurrence labels it again (CodeRabbit, #357).
-    const forMender = outcome.kind === "created" || (outcome.kind === "commented" &&
+    const labelled = outcome.kind === "created" || (outcome.kind === "commented" &&
       (await tracker.addLabel(outcome.identifier, MENDER_LABEL).then(() => true, (err: unknown) => {
         console.warn(`[run-failure] labelling ${outcome.identifier} for Mender failed: ${err instanceof Error ? err.message : String(err)}`);
         return false;
       })));
-    if (forMender) await wakeMender(env.bindings, `run failure ${outcome.identifier}`);
+    if (labelled) forMender = outcome.identifier;
     return {
       icon: "ok",
       text:
@@ -277,5 +281,8 @@ export async function fileRunFailure(
     const text = err instanceof Error ? err.message : String(err);
     console.warn(`[run-failure] filing failed: ${text}`);
     return { icon: "warn", text: `Couldn't file run failure: ${text}` };
+  } finally {
+    const ticket = forMender ?? created[0] ?? null;
+    if (ticket) await wakeMender(env.bindings, `run failure ${ticket}`);
   }
 }

@@ -35,6 +35,28 @@ export async function dispatchMender(
 }
 
 /**
+ * The tracker, noting each ticket it creates in `created`. Filing does more
+ * after the ticket exists (the ledger row), and when that fails the ticket is
+ * still Mender's: it is woken for what was created, not for what was recorded
+ * (Codex, #357).
+ */
+export function noteCreated<T extends { createIssue(draft: never): Promise<{ identifier: string }> }>(tracker: T, created: string[]): T {
+  return new Proxy(tracker, {
+    get(target, prop) {
+      if (prop === "createIssue") {
+        return async (draft: never) => {
+          const issue = await target.createIssue(draft);
+          created.push(issue.identifier);
+          return issue;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/**
  * Wake Mender because something was just filed for it. Never throws: a ticket
  * that exists is not undone by a GitHub that did not answer — the next event
  * wakes Mender again, and every tick takes the oldest work first.

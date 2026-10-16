@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
-import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW, wakeMender } from "../src/agent/mender-dispatch";
+import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW, noteCreated, wakeMender } from "../src/agent/mender-dispatch";
 
 // The generated Prisma client is the workerd build, which plain Node cannot
 // load, so the scheduler's database is the in-memory stand-in the other verify
@@ -129,24 +129,44 @@ async function main() {
     visit(sf);
     return { sf, found };
   };
-  const gaps = sites("capability-gaps.ts").found;
+  const gapSites = sites("capability-gaps.ts");
+  const gaps = gapSites.found;
   const failures = sites("run-failures.ts");
   const feedback = sites("feedback-filing.ts").found;
-  const forMender = (() => {
+  const initOf = (sf: ts.SourceFile, name: string) => {
     let init = "";
     const visit = (node: ts.Node) => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "forMender") init = node.initializer?.getText(failures.sf) ?? "";
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) init = node.initializer?.getText(sf) ?? "";
       ts.forEachChild(node, visit);
     };
-    visit(failures.sf);
+    visit(sf);
     return init;
-  })();
-  const shape = JSON.stringify({ gaps, failures: failures.found, feedback, forMender });
-  check("a checker gap wakes Mender once, after the gaps are filed, only when one was",
-    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && /icon === "ok"/.test(gaps[0].guard) && /checker gap/.test(gaps[0].reason), shape);
-  check("a run failure wakes Mender once, for a new ticket or a recurrence that holds Mender's label",
-    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "forMender" &&
-      /outcome\.kind === "created"/.test(forMender) && /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(forMender), shape);
+  };
+  const labelled = initOf(failures.sf, "labelled");
+  const ticket = initOf(failures.sf, "ticket");
+  const shape = JSON.stringify({ gaps, failures: failures.found, feedback, labelled, ticket });
+  check("a checker gap wakes Mender once, after the gaps are filed, when one was filed or created",
+    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && /created\.length/.test(gaps[0].guard) && /icon === "ok"/.test(gaps[0].guard) &&
+      /checker gap/.test(gaps[0].reason) && initOf(gapSites.sf, "noting") === "noteCreated(tracker, created)" &&
+      /tracker: noting/.test(gapSites.sf.getFullText()), shape);
+  check("a run failure wakes Mender once, for a new ticket, a recurrence that holds Mender's label, or a ticket created before its bookkeeping failed",
+    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "ticket" &&
+      ticket === "forMender ?? created[0] ?? null" && /outcome\.kind === "created"/.test(labelled) &&
+      /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(labelled) &&
+      /tracker: noteCreated\(tracker, created\)/.test(failures.sf.getFullText()), shape);
+  // noteCreated itself: the created ticket is noted before anything after it can fail.
+  {
+    const noted: string[] = [];
+    class Tracker {
+      prefix = "CHE-";
+      async createIssue() { return { identifier: `${this.prefix}7` }; }
+      async addComment() { return this.prefix; }
+    }
+    const wrapped = noteCreated(new Tracker() as unknown as { createIssue(d: never): Promise<{ identifier: string }>; addComment(): Promise<string> }, noted);
+    await wrapped.createIssue({} as never);
+    check("noteCreated notes each created ticket and leaves the tracker's other methods working",
+      noted.join() === "CHE-7" && (await wrapped.addComment()) === "CHE-", noted.join());
+  }
   check("a pilot report wakes Mender once per tick, for every ticket created",
     feedback.length === 1 && feedback[0].fn === "fileOpenFeedback" && feedback[0].guard === "created.length" && /created\.join/.test(feedback[0].reason), shape);
   check("a run failure is filed under Mender's label",
