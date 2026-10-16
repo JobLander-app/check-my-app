@@ -440,7 +440,7 @@ check("the watch runs in its own workflow and group, on dispatch with the error'
     }
   })();
   check("after the push every comment and state change is its own step, the state before the comment, and Mender is woken whatever failed",
-    /const step = async \(what, act\) => \{\s*\n\s*try \{\s*\n\s*await act\(\);\s*\n\s*\} catch/.test(watchSrc) &&
+    /const step = async \(what, act\) => \{\s*\n\s*for \(let attempt = 1; attempt <= 3; attempt\+\+\) \{\s*\n\s*try \{\s*\n\s*await act\(\);\s*\n\s*return;\s*\n\s*\} catch/.test(watchSrc) &&
       !/(comment\(|setState\(|"pr", "comment")/.test(outsideSteps) && /"workflow", "run", "mender-agent\.yml"/.test(outsideSteps) &&
       watchSrc.indexOf('setState(issue.id, "Todo")') < watchSrc.indexOf("telling #${c.pr}'s ticket") &&
       /const commits = deploy && before \? carried\(repo, before\.sha, deploy\.sha\) : null;/.test(watchSrc), outsideSteps.slice(-400));

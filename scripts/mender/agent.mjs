@@ -912,12 +912,18 @@ async function watch() {
   if (!error) throw new Error(`${ticket} is not on the board`);
   let sha = null;
   // Each step after the revert is its own: a comment that fails must not leave
-  // the tickets where they were, nor Mender asleep (Codex, #359).
+  // the tickets where they were, nor Mender asleep (Codex, #359). A step is
+  // tried three times, so a moment of Linear or GitHub down does not leave a
+  // reverted ticket Done (Codex, #359 round 3).
   const step = async (what, act) => {
-    try {
-      await act();
-    } catch (e) {
-      console.error(`[mender] watch ${ticket}: ${what} failed: ${e.message}`);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await act();
+        return;
+      } catch (e) {
+        console.error(`[mender] watch ${ticket}: ${what} failed (attempt ${attempt}): ${e.message}`);
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+      }
     }
   };
   if (d.action === "revert") {
@@ -936,7 +942,10 @@ async function watch() {
       await step(`commenting on #${c.pr}`, () => gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]));
       let issue = null;
       await step(`finding #${c.pr}'s ticket`, async () => { issue = await ticketOf(c.branch); });
-      if (!issue) continue;
+      if (!issue) {
+        console.error(`[mender] watch ${ticket}: #${c.pr}'s ticket could not be found; it stays Done though its change was reverted`);
+        continue;
+      }
       // The state first: a ticket back in Todo is what gives Mender its next attempt.
       await step(`returning #${c.pr}'s ticket to Todo`, () => setState(issue.id, "Todo"));
       await step(`telling #${c.pr}'s ticket`, () => comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
