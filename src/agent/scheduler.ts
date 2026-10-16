@@ -15,7 +15,7 @@ import { snapshotAppAccounts } from "@/lib/test-accounts";
 import { sweepOrphanedRuns } from "./orphan-runs";
 import { releaseCanceledLeases, settleCanceledPrices } from "./canceled-leases";
 import { dispatchMender } from "./mender-dispatch";
-import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepTestAccounts } from "./janitor";
+import { sweepExpiredEphemeral, sweepExpiredPendingChecks, sweepSelfCheckLeftovers, sweepTestAccounts } from "./janitor";
 import { noticeIdempotencyKey, sendBalanceUsedUp, sendWatchTrialPaused } from "@/lib/email";
 import { recipientsForApp } from "@/lib/recipients";
 import { captureServer } from "@/lib/analytics-server";
@@ -92,6 +92,13 @@ export async function runDueWatches(
     await sweepTestAccounts(env, now);
   } catch (err) {
     console.warn(`[janitor] sweep failed: ${err instanceof Error ? err.message : err}`);
+  }
+  // What a self-check of our own product registered under an ordinary account,
+  // which the sweep above (keyed on the account) cannot see.
+  try {
+    await sweepSelfCheckLeftovers(env, now);
+  } catch (err) {
+    console.warn(`[janitor] self-check leftover sweep failed: ${err instanceof Error ? err.message : err}`);
   }
   // Launch: parked $1 checks that were never paid for.
   try {
