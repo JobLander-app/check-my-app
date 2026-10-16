@@ -82,6 +82,7 @@
     "posthog:setup": "tsx --tsconfig tsconfig.json scripts/posthog-setup.ts",
     "cost:trend": "node scripts/cost-trend.mjs",
     "supply": "tsx --tsconfig tsconfig.json scripts/measure/gate-ready-supply.ts",
+    "verify:funnel": "tsx --tsconfig tsconfig.json scripts/verify-funnel.ts",
     "verify:homework-gate": "tsx --tsconfig tsconfig.json scripts/verify-homework-gate.ts",
     "verify:review": "tsx --tsconfig tsconfig.json scripts/verify-review.ts",
     "verify:orphan-runs": "tsx --tsconfig tsconfig.json scripts/verify-orphan-runs.ts",
