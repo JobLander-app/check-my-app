@@ -9,6 +9,11 @@
 #   - a Mender tick ended (a round pushed, a PR opened);
 #   - by hand.
 # A separate workflow so a two-hour Mender tick never holds a merge in its queue.
+#
+# The watch runs here too (CHE-486 part 4), in the same concurrency group, so a
+# revert never races a merge: the agent worker dispatches this workflow with
+# `watch` = the ticket it filed for a new production error and `seen` = when.
+# If that came right after a deploy of Mender's alone, the deploy is reverted.
 
 name: Mender gate
 
@@ -22,6 +27,12 @@ on:
     inputs:
       pr:
         description: "One PR number to decide; empty = every open Mender PR"
+        required: false
+      watch:
+        description: "The watch instead of the gate: the ticket filed for a new production error (CHE-123)"
+        required: false
+      seen:
+        description: "With watch: when the error was first seen (ISO time); empty = now"
         required: false
 
 concurrency:
@@ -60,4 +71,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GATE_PR: ${{ inputs.pr || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || '' }}
-        run: node scripts/mender/agent.mjs gate
+          WATCH_TICKET: ${{ inputs.watch }}
+          WATCH_SEEN: ${{ inputs.seen }}
+        run: node scripts/mender/agent.mjs ${{ inputs.watch && 'watch' || 'gate' }}

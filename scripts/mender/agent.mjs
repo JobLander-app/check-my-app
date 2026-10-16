@@ -25,11 +25,14 @@
 //       green and whose review is done merges itself (CHE-486, owner
 //       2026-10-15; gate.mjs). It used to wait for a person, and ten waited for
 //       days. TICKET=CHE-123 picks a ticket; GATE_PR=123 limits the gate to one PR.
+//   node scripts/mender/agent.mjs watch    — no model: a new production error
+//       right after a deploy of Mender's alone reverts that deploy's changes
+//       (CHE-486 part 4; gate.mjs watchDecision). WATCH_TICKET, WATCH_SEEN.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { factsFrom, gateDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
+import { factsFrom, gateDecision, watchDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
 import { codexSummaryState, REVIEW_REQUEST } from "../doer/review.mjs";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
@@ -795,9 +798,112 @@ async function gate() {
   if (failed) throw new Error(`the gate could not decide ${failed} pull request(s)`);
 }
 
+// ─── The watch (CHE-486 part 4): a new error right after Mender's deploy ─────
+//
+// Woken by the agent worker when it files a new "[Prod error]" or "[Checker
+// failure]" ticket (WATCH_TICKET, seen at WATCH_SEEN), in the gate's own
+// concurrency group so a revert never races a merge. The decision is gate.mjs
+// watchDecision; this reads the deploys and acts.
+
+/**
+ * The deploys of main, newest first: CI / Deploy runs whose `wrangler deploy`
+ * step succeeded. A run superseded by a newer commit skips that step and put
+ * nothing in production; one still deploying the web counts from its workers.
+ */
+function deploysOfMain(limit = 2) {
+  const runs = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "20", "--json", "databaseId,headSha"]);
+  const out = [];
+  for (const run of runs) {
+    const at = gh(["run", "view", String(run.databaseId), "--json", "jobs", "--jq",
+      '[.jobs[] | select(.name == "deploy") | .steps[] | select((.name | test("wrangler deploy --config")) and .conclusion == "success") | .completedAt] | first // ""']);
+    if (at) out.push({ sha: run.headSha, deployedAt: Date.parse(at) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** The commits a deploy carried that the one before it did not, oldest first, each with the PR it was merged from. */
+function carried(repo, from, to) {
+  const shas = from ? ghJson(["api", `repos/${repo}/compare/${from}...${to}`, "--jq", "[.commits[].sha]"]) : [to];
+  return shas.map((sha) => {
+    const pr = ghJson(["api", `repos/${repo}/commits/${sha}/pulls`, "--jq", "[.[] | select(.merged_at != null) | {number, branch: .head.ref}] | first // null"]);
+    return { sha, pr: pr?.number ?? null, branch: pr?.branch ?? null };
+  });
+}
+
+/**
+ * Revert these commits on main as one commit, pushed with the personal token
+ * (so CI deploys it). Main may move between the fetch and the push; one more
+ * try from the new tip. A revert that does not apply cleanly throws, and the
+ * change stays. Exported for verify-mender-agent, which runs it on a real
+ * repository.
+ */
+export function revertOnMain(commits, title, body, { pushUrl, me, cwd = process.cwd() }) {
+  const env = { ...process.env, GIT_AUTHOR_NAME: me, GIT_AUTHOR_EMAIL: `${me}@users.noreply.github.com`, GIT_COMMITTER_NAME: me, GIT_COMMITTER_EMAIL: `${me}@users.noreply.github.com` };
+  const git = (...args) => sh("git", args, { env, cwd });
+  for (let attempt = 1; ; attempt++) {
+    git("fetch", "--quiet", "--depth=200", "origin", "main");
+    git("checkout", "--quiet", "-B", "mender-watch", "FETCH_HEAD");
+    try {
+      git("revert", "--no-commit", ...commits.map((c) => c.sha).reverse());
+    } catch (e) {
+      try { git("revert", "--abort"); } catch { /* nothing to abort */ }
+      throw new Error(`the revert does not apply cleanly on main: ${e.message.split("\n")[0]}`);
+    }
+    git("commit", "--quiet", "-m", title, "-m", body);
+    try {
+      git("push", "--quiet", pushUrl, "HEAD:main");
+      return git("rev-parse", "HEAD");
+    } catch (e) {
+      if (attempt >= 2) throw new Error(`main moved twice under the revert: ${e.message.split("\n")[0]}`);
+    }
+  }
+}
+
+async function watch() {
+  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  const ticket = process.env.WATCH_TICKET?.trim().toUpperCase();
+  if (!/^CHE-\d+$/.test(ticket ?? "")) throw new Error(`WATCH_TICKET must name the error's ticket (CHE-123), not "${ticket ?? ""}"`);
+  const seenAt = Date.parse(process.env.WATCH_SEEN ?? "") || Date.now();
+  const [deploy, before] = deploysOfMain(2);
+  const commits = deploy ? carried(repo, before?.sha ?? null, deploy.sha) : [];
+  const d = watchDecision({ seenAt, deploy: deploy ?? null, commits, isMender: (branch) => Boolean(branch) && validBranch(branch) });
+  say(`watch ${ticket}: ${d.action} — ${d.reason}`);
+  const error = (await linear("query($i:String!){issue(id:$i){id identifier url}}", { i: ticket })).issue;
+  if (!error) throw new Error(`${ticket} is not on the board`);
+  let sha = null;
+  if (d.action === "revert") {
+    const list = d.revert.map((c) => `#${c.pr} (${c.branch})`).join(", ");
+    try {
+      sha = revertOnMain(d.revert, `Revert Mender's ${d.revert.map((c) => `#${c.pr}`).join(", ")}: ${ticket} appeared right after its deploy`,
+        `The watch (CHE-486): ${ticket} — ${error.url} — ${d.reason}.\n\nReverted: ${list}. Their tickets go back to Mender with this reason.`,
+        { pushUrl: `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, me: gh(["api", "user", "--jq", ".login"]) });
+    } catch (e) {
+      say(`watch ${ticket}: not reverted — ${e.message}`);
+      await comment(error.id, `**The watch could not revert** ${list}, deployed just before this appeared: ${e.message}. The change stays; Mender takes this ticket.`);
+    }
+  }
+  if (sha) {
+    for (const c of d.revert) {
+      gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]);
+      const issue = await ticketOf(c.branch);
+      if (!issue) continue;
+      await comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
+        `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`);
+      await setState(issue.id, "Todo");
+    }
+    await comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
+      "Done; if this comes back, the monitor opens a recurrence ticket naming this one.");
+    await setState(error.id, "Done");
+  }
+  // The reverted tickets, or the error's own: either way Mender has work.
+  gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+  say(sha ? `watch ${ticket}: reverted in ${sha.slice(0, 7)}` : `watch ${ticket}: kept; Mender woken`);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const step = process.argv[2];
-  const run = { peek, work, gate, publish: () => publish().then(chainNext) }[step];
-  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish|gate")))
+  const run = { peek, work, gate, watch, publish: () => publish().then(chainNext) }[step];
+  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish|gate|watch")))
     .catch((e) => { console.error(e); process.exit(1); });
 }

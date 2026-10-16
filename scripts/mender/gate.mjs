@@ -129,3 +129,38 @@ export function gateDecision({ ci, review, p1 = 0, roundsUsed = 0, answered = fa
   }
   return { action: "wait", reason: "the review was asked for and has not come yet" };
 }
+
+// ─── The watch (CHE-486 part 4) ──────────────────────────────────────────────
+//
+// What protects production after a merge nobody read. A new error in production
+// (the monitor's "[Prod error]" ticket) or a new kind of failed check ("[Checker
+// failure]") wakes the watch with the time it was seen. If it appeared within
+// WATCH_MINUTES of a deploy that carried only Mender's changes, those changes are
+// reverted on main and their tickets go back to Mender with the reason. Anything
+// else — no recent deploy, or a deploy with a person's change in it too — is not
+// the watch's to judge: the ticket stays, and Mender is woken for it.
+
+/** How long after a deploy a new error is taken as that deploy's. */
+export const WATCH_MINUTES = 30;
+
+/**
+ * @param {object} w
+ * @param {number} w.seenAt when the error was first seen (ms)
+ * @param {{sha:string, deployedAt:number}|null} w.deploy the deploy that put main's current code in production
+ * @param {{sha:string, pr:number|null, branch:string|null}[]} w.commits what that deploy carried that the one before it did not
+ * @param {(branch:string|null) => boolean} w.isMender
+ * @returns {{action:"revert"|"keep", reason:string, revert:{sha:string, pr:number|null, branch:string|null}[]}}
+ */
+export function watchDecision({ seenAt, deploy, commits, isMender }) {
+  const keep = (reason) => ({ action: "keep", reason, revert: [] });
+  if (!deploy) return keep("no deploy of main was found");
+  const minutes = (seenAt - deploy.deployedAt) / 60_000;
+  if (minutes < 0) return keep("the error was seen before the latest deploy");
+  if (minutes > WATCH_MINUTES) return keep(`the latest deploy was ${Math.round(minutes)} minutes before the error, past the ${WATCH_MINUTES}-minute watch`);
+  const mender = commits.filter((c) => isMender(c.branch));
+  if (!mender.length) return keep("the latest deploy carried no change of Mender's");
+  if (mender.length < commits.length) {
+    return keep(`the latest deploy, ${Math.round(minutes)} minutes before the error, carried Mender's ${mender.map((c) => `#${c.pr}`).join(", ")} and other changes too — not the watch's to judge`);
+  }
+  return { action: "revert", reason: `it appeared ${Math.round(minutes)} minutes after the deploy that carried only Mender's ${mender.map((c) => `#${c.pr}`).join(", ")}`, revert: mender };
+}
