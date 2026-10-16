@@ -148,16 +148,19 @@ export const TELL_EVERY_MS = 60 * 60 * 1000;
 /**
  * What a report of a known signature is owed.
  *   "file" — no ticket yet: open one (and wake Mender).
- *   "count" — counted in our own table only: ruled not-a-bug, or told within the hour.
+ *   "count" — counted in our own table only: ruled not-a-bug, or told (or being
+ *             filed by another invocation) within the hour.
  *   "tell" — ask the ticket: still open → a comment; Done and back → a recurrence
  *            ticket; Canceled → settled, never filed again; gone → a new ticket.
+ * lastToldAt is also the claim on the signature (prod-errors.ts), so it is read
+ * before the ticket: a signature claimed for filing is not filed twice.
  */
 export function prodErrorAction(
   row: { issueIdentifier: string | null; lastToldAt: Date | null; settled: boolean },
   now: Date,
 ): "file" | "count" | "tell" {
   if (row.settled) return "count";
-  if (!row.issueIdentifier) return "file";
   if (row.lastToldAt && now.getTime() - row.lastToldAt.getTime() < TELL_EVERY_MS) return "count";
+  if (!row.issueIdentifier) return "file";
   return "tell";
 }

@@ -38,8 +38,10 @@ async function main() {
   const a = normalizeMessage('Cannot read properties of undefined (reading "cmv6s6psu00030b1ow5wcjn4s") for run 395 at https://checkmyapp.dev/run/cmv6ynouj0003ys1r8h5af1cg?t=9');
   const b = normalizeMessage('Cannot read properties of undefined (reading "cmuvtk34a0002ue1tf94hw9pt") for run 401 at https://checkmyapp.dev/run/cmuxyz0000000000000000000?t=2');
   check("ids, numbers, quoted values and URL queries never split a signature", a === b, `${a} | ${b}`);
-  const secret = normalizeMessage("Login failed for vladislav@otp.plus with token sk-or-v1-0123456789abcdef0123456789abcdef and jwt eyJhbGciOiJIUzI1NiJ9abc123");
-  check("…and an email or a token never reaches the board", !/otp\.plus|vladislav|0123456789abcdef|eyJhbGci/.test(secret), secret);
+  // Unmistakably synthetic, shaped only like what the normaliser must catch: a
+  // long run of letters and digits (Codex, #358: no real provider prefix here).
+  const secret = normalizeMessage("Login failed for someone@example.test with token FAKEtoken0000notakey0000FAKE and jwt FAKEjwt0000notajwt0000");
+  check("…and an email or a token never reaches the board", !/example\.test|someone|FAKE|notakey|notajwt/.test(secret), secret);
   check("the frame is the function, never its line", frameOf("E\n    at loadVerdict (index.js:1:2)") === "loadVerdict" && frameOf("E\n    at async handle (x.js:9:9)") === "handle");
   const [r1] = reportsFrom([exception("boom 1", 1234)]);
   const [r2] = reportsFrom([exception("boom 2", 9876)]);
@@ -84,6 +86,13 @@ async function main() {
       async update(args: { where: { signature: string }; data: Partial<Row> }) {
         table.set(args.where.signature, { ...table.get(args.where.signature)!, ...args.data });
       },
+      // One statement, so atomic: the swap lands only on the value it names.
+      async updateMany(args: { where: { signature: string; lastToldAt: Date | null }; data: Partial<Row> }) {
+        const known = table.get(args.where.signature);
+        if (!known || (known.lastToldAt?.getTime() ?? null) !== (args.where.lastToldAt?.getTime() ?? null)) return { count: 0 };
+        table.set(args.where.signature, { ...known, ...args.data });
+        return { count: 1 };
+      },
     },
   };
   const created: TicketDraft[] = [];
@@ -126,11 +135,23 @@ async function main() {
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + 5 * TELL_EVERY_MS) });
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + 7 * TELL_EVERY_MS) });
   check("a Canceled ticket settles the signature: never filed again", created.length === 2 && table.get(report.signature)?.settled === true);
+  // Codex, #358: tail invocations overlap. Two at once with a new signature
+  // open one ticket and wake Mender once.
+  const [twin] = reportsFrom([exception("z", 1, "checkmyapp-web", "SyntaxError")]);
+  const before = { created: created.length, dispatched: dispatched.length };
+  await Promise.all([intakeProdErrors(env("on"), [twin], { board, now }), intakeProdErrors(env("on"), [twin], { board, now })]);
+  check("two invocations at once with a new signature open one ticket, and wake Mender once",
+    created.length === before.created + 1 && dispatched.length === before.dispatched + 1 && table.get(twin.signature)?.count === 2,
+    `${created.length - before.created} ticket(s), ${dispatched.length - before.dispatched} wake(s)`);
   trackerDown = true;
   const [other] = reportsFrom([exception("y", 1, "checkmyapp-agent", "RangeError")]);
   let threw = false;
   try { await intakeProdErrors(env("on"), [other], { board, now }); } catch { threw = true; }
   check("a tracker that fails throws nothing (the monitor would report the throw back)", !threw);
+  trackerDown = false;
+  await intakeProdErrors(env("on"), [other], { board, now: new Date(now.getTime() + 60_000) });
+  check("…and lets its claim go: the next report files it, without waiting out the hour",
+    created.some((d) => d.title.includes("checkmyapp-agent: RangeError")));
   check("the ticket carries no raw message", !created.some((d) => /cmv6s6psu|otp\.plus/.test(d.description + d.title)));
   globalThis.fetch = realFetch;
 

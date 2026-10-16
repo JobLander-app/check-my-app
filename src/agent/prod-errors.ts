@@ -63,6 +63,7 @@ type Db = {
   prodError: {
     upsert(args: unknown): Promise<ProdErrorRow>;
     update(args: unknown): Promise<unknown>;
+    updateMany(args: unknown): Promise<{ count: number }>;
   };
 };
 
@@ -78,6 +79,7 @@ export async function intakeProdErrors(
   const told: string[] = [];
   let board: GapBoard | null | undefined = opts.board;
   for (const r of reports) {
+    let claim: { signature: string; lastToldAt: Date | null } | null = null;
     try {
       const row = await db.prodError.upsert({
         where: { signature: r.signature },
@@ -89,12 +91,18 @@ export async function intakeProdErrors(
       if (action === "count") continue;
       board = board === undefined ? await ourBoard(env as AgentEnv) : board;
       if (!board) continue;
+      // The claim (Codex, #358): tail invocations overlap, and two that both
+      // read "no ticket yet" would open two. lastToldAt is swapped from the
+      // value this one read to now in one statement; only the invocation whose
+      // swap lands acts, and every other one reads "told within the hour".
+      const claimed = await db.prodError.updateMany({ where: { signature: r.signature, lastToldAt: row.lastToldAt }, data: { lastToldAt: now } });
+      if (claimed.count !== 1) continue;
+      claim = { signature: r.signature, lastToldAt: row.lastToldAt };
       let previous: string | null = null;
       if (action === "tell" && row.issueIdentifier) {
         const outcome = await board.tracker.getIssueOutcome(row.issueIdentifier);
         if (outcome === "open") {
           await board.tracker.addComment(row.issueIdentifier, `Still happening: ${row.count} occurrence(s) since ${row.firstSeenAt.toISOString()}, the latest ${now.toISOString()}${r.path ? ` on \`${r.path}\`` : ""}.`);
-          await db.prodError.update({ where: { signature: r.signature }, data: { lastToldAt: now } });
           told.push(row.issueIdentifier);
           continue;
         }
@@ -105,10 +113,13 @@ export async function intakeProdErrors(
         if (outcome === "done") previous = row.issueIdentifier;
       }
       const issue = await board.tracker.createIssue(prodErrorDraft(r, row, previous));
+      claim = null;
       await db.prodError.update({ where: { signature: r.signature }, data: { issueIdentifier: issue.identifier, lastToldAt: now } });
       filed.push(issue.identifier);
     } catch (err) {
       console.warn(`[prod-error] ${r.signature.slice(0, 120)}: ${err instanceof Error ? err.message : String(err)}`);
+      // Nothing was filed: the claim is let go, so the next report tries again.
+      if (claim) await db.prodError.updateMany({ where: { signature: claim.signature, lastToldAt: now }, data: { lastToldAt: claim.lastToldAt } }).catch(() => {});
     }
   }
   if (filed.length) await wakeMender(env.bindings, `prod error(s) ${filed.join(", ")}`);
