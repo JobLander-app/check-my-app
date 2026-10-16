@@ -673,11 +673,32 @@ function trustedLogins() {
  * revert sends it back to Todo) is left alone. A PR the gate closed is the same
  * story the other way: its ticket goes back to Todo (Codex, #356).
  */
+/**
+ * The gate sends a ticket back to Mender's queue, and wakes Mender at once.
+ * Closing a PR deploys nothing, so no deploy would (CHE-447 sat in Todo an hour
+ * and a half after #325 was closed, 2026-10-16); and waking at once, not at the
+ * end of the run, means a later failure or a merge's long wait cannot lose it
+ * (Codex, #361). The wake is tried three times; a dispatch that still fails
+ * fails the gate run, loudly.
+ */
+async function backToTodo(issueId, body) {
+  await comment(issueId, body);
+  await setState(issueId, "Todo");
+  for (let attempt = 1; ; attempt++) {
+    try {
+      gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+      return;
+    } catch (e) {
+      if (attempt >= 3) throw new Error(`the ticket is back in Todo but Mender could not be woken: ${e.message}`);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+    }
+  }
+}
+
 async function reconcileMerged() {
   const since = Date.now() - 2 * 86_400_000;
   const settled = ghJson(["pr", "list", "--state", "closed", "--limit", "50", "--json", "number,headRefName,url,mergedAt,closedAt"])
     .filter((p) => validBranch(p.headRefName) && Date.parse(p.closedAt) > since);
-  let requeued = 0;
   for (const pr of settled) {
     const id = pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase();
     const d = await linear("query($i:String!){issue(id:$i){id state{name}}}", { i: id });
@@ -687,13 +708,10 @@ async function reconcileMerged() {
       await setState(d.issue.id, "Done");
       say(`reconciled ${id}: merged in #${pr.number}, now Done`);
     } else {
-      await comment(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
-      await setState(d.issue.id, "Todo");
-      requeued++;
-      say(`reconciled ${id}: #${pr.number} closed, back to Todo`);
+      await backToTodo(d.issue.id, `**Mender's pull request ${pr.url} was closed without a merge.** Back to Todo; the next attempt starts from current main.`);
+      say(`reconciled ${id}: #${pr.number} closed, back to Todo, Mender woken`);
     }
   }
-  return requeued;
 }
 
 /** The ticket a mender/che-N-… branch belongs to, from Linear. */
@@ -773,12 +791,11 @@ async function closePr(pr, reason, facts) {
   if (issue) {
     // No attempt mark: the PR's opening already counted this attempt, and a
     // second mark would take the ticket out of the queue at once (Codex, #356).
-    await comment(issue.id, `**Mender's pull request ${pr.url} was closed:** ${reason}.` +
+    await backToTodo(issue.id, `**Mender's pull request ${pr.url} was closed:** ${reason}.` +
       (facts.findings ? `\n\nWhat the review found on its last head:\n${facts.findings}` : "") +
       "\n\nBack to Todo; the next attempt starts from current main.");
-    await setState(issue.id, "Todo");
   }
-  say(`closed #${pr.number}: ${reason}`);
+  say(`closed #${pr.number}: ${reason}${issue ? "; Mender woken" : ""}`);
 }
 
 /** Codex answers only an identity linked to a ChatGPT account, so it is asked with the owner's token (CHE-155). */
@@ -799,12 +816,8 @@ async function gate() {
     .filter((p) => validBranch(p.headRefName) && !p.isCrossRepository && (!only || p.number === only));
   const trusted = trustedLogins();
   let failed = 0;
-  // Tickets this run sent back to Todo. Closing a PR deploys nothing, so no
-  // deploy will wake Mender for them: the gate does (CHE-447 sat in Todo for
-  // an hour and a half after #325 was closed, 2026-10-16).
-  let requeued = 0;
   try {
-    requeued += await reconcileMerged();
+    await reconcileMerged();
   } catch (e) {
     failed++;
     console.error(`[mender] gate: reconciling merged PRs failed: ${e.message}`);
@@ -815,7 +828,6 @@ async function gate() {
       // A branch main has moved under: the next attempt starts from main instead.
       if (pr.mergeable === "CONFLICTING") {
         await closePr(pr, "it conflicts with main", { findings: "" });
-        requeued++;
         continue;
       }
       const facts = gateFacts(repo, pr, trusted);
@@ -825,22 +837,10 @@ async function gate() {
       // A job re-run finishes as a workflow run, which wakes the gate again.
       if (d.action === "rerun") gh(["api", "-X", "POST", `repos/${repo}/actions/jobs/${facts.checkId}/rerun`]);
       if (d.action === "merge") await mergePr(pr, d.reason);
-      if (d.action === "close") {
-        await closePr(pr, d.reason, facts);
-        requeued++;
-      }
+      if (d.action === "close") await closePr(pr, d.reason, facts);
     } catch (e) {
       failed++;
       console.error(`[mender] gate #${pr.number}: ${e.message}`);
-    }
-  }
-  if (requeued) {
-    try {
-      gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
-      say(`${requeued} ticket(s) back in Mender's queue — Mender woken`);
-    } catch (e) {
-      failed++;
-      console.error(`[mender] gate: waking Mender for ${requeued} requeued ticket(s) failed: ${e.message}`);
     }
   }
   if (failed) throw new Error(`the gate could not decide ${failed} pull request(s)`);
