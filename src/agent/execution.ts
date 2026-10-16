@@ -38,6 +38,7 @@ import { conversionEarned, journeyMetric, leftOurGap, normalizeScenario, recordW
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
 import { ExtensionRuntimeError } from "./extension-error";
+import { nudgedStepStands, WALK_MAX_NUDGES, WALK_MUST_REPORT_NOTE } from "./nudged-report";
 import { extensionAccountingStep, extensionProductFailureStep } from "./extension-evidence";
 
 export interface WalkRun extends RunInput {
@@ -203,6 +204,11 @@ export async function walkOneJourney(args: {
     // CHE-334: this walk met our own self-check guard, so its summary may not
     // retell that refusal as the product's.
     let metOwnGuard = false;
+    // The walk stopped with nothing recorded and was asked to report
+    // (core.ts untilSatisfied); until then there is nothing to settle.
+    let nudgedToReport = false;
+    // The live-feed note for a report the walk did not keep as written.
+    let progressInstead: string | null = null;
     // CHE-393: what this journey last knew about being signed in — one browser
     // context, so it carries to a step whose page says nothing.
     let lastSignedIn: boolean | null = null;
@@ -262,6 +268,18 @@ export async function walkOneJourney(args: {
         return stored.storageUrl;
       },
       onReportStep: async (reported) => {
+        // A negative step that only exists because the walk was asked to report
+        // needs positive evidence; without it nothing is written, and the walk
+        // is the unrecorded one it was before it was asked.
+        if (nudgedToReport && !nudgedStepStands(reported, {
+          networkLog: toolEnv.networkLog,
+          consoleLog: toolEnv.consoleLog,
+          ownOrigins: [toolEnv.targetOrigin, ...(toolEnv.allowedOrigins ?? [])],
+        })) {
+          console.warn(`[walk] journey "${proposed.title}": a ${reported.status} step asked for after the walk stopped has no evidence behind it — not recorded`);
+          progressInstead = `skipped: ${unrecordedWalkStep(proposed.title).label}`;
+          return;
+        }
         // CHE-214: a class already decided from the machine trail at report
         // time (a control our hands could not drive) is evidence, not a guess.
         // Captured before adjudication, which may hand back a different object.
@@ -386,7 +404,23 @@ export async function walkOneJourney(args: {
         // adaptive thinking to cut output tokens/call. Verdict calibration
         // still happens in synthesis (Opus, thinking on).
         thinking: "off",
-        onProgress,
+        onProgress: onProgress
+          ? async (note) => {
+              const shown = progressInstead ?? note;
+              progressInstead = null;
+              await onProgress(shown);
+            }
+          : undefined,
+        // Website walks only: an extension walk's session has its own end
+        // (Stop, observed) and is judged on that.
+        untilSatisfied: extension
+          ? undefined
+          : {
+              done: () => stepOrder > 0,
+              note: WALK_MUST_REPORT_NOTE,
+              maxNudges: WALK_MAX_NUDGES,
+              onNudge: () => { nudgedToReport = true; },
+            },
         // CHE-130: screenshots accumulated in the walking context and were
         // re-read every iteration — a full joblander walk went $0.91 → $2.31
         // when vision nav landed. Keep only the last few in view.

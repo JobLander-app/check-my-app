@@ -46,6 +46,11 @@ export interface AgentLoopArgs {
   // extra turns execute tools normally: a create_cleanup walk still has to
   // delete what it created and call record_deleted (CHE-90).
   wrapUpAfter?: { tool: string; extraIterations: number; note: string };
+  // A loop that must leave something behind (a walk must record a step): when
+  // the model stops on its own while `done()` is false, it is told `note` and
+  // given another turn, at most `maxNudges` times. Model-facing only. `onNudge`
+  // fires each time, so the caller knows what it reads next was asked for.
+  untilSatisfied?: { done: () => boolean; note: string; maxNudges: number; onNudge?: () => void };
 }
 
 export interface AgentLoopResult {
@@ -101,6 +106,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     onProgress,
     imageWindow,
     wrapUpAfter,
+    untilSatisfied,
   } = args;
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: task }];
   const transcript: TranscriptEntry[] = [];
@@ -113,6 +119,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
   let cap = maxIterations;
   // CHE-180: only the model's own stop flips this; running out of turns does not.
   let endedBy: "model" | "cap" = "cap";
+  let nudges = 0;
   // CHE-169: the screenshot tool carries `look` only under vision on demand;
   // with the harness off this is BROWSER_TOOLS, byte for byte.
   const tools = browserToolsFor(env);
@@ -162,6 +169,21 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     }
 
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
+      // The model said it was done, and what the caller needs from it is not
+      // there. Asked once more instead of accepted: a walk that ends in prose
+      // leaves nothing a customer can open (CHE-420). Only a turn that can
+      // still be taken is spent on it — at the cap the loop ends as before.
+      if (untilSatisfied && !untilSatisfied.done() && nudges < untilSatisfied.maxNudges && iterations < cap) {
+        nudges += 1;
+        untilSatisfied.onNudge?.();
+        console.log(`[agent] iter ${iterations}: the model stopped before the loop's condition held — nudge ${nudges}/${untilSatisfied.maxNudges}`);
+        messages.push({
+          role: "assistant",
+          content: response.content.length ? response.content : [{ type: "text", text: "(no reply)" }],
+        });
+        messages.push({ role: "user", content: untilSatisfied.note });
+        continue;
+      }
       endedBy = "model";
       break;
     }
