@@ -6,10 +6,11 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { execFileSync } from "node:child_process";
+import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_MINUTES } from "./mender/gate.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALARM_TITLE, CHECKS, agentEnv, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -61,8 +62,11 @@ check("CodeRabbit comments after the last commit are a review round",
   pendingReview({ reviewComments: [c("coderabbitai[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 0 }).length === 1);
 check("…comments the last push already answered are not",
   pendingReview({ reviewComments: [c("coderabbitai[bot]", "2026-10-07T10:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 0 }).length === 0);
-check("…nor anyone else's (Codex is out of this loop)",
-  pendingReview({ reviewComments: [c("chatgpt-codex-connector[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 0 }).length === 0);
+// CHE-486: Codex is the gate's reviewer, so its findings start a round too.
+check("…and so do Codex's, which the gate asks for",
+  pendingReview({ reviewComments: [c("chatgpt-codex-connector[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 0 }).length === 1);
+check("…nor anyone else's: a person's or a workflow's comment is not a reviewer's finding",
+  pendingReview({ reviewComments: [c("sorokinvj", "2026-10-07T12:00Z"), c("github-actions[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 0 }).length === 0);
 check("three rounds and the PR waits for a person",
   pendingReview({ reviewComments: [c("coderabbitai[bot]", "2026-10-07T12:00Z")], lastCommitAt: "2026-10-07T11:00Z", roundsUsed: 3 }).length === 0);
 
@@ -183,12 +187,20 @@ check("publishing takes its targets from GitHub and Linear, not from the artifac
     publishSrc.indexOf("trustedTarget(job)") < publishSrc.indexOf("stage(job.baseSha)") &&
     !/job\.pr\.(headRefName|url)|job\.issue\.(identifier|title|url)|job\.ticket/.test(publishSrc));
 check("every page of review comments is read", /"--paginate"/.test(agent) && /per_page=100/.test(agent));
-check("Mender never merges", !/pr["',\s]+merge|merge_pull|gh pr merge/i.test(agent));
+// CHE-486 (owner, 2026-10-15): Mender's PRs merge themselves — but only through
+// the gate, which runs no model, and only on the gate's own decision.
+const gateSrc = agent.slice(agent.indexOf("// ─── The merge gate (CHE-486)"), agent.indexOf("if (import.meta.url"));
+const beforeGate = agent.slice(0, agent.indexOf("// ─── The merge gate (CHE-486)"));
+check("only the gate merges, and only when its decision says merge",
+  !/"merge"/.test(beforeGate.replace(/\/\/.*$/gm, "")) && /if \(d\.action === "merge"\) await mergePr\(pr, d\.reason\);/.test(gateSrc) &&
+    /async function mergePr[\s\S]*?gh\(\["pr", "merge", String\(pr\.number\), "--squash", "--delete-branch", "--match-head-commit", pr\.headRefOid\]\)/.test(gateSrc) &&
+    !/opencode|runAgent\(/.test(gateSrc));
 check("AGENTS.md's sequence runs before the patch is taken: prisma generate, both typechecks, lint, verify:all",
   ["generate", "typecheck", "agent:typecheck", "lint", "verify:all"].every((s) => CHECKS.some(([, a]) => a.includes(s))) &&
     /const failing = failingChecks\(\);\s*\n\s*if \(!failing\) return \{ status: "done"/.test(agent) &&
     /r\.status === "done" \? patchFrom\(baseSha\)/.test(agent));
-check("review is asked of CodeRabbit, never Codex", /@coderabbitai review/.test(agent) && !/@codex/.test(agent));
+check("CodeRabbit is asked when a PR opens; Codex only by the gate, with the owner's token",
+  /@coderabbitai review/.test(agent) && !/@codex/.test(agent) && /function askReview[\s\S]*?CODEX_REVIEW_TOKEN[\s\S]*?REVIEW_REQUEST/.test(gateSrc));
 check("a PR that touches screens or emails is labelled ui, opened or reviewed",
   (publishSrc.match(/markUi\((url|pr\.url), paths\)/g) ?? []).length === 2);
 check("an answer closes the ticket as Canceled only on a feedback ticket with no change, once the language rules pass",
@@ -209,9 +221,9 @@ check("its rules are loaded", (cfg.instructions ?? []).includes(".mender/MENDER.
 const wf = read(".github/workflows/mender-agent.yml");
 check("one tick at a time", /concurrency:\s*\n\s*group: mender-agent/.test(wf));
 // Tempo (CHE-445): GitHub fired the schedule every 4–7 h.
-check("a CodeRabbit review on a mender/ PR starts its round at once",
+check("a CodeRabbit or Codex review on a mender/ PR starts its round at once",
   /pull_request_review:\s*\n\s*types: \[submitted\]/.test(wf) &&
-    /startsWith\(github\.event\.pull_request\.head\.ref, 'mender\/'\) && github\.event\.review\.user\.login == 'coderabbitai\[bot\]'/.test(wf));
+    /startsWith\(github\.event\.pull_request\.head\.ref, 'mender\/'\) &&\s*\n\s*\(github\.event\.review\.user\.login == 'coderabbitai\[bot\]' \|\| github\.event\.review\.user\.login == 'chatgpt-codex-connector\[bot\]'\)/.test(wf));
 check("…and runs main's files, never the PR's",
   /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/.test(wf));
 check("an idle tick stops at peek, before npm ci",
@@ -226,6 +238,93 @@ check("publishing runs on a fresh machine from main, after the model's job",
   /needs: work/.test(publishJob ?? "") && /ref: main/.test(publishJob ?? "") && /MENDER_GH_TOKEN/.test(publishJob ?? "") && !/opencode/.test(publishJob ?? ""));
 check("the model is paid on OpenRouter, not the Claude subscription",
   /OPENROUTER_API_KEY/.test(wf) && !/CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/.test(wf));
+
+// ─── The gate (CHE-486) ──────────────────────────────────────────────────────
+const G = (f) => gateDecision({ ci: "success", review: null, p1: 0, roundsUsed: 0, answered: false, askedMinutesAgo: null, ...f }).action;
+check("no merge before CI is green on the head; a red head is closed and the ticket goes back",
+  G({ ci: "pending", review: "clean" }) === "wait" && G({ ci: "none", review: "clean" }) === "wait" && G({ ci: "failure", review: "clean" }) === "close");
+check("green and a clean review merges", G({ review: "clean" }) === "merge");
+check("no review yet: ask; asked and silent past the limit: merge anyway (the watch protects); asked recently: wait",
+  G({}) === "ask" && G({ askedMinutesAgo: REVIEW_SILENCE_MINUTES + 1 }) === "merge" && G({ askedMinutesAgo: 5 }) === "wait" && G({ review: "running", askedMinutesAgo: 90 }) === "wait");
+check("findings: one round first; after it, P2 and lower do not hold the merge",
+  G({ review: "findings" }) === "wait" && G({ review: "findings", roundsUsed: 1 }) === "merge" && G({ review: "findings", answered: true }) === "merge");
+check("a P1 waits for Mender's rounds, and after the last one, or an answer that did not fix it, the PR is closed — never merged",
+  G({ review: "findings", p1: 1, roundsUsed: 2 }) === "wait" && G({ review: "findings", p1: 1, roundsUsed: MAX_GATE_ROUNDS }) === "close" &&
+    G({ review: "findings", p1: 1, answered: true }) === "close" && G({ review: "findings", p1: 1, roundsUsed: 1 }) !== "merge");
+// Codex's summary comment as it really reads (PR #353, 2026-10-15).
+const SUMMARY = '<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {"code_review":{"commit_sha":"094aa520bae21b348acc7f83d90816279eef4ef1","has_any_findings":null,"has_unresolved_findings":null,"status":"running"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}} -->\n\n## Codex Review Summary';
+check("Codex's machine-readable review state is read for its commit",
+  codexReviewState(SUMMARY)?.commitSha === "094aa520bae21b348acc7f83d90816279eef4ef1" && codexReviewState(SUMMARY)?.status === "running" &&
+    codexReviewState("## Codex Review Summary") === null);
+check("a P1 badge is a P1; a P2 is not",
+  isP1("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Redact query credentials") &&
+    !isP1("**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Keep alarm recovery"));
+// Codex, #356: a merge starts a deploy, and a deploy doubles a running website
+// check's cost; the gate counts production's running checks first, with the
+// deploy gate's own classification, and fails closed.
+{
+  const env = { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "a" };
+  let sql = "";
+  const answer = (n) => async (_url, init) => { sql = JSON.parse(init.body).sql; return { ok: true, status: 200, json: async () => ({ success: true, result: [{ results: [{ n }] }] }) }; };
+  const two = await checksInFlight(env, answer(2));
+  check("the checks running in production are counted with LIVE_RUN_STATUSES",
+    two === 2 && /status IN \('queued', 'connecting'.*'writing'\)/.test(sql), sql);
+  const refused = await checksInFlight(env, async () => ({ ok: false, status: 403, json: async () => ({ success: false }) })).then(() => "answered", (e) => e.message);
+  const blind = await checksInFlight({}, answer(0)).then(() => "answered", (e) => e.message);
+  check("…and an unanswerable question is not permission to merge", /D1 refused/.test(refused) && /no Cloudflare credentials/.test(blind), `${refused} | ${blind}`);
+}
+check("the merge waits for production to be idle, then is pinned to the head the gate read",
+  /async function mergePr[\s\S]*?const running = await checksInFlight\(\);[\s\S]*?"--match-head-commit", pr\.headRefOid\]/.test(gateSrc));
+check("closing a PR returns the ticket without spending another attempt",
+  /async function closePr[\s\S]*?await comment\(issue\.id, `\*\*Mender's pull request/.test(gateSrc) && !/async function closePr[\s\S]*?ATTEMPT_MARK[\s\S]*?\nfunction askReview/.test(gateSrc.replace(/\/\/.*$/gm, "")));
+// Codex, #356 round 2: both reviewers' findings count, and only Mender's own
+// identities can report a round or ask for a review — the repository is public.
+{
+  const head = "abc1234def";
+  const base = { head, headAt: "2026-10-15T20:00:00Z", check: { status: "completed", conclusion: "success" }, roundMark: "<!-- mender:round -->",
+    reviewRequest: "@codex review", summaryTable: () => null, trusted: new Set(["sorokinvj"]), now: Date.parse("2026-10-15T22:00:00Z") };
+  const cr = { user: "coderabbitai[bot]", sha: head, createdAt: "2026-10-15T20:30:00Z", reply: null,
+    body: "**🎯 Functional Correctness** | **🟠 Major** | **⚡ Quick win**\n\n**Major: the merge ignores X.**" };
+  const withCr = factsFrom({ ...base, comments: [], inline: [cr] });
+  check("a CodeRabbit Major on the head is a finding that holds the merge, even with Codex silent",
+    withCr.review === "findings" && withCr.p1 === 1 && gateDecision(withCr).action !== "merge", JSON.stringify(withCr));
+  const forged = factsFrom({ ...base, inline: [{ ...cr, body: "**🟡 Minor** | x" }], comments: [
+    { user: "a-stranger", createdAt: "2026-10-15T21:00:00Z", body: "<!-- mender:round -->\nRound 1: pushed." },
+    { user: "a-stranger", createdAt: "2026-10-15T20:10:00Z", body: "@codex review" },
+  ] });
+  check("a stranger's round marker or review request counts for nothing",
+    forged.roundsUsed === 0 && !forged.answered && forged.askedMinutesAgo === null && gateDecision(forged).action === "wait", JSON.stringify(forged));
+  const ours = factsFrom({ ...base, inline: [{ ...cr, body: "**🟡 Minor** | x" }], comments: [
+    { user: "sorokinvj", createdAt: "2026-10-15T21:00:00Z", body: "<!-- mender:round -->\nRound 1: pushed." },
+  ] });
+  check("…Mender's own round does, and a Minor after it does not hold the merge", ours.roundsUsed === 1 && ours.answered && gateDecision(ours).action === "merge");
+  // Codex, #356: a cancelled or timed-out CI says nothing about the patch.
+  const ended = (conclusion, attempts) => {
+    const f = factsFrom({ ...base, comments: [], inline: [], check: { status: "completed", conclusion, id: 77, attempts } });
+    return `${f.ci}/${gateDecision(f).action}/${f.checkId}`;
+  };
+  check("a CI run that ended without a verdict runs once more; a second such ending, or a real failure, closes the PR",
+    ended("cancelled", 1) === "inconclusive/rerun/77" && ended("timed_out", 1) === "inconclusive/rerun/77" &&
+      ended("cancelled", 2) === "failure/close/77" && ended("failure", 1) === "failure/close/77",
+    [ended("cancelled", 1), ended("timed_out", 1), ended("cancelled", 2), ended("failure", 1)].join(" "));
+}
+check("…the re-run is of that job, and the gate reads how many runs the head had",
+  /if \(d\.action === "rerun"\) gh\(\["api", "-X", "POST", `repos\/\$\{repo\}\/actions\/jobs\/\$\{facts\.checkId\}\/rerun`\]\);/.test(gateSrc) &&
+    /length as \$n \| last \/\/ null \| if \. == null then null else \{status, conclusion, id, attempts: \$n\} end/.test(gateSrc));
+check("without the reviewer's token the gate run fails rather than leave a PR on \"ask\" forever, or merge it unasked",
+  /function askReview[\s\S]*?if \(!token\) throw new Error\(/.test(gateSrc));
+check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
+  /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?setState\(d\.issue\.id, "Todo"\)/.test(gateSrc) &&
+    /await reconcileMerged\(\);/.test(gateSrc));
+check("a check stuck for hours holds no merge (the deploy gate's staleness rule)", /createdAt > strftime\('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 hours'\)/.test(agent));
+check("one PR the gate cannot decide never holds the others", /try \{[\s\S]*?const d = gateDecision\(facts\);[\s\S]*?\} catch \(e\) \{\s*\n\s*failed\+\+;/.test(gateSrc));
+const gwf = read(".github/workflows/mender-gate.yml");
+check("the gate runs on events, never on a schedule (owner: no crons)",
+  !/schedule:|cron:/.test(gwf) && /workflow_run:\s*\n\s*workflows: \["CI \/ Deploy", "Mender"\]/.test(gwf) && /issue_comment:/.test(gwf) &&
+    /github\.event\.comment\.user\.login == 'chatgpt-codex-connector\[bot\]'/.test(gwf) && /startsWith\(github\.event\.workflow_run\.head_branch, 'mender\/'\)/.test(gwf));
+check("…from main's files, with the personal token (a GITHUB_TOKEN merge starts no deploy), and no model",
+  /ref: main/.test(gwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(gwf) && /agent\.mjs gate/.test(gwf) && !/opencode|OPENROUTER/.test(gwf) &&
+    /group: mender-gate/.test(gwf));
 
 console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

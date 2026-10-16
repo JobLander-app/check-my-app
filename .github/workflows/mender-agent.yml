@@ -2,7 +2,9 @@
 # the ticket that names this workflow). Label a CHE issue `mender`; within half
 # an hour Mender reads it (Linear + Notion over MCP), opens a PR, asks CodeRabbit
 # to review, works through up to three review rounds, and reports on the ticket.
-# A person merges. scripts/mender/agent.mjs is the whole procedure.
+# The PR merges itself (mender-gate.yml, CHE-486; owner 2026-10-15). It used to
+# wait for a person, and ten PRs waited for days. scripts/mender/agent.mjs is the
+# whole procedure.
 #
 # The model is OpenRouter's, paid in dollars (OPENROUTER_API_KEY), never the
 # owner's Claude subscription.
@@ -23,9 +25,10 @@ on:
       ticket:
         description: "A CHE identifier to take now (e.g. CHE-123); empty = the queue"
         required: false
-  # A CodeRabbit review on a Mender PR starts its round now, not at the next
-  # schedule (which GitHub fired every 4–7 h; CHE-445). The job below runs only
-  # for CodeRabbit on mender/ branches, and always from main's files.
+  # A review on a Mender PR starts its round now, not at the next schedule
+  # (which GitHub fired every 4–7 h; CHE-445). The job below runs only for
+  # CodeRabbit or Codex (asked by the gate, CHE-486) on mender/ branches, and
+  # always from main's files.
   pull_request_review:
     types: [submitted]
 
@@ -38,7 +41,8 @@ jobs:
   work:
     if: >-
       github.event_name != 'pull_request_review' ||
-      (startsWith(github.event.pull_request.head.ref, 'mender/') && github.event.review.user.login == 'coderabbitai[bot]')
+      (startsWith(github.event.pull_request.head.ref, 'mender/') &&
+        (github.event.review.user.login == 'coderabbitai[bot]' || github.event.review.user.login == 'chatgpt-codex-connector[bot]'))
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
