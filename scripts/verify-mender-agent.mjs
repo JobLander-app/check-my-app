@@ -298,7 +298,21 @@ check("closing a PR returns the ticket without spending another attempt",
     { user: "sorokinvj", createdAt: "2026-10-15T21:00:00Z", body: "<!-- mender:round -->\nRound 1: pushed." },
   ] });
   check("…Mender's own round does, and a Minor after it does not hold the merge", ours.roundsUsed === 1 && ours.answered && gateDecision(ours).action === "merge");
+  // Codex, #356: a cancelled or timed-out CI says nothing about the patch.
+  const ended = (conclusion, attempts) => {
+    const f = factsFrom({ ...base, comments: [], inline: [], check: { status: "completed", conclusion, id: 77, attempts } });
+    return `${f.ci}/${gateDecision(f).action}/${f.checkId}`;
+  };
+  check("a CI run that ended without a verdict runs once more; a second such ending, or a real failure, closes the PR",
+    ended("cancelled", 1) === "inconclusive/rerun/77" && ended("timed_out", 1) === "inconclusive/rerun/77" &&
+      ended("cancelled", 2) === "failure/close/77" && ended("failure", 1) === "failure/close/77",
+    [ended("cancelled", 1), ended("timed_out", 1), ended("cancelled", 2), ended("failure", 1)].join(" "));
 }
+check("…the re-run is of that job, and the gate reads how many runs the head had",
+  /if \(d\.action === "rerun"\) gh\(\["api", "-X", "POST", `repos\/\$\{repo\}\/actions\/jobs\/\$\{facts\.checkId\}\/rerun`\]\);/.test(gateSrc) &&
+    /length as \$n \| last \/\/ null \| if \. == null then null else \{status, conclusion, id, attempts: \$n\} end/.test(gateSrc));
+check("without the reviewer's token the gate run fails rather than leave a PR on \"ask\" forever, or merge it unasked",
+  /function askReview[\s\S]*?if \(!token\) throw new Error\(/.test(gateSrc));
 check("a closed PR's ticket left In Review is settled by the next gate run — merged: Done, closed: Todo — and only from In Review",
   /async function reconcileMerged[\s\S]*?"--state", "closed"[\s\S]*?if \(d\.issue\?\.state\?\.name !== "In Review"\) continue;[\s\S]*?if \(pr\.mergedAt\) \{[\s\S]*?setState\(d\.issue\.id, "Done"\)[\s\S]*?setState\(d\.issue\.id, "Todo"\)/.test(gateSrc) &&
     /await reconcileMerged\(\);/.test(gateSrc));

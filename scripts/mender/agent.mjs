@@ -619,9 +619,9 @@ function gateFacts(repo, pr, trusted) {
   return factsFrom({
     head,
     headAt: gh(["api", `repos/${repo}/commits/${head}`, "--jq", ".commit.committer.date"]),
-    // The latest `check` job on this head (a re-run is a newer one).
+    // The latest `check` job on this head (a re-run is a newer one), and how many there were.
     check: ghJson(["api", `repos/${repo}/commits/${head}/check-runs?per_page=100`, "--jq",
-      `[.check_runs[] | select(.name == "check")] | sort_by(.id) | last // null | if . == null then null else {status, conclusion} end`]),
+      `[.check_runs[] | select(.name == "check")] | sort_by(.id) | length as $n | last // null | if . == null then null else {status, conclusion, id, attempts: $n} end`]),
     comments: pagesOf(`repos/${repo}/issues/${pr.number}/comments`, "{user: .user.login, createdAt: .created_at, body: (.body // \"\")}"),
     inline: pagesOf(`repos/${repo}/pulls/${pr.number}/comments`,
       "{user: .user.login, sha: .original_commit_id, createdAt: .created_at, body: (.body // \"\"), reply: .in_reply_to_id}"),
@@ -750,7 +750,10 @@ async function closePr(pr, reason, facts) {
 /** Codex answers only an identity linked to a ChatGPT account, so it is asked with the owner's token (CHE-155). */
 function askReview(pr) {
   const token = process.env.CODEX_REVIEW_TOKEN;
-  if (!token) return say(`#${pr.number}: CODEX_REVIEW_TOKEN is not set — the review cannot be asked; the gate merges after ${REVIEW_SILENCE_MINUTES} minutes of silence`);
+  // Without it nothing is asked and no silence clock starts, so the PR would sit
+  // on "ask" forever without a word (Codex, #356). The reviewer is never skipped
+  // instead: the gate run fails, loudly.
+  if (!token) throw new Error(`#${pr.number}: CODEX_REVIEW_TOKEN is not set — the review cannot be asked, and nothing merges unasked`);
   execFileSync("gh", ["pr", "comment", String(pr.number), "--body", `${REVIEW_REQUEST}\n\nAsked by Mender's gate for ${pr.headRefOid.slice(0, 7)}.`],
     { stdio: "inherit", env: { ...process.env, GH_TOKEN: token } });
 }
@@ -780,6 +783,8 @@ async function gate() {
       const d = gateDecision(facts);
       say(`gate #${pr.number} ${pr.headRefOid.slice(0, 7)}: ${d.action} — ${d.reason}`);
       if (d.action === "ask") askReview(pr);
+      // A job re-run finishes as a workflow run, which wakes the gate again.
+      if (d.action === "rerun") gh(["api", "-X", "POST", `repos/${repo}/actions/jobs/${facts.checkId}/rerun`]);
       if (d.action === "merge") await mergePr(pr, d.reason);
       if (d.action === "close") await closePr(pr, d.reason, facts);
     } catch (e) {
