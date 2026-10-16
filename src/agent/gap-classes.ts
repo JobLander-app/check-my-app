@@ -461,7 +461,12 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   if (textHit) return textHit;
   // A foreign host's 429 is not this class: it is "we could not reach it from
   // here" (egress_unreachable), as the CHALLENGE comment above says.
-  if (RATE_LIMITED.test(text) && foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length === 0) return "rate_limited";
+  if (RATE_LIMITED.test(text)) {
+    // Named, so it is not the target's limit: without this branch the words
+    // "returned HTTP 429" match neither CHALLENGE nor EGRESS and fall through
+    // to unclassified, which is the bucket CHE-86 was.
+    return foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length === 0 ? "rate_limited" : "egress_unreachable";
+  }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
   return trailClass(evidence.actions ?? []) ?? "unclassified";

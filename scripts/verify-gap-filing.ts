@@ -956,6 +956,7 @@ async function main() {
       // What must not move.
       ["a price of $429 is not a status", { text: "The Pro plan costs $429 a year and the page did not load.", targetOrigin: T }, "unclassified"],
       ["a Rate limiting settings page is a product noun, not a refusal", { text: "The Rate limiting settings page could not be read.", targetOrigin: T }, "unclassified"],
+      ["a foreign host's 429 in plain words reaches egress, not unclassified", { text: "https://vk.com/share.php returned HTTP 429", targetOrigin: "https://theins.ru" }, "egress_unreachable"],
       ["a foreign host's 429 is still not this class", { text: "UNREACHABLE (HTTP 429 from vk.com) https://vk.com/share.php", targetOrigin: "https://theins.ru" }, "egress_unreachable"],
       ["a 429 beside a named capability keeps that capability (new tab)", { text: "The link opens in a new tab; the page behind it returned HTTP 429.", targetOrigin: T }, "new_tab"],
       ["a challenge on the target is still a captcha", { text: "A Cloudflare security challenge blocked the page.", targetOrigin: T }, "captcha"],
