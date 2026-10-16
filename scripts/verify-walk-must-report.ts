@@ -105,9 +105,11 @@ async function main() {
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", () => resolve()));
   const origin = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
   const target = `${origin}/`;
-  const browser = await chromium.launch().catch(() => chromium.launch({ channel: "chrome" }));
-  const real = await realD1();
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let real: Awaited<ReturnType<typeof realD1>> | undefined;
   try {
+    browser = await chromium.launch().catch(() => chromium.launch({ channel: "chrome" }));
+    real = await realD1();
     const db = real.db;
     await db.user.create({ data: { id: "ann", clerkUserId: "ck_ann", email: "ann@a.test" } });
     await db.team.create({ data: { id: "team_a", name: "A", plan: "business" } });
@@ -181,6 +183,12 @@ async function main() {
       hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 500`], consoleLog: [], ownOrigins: own1, words }));
     check("evidence: a 500 the step does not name is not",
       !hasPositiveEvidence({ networkLog: [`GET ${origin}/favicon.ico → 404`], consoleLog: [], ownOrigins: own1, words }));
+    check("evidence: a 500 on another path is not, even when the step says 500",
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/api/other → 500`], consoleLog: [], ownOrigins: own1, words: "the practice module returned 500." }));
+    check("evidence: a path is named whole, not as the front of a longer one",
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/api → 500`], consoleLog: [], ownOrigins: own1, words: "/api/x answered 500." }));
+    check("evidence: generic exception words are not",
+      !hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: analyticsWidget is undefined"], ownOrigins: own1, words: "the page threw: practicemodule is undefined" }));
     check("evidence: a console error counts",
       hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: practiceModule is undefined"], ownOrigins: own1, words: "the page threw: practicemodule is undefined" }));
     check("evidence: a console error the step does not name is not",
@@ -192,8 +200,8 @@ async function main() {
     check("evidence: another origin's 500 is not the product's",
       !hasPositiveEvidence({ networkLog: ["GET https://analytics.example.com/c → 500"], consoleLog: [], ownOrigins: own1, words: "answered 500 /c" }));
   } finally {
-    await real.close?.();
-    await browser.close();
+    await real?.dispose();
+    await browser?.close();
     site.close();
   }
   console.log(failures ? `\nverify-walk-must-report: ${failures} FAILED` : "\nverify-walk-must-report: all passed");

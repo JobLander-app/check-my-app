@@ -44,9 +44,21 @@ function wordsOf(step: ReportedStep): string {
   return `${step.observed ?? ""} ${step.attempted ?? ""}`.toLowerCase();
 }
 
+// The path as a whole, not as the front of a longer one: "/api" is not named by
+// "/api/practice".
+function namesPath(words: string, path: string): boolean {
+  for (let at = words.indexOf(path); at !== -1; at = words.indexOf(path, at + 1)) {
+    const before = words[at - 1];
+    const after = words[at + path.length];
+    if ((before === undefined || !/[a-z0-9_/-]/.test(before)) && (after === undefined || !/[a-z0-9_/-]/.test(after))) return true;
+  }
+  return false;
+}
+
 // "METHOD url → status" lines (tools.ts attachLogCapture). 429 is our own
 // request volume (CLAUDE.md §3), never evidence. A failure counts for this
-// step only when the step names it: the status code, or the path that failed.
+// step only when the step names the path that failed. A status code alone is
+// not enough: an unrelated 500 elsewhere would otherwise back any "returned 500".
 function failedOwnRequestNamed(networkLog: string[], ownOrigins: string[], words: string): boolean {
   const own = ownOrigins.map((o) => o.toLowerCase());
   return networkLog.some((line) => {
@@ -58,7 +70,7 @@ function failedOwnRequestNamed(networkLog: string[], ownOrigins: string[], words
       const url = new URL(m[1]);
       if (!own.includes(url.origin.toLowerCase())) return false;
       const path = url.pathname.toLowerCase();
-      return new RegExp(`\\b${status}\\b`).test(words) || (path.length > 1 && words.includes(path));
+      return path.length > 1 && namesPath(words, path);
     } catch {
       return false;
     }
@@ -66,15 +78,18 @@ function failedOwnRequestNamed(networkLog: string[], ownOrigins: string[], words
 }
 
 // Words that open nearly every console line and say nothing about which one.
-const CONSOLE_COMMON = new Set(["uncaught", "error", "failed", "resource", "status", "unhandled", "console", "exception", "message"]);
+const CONSOLE_COMMON = new Set(["uncaught", "error", "failed", "resource", "status", "unhandled", "console", "exception", "message",
+  "undefined", "typeerror", "referenceerror", "syntaxerror", "rangeerror", "cannot", "property", "properties", "reading", "defined", "object", "function", "denied", "refused"]);
 
 // A console error counts for this step when the step repeats something
-// particular from it — a word of five letters or more that is not boilerplate.
+// particular from it — a whole word of five letters or more that is not
+// boilerplate (not a substring: "widget" inside "analyticswidget" is another thing).
 function consoleErrorNamed(consoleLog: string[], words: string): boolean {
+  const stepTokens = new Set(words.match(/[a-z0-9_]{5,}/g) ?? []);
   return consoleLog.some((line) => {
     if (!line.startsWith("[error]")) return false;
     const tokens = line.slice("[error]".length).toLowerCase().match(/[a-z0-9_]{5,}/g) ?? [];
-    return tokens.some((t) => !CONSOLE_COMMON.has(t) && words.includes(t));
+    return tokens.some((t) => !CONSOLE_COMMON.has(t) && stepTokens.has(t));
   });
 }
 
