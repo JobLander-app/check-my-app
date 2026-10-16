@@ -134,6 +134,19 @@ function main() {
     check("doubling back and then going somewhere new is still a wander",
       !middle.ok && middle.refusal === "revisits", JSON.stringify(middle));
 
+    const oscillate = deriveFunnel(walk(
+      "https://x.dev/a", "https://x.dev/b", "https://x.dev/c", "https://x.dev/a",
+      "https://x.dev/b", "https://x.dev/a", "https://x.dev/c",
+    ));
+    check("oscillating among known pages after the first revisit is not a way back",
+      !oscillate.ok && oscillate.refusal === "revisits", JSON.stringify(oscillate));
+
+    const onePass = deriveFunnel(walk(
+      "https://x.dev/a", "https://x.dev/b", "https://x.dev/c", "https://x.dev/b", "https://x.dev/a",
+    ));
+    check("one pass back over pages already seen is still a way back",
+      onePass.ok && onePass.stages.join(" → ") === "/a → /b → /c", JSON.stringify(onePass));
+
     const onlyBack = deriveFunnel(walk("https://x.dev/a", "https://x.dev/a"));
     check("going back does not turn one page into two",
       !onlyBack.ok && onlyBack.refusal === "single_stage", JSON.stringify(onlyBack));

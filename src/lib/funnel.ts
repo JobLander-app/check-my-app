@@ -220,8 +220,14 @@ export function deriveFunnel(actions: readonly RecordedOutcome[]): DerivedFunnel
     standingOn.add(stages[i]);
   }
   // Everything from the first repeat onward must itself be pages already seen,
-  // or the doubling back is in the middle of the walk and not at its end.
-  const onlyWayBack = stages.slice(firstRepeat).every((p) => standingOn.has(p));
+  // or the doubling back is in the middle of the walk and not at its end — and
+  // it must visit each of them once. A tail that keeps oscillating among known
+  // pages (a b c a b a c) is not a way back, it is more wandering, and letting
+  // it through would let any length of looking around evade both the revisit
+  // refusal and the stage cap. One pass back over what was seen is a return.
+  const tail = stages.slice(firstRepeat);
+  const onlyWayBack =
+    tail.every((p) => standingOn.has(p)) && new Set(tail).size === tail.length;
   const path = onlyWayBack ? stages.slice(0, firstRepeat) : stages;
 
   // 4. A walk that returns to a page it has already left, and then goes on to
