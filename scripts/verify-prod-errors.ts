@@ -112,8 +112,13 @@ async function main() {
     },
   } as unknown as GapBoard;
   const dispatched: string[] = [];
+  const bodies: string[] = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: string) => { dispatched.push(String(url)); return new Response(null, { status: 204 }); }) as typeof fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    dispatched.push(String(url));
+    bodies.push(String(init?.body ?? ""));
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
   const env = (filing?: string) => ({ db, bindings: { PROD_ERROR_FILING: filing, MENDER_DISPATCH_TOKEN: "t" } as never });
   const [report] = reportsFrom([exception("x")]);
 
@@ -126,6 +131,10 @@ async function main() {
   check("a new signature is one ticket for Mender, and Mender is woken",
     first.filed.length === 1 && created[0]?.labelNames.includes("mender") && created[0].labelNames.includes(PROD_ERROR_LABEL) &&
       created[0].title.startsWith("[Prod error] checkmyapp-web: TypeError:") && dispatched.length === 1, JSON.stringify(created[0]?.title));
+  // CHE-486 part 4: through the watch, which judges the last deploy and wakes Mender itself.
+  check("…through the watch, with the ticket and the time it was seen",
+    dispatched[0]?.endsWith("/actions/workflows/mender-watch.yml/dispatches") &&
+      JSON.stringify(JSON.parse(bodies[0] ?? "{}").inputs) === JSON.stringify({ watch: first.filed[0], seen: now.toISOString() }), `${dispatched[0]} ${bodies[0]}`);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + 60_000) });
   check("a repeat within the hour costs nothing: no ticket, no comment, nobody woken", created.length === 1 && comments.length === 0 && dispatched.length === 1);
   await intakeProdErrors(env("on"), [report], { board, now: new Date(now.getTime() + TELL_EVERY_MS + 1) });

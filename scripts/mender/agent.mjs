@@ -25,11 +25,14 @@
 //       green and whose review is done merges itself (CHE-486, owner
 //       2026-10-15; gate.mjs). It used to wait for a person, and ten waited for
 //       days. TICKET=CHE-123 picks a ticket; GATE_PR=123 limits the gate to one PR.
+//   node scripts/mender/agent.mjs watch    — no model: a new production error
+//       right after a deploy of Mender's alone reverts that deploy's changes
+//       (CHE-486 part 4; gate.mjs watchDecision). WATCH_TICKET, WATCH_SEEN.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { factsFrom, gateDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
+import { factsFrom, gateDecision, mergeHold, watchDecision, REVIEW_SILENCE_MINUTES } from "./gate.mjs";
 import { codexSummaryState, REVIEW_REQUEST } from "../doer/review.mjs";
 
 const TEAM_ID = "b9503451-107e-41b6-a933-5959324a72af"; // Linear "Check My App"
@@ -467,11 +470,30 @@ export function branchFor(issue) {
 /** The only refs the personal token may ever be used to push to. */
 export const validBranch = (b) => /^mender\/che-\d+(-[a-z0-9]+)*$/.test(String(b));
 
+/**
+ * Git with the personal token, which never enters a command line: a failed
+ * git command's error carries its arguments, and errors are logged and posted
+ * (Codex, #359). Git reads the token from configuration in its environment, and
+ * every message is scrubbed of it besides.
+ */
+export function gitAuth(token, cwd = process.cwd(), extraEnv = {}) {
+  const header = token ? `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}` : "";
+  const env = { ...process.env, ...extraEnv, ...(token ? { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", GIT_CONFIG_VALUE_0: header } : {}) };
+  const scrub = (message) => (token ? message.split(token).join("***").split(header).join("***") : message);
+  return (...args) => {
+    try {
+      return sh("git", args, { env, cwd });
+    } catch (e) {
+      throw new Error(scrub(String(e.message).split("\n")[0]));
+    }
+  };
+}
+
 function push(branch, message, { force = false } = {}) {
   if (!validBranch(branch)) throw new Error(`refusing to push to ${JSON.stringify(branch)}: not a mender/che-* branch`);
   sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
-  sh("git", ["push", "-q", ...(force ? ["--force"] : []), `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
+  gitAuth(process.env.GH_TOKEN)("push", "-q", ...(force ? ["--force"] : []), `https://github.com/${repo}.git`, `HEAD:refs/heads/${branch}`);
 }
 
 /**
@@ -705,17 +727,26 @@ export async function checksInFlight(env = process.env, doFetch = fetch) {
   return Number(body.result?.[0]?.results?.[0]?.n ?? 0);
 }
 
-const MERGE_WAIT_MS = Number(process.env.MENDER_MERGE_WAIT_MS ?? 20 * 60_000);
+const MERGE_WAIT_MS = Number(process.env.MENDER_MERGE_WAIT_MS ?? 40 * 60_000);
+
+/** Whether main is deploying now, and when it last deployed. */
+function mainState() {
+  const deploying = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "5", "--json", "status",
+    "--jq", '[.[] | select(.status != "completed")] | length']) > 0;
+  return { deploying, deployedAt: deploysOfMain(1)[0]?.deployedAt ?? null };
+}
 
 async function mergePr(pr, reason) {
-  // Wait for production to be idle; still busy after the wait, the PR stays
+  // Wait for production to be idle, and for the last deploy to have had its
+  // whole watch (gate.mjs mergeHold); still held after the wait, the PR stays
   // open and the next event decides again. An unanswerable question is not
   // permission to deploy.
   for (const deadline = Date.now() + MERGE_WAIT_MS; ;) {
     const running = await checksInFlight();
-    if (!running) break;
-    if (Date.now() >= deadline) return say(`#${pr.number}: ${running} check(s) still running in production — left open`);
-    say(`#${pr.number}: ${running} check(s) running in production — waiting before the merge`);
+    const hold = running ? `${running} check(s) running in production` : mergeHold(mainState());
+    if (!hold) break;
+    if (Date.now() >= deadline) return say(`#${pr.number}: ${hold} — left open`);
+    say(`#${pr.number}: ${hold} — waiting before the merge`);
     await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
   // The personal token, so the push to main starts CI and the deploy (a merge by
@@ -795,9 +826,143 @@ async function gate() {
   if (failed) throw new Error(`the gate could not decide ${failed} pull request(s)`);
 }
 
+// ─── The watch (CHE-486 part 4): a new error right after Mender's deploy ─────
+//
+// Woken by the agent worker when it files a new "[Prod error]" or "[Checker
+// failure]" ticket (WATCH_TICKET, seen at WATCH_SEEN), in mender-watch.yml. The
+// decision is gate.mjs watchDecision; this reads the deploys and acts.
+
+/**
+ * The deploys of main, newest first: CI / Deploy runs whose `wrangler deploy`
+ * step succeeded. A run superseded by a newer commit skips that step and put
+ * nothing in production; one still deploying the web counts from its workers.
+ */
+function deploysOfMain(limit = 2) {
+  const runs = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "50", "--json", "databaseId,headSha"]);
+  const out = [];
+  for (const run of runs) {
+    const at = gh(["run", "view", String(run.databaseId), "--json", "jobs", "--jq",
+      '[.jobs[] | select(.name == "deploy") | .steps[] | select((.name | test("wrangler deploy --config")) and .conclusion == "success") | .completedAt] | first // ""']);
+    if (at) out.push({ sha: run.headSha, deployedAt: Date.parse(at) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * The commits a deploy carried that the one before it did not, oldest first,
+ * each with the PR it was merged from. Null when GitHub's comparison is cut
+ * short (it lists at most 250 commits unpaged): an unseen commit could be a
+ * person's (Codex, #359).
+ */
+function carried(repo, from, to) {
+  const { total, shas } = ghJson(["api", `repos/${repo}/compare/${from}...${to}`, "--jq", "{total: .total_commits, shas: [.commits[].sha]}"]);
+  if (total !== shas.length) return null;
+  return shas.map((sha) => {
+    const pr = ghJson(["api", `repos/${repo}/commits/${sha}/pulls`, "--jq", "[.[] | select(.merged_at != null) | {number, branch: .head.ref}] | first // null"]);
+    return { sha, pr: pr?.number ?? null, branch: pr?.branch ?? null };
+  });
+}
+
+/**
+ * Revert these commits on main as one commit, pushed with the personal token
+ * (so CI deploys it). Main may move between the fetch and the push; one more
+ * try from the new tip. A revert that does not apply cleanly throws, and the
+ * change stays. Exported for verify-mender-agent, which runs it on a real
+ * repository.
+ *
+ * The token goes through gitAuth, never a command line (Codex, #359).
+ */
+export function revertOnMain(commits, title, body, { url, token = "", me, cwd = process.cwd() }) {
+  const git = gitAuth(token, cwd,
+    { GIT_AUTHOR_NAME: me, GIT_AUTHOR_EMAIL: `${me}@users.noreply.github.com`, GIT_COMMITTER_NAME: me, GIT_COMMITTER_EMAIL: `${me}@users.noreply.github.com` });
+  for (let attempt = 1; ; attempt++) {
+    // With the token: the checkout keeps no credential (Codex, #359).
+    git("fetch", "--quiet", "--depth=200", url, "main");
+    git("checkout", "--quiet", "-B", "mender-watch", "FETCH_HEAD");
+    try {
+      git("revert", "--no-commit", ...commits.map((c) => c.sha).reverse());
+    } catch (e) {
+      try { git("revert", "--abort"); } catch { /* nothing to abort */ }
+      throw new Error(`the revert does not apply cleanly on main: ${e.message}`);
+    }
+    git("commit", "--quiet", "-m", title, "-m", body);
+    try {
+      git("push", "--quiet", url, "HEAD:main");
+      return git("rev-parse", "HEAD");
+    } catch (e) {
+      if (attempt >= 2) throw new Error(`main moved twice under the revert: ${e.message}`);
+    }
+  }
+}
+
+async function watch() {
+  const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+  const ticket = process.env.WATCH_TICKET?.trim().toUpperCase();
+  if (!/^CHE-\d+$/.test(ticket ?? "")) throw new Error(`WATCH_TICKET must name the error's ticket (CHE-123), not "${ticket ?? ""}"`);
+  const seenAt = Date.parse(process.env.WATCH_SEEN ?? "") || Date.now();
+  const [deploy, before] = deploysOfMain(2);
+  // Without the deploy before it, or with a comparison cut short, what the
+  // latest one carried is unknown — it ships every older commit too — so
+  // nothing is judged (Codex, #359).
+  const commits = deploy && before ? carried(repo, before.sha, deploy.sha) : null;
+  const d = watchDecision({ seenAt, deploy: deploy ?? null, commits, isMender: (branch) => Boolean(branch) && validBranch(branch) });
+  say(`watch ${ticket}: ${d.action} — ${d.reason}`);
+  const error = (await linear("query($i:String!){issue(id:$i){id identifier url}}", { i: ticket })).issue;
+  if (!error) throw new Error(`${ticket} is not on the board`);
+  let sha = null;
+  // Each step after the revert is its own: a comment that fails must not leave
+  // the tickets where they were, nor Mender asleep (Codex, #359). A step is
+  // tried three times, so a moment of Linear or GitHub down does not leave a
+  // reverted ticket Done (Codex, #359 round 3).
+  const step = async (what, act) => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await act();
+        return;
+      } catch (e) {
+        console.error(`[mender] watch ${ticket}: ${what} failed (attempt ${attempt}): ${e.message}`);
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+      }
+    }
+  };
+  if (d.action === "revert") {
+    const list = d.revert.map((c) => `#${c.pr} (${c.branch})`).join(", ");
+    try {
+      sha = revertOnMain(d.revert, `Revert Mender's ${d.revert.map((c) => `#${c.pr}`).join(", ")}: ${ticket} appeared right after its deploy`,
+        `The watch (CHE-486): ${ticket} — ${error.url} — ${d.reason}.\n\nReverted: ${list}. Their tickets go back to Mender with this reason.`,
+        { url: `https://github.com/${repo}.git`, token: process.env.GH_TOKEN, me: gh(["api", "user", "--jq", ".login"]) });
+    } catch (e) {
+      say(`watch ${ticket}: not reverted — ${e.message}`);
+      await step(`telling ${ticket}`, () => comment(error.id, `**The watch could not revert** ${list}, deployed just before this appeared: ${e.message}. The change stays; Mender takes this ticket.`));
+    }
+  }
+  if (sha) {
+    for (const c of d.revert) {
+      await step(`commenting on #${c.pr}`, () => gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]));
+      let issue = null;
+      await step(`finding #${c.pr}'s ticket`, async () => { issue = await ticketOf(c.branch); });
+      if (!issue) {
+        console.error(`[mender] watch ${ticket}: #${c.pr}'s ticket could not be found; it stays Done though its change was reverted`);
+        continue;
+      }
+      // The state first: a ticket back in Todo is what gives Mender its next attempt.
+      await step(`returning #${c.pr}'s ticket to Todo`, () => setState(issue.id, "Todo"));
+      await step(`telling #${c.pr}'s ticket`, () => comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
+        `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`));
+    }
+    await step(`settling ${ticket}`, () => setState(error.id, "Done"));
+    await step(`telling ${ticket}`, () => comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
+      "Done; if this comes back, the monitor opens a recurrence ticket naming this one."));
+  }
+  // The reverted tickets, or the error's own: either way Mender has work.
+  gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
+  say(sha ? `watch ${ticket}: reverted in ${sha.slice(0, 7)}` : `watch ${ticket}: kept; Mender woken`);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const step = process.argv[2];
-  const run = { peek, work, gate, publish: () => publish().then(chainNext) }[step];
-  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish|gate")))
+  const run = { peek, work, gate, watch, publish: () => publish().then(chainNext) }[step];
+  (run ? run() : Promise.reject(new Error("usage: agent.mjs peek|work|publish|gate|watch")))
     .catch((e) => { console.error(e); process.exit(1); });
 }

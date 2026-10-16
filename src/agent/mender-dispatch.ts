@@ -10,23 +10,26 @@
 
 export const MENDER_REPO = "JobLander-app/check-my-app";
 export const MENDER_WORKFLOW = "mender-agent.yml";
+/** The watch after a deploy (CHE-486 part 4; .github/workflows/mender-watch.yml). */
+export const WATCH_WORKFLOW = "mender-watch.yml";
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export async function dispatchMender(
   bindings: { MENDER_DISPATCH_TOKEN?: string },
   doFetch: Fetch = (url, init) => fetch(url, init),
+  run: { workflow?: string; inputs?: Record<string, string> } = {},
 ): Promise<"dispatched" | "no-token"> {
   const token = bindings.MENDER_DISPATCH_TOKEN;
   if (!token) return "no-token";
-  const res = await doFetch(`https://api.github.com/repos/${MENDER_REPO}/actions/workflows/${MENDER_WORKFLOW}/dispatches`, {
+  const res = await doFetch(`https://api.github.com/repos/${MENDER_REPO}/actions/workflows/${run.workflow ?? MENDER_WORKFLOW}/dispatches`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
       "User-Agent": "checkmyapp-agent",
     },
-    body: JSON.stringify({ ref: "main" }),
+    body: JSON.stringify(run.inputs ? { ref: "main", inputs: run.inputs } : { ref: "main" }),
     // A stalled GitHub must not hold whatever filed the ticket (CodeRabbit, #307).
     signal: AbortSignal.timeout(5_000),
   });
@@ -81,6 +84,24 @@ export async function wakeMender(bindings: WakeBindings, why: string, doFetch?: 
     console.warn(`[mender] could not be woken (${why}): ${err instanceof Error ? err.message : String(err)} — owed to the next tick`);
     await bindings.EVIDENCE?.put(OWED_WAKE_KEY, JSON.stringify({ why, at: new Date().toISOString() })).catch(() => {});
     return "failed";
+  }
+}
+
+/**
+ * A ticket for a new production error or a new kind of failed check (CHE-486
+ * part 4): the watch looks first — the last deploy is reverted if it carried
+ * only Mender's changes and the error came right after it — and wakes Mender
+ * either way. A watch GitHub refused falls back to waking Mender: the ticket is
+ * never left alone, only the revert is lost. Never throws.
+ */
+export async function watchDeploy(bindings: WakeBindings, ticket: string, seen: Date, doFetch?: Fetch): Promise<"dispatched" | "no-token" | "failed"> {
+  try {
+    const result = await dispatchMender(bindings, doFetch, { workflow: WATCH_WORKFLOW, inputs: { watch: ticket, seen: seen.toISOString() } });
+    if (result === "dispatched") console.log(`[mender] the watch looks at ${ticket}`);
+    return result;
+  } catch (err) {
+    console.warn(`[mender] the watch for ${ticket} could not start: ${err instanceof Error ? err.message : String(err)} — waking Mender instead`);
+    return wakeMender(bindings, `${ticket} (the watch could not start)`, doFetch);
   }
 }
 

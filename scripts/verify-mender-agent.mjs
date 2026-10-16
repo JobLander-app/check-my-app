@@ -6,11 +6,11 @@
 // Usage: node scripts/verify-mender-agent.mjs
 
 import { execFileSync } from "node:child_process";
-import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, REVIEW_SILENCE_MINUTES } from "./mender/gate.mjs";
+import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, mergeHold, REVIEW_SILENCE_MINUTES, WATCH_MINUTES, watchDecision } from "./mender/gate.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, revertOnMain, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -325,6 +325,128 @@ check("the gate runs on events, never on a schedule (owner: no crons)",
 check("…from main's files, with the personal token (a GITHUB_TOKEN merge starts no deploy), and no model",
   /ref: main/.test(gwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(gwf) && /agent\.mjs gate/.test(gwf) && !/opencode|OPENROUTER/.test(gwf) &&
     /group: mender-gate/.test(gwf));
+
+// ─── The watch (CHE-486 part 4) ──────────────────────────────────────────────
+{
+  const at = Date.parse("2026-10-16T12:00:00Z");
+  const mender = { sha: "m1", pr: 401, branch: "mender/che-500-fix" };
+  const person = { sha: "p1", pr: 402, branch: "che-501-feature" };
+  const W = (minutesAfter, commits, deploy = { sha: "m1", deployedAt: at }) =>
+    watchDecision({ seenAt: at + minutesAfter * 60_000, deploy, commits, isMender: (b) => Boolean(b) && validBranch(b) });
+  const reverted = W(10, [mender]);
+  check("a new error within the watch after a deploy of Mender's alone reverts that deploy's change",
+    reverted.action === "revert" && reverted.revert.length === 1 && reverted.revert[0].sha === "m1", JSON.stringify(reverted));
+  check("…past the watch, before the deploy, with a person's change in the deploy, or with no Mender change, it is kept",
+    W(WATCH_MINUTES + 1, [mender]).action === "keep" && W(-1, [mender]).action === "keep" &&
+      W(10, [person, mender]).action === "keep" && W(10, [person]).action === "keep" && W(10, [], null).action === "keep" &&
+      /not the watch's to judge/.test(W(10, [person, mender]).reason));
+  check("…and a revert pushed straight to main is nobody's PR, so the watch never reverts its own revert",
+    W(10, [{ sha: "r1", pr: null, branch: null }]).action === "keep");
+  // Codex, #359: the deploy before the latest one not found — the latest ships
+  // every older commit too, so what it carried is unknown and nothing is reverted.
+  check("…nor is anything reverted when what the deploy carried is unknown", W(10, null).action === "keep" && /unknown/.test(W(10, null).reason));
+}
+// One merge, one deploy, one whole watch: otherwise an error meant for the first
+// merge lands after the second, and the wrong change is reverted.
+{
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  const held = mergeHold({ deploying: true, deployedAt: now - 60 * 60_000, now });
+  const watching = mergeHold({ deploying: false, deployedAt: now - 10 * 60_000, now });
+  check("the next merge waits while main deploys, and until the last deploy has had its whole watch",
+    /deploying/.test(held ?? "") && /10 of its 30 watched minutes/.test(watching ?? "") &&
+      mergeHold({ deploying: false, deployedAt: now - (WATCH_MINUTES + 1) * 60_000, now }) === null && mergeHold({ deploying: false, deployedAt: null, now }) === null,
+    `${held} | ${watching}`);
+  const src = read("scripts/mender/agent.mjs");
+  check("…and mergePr asks it before every merge, with production's running checks",
+    /async function mergePr[\s\S]*?const hold = running \? [^\n]*: mergeHold\(mainState\(\)\);\s*\n\s*if \(!hold\) break;[\s\S]*?"pr", "merge"/.test(src) &&
+      /timeout-minutes: 50/.test(read(".github/workflows/mender-gate.yml")));
+}
+// revertOnMain on a real repository: a bare "origin", a person's commit and a
+// Mender commit on main; the watch's checkout reverts Mender's alone.
+{
+  const root = mkdtempSync(join(tmpdir(), "mender-watch-"));
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" } }).trim();
+  try {
+    const origin = join(root, "origin.git");
+    git(root, "init", "--quiet", "--bare", "--initial-branch=main", origin);
+    const dev = join(root, "dev");
+    git(root, "clone", "--quiet", origin, dev);
+    const commit = (file, text, msg) => { writeFileSync(join(dev, file), text); git(dev, "add", file); git(dev, "commit", "--quiet", "-m", msg); return git(dev, "rev-parse", "HEAD"); };
+    commit("a.txt", "one\n", "base");
+    commit("b.txt", "person\n", "a person's change");
+    const menderSha = commit("a.txt", "one\nmender\n", "Mender's change");
+    git(dev, "push", "--quiet", "origin", "HEAD:main");
+    const watchDir = join(root, "watch");
+    git(root, "clone", "--quiet", origin, watchDir);
+    const sha = revertOnMain([{ sha: menderSha }], "Revert Mender's #1", "why", { url: origin, me: "watch", cwd: watchDir });
+    const show = (path) => git(root, "--git-dir", origin, "show", `main:${path}`);
+    check("the revert lands on main: Mender's change is gone, the person's stays, and it is one commit by the watch",
+      git(root, "--git-dir", origin, "rev-parse", "main") === sha && show("a.txt") === "one" && show("b.txt") === "person" &&
+        git(root, "--git-dir", origin, "log", "-1", "--format=%an %s", "main") === "watch Revert Mender's #1");
+    // A later commit on the same lines: the revert does not apply, and main is untouched.
+    git(dev, "pull", "--quiet", "--rebase", "origin", "main");
+    commit("a.txt", "one\nmender, edited by a person\n", "a person edits the same line");
+    const later = commit("a.txt", "one\nmender, edited again\n", "and again");
+    git(dev, "push", "--quiet", "origin", "HEAD:main");
+    const refused = (() => { try { revertOnMain([{ sha: menderSha }], "Revert", "why", { url: origin, me: "watch", cwd: watchDir }); return "applied"; } catch (e) { return e.message; } })();
+    check("a revert that does not apply cleanly throws, and main is left as it was",
+      /does not apply cleanly/.test(refused) && git(root, "--git-dir", origin, "rev-parse", "main") === later, refused);
+    // Codex, #359: a git failure with the token in play never carries it out.
+    const token = "FAKEtokenFAKEtokenFAKE";
+    const leaked = (() => { try { revertOnMain([{ sha: menderSha }], "Revert", "why", { url: join(root, "missing.git"), token, me: "watch", cwd: watchDir }); return "applied"; } catch (e) { return e.message; } })();
+    check("a failed fetch with the token says so without the token, raw or encoded",
+      leaked !== "applied" && !leaked.includes(token) && !leaked.includes(Buffer.from(`x-access-token:${token}`).toString("base64")), leaked);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+// Its own workflow and concurrency group: GitHub keeps one pending run per
+// group, so a watch queued behind the gate would be dropped by the next gate event.
+const wwf = read(".github/workflows/mender-watch.yml");
+check("the watch runs in its own workflow and group, on dispatch with the error's ticket, with the personal token and no clock, and wakes Mender either way",
+  /group: mender-watch/.test(wwf) && /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*watch:/.test(wwf) && !/schedule:|cron:/.test(wwf) &&
+    /WATCH_TICKET: \$\{\{ inputs\.watch \}\}/.test(wwf) && /GH_TOKEN: \$\{\{ secrets\.MENDER_GH_TOKEN \}\}/.test(wwf) &&
+    /run: node scripts\/mender\/agent\.mjs watch/.test(wwf) && /ref: main/.test(wwf) && !/inputs\.watch|agent\.mjs watch/.test(read(".github/workflows/mender-gate.yml")) &&
+    /async function watch\(\)[\s\S]*?setState\(issue\.id, "Todo"\)[\s\S]*?setState\(error\.id, "Done"\)[\s\S]*?"workflow", "run", "mender-agent\.yml"/.test(read("scripts/mender/agent.mjs")));
+// Codex, #359: the checkout keeps no credential, so the revert fetches through
+// the authenticated URL; each step after the push is its own, and the wake runs
+// whatever failed before it; the deploy before the latest must be found.
+{
+  const src = read("scripts/mender/agent.mjs");
+  const watchSrc = src.slice(src.indexOf("async function watch()"));
+  check("the revert fetches and pushes with the token in git's environment, never in a command line, and never through the credential-less origin",
+    /git\("fetch", "--quiet", "--depth=200", url, "main"\)/.test(src) && /git\("push", "--quiet", url, "HEAD:main"\)/.test(src) &&
+      !/git\("fetch"[^)]*"origin"/.test(src) && /GIT_CONFIG_KEY_0: "http\.extraheader"/.test(src) &&
+      /url: `https:\/\/github\.com\/\$\{repo\}\.git`, token: process\.env\.GH_TOKEN/.test(watchSrc) &&
+      // …and Mender's own publish push the same way: no token in any git URL in the file.
+      !/x-access-token:\$\{process\.env|https:\/\/[^`"]*\$\{process\.env\.GH_TOKEN\}@/.test(src) &&
+      /gitAuth\(process\.env\.GH_TOKEN\)\("push", "-q"/.test(src));
+  // Every `await step(…)` statement removed by balancing its parentheses; no
+  // comment, state change or PR comment may be left outside one.
+  const outsideSteps = (() => {
+    let out = "", i = 0;
+    const body = watchSrc.slice(0, watchSrc.indexOf("\nif (import.meta.url"));
+    for (;;) {
+      const at = body.indexOf("await step(", i);
+      if (at < 0) return out + body.slice(i);
+      out += body.slice(i, at);
+      let depth = 0, j = at + "await step".length;
+      for (; j < body.length; j++) {
+        if (body[j] === "(") depth++;
+        if (body[j] === ")" && --depth === 0) break;
+      }
+      i = j + 1;
+    }
+  })();
+  check("after the push every comment and state change is its own step, the state before the comment, and Mender is woken whatever failed",
+    /const step = async \(what, act\) => \{\s*\n\s*for \(let attempt = 1; attempt <= 3; attempt\+\+\) \{\s*\n\s*try \{\s*\n\s*await act\(\);\s*\n\s*return;\s*\n\s*\} catch/.test(watchSrc) &&
+      !/(comment\(|setState\(|"pr", "comment")/.test(outsideSteps) && /"workflow", "run", "mender-agent\.yml"/.test(outsideSteps) &&
+      watchSrc.indexOf('setState(issue.id, "Todo")') < watchSrc.indexOf("telling #${c.pr}'s ticket") &&
+      /const commits = deploy && before \? carried\(repo, before\.sha, deploy\.sha\) : null;/.test(watchSrc), outsideSteps.slice(-400));
+  check("a comparison GitHub cut short makes what the deploy carried unknown",
+    /if \(total !== shas\.length\) return null;/.test(src));
+}
 
 console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

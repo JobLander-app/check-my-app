@@ -36,8 +36,9 @@ jobs:
         (github.event.workflow_run.event == 'pull_request' && startsWith(github.event.workflow_run.head_branch, 'mender/')))) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
     runs-on: ubuntu-latest
-    # A merge may wait up to 20 minutes for production's checks to finish.
-    timeout-minutes: 30
+    # A merge may wait up to 40 minutes: for production's checks to finish, and
+    # for the last deploy to have had its whole 30-minute watch (CHE-486 part 4).
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:
