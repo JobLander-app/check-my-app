@@ -268,13 +268,15 @@ export async function walkOneJourney(args: {
         return stored.storageUrl;
       },
       onReportStep: async (reported) => {
-        // A negative step that only exists because the walk was asked to report
-        // needs positive evidence; without it nothing is written, and the walk
+        // A step that only exists because the walk was asked to report needs
+        // evidence from the walk (an ok: that it acted; a negative one: an
+        // error the step names); without it nothing is written, and the walk
         // is the unrecorded one it was before it was asked.
         if (nudgedToReport && !nudgedStepStands(reported, {
           networkLog: toolEnv.networkLog,
           consoleLog: toolEnv.consoleLog,
           ownOrigins: [toolEnv.targetOrigin, ...(toolEnv.allowedOrigins ?? [])],
+          actionTrail,
         })) {
           console.warn(`[walk] journey "${proposed.title}": a ${reported.status} step asked for after the walk stopped has no evidence behind it — not recorded`);
           progressInstead = `skipped: ${unrecordedWalkStep(proposed.title).label}`;

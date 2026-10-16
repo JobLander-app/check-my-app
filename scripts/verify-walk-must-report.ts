@@ -17,7 +17,12 @@
 //      walk stays the unrecorded one, and the live feed never says "broken";
 //   5. asked, reports "broken" after the product's own endpoint answered 500 →
 //      stored as broken (positive evidence);
-//   6. the evidence rule itself: 429, a foreign origin and a bare 200 are not.
+//   6. asked, reports ok though the walk never acted → NOT stored as ok (nothing
+//      was observed), the walk stays the unrecorded one;
+//   7. asked, reports broken, and the only error in the walk is an unrelated
+//      404 the step does not name → NOT stored as broken;
+//   8. the evidence rule itself: 429, a foreign origin, a bare 200 and an
+//      error the step does not name are not.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-walk-must-report.ts
 
@@ -80,6 +85,11 @@ function scriptedModel(turns: Turn[]) {
 async function main() {
   const { walkOneJourney } = await import("@/agent/execution");
   const site = http.createServer((req, res) => {
+    if (req.url?.startsWith("/api/missing")) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end('{"error":"nope"}');
+      return;
+    }
     if (req.url?.startsWith("/api/practice")) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end('{"error":"boom"}');
@@ -88,6 +98,8 @@ async function main() {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(req.url?.startsWith("/broken")
       ? "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><script>fetch('/api/practice')</script>"
+      : req.url?.startsWith("/unrelated")
+      ? "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><script>fetch('/api/missing')</script>"
       : "<!doctype html><meta charset=utf-8><title>Practice</title><h1>Practice</h1><p>Start a mock interview</p>");
   });
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", () => resolve()));
@@ -121,10 +133,17 @@ async function main() {
     };
     const shape = (steps: { status: string; gapClass: string | null }[]) => JSON.stringify(steps.map((s) => [s.status, s.gapClass]));
 
-    const asked = await walk("run_asked", [{ say: "Done." }, { report: "ok", observed: "The module opens." }, { say: "Done." }]);
+    const asked = await walk("run_asked", [{ navigate: target }, { say: "Done." }, { report: "ok", observed: "The module opens." }, { say: "Done." }]);
     check("silent, then asked: the step it reports is recorded and no unrecorded-walk gap is left",
       asked.nudges === 1 && asked.steps.length === 1 && asked.steps[0].status === "ok" && asked.steps[0].gapClass !== "unrecorded_walk",
       `${asked.nudges} nudge(s), ${shape(asked.steps)}`);
+
+    // Nothing was done before the nudge: an ok now is a report on request about
+    // a walk that observed nothing.
+    const idle = await walk("run_idle", [{ say: "Done." }, { report: "ok", observed: "The module opens." }, { say: "Done." }]);
+    check("asked after doing nothing, reports ok: not stored as ok — the unrecorded-walk step",
+      idle.nudges === 1 && idle.steps.length === 1 && idle.steps[0].status === "skipped" && idle.steps[0].gapClass === "unrecorded_walk",
+      shape(idle.steps));
 
     const stubborn = await walk("run_stubborn", [{ say: "Done." }]);
     check("silent when asked too: asked once, and the walk is still the unrecorded-walk gap",
@@ -144,22 +163,34 @@ async function main() {
       forced.summary === HOMEWORK_FALLBACK, String(forced.summary));
     check("…and the live feed never announced the broken step", forced.feed.length > 0 && forced.feed.every((n) => !n.startsWith("broken")), JSON.stringify(forced.feed));
 
-    const evidenced = await walk("run_evidenced", [{ navigate: `${origin}/broken` }, { say: "Done." }, { report: "broken", observed: "The practice module could not load its data." }, { say: "Done." }]);
+    const evidenced = await walk("run_evidenced", [{ navigate: `${origin}/broken` }, { say: "Done." }, { report: "broken", observed: "The practice module could not load its data: /api/practice answered 500." }, { say: "Done." }]);
     check("asked, reports broken after the product's own endpoint answered 500: stored as broken",
       evidenced.nudges === 1 && evidenced.steps.length === 1 && evidenced.steps[0].status === "broken",
       shape(evidenced.steps));
 
+    // An error elsewhere in the walk (a 404) that the step does not name is no
+    // evidence for what the step claims.
+    const unrelated = await walk("run_unrelated", [{ navigate: `${origin}/unrelated` }, { say: "Done." }, { report: "broken", observed: "The practice module stayed empty." }, { say: "Done." }]);
+    check("asked, reports broken while the walk's only error is an unrelated 404 the step does not name: not stored as broken",
+      unrelated.nudges === 1 && unrelated.steps.length === 1 && unrelated.steps[0].status === "skipped" && unrelated.steps[0].gapClass === "unrecorded_walk",
+      shape(unrelated.steps));
+
     const own1 = [origin];
+    const words = "the practice module could not load its data: /api/x answered 500.";
     check("evidence: a 500 from the product's own origin counts",
-      hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 500`], consoleLog: [], ownOrigins: own1 }));
+      hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 500`], consoleLog: [], ownOrigins: own1, words }));
+    check("evidence: a 500 the step does not name is not",
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/favicon.ico → 404`], consoleLog: [], ownOrigins: own1, words }));
     check("evidence: a console error counts",
-      hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError"], ownOrigins: own1 }));
+      hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: practiceModule is undefined"], ownOrigins: own1, words: "the page threw: practicemodule is undefined" }));
+    check("evidence: a console error the step does not name is not",
+      !hasPositiveEvidence({ networkLog: [], consoleLog: ["[error] Uncaught TypeError: analyticsWidget is undefined"], ownOrigins: own1, words }));
     check("evidence: a bare 200 and a warning do not",
-      !hasPositiveEvidence({ networkLog: [`GET ${origin}/ → 200`], consoleLog: ["[warning] deprecated"], ownOrigins: own1 }));
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/ → 200`], consoleLog: ["[warning] deprecated"], ownOrigins: own1, words }));
     check("evidence: 429 is our own request volume, never evidence",
-      !hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 429`], consoleLog: [], ownOrigins: own1 }));
+      !hasPositiveEvidence({ networkLog: [`GET ${origin}/api/x → 429`], consoleLog: [], ownOrigins: own1, words: "answered 429 /api/x" }));
     check("evidence: another origin's 500 is not the product's",
-      !hasPositiveEvidence({ networkLog: ["GET https://analytics.example.com/c → 500"], consoleLog: [], ownOrigins: own1 }));
+      !hasPositiveEvidence({ networkLog: ["GET https://analytics.example.com/c → 500"], consoleLog: [], ownOrigins: own1, words: "answered 500 /c" }));
   } finally {
     await real.close?.();
     await browser.close();
