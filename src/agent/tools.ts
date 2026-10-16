@@ -2002,7 +2002,9 @@ async function selectInto(env: ToolEnv, field: Locator, value: string, named: st
         Array.from((el as unknown as HTMLSelectElement).options).map((o) => ({
           value: o.value,
           label: (o.label || o.textContent || "").trim(),
-          disabled: o.disabled,
+          // o.disabled reflects only the option's own attribute; an option inside
+          // <optgroup disabled> is just as unavailable to a person.
+          disabled: o.disabled || (o.parentElement instanceof HTMLOptGroupElement && o.parentElement.disabled),
         })),
       undefined,
       { timeout: 3_000 },

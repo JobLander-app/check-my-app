@@ -27,7 +27,14 @@ const CADENCE = [
 
 // A <select> as Playwright sees it: fill() throws the message it throws for
 // anything that is not a text control, selectOption() works.
-function stubPage(opts: { sticks?: boolean } = {}) {
+// The browser's own classes, which the page function in tools.ts names. Only
+// what that function reads is modelled.
+class FakeOptGroup {
+  constructor(public disabled: boolean) {}
+}
+(globalThis as unknown as { HTMLOptGroupElement: unknown }).HTMLOptGroupElement = FakeOptGroup;
+
+function stubPage(opts: { sticks?: boolean; groupDisabled?: boolean } = {}) {
   let value = "daily";
   let filled = false;
   const locator = {
@@ -39,7 +46,17 @@ function stubPage(opts: { sticks?: boolean } = {}) {
       const src = String(fn);
       // Told apart by what each question asks of the element. Anything else the
       // tool asks (how the control is marked up) has no answer on a stub.
-      if (src.includes(".options")) return CADENCE;
+      if (src.includes(".options")) {
+        if (!opts.groupDisabled) return CADENCE;
+        // Run the real page function: o.disabled reflects only the option's own
+        // attribute, so "Weekly" below reads false although its group is disabled.
+        const group = new FakeOptGroup(true);
+        const options = [
+          { value: "daily", label: "Every day", textContent: "Every day", disabled: false, parentElement: {} },
+          { value: "weekly", label: "Every week", textContent: "Every week", disabled: false, parentElement: group },
+        ];
+        return fn({ options });
+      }
       if (src.includes("HTMLInputElement")) return true; // isTextControl: a select is something fill() names
       if (src.includes("HTMLSelectElement")) return true; // isSelectControl
       return null;
@@ -67,7 +84,7 @@ function stubPage(opts: { sticks?: boolean } = {}) {
   };
 }
 
-function stubEnv(opts: { sticks?: boolean } = {}) {
+function stubEnv(opts: { sticks?: boolean; groupDisabled?: boolean } = {}) {
   return {
     page: stubPage(opts),
     targetOrigin: "https://checkmyapp.dev",
@@ -116,6 +133,17 @@ async function main() {
     const result = await executeTool(env, "fill", { label: "Frequency", value: "Every week" });
     check("a choice that did not stick is not reported as Filled.", result !== "Filled.", result.slice(0, 80));
     check("…it is recorded as undriven", (env.undrivenControls as UndrivenControl[]).length === 1);
+  }
+
+  // 5 — an option inside <optgroup disabled> is as unavailable as a disabled one:
+  // refused with the menu, never handed to selectOption to time out and be filed
+  // as a control we could not drive.
+  {
+    const env = stubEnv({ groupDisabled: true });
+    const result = await executeTool(env, "fill", { label: "Frequency", value: "Every week" });
+    check("an option in a disabled optgroup is refused", /Nothing was selected/.test(result) && env.page.chosen() === "daily", result);
+    check("…and the menu offers only what can be chosen", /Every day/.test(result) && !/"Every week"\./.test(result.split("Its options:")[1] ?? ""), result);
+    check("…and it is not recorded as undriven", (env.undrivenControls as UndrivenControl[]).length === 0);
   }
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
