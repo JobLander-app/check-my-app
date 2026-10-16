@@ -183,8 +183,13 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     }
 
     if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
-      if (untilSatisfied && !untilSatisfied.satisfied() && nudges < untilSatisfied.maxNudges && iterations < cap) {
+      if (untilSatisfied && !untilSatisfied.satisfied() && nudges < untilSatisfied.maxNudges) {
         nudges += 1;
+        // A stop on the last allowed turn would otherwise leave no turn for the
+        // forced call, and the walk would end empty exactly when the model spent
+        // every earlier turn on navigation. The request is allowed one turn past
+        // the cap; maxNudges bounds how often that can happen.
+        if (iterations >= cap) cap = iterations + 1;
         console.warn(`[agent] iter ${iterations}: the model stopped before the required call — asking again (${nudges}/${untilSatisfied.maxNudges})`);
         // An assistant turn may not be empty; keep whatever it said.
         messages.push({

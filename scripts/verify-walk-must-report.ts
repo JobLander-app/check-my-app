@@ -15,7 +15,10 @@
 //      same prose) → the next request carries tool_choice report_step, so the
 //      step is recorded anyway and the journey is not an unrecorded walk; the
 //      model was asked once only (the nudge is bounded);
-//   3. a model that reports on its own is never asked.
+//   3. a model that reports on its own is never asked;
+//   4. a model that spends every allowed turn reading pages and only then stops
+//      is still made to report: the forced call has a turn of its own past the
+//      cap, so the zero-step outcome is not reachable by running out of turns.
 //
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-walk-must-report.ts
 
@@ -29,6 +32,7 @@ import { chromium } from "playwright";
 import { realD1 } from "./fixtures/real-d1";
 import type { LlmConfig } from "@/agent/llm";
 import type { AgentEnv } from "@/agent/env";
+import { walkingIterationCap } from "@/agent/limits";
 import { unrecordedWalkSummary } from "@/agent/summary";
 import { HOMEWORK_FALLBACK } from "@/lib/verdict-language";
 
@@ -50,12 +54,13 @@ function check(name: string, ok: boolean, detail = "") {
 
 const CLAIM = "The practice interview module did not open for the signed-in user.";
 
-type Mode = "reports_when_asked" | "ignores_request" | "reports_first";
+type Mode = "reports_when_asked" | "ignores_request" | "reports_first" | "stops_on_last_turn";
 
 function scriptedModel(mode: Mode) {
   let calls = 0;
   let asked = 0;
   let forced = 0;
+  let browsed = 0;
   const message = (content: Anthropic.ContentBlock[], stop: Anthropic.Message["stop_reason"]) =>
     ({ id: `m${calls}`, type: "message", role: "assistant", model: "scripted", stop_reason: stop, stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 1 } as Anthropic.Usage, content }) as Anthropic.Message;
@@ -77,6 +82,11 @@ function scriptedModel(mode: Mode) {
       return mode === "reports_when_asked" ? report("tu_asked") : message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
     }
     if (mode === "reports_first" && calls === 1) return report("tu_first");
+    // Every turn but the last allowed one is spent reading; the last is a stop.
+    if (mode === "stops_on_last_turn" && browsed < walkingIterationCap(1) - 1) {
+      browsed += 1;
+      return message([{ type: "tool_use", id: `tu_read_${browsed}`, name: "read_page", input: {} }], "tool_use");
+    }
     return message([{ type: "text", text: CLAIM, citations: null }], "end_turn");
   };
   const client = { messages: { create } } as unknown as Anthropic;
@@ -134,6 +144,13 @@ async function main() {
 
     const first = await walk("reports_first");
     check("a walk that reports on its own is never asked", first.asked === 0 && first.steps.length === 1, String(first.asked));
+
+    const last = await walk("stops_on_last_turn");
+    check("a walk that stops on its last allowed turn still gets the forced report_step",
+      last.asked === 1 && last.forced === 1 && last.steps.length === 1 && last.steps[0].label === "Open the module",
+      JSON.stringify({ asked: last.asked, forced: last.forced, steps: last.steps.map((s) => [s.label, s.gapClass]) }));
+    check("…and that journey is not filed as an unrecorded walk",
+      !last.steps.some((s) => s.gapClass === "unrecorded_walk") && last.summary !== HOMEWORK_FALLBACK, String(last.summary));
   } finally {
     await real.close?.();
     await browser.close();
