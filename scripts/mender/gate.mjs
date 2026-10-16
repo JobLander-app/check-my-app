@@ -147,7 +147,7 @@ export const WATCH_MINUTES = 30;
  * @param {object} w
  * @param {number} w.seenAt when the error was first seen (ms)
  * @param {{sha:string, deployedAt:number}|null} w.deploy the deploy that put main's current code in production
- * @param {{sha:string, pr:number|null, branch:string|null}[]} w.commits what that deploy carried that the one before it did not
+ * @param {{sha:string, pr:number|null, branch:string|null}[]|null} w.commits what that deploy carried that the one before it did not; null = unknown
  * @param {(branch:string|null) => boolean} w.isMender
  * @returns {{action:"revert"|"keep", reason:string, revert:{sha:string, pr:number|null, branch:string|null}[]}}
  */
@@ -157,6 +157,7 @@ export function watchDecision({ seenAt, deploy, commits, isMender }) {
   const minutes = (seenAt - deploy.deployedAt) / 60_000;
   if (minutes < 0) return keep("the error was seen before the latest deploy");
   if (minutes > WATCH_MINUTES) return keep(`the latest deploy was ${Math.round(minutes)} minutes before the error, past the ${WATCH_MINUTES}-minute watch`);
+  if (!commits) return keep("the deploy before the latest one was not found, so what the latest one carried is unknown");
   const mender = commits.filter((c) => isMender(c.branch));
   if (!mender.length) return keep("the latest deploy carried no change of Mender's");
   if (mender.length < commits.length) {

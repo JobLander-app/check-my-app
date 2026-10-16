@@ -342,6 +342,9 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
       /not the watch's to judge/.test(W(10, [person, mender]).reason));
   check("…and a revert pushed straight to main is nobody's PR, so the watch never reverts its own revert",
     W(10, [{ sha: "r1", pr: null, branch: null }]).action === "keep");
+  // Codex, #359: the deploy before the latest one not found — the latest ships
+  // every older commit too, so what it carried is unknown and nothing is reverted.
+  check("…nor is anything reverted when what the deploy carried is unknown", W(10, null).action === "keep" && /unknown/.test(W(10, null).reason));
 }
 // revertOnMain on a real repository: a bare "origin", a person's commit and a
 // Mender commit on main; the watch's checkout reverts Mender's alone.
@@ -383,6 +386,19 @@ check("the watch runs in the gate's workflow and concurrency group, on dispatch 
     /WATCH_TICKET: \$\{\{ inputs\.watch \}\}/.test(read(".github/workflows/mender-gate.yml")) &&
     /run: node scripts\/mender\/agent\.mjs \$\{\{ inputs\.watch && 'watch' \|\| 'gate' \}\}/.test(read(".github/workflows/mender-gate.yml")) &&
     /async function watch\(\)[\s\S]*?setState\(issue\.id, "Todo"\)[\s\S]*?setState\(error\.id, "Done"\)[\s\S]*?"workflow", "run", "mender-agent\.yml"/.test(read("scripts/mender/agent.mjs")));
+// Codex, #359: the checkout keeps no credential, so the revert fetches through
+// the authenticated URL; each step after the push is its own, and the wake runs
+// whatever failed before it; the deploy before the latest must be found.
+{
+  const src = read("scripts/mender/agent.mjs");
+  const watchSrc = src.slice(src.indexOf("async function watch()"));
+  check("the revert fetches through the authenticated URL, never the credential-less origin",
+    /git\("fetch", "--quiet", "--depth=200", pushUrl, "main"\)/.test(src) && !/git\("fetch"[^)]*"origin"/.test(src));
+  check("after the push every comment and state change is its own step, and Mender is woken whatever failed",
+    /const step = async \(what, act\) => \{\s*\n\s*try \{\s*\n\s*await act\(\);\s*\n\s*\} catch/.test(watchSrc) &&
+      !/\n\s*(await comment|await setState|gh\(\["pr", "comment")/.test(watchSrc.replace(/await step\([\s\S]*?\}\);|await step\([^\n]*\n/g, "")) &&
+      /const commits = deploy && before \? carried\(repo, before\.sha, deploy\.sha\) : null;/.test(watchSrc));
+}
 
 console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

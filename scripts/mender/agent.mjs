@@ -811,7 +811,7 @@ async function gate() {
  * nothing in production; one still deploying the web counts from its workers.
  */
 function deploysOfMain(limit = 2) {
-  const runs = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "20", "--json", "databaseId,headSha"]);
+  const runs = ghJson(["run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--limit", "50", "--json", "databaseId,headSha"]);
   const out = [];
   for (const run of runs) {
     const at = gh(["run", "view", String(run.databaseId), "--json", "jobs", "--jq",
@@ -842,7 +842,8 @@ export function revertOnMain(commits, title, body, { pushUrl, me, cwd = process.
   const env = { ...process.env, GIT_AUTHOR_NAME: me, GIT_AUTHOR_EMAIL: `${me}@users.noreply.github.com`, GIT_COMMITTER_NAME: me, GIT_COMMITTER_EMAIL: `${me}@users.noreply.github.com` };
   const git = (...args) => sh("git", args, { env, cwd });
   for (let attempt = 1; ; attempt++) {
-    git("fetch", "--quiet", "--depth=200", "origin", "main");
+    // Through the authenticated URL: the checkout keeps no credential (Codex, #359).
+    git("fetch", "--quiet", "--depth=200", pushUrl, "main");
     git("checkout", "--quiet", "-B", "mender-watch", "FETCH_HEAD");
     try {
       git("revert", "--no-commit", ...commits.map((c) => c.sha).reverse());
@@ -866,12 +867,23 @@ async function watch() {
   if (!/^CHE-\d+$/.test(ticket ?? "")) throw new Error(`WATCH_TICKET must name the error's ticket (CHE-123), not "${ticket ?? ""}"`);
   const seenAt = Date.parse(process.env.WATCH_SEEN ?? "") || Date.now();
   const [deploy, before] = deploysOfMain(2);
-  const commits = deploy ? carried(repo, before?.sha ?? null, deploy.sha) : [];
+  // Without the deploy before it, what the latest one carried is unknown — it
+  // ships every older commit too — so nothing is judged (Codex, #359).
+  const commits = deploy && before ? carried(repo, before.sha, deploy.sha) : null;
   const d = watchDecision({ seenAt, deploy: deploy ?? null, commits, isMender: (branch) => Boolean(branch) && validBranch(branch) });
   say(`watch ${ticket}: ${d.action} — ${d.reason}`);
   const error = (await linear("query($i:String!){issue(id:$i){id identifier url}}", { i: ticket })).issue;
   if (!error) throw new Error(`${ticket} is not on the board`);
   let sha = null;
+  // Each step after the revert is its own: a comment that fails must not leave
+  // the tickets where they were, nor Mender asleep (Codex, #359).
+  const step = async (what, act) => {
+    try {
+      await act();
+    } catch (e) {
+      console.error(`[mender] watch ${ticket}: ${what} failed: ${e.message}`);
+    }
+  };
   if (d.action === "revert") {
     const list = d.revert.map((c) => `#${c.pr} (${c.branch})`).join(", ");
     try {
@@ -880,21 +892,25 @@ async function watch() {
         { pushUrl: `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, me: gh(["api", "user", "--jq", ".login"]) });
     } catch (e) {
       say(`watch ${ticket}: not reverted — ${e.message}`);
-      await comment(error.id, `**The watch could not revert** ${list}, deployed just before this appeared: ${e.message}. The change stays; Mender takes this ticket.`);
+      await step(`telling ${ticket}`, () => comment(error.id, `**The watch could not revert** ${list}, deployed just before this appeared: ${e.message}. The change stays; Mender takes this ticket.`));
     }
   }
   if (sha) {
     for (const c of d.revert) {
-      gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]);
-      const issue = await ticketOf(c.branch);
-      if (!issue) continue;
-      await comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
-        `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`);
-      await setState(issue.id, "Todo");
+      await step(`commenting on #${c.pr}`, () => gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]));
+      await step(`returning #${c.pr}'s ticket to Mender`, async () => {
+        const issue = await ticketOf(c.branch);
+        if (!issue) return;
+        await comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
+          `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`);
+        await setState(issue.id, "Todo");
+      });
     }
-    await comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
-      "Done; if this comes back, the monitor opens a recurrence ticket naming this one.");
-    await setState(error.id, "Done");
+    await step(`settling ${ticket}`, async () => {
+      await comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
+        "Done; if this comes back, the monitor opens a recurrence ticket naming this one.");
+      await setState(error.id, "Done");
+    });
   }
   // The reverted tickets, or the error's own: either way Mender has work.
   gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);
