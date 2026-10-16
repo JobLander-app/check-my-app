@@ -42,6 +42,10 @@ async function main() {
   // long run of letters and digits (Codex, #358: no real provider prefix here).
   const secret = normalizeMessage("Login failed for someone@example.test with token FAKEtoken0000notakey0000FAKE and jwt FAKEjwt0000notajwt0000");
   check("…and an email or a token never reaches the board", !/example\.test|someone|FAKE|notakey|notajwt/.test(secret), secret);
+  // Codex, #358: a credential with no digit in it.
+  const alpha = normalizeMessage("Upstream said: Bearer FAKEabcdefFAKEghijkl and apikey=FAKEonlylettersFAKE then FAKEopaqueFAKEopaqueFAKEopaqueFAKEopaque");
+  check("…nor one with no digit in it: after its name, or long and opaque", !/FAKE/.test(alpha) && /Bearer #/.test(alpha), alpha);
+  check("…while an error's own name survives", normalizeMessage("PrismaClientKnownRequestError: query failed") === "PrismaClientKnownRequestError: query failed");
   check("the frame is the function, never its line", frameOf("E\n    at loadVerdict (index.js:1:2)") === "loadVerdict" && frameOf("E\n    at async handle (x.js:9:9)") === "handle");
   const [r1] = reportsFrom([exception("boom 1", 1234)]);
   const [r2] = reportsFrom([exception("boom 2", 9876)]);
@@ -152,6 +156,17 @@ async function main() {
   await intakeProdErrors(env("on"), [other], { board, now: new Date(now.getTime() + 60_000) });
   check("…and lets its claim go: the next report files it, without waiting out the hour",
     created.some((d) => d.title.includes("checkmyapp-agent: RangeError")));
+  // Codex, #358: the ticket exists but recording it hiccups once — it is retried, and Mender is woken.
+  const [third] = reportsFrom([exception("w", 1, "checkmyapp-web", "URIError")]);
+  const realUpdate = db.prodError.update;
+  let hiccups = 1;
+  db.prodError.update = async (args) => { if ("issueIdentifier" in args.data && hiccups-- > 0) throw new Error("D1 hiccup"); return realUpdate(args); };
+  const wakesBefore = dispatched.length;
+  const hiccup = await intakeProdErrors(env("on"), [third], { board, now });
+  db.prodError.update = realUpdate;
+  check("a ticket whose record hiccups once is recorded on the retry, and Mender is woken for it",
+    hiccup.filed.length === 1 && table.get(third.signature)?.issueIdentifier === hiccup.filed[0] && dispatched.length === wakesBefore + 1,
+    `${hiccup.filed} / ${table.get(third.signature)?.issueIdentifier}`);
   check("the ticket carries no raw message", !created.some((d) => /cmv6s6psu|otp\.plus/.test(d.description + d.title)));
   globalThis.fetch = realFetch;
 

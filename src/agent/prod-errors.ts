@@ -114,8 +114,16 @@ export async function intakeProdErrors(
       }
       const issue = await board.tracker.createIssue(prodErrorDraft(r, row, previous));
       claim = null;
-      await db.prodError.update({ where: { signature: r.signature }, data: { issueIdentifier: issue.identifier, lastToldAt: now } });
+      // The ticket exists, so it is filed and Mender is woken whatever happens
+      // next. Recording it is tried twice (Codex, #358); if both fail, the log
+      // names the ticket, and the next report within the hour still only counts.
       filed.push(issue.identifier);
+      let recorded = false;
+      for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+        recorded = await db.prodError.update({ where: { signature: r.signature }, data: { issueIdentifier: issue.identifier, lastToldAt: now } })
+          .then(() => true, () => false);
+      }
+      if (!recorded) console.warn(`[prod-error] filed ${issue.identifier} but could not record it on ${r.signature.slice(0, 120)}; a duplicate may follow after the hour`);
     } catch (err) {
       console.warn(`[prod-error] ${r.signature.slice(0, 120)}: ${err instanceof Error ? err.message : String(err)}`);
       // Nothing was filed: the claim is let go, so the next report tries again.

@@ -60,6 +60,10 @@ export function normalizeMessage(message: string): string {
     // A person's address or a credential is never part of a signature, and the
     // message goes on our board: emails, then anything token-shaped.
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, `${PLACEHOLDER}@${PLACEHOLDER}`)
+    // Whatever follows a credential's name, and any long opaque run even with no
+    // digit in it (Codex, #358): an error name is shorter than 32 characters.
+    .replace(/\b(bearer|basic|token|secret|password|passwd|api[_-]?key|authorization|cookie|session)\b(\s*[:=]\s*|\s+)[^\s,;]+/gi, `$1$2${PLACEHOLDER}`)
+    .replace(/(?<![\w+/=-])[A-Za-z0-9_+/=-]{32,}(?![\w+/=-])/g, PLACEHOLDER)
     .replace(/\b(?=[\w-]*\d)[A-Za-z0-9_-]{20,}\b/g, PLACEHOLDER)
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, PLACEHOLDER)
     .replace(/\bc[a-z0-9]{20,}\b/g, PLACEHOLDER)
