@@ -470,11 +470,30 @@ export function branchFor(issue) {
 /** The only refs the personal token may ever be used to push to. */
 export const validBranch = (b) => /^mender\/che-\d+(-[a-z0-9]+)*$/.test(String(b));
 
+/**
+ * Git with the personal token, which never enters a command line: a failed
+ * git command's error carries its arguments, and errors are logged and posted
+ * (Codex, #359). Git reads the token from configuration in its environment, and
+ * every message is scrubbed of it besides.
+ */
+export function gitAuth(token, cwd = process.cwd(), extraEnv = {}) {
+  const header = token ? `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}` : "";
+  const env = { ...process.env, ...extraEnv, ...(token ? { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", GIT_CONFIG_VALUE_0: header } : {}) };
+  const scrub = (message) => (token ? message.split(token).join("***").split(header).join("***") : message);
+  return (...args) => {
+    try {
+      return sh("git", args, { env, cwd });
+    } catch (e) {
+      throw new Error(scrub(String(e.message).split("\n")[0]));
+    }
+  };
+}
+
 function push(branch, message, { force = false } = {}) {
   if (!validBranch(branch)) throw new Error(`refusing to push to ${JSON.stringify(branch)}: not a mender/che-* branch`);
   sh("git", ["-c", "user.name=Mender", "-c", "user.email=mender@checkmyapp.dev", "commit", "-q", "-m", message]);
   const repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
-  sh("git", ["push", "-q", ...(force ? ["--force"] : []), `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, `HEAD:refs/heads/${branch}`]);
+  gitAuth(process.env.GH_TOKEN)("push", "-q", ...(force ? ["--force"] : []), `https://github.com/${repo}.git`, `HEAD:refs/heads/${branch}`);
 }
 
 /**
@@ -821,9 +840,15 @@ function deploysOfMain(limit = 2) {
   return out;
 }
 
-/** The commits a deploy carried that the one before it did not, oldest first, each with the PR it was merged from. */
+/**
+ * The commits a deploy carried that the one before it did not, oldest first,
+ * each with the PR it was merged from. Null when GitHub's comparison is cut
+ * short (it lists at most 250 commits unpaged): an unseen commit could be a
+ * person's (Codex, #359).
+ */
 function carried(repo, from, to) {
-  const shas = from ? ghJson(["api", `repos/${repo}/compare/${from}...${to}`, "--jq", "[.commits[].sha]"]) : [to];
+  const { total, shas } = ghJson(["api", `repos/${repo}/compare/${from}...${to}`, "--jq", "{total: .total_commits, shas: [.commits[].sha]}"]);
+  if (total !== shas.length) return null;
   return shas.map((sha) => {
     const pr = ghJson(["api", `repos/${repo}/commits/${sha}/pulls`, "--jq", "[.[] | select(.merged_at != null) | {number, branch: .head.ref}] | first // null"]);
     return { sha, pr: pr?.number ?? null, branch: pr?.branch ?? null };
@@ -836,26 +861,28 @@ function carried(repo, from, to) {
  * try from the new tip. A revert that does not apply cleanly throws, and the
  * change stays. Exported for verify-mender-agent, which runs it on a real
  * repository.
+ *
+ * The token goes through gitAuth, never a command line (Codex, #359).
  */
-export function revertOnMain(commits, title, body, { pushUrl, me, cwd = process.cwd() }) {
-  const env = { ...process.env, GIT_AUTHOR_NAME: me, GIT_AUTHOR_EMAIL: `${me}@users.noreply.github.com`, GIT_COMMITTER_NAME: me, GIT_COMMITTER_EMAIL: `${me}@users.noreply.github.com` };
-  const git = (...args) => sh("git", args, { env, cwd });
+export function revertOnMain(commits, title, body, { url, token = "", me, cwd = process.cwd() }) {
+  const git = gitAuth(token, cwd,
+    { GIT_AUTHOR_NAME: me, GIT_AUTHOR_EMAIL: `${me}@users.noreply.github.com`, GIT_COMMITTER_NAME: me, GIT_COMMITTER_EMAIL: `${me}@users.noreply.github.com` });
   for (let attempt = 1; ; attempt++) {
-    // Through the authenticated URL: the checkout keeps no credential (Codex, #359).
-    git("fetch", "--quiet", "--depth=200", pushUrl, "main");
+    // With the token: the checkout keeps no credential (Codex, #359).
+    git("fetch", "--quiet", "--depth=200", url, "main");
     git("checkout", "--quiet", "-B", "mender-watch", "FETCH_HEAD");
     try {
       git("revert", "--no-commit", ...commits.map((c) => c.sha).reverse());
     } catch (e) {
       try { git("revert", "--abort"); } catch { /* nothing to abort */ }
-      throw new Error(`the revert does not apply cleanly on main: ${e.message.split("\n")[0]}`);
+      throw new Error(`the revert does not apply cleanly on main: ${e.message}`);
     }
     git("commit", "--quiet", "-m", title, "-m", body);
     try {
-      git("push", "--quiet", pushUrl, "HEAD:main");
+      git("push", "--quiet", url, "HEAD:main");
       return git("rev-parse", "HEAD");
     } catch (e) {
-      if (attempt >= 2) throw new Error(`main moved twice under the revert: ${e.message.split("\n")[0]}`);
+      if (attempt >= 2) throw new Error(`main moved twice under the revert: ${e.message}`);
     }
   }
 }
@@ -866,8 +893,9 @@ async function watch() {
   if (!/^CHE-\d+$/.test(ticket ?? "")) throw new Error(`WATCH_TICKET must name the error's ticket (CHE-123), not "${ticket ?? ""}"`);
   const seenAt = Date.parse(process.env.WATCH_SEEN ?? "") || Date.now();
   const [deploy, before] = deploysOfMain(2);
-  // Without the deploy before it, what the latest one carried is unknown — it
-  // ships every older commit too — so nothing is judged (Codex, #359).
+  // Without the deploy before it, or with a comparison cut short, what the
+  // latest one carried is unknown — it ships every older commit too — so
+  // nothing is judged (Codex, #359).
   const commits = deploy && before ? carried(repo, before.sha, deploy.sha) : null;
   const d = watchDecision({ seenAt, deploy: deploy ?? null, commits, isMender: (branch) => Boolean(branch) && validBranch(branch) });
   say(`watch ${ticket}: ${d.action} — ${d.reason}`);
@@ -888,7 +916,7 @@ async function watch() {
     try {
       sha = revertOnMain(d.revert, `Revert Mender's ${d.revert.map((c) => `#${c.pr}`).join(", ")}: ${ticket} appeared right after its deploy`,
         `The watch (CHE-486): ${ticket} — ${error.url} — ${d.reason}.\n\nReverted: ${list}. Their tickets go back to Mender with this reason.`,
-        { pushUrl: `https://x-access-token:${process.env.GH_TOKEN}@github.com/${repo}.git`, me: gh(["api", "user", "--jq", ".login"]) });
+        { url: `https://github.com/${repo}.git`, token: process.env.GH_TOKEN, me: gh(["api", "user", "--jq", ".login"]) });
     } catch (e) {
       say(`watch ${ticket}: not reverted — ${e.message}`);
       await step(`telling ${ticket}`, () => comment(error.id, `**The watch could not revert** ${list}, deployed just before this appeared: ${e.message}. The change stays; Mender takes this ticket.`));
@@ -897,19 +925,17 @@ async function watch() {
   if (sha) {
     for (const c of d.revert) {
       await step(`commenting on #${c.pr}`, () => gh(["pr", "comment", String(c.pr), "--body", `**Reverted by the watch** in ${sha.slice(0, 7)}: ${ticket} (${error.url}) — ${d.reason}.`]));
-      await step(`returning #${c.pr}'s ticket to Mender`, async () => {
-        const issue = await ticketOf(c.branch);
-        if (!issue) return;
-        await comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
-          `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`);
-        await setState(issue.id, "Todo");
-      });
+      let issue = null;
+      await step(`finding #${c.pr}'s ticket`, async () => { issue = await ticketOf(c.branch); });
+      if (!issue) continue;
+      // The state first: a ticket back in Todo is what gives Mender its next attempt.
+      await step(`returning #${c.pr}'s ticket to Todo`, () => setState(issue.id, "Todo"));
+      await step(`telling #${c.pr}'s ticket`, () => comment(issue.id, `**Reverted:** ${ticket} (${error.url}) appeared in production right after the deploy of #${c.pr}, and the watch reverted it in ${sha.slice(0, 7)}. ` +
+        `What went wrong is on ${ticket}; the next attempt starts from current main and must not bring it back.`));
     }
-    await step(`settling ${ticket}`, async () => {
-      await comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
-        "Done; if this comes back, the monitor opens a recurrence ticket naming this one.");
-      await setState(error.id, "Done");
-    });
+    await step(`settling ${ticket}`, () => setState(error.id, "Done"));
+    await step(`telling ${ticket}`, () => comment(error.id, `**Caused by a deploy of Mender's, and reverted:** ${d.reason}. Revert ${sha.slice(0, 7)}. ` +
+      "Done; if this comes back, the monitor opens a recurrence ticket naming this one."));
   }
   // The reverted tickets, or the error's own: either way Mender has work.
   gh(["workflow", "run", "mender-agent.yml", "--ref", "main"]);

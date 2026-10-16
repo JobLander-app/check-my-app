@@ -364,7 +364,7 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
     git(dev, "push", "--quiet", "origin", "HEAD:main");
     const watchDir = join(root, "watch");
     git(root, "clone", "--quiet", origin, watchDir);
-    const sha = revertOnMain([{ sha: menderSha }], "Revert Mender's #1", "why", { pushUrl: origin, me: "watch", cwd: watchDir });
+    const sha = revertOnMain([{ sha: menderSha }], "Revert Mender's #1", "why", { url: origin, me: "watch", cwd: watchDir });
     const show = (path) => git(root, "--git-dir", origin, "show", `main:${path}`);
     check("the revert lands on main: Mender's change is gone, the person's stays, and it is one commit by the watch",
       git(root, "--git-dir", origin, "rev-parse", "main") === sha && show("a.txt") === "one" && show("b.txt") === "person" &&
@@ -374,9 +374,14 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
     commit("a.txt", "one\nmender, edited by a person\n", "a person edits the same line");
     const later = commit("a.txt", "one\nmender, edited again\n", "and again");
     git(dev, "push", "--quiet", "origin", "HEAD:main");
-    const refused = (() => { try { revertOnMain([{ sha: menderSha }], "Revert", "why", { pushUrl: origin, me: "watch", cwd: watchDir }); return "applied"; } catch (e) { return e.message; } })();
+    const refused = (() => { try { revertOnMain([{ sha: menderSha }], "Revert", "why", { url: origin, me: "watch", cwd: watchDir }); return "applied"; } catch (e) { return e.message; } })();
     check("a revert that does not apply cleanly throws, and main is left as it was",
       /does not apply cleanly/.test(refused) && git(root, "--git-dir", origin, "rev-parse", "main") === later, refused);
+    // Codex, #359: a git failure with the token in play never carries it out.
+    const token = "FAKEtokenFAKEtokenFAKE";
+    const leaked = (() => { try { revertOnMain([{ sha: menderSha }], "Revert", "why", { url: join(root, "missing.git"), token, me: "watch", cwd: watchDir }); return "applied"; } catch (e) { return e.message; } })();
+    check("a failed fetch with the token says so without the token, raw or encoded",
+      leaked !== "applied" && !leaked.includes(token) && !leaked.includes(Buffer.from(`x-access-token:${token}`).toString("base64")), leaked);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -395,12 +400,37 @@ check("the watch runs in its own workflow and group, on dispatch with the error'
 {
   const src = read("scripts/mender/agent.mjs");
   const watchSrc = src.slice(src.indexOf("async function watch()"));
-  check("the revert fetches through the authenticated URL, never the credential-less origin",
-    /git\("fetch", "--quiet", "--depth=200", pushUrl, "main"\)/.test(src) && !/git\("fetch"[^)]*"origin"/.test(src));
-  check("after the push every comment and state change is its own step, and Mender is woken whatever failed",
+  check("the revert fetches and pushes with the token in git's environment, never in a command line, and never through the credential-less origin",
+    /git\("fetch", "--quiet", "--depth=200", url, "main"\)/.test(src) && /git\("push", "--quiet", url, "HEAD:main"\)/.test(src) &&
+      !/git\("fetch"[^)]*"origin"/.test(src) && /GIT_CONFIG_KEY_0: "http\.extraheader"/.test(src) &&
+      /url: `https:\/\/github\.com\/\$\{repo\}\.git`, token: process\.env\.GH_TOKEN/.test(watchSrc) &&
+      // …and Mender's own publish push the same way: no token in any git URL in the file.
+      !/x-access-token:\$\{process\.env|https:\/\/[^`"]*\$\{process\.env\.GH_TOKEN\}@/.test(src) &&
+      /gitAuth\(process\.env\.GH_TOKEN\)\("push", "-q"/.test(src));
+  // Every `await step(…)` statement removed by balancing its parentheses; no
+  // comment, state change or PR comment may be left outside one.
+  const outsideSteps = (() => {
+    let out = "", i = 0;
+    const body = watchSrc.slice(0, watchSrc.indexOf("\nif (import.meta.url"));
+    for (;;) {
+      const at = body.indexOf("await step(", i);
+      if (at < 0) return out + body.slice(i);
+      out += body.slice(i, at);
+      let depth = 0, j = at + "await step".length;
+      for (; j < body.length; j++) {
+        if (body[j] === "(") depth++;
+        if (body[j] === ")" && --depth === 0) break;
+      }
+      i = j + 1;
+    }
+  })();
+  check("after the push every comment and state change is its own step, the state before the comment, and Mender is woken whatever failed",
     /const step = async \(what, act\) => \{\s*\n\s*try \{\s*\n\s*await act\(\);\s*\n\s*\} catch/.test(watchSrc) &&
-      !/\n\s*(await comment|await setState|gh\(\["pr", "comment")/.test(watchSrc.replace(/await step\([\s\S]*?\}\);|await step\([^\n]*\n/g, "")) &&
-      /const commits = deploy && before \? carried\(repo, before\.sha, deploy\.sha\) : null;/.test(watchSrc));
+      !/(comment\(|setState\(|"pr", "comment")/.test(outsideSteps) && /"workflow", "run", "mender-agent\.yml"/.test(outsideSteps) &&
+      watchSrc.indexOf('setState(issue.id, "Todo")') < watchSrc.indexOf("telling #${c.pr}'s ticket") &&
+      /const commits = deploy && before \? carried\(repo, before\.sha, deploy\.sha\) : null;/.test(watchSrc), outsideSteps.slice(-400));
+  check("a comparison GitHub cut short makes what the deploy carried unknown",
+    /if \(total !== shas\.length\) return null;/.test(src));
 }
 
 console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
