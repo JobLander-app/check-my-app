@@ -65,6 +65,7 @@
     "verify:findings-gate": "tsx --tsconfig tsconfig.json scripts/verify-findings-gate.ts",
     "verify:no-fix-in-finding": "tsx --tsconfig tsconfig.json scripts/verify-no-fix-in-finding.ts",
     "verify:verdict-integrity": "tsx --tsconfig tsconfig.json scripts/verify-verdict-integrity.ts",
+    "verify:select-control": "tsx --tsconfig tsconfig.json scripts/verify-select-control.ts",
     "verify:store-password": "tsx --tsconfig tsconfig.json scripts/verify-store-password.ts",
     "verify:gap-filing": "tsx --tsconfig tsconfig.json scripts/verify-gap-filing.ts",
     "verify:egress-links": "tsx --tsconfig tsconfig.json scripts/verify-egress-links.ts",
