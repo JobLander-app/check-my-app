@@ -35,6 +35,7 @@ export type GapClass =
   | "range_input"
   | "third_party_block"
   | "egress_unreachable"
+  | "rate_limited"
   | "undriven_control"
   | "extension_runtime"
   | "extension_session_cleanup"
@@ -120,6 +121,13 @@ export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
   egress_unreachable: {
     label: "Checker cannot reach a host from where it runs",
     why: "A fetch that times out or is reset from our network says nothing about the link (CHE-190). Until the check can go out through a path the host answers, every outbound link to it is coverage we do not have.",
+  },
+  // CHE-86 was this bucket and its comments were mostly this one shape:
+  // runs #265–#353 (joblander.app's homepage demo, /api/public/insight-preview
+  // answering 429) and run #352 (a store "rate limiting requests").
+  rate_limited: {
+    label: "Checker is rate-limited by the target before a step can be performed",
+    why: "A product that limits tries or requests per visitor answers us with 429 once our own volume has used them up (CLAUDE.md rule 3: that is our request volume, never a finding). The step beyond the limit — a live demo, a scan, a sign-in — goes unseen until the check paces itself or comes through a path the limit leaves alone.",
   },
   undriven_control: {
     label: "Checker cannot drive a control that a person can operate by hand",
@@ -265,6 +273,21 @@ const GATE_STATUS = /\b(?:403|503)\b/;
 // customer-copy scrub.
 const EGRESS =
   /\bUNREACHABLE\b|\bcould not be reached\b|\bunreachable\b|\btimed?[\s-]?out\b|\bconnection (?:reset|refused|failed|error|closed)\b|\bE(?:CONNRESET|CONNREFUSED|TIMEDOUT|HOSTUNREACH)\b|\bcould not confirm (?:[a-z0-9-]+\.)+[a-z]{2,}\b[^.]*\bthis run\b/i;
+
+// The product's own limit answering us. It needs the status or the words of a
+// refusal, never the noun alone (the CHE-430 lesson): "Rate limiting" is also a
+// settings page of a security app, and a step about that page is not this.
+const RATE_LIMITED = new RegExp(
+  [
+    String.raw`\b(?:http|status(?: code)?|error)\s*:?\s*429\b`,
+    String.raw`\b(?:returned|answered|answering|responded with|came back with|gave|got|received)\s+(?:an?\s+)?(?:http\s+)?429\b`,
+    String.raw`\b429\s*\(?\s*too many requests\b`,
+    String.raw`\btoo many requests\b`,
+    String.raw`\b(?:was|were|is|are|got|being|been)\s+rate[- ]limited\b`,
+    String.raw`\brate[- ]limiting\s+(?:requests|us|our|the (?:check|visitor|traffic))\b`,
+  ].join("|"),
+  "i",
+);
 
 const CITED_HOST = /\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b/gi;
 const NOT_A_HOST = /\.(?:php|html?|x?html|js|mjs|ts|tsx|css|json|xml|png|jpe?g|gif|svg|webp|ico|txt|pdf|aspx?|jsp|map|woff2?)$/i;
@@ -436,6 +459,14 @@ export function classifyGap(evidence: GapEvidence): GapClass {
     return "third_party_block";
   }
   if (textHit) return textHit;
+  // A foreign host's 429 is not this class: it is "we could not reach it from
+  // here" (egress_unreachable), as the CHALLENGE comment above says.
+  if (RATE_LIMITED.test(text)) {
+    // Named, so it is not the target's limit: without this branch the words
+    // "returned HTTP 429" match neither CHALLENGE nor EGRESS and fall through
+    // to unclassified, which is the bucket CHE-86 was.
+    return foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length === 0 ? "rate_limited" : "egress_unreachable";
+  }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
   return trailClass(evidence.actions ?? []) ?? "unclassified";
