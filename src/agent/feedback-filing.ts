@@ -41,6 +41,9 @@ export async function fileOpenFeedback(
     return { filed: [], failed: due.length };
   }
   const filed: string[] = [];
+  // Every ticket that exists now, recorded or not: Mender is woken for a ticket,
+  // not for a row (Codex, #357).
+  const created: string[] = [];
   let failed = 0;
   for (const row of due) {
     const claimed = await env.db.feedback.updateMany({
@@ -55,6 +58,7 @@ export async function fileOpenFeedback(
     try {
       const issue = await board.tracker.createIssue(await draftFor(env, board, row));
       identifier = issue.identifier;
+      created.push(identifier);
     } catch (err) {
       failed++;
       await env.db.feedback.updateMany({ where: mine, data: { status: "open", claimedAt: null } }).catch(() => {});
@@ -76,7 +80,7 @@ export async function fileOpenFeedback(
   }
   // CHE-486: the report is filed for Mender (labelled `mender`), and the ticket
   // is what wakes it — no clock.
-  if (filed.length) await wakeMender(env.bindings, `pilot feedback ${filed.join(", ")}`);
+  if (created.length) await wakeMender(env.bindings, `pilot feedback ${created.join(", ")}`);
   return { filed, failed };
 }
 

@@ -255,8 +255,15 @@ export async function fileRunFailure(
       verdictUrl: runUrl,
       recurrenceDetail: occurrence,
     });
-    if (outcome.kind === "commented") await tracker.addLabel(outcome.identifier, MENDER_LABEL).catch(() => {});
-    if (outcome.kind === "created" || outcome.kind === "commented") await wakeMender(env.bindings, `run failure ${outcome.identifier}`);
+    // A recurrence on a ticket somebody took the label off gets it back. Mender
+    // is woken for a ticket in its queue: a label that failed is said, and the
+    // next recurrence labels it again (CodeRabbit, #357).
+    const forMender = outcome.kind === "created" || (outcome.kind === "commented" &&
+      (await tracker.addLabel(outcome.identifier, MENDER_LABEL).then(() => true, (err: unknown) => {
+        console.warn(`[run-failure] labelling ${outcome.identifier} for Mender failed: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      })));
+    if (forMender) await wakeMender(env.bindings, `run failure ${outcome.identifier}`);
     return {
       icon: "ok",
       text:

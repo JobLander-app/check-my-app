@@ -167,12 +167,22 @@ async function main() {
       if (args.data.status === "filed") { blocked++; return Promise.reject(new Error("D1 hiccup")); }
       return realUpdateMany(args as never);
     };
+    // …and Mender is woken for it all the same: the ticket exists (Codex, #357).
+    const woken: string[] = [];
+    const realFetch = globalThis.fetch;
+    const realLog = console.log;
+    globalThis.fetch = (async (url: RequestInfo | URL) => (woken.push(String(url)), new Response(null, { status: 204 }))) as typeof fetch;
     console.warn = () => {};
-    await fileOpenFeedback(env, { board: board(), now: new Date(t0.getTime() + 2 * CLAIM_LEASE_MS) });
+    console.log = () => {};
+    await fileOpenFeedback({ db, bindings: { MENDER_DISPATCH_TOKEN: "t" } } as unknown as AgentEnv,
+      { board: board(), now: new Date(t0.getTime() + 2 * CLAIM_LEASE_MS) });
     console.warn = warn;
+    console.log = realLog;
+    globalThis.fetch = realFetch;
     (db.feedback as unknown as { updateMany: unknown }).updateMany = realUpdateMany;
     const lateRow = await db.feedback.findUnique({ where: { id: lateId } });
     eq("a ticket that exists never sends its report back to open", [lateRow?.status, blocked, drafts.length], ["filing", 2, 8]);
+    eq("…and Mender is woken for it, recorded or not", woken.filter((u) => u.endsWith("/dispatches")).length, 1);
 
     // A tick slower than its lease: while its tracker call hangs, another tick
     // takes the row over. The slow one failing must not undo that claim.

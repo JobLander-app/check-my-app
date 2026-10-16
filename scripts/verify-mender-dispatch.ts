@@ -15,6 +15,7 @@
 
 import Module from "node:module";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import type { AgentBindings } from "../src/agent/env";
 import { createStubDb } from "./fixtures/mcp-db";
 import { dispatchMender, MENDER_REPO, MENDER_WORKFLOW, wakeMender } from "../src/agent/mender-dispatch";
@@ -107,15 +108,56 @@ async function main() {
     woke === "dispatched" && refused === "failed" && down === "failed" && none === "no-token" &&
       said.some((s) => s.includes("woken: run failure CHE-1")) && said.some((s) => s.includes("CHE-3") && s.includes("network down")), said.join(" | "));
 
-  // Every place that files a ticket for Mender wakes it, right after filing.
-  const src = (p: string) => readFileSync(new URL(`../src/agent/${p}`, import.meta.url), "utf8");
-  check("a checker gap, a run failure and a pilot report each wake Mender when filed",
-    /await wakeMender\(env\.bindings, `checker gap/.test(src("capability-gaps.ts")) &&
-      /selfPolicy\(self, "\[Checker failure\] \{verdict\}", \[MENDER_LABEL\]\)/.test(src("run-failures.ts")) &&
-      /await wakeMender\(env\.bindings, `run failure/.test(src("run-failures.ts")) &&
-      /if \(filed\.length\) await wakeMender\(env\.bindings, `pilot feedback/.test(src("feedback-filing.ts")));
+  // Every place that files a ticket for Mender wakes it, right after filing —
+  // read from the syntax tree, so a call in a comment, a string or the wrong
+  // function does not count (CodeRabbit, #357). That the feedback wake follows
+  // a created ticket is verify-feedback's, run for real.
+  const sites = (file: string) => {
+    const sf = ts.createSourceFile(file, readFileSync(new URL(`../src/agent/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+    const found: { fn: string; guard: string; reason: string }[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "wakeMender") {
+        let fn = "", guard = "";
+        for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
+          if (!guard && ts.isIfStatement(up) && up.thenStatement.pos <= node.pos && node.end <= up.thenStatement.end) guard = up.expression.getText(sf);
+          if (ts.isFunctionDeclaration(up) && up.name) { fn = up.name.text; break; }
+        }
+        found.push({ fn, guard, reason: node.arguments[1]?.getText(sf) ?? "" });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return { sf, found };
+  };
+  const gaps = sites("capability-gaps.ts").found;
+  const failures = sites("run-failures.ts");
+  const feedback = sites("feedback-filing.ts").found;
+  const forMender = (() => {
+    let init = "";
+    const visit = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "forMender") init = node.initializer?.getText(failures.sf) ?? "";
+      ts.forEachChild(node, visit);
+    };
+    visit(failures.sf);
+    return init;
+  })();
+  const shape = JSON.stringify({ gaps, failures: failures.found, feedback, forMender });
+  check("a checker gap wakes Mender once, after the gaps are filed, only when one was",
+    gaps.length === 1 && gaps[0].fn === "fileCapabilityGaps" && /icon === "ok"/.test(gaps[0].guard) && /checker gap/.test(gaps[0].reason), shape);
+  check("a run failure wakes Mender once, for a new ticket or a recurrence that holds Mender's label",
+    failures.found.length === 1 && failures.found[0].fn === "fileRunFailure" && failures.found[0].guard === "forMender" &&
+      /outcome\.kind === "created"/.test(forMender) && /tracker\.addLabel\(outcome\.identifier, MENDER_LABEL\)\.then\(\(\) => true/.test(forMender), shape);
+  check("a pilot report wakes Mender once per tick, for every ticket created",
+    feedback.length === 1 && feedback[0].fn === "fileOpenFeedback" && feedback[0].guard === "created.length" && /created\.join/.test(feedback[0].reason), shape);
+  check("a run failure is filed under Mender's label",
+    /selfPolicy\(self, "\[Checker failure\] \{verdict\}", \[MENDER_LABEL\]\)/.test(failures.sf.getFullText()));
+
   const wf = readFileSync(new URL("../.github/workflows/mender-agent.yml", import.meta.url), "utf8");
   check("Mender's workflow has no schedule", !/^\s*schedule:|cron:/m.test(wf));
+  // The safety net without a clock: a wake GitHub refused, a ticket labelled by
+  // hand, a key raised after an alarm — each is picked up at the next deploy.
+  check("…and looks at its queue after every deploy of main",
+    /workflow_run:\s*\n\s*workflows: \["CI \/ Deploy"\]\s*\n\s*types: \[completed\]\s*\n\s*branches: \[main\]/.test(wf));
 
   console.log(bad === 0 ? "\nall pass" : `\n${bad} FAILED`);
   process.exit(bad === 0 ? 0 : 1);

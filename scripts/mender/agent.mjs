@@ -271,7 +271,7 @@ async function alarm(reason) {
     await linear("mutation($team:String!,$t:String!,$d:String!){issueCreate(input:{teamId:$team,title:$t,description:$d,priority:1}){success}}", {
       team: TEAM_ID, t: ALARM_TITLE,
       d: `Mender stopped: ${reason}.${run ? ` (${run})` : ""}\n\nNo ticket is claimed and no attempt is counted; the queue waits. ` +
-        "Mender tries again every half hour and closes this ticket itself once the key serves.\n\n" +
+        "Mender tries again at the next ticket filed for it or the next deploy of main, and closes this ticket itself once the key serves.\n\n" +
         "What ends it: the limit of the OpenRouter key `journeyman` (raised through the management key in the Progress Log), or its reset.",
     });
   }
