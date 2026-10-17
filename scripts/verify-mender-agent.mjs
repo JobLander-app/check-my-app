@@ -11,7 +11,7 @@ import { codexReviewState, factsFrom, gateDecision, isP1, MAX_GATE_ROUNDS, merge
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, revertOnMain, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch } from "./mender/agent.mjs";
+import { ALARM_TITLE, CHECKS, agentEnv, checksInFlight, answerOf, branchFor, chooseTicket, forbiddenPaths, isFeedback, keyShortfall, ourRefusal, pendingReview, readEvent, report, revertOnMain, runAgent, stagedPaths, stranded, turnError, uiPaths, usableAnswer, validBranch, waitingForAnswer } from "./mender/agent.mjs";
 
 let bad = 0;
 const check = (name, ok, detail = "") => {
@@ -31,6 +31,20 @@ check("a ticket already in progress or in review is not taken again",
 check("a ticket tried twice without a PR steps aside",
   chooseTicket([issue("CHE-1", "2026-10-01", "unstarted", 2), issue("CHE-2", "2026-10-02")])?.identifier === "CHE-2");
 check("nothing labelled → nothing taken", chooseTicket([]) === null);
+// CHE-488, 2026-10-17: a blocked ticket was taken again two minutes later with
+// nothing new, and its last attempt was gone before anyone could answer.
+{
+  const blocked = (identifier, createdAt, ...after) => ({ ...issue(identifier, createdAt, "unstarted", 1),
+    comments: { nodes: [
+      { createdAt: "2026-10-17T02:33:00Z", body: "<!-- mender:attempt -->\n**Mender did not open a pull request** (blocked).\n\nMENDER_BLOCKED: owner decision\n\n— Mender · m · 7 steps · $0.33" },
+      ...after.map((body, n) => ({ createdAt: `2026-10-17T1${n}:00:00Z`, body })),
+    ] } });
+  const waits = (...after) => chooseTicket([blocked("CHE-1", "2026-10-01", ...after), issue("CHE-2", "2026-10-02")])?.identifier === "CHE-2";
+  check("a ticket Mender is blocked on waits for an answer; the monitor's counts and Mender's own notes are not one; a person's comment is",
+    waits() && waits("Still happening: 11 occurrence(s) since …") && waits("Re-filed from CheckMyApp — still present in run #9") &&
+      !waits("Here is the data you asked for: the rows are …") && waitingForAnswer(blocked("CHE-1", "2026-10-01")) &&
+      !waitingForAnswer(issue("CHE-3", "2026-10-03")));
+}
 // Ticket rules (owner, 2026-10-12).
 const inEpic = (identifier, createdAt, epicLabels) => ({ ...issue(identifier, createdAt), parent: { identifier: "CHE-100", labels: { nodes: epicLabels.map((name) => ({ name })) } } });
 check("a ticket in an epic its lead has not given to Mender is not taken",

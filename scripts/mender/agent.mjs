@@ -119,7 +119,8 @@ export const OPEN = ["triage", "backlog", "unstarted", "started"];
  * aside. Ticket rules (owner, 2026-10-12): a ticket inside an epic is taken
  * only when the epic carries the label too — the epic's lead agent says so by
  * labelling it (CHE-443 was taken from another session's epic unannounced);
- * and a ticket Mender split waits while its parts are open.
+ * a ticket Mender split waits while its parts are open; and a ticket Mender
+ * is blocked on waits for an answer.
  */
 export function chooseTicket(issues) {
   return [...issues]
@@ -127,7 +128,28 @@ export function chooseTicket(issues) {
     .filter((i) => i.comments.nodes.filter((c) => c.body.includes(ATTEMPT_MARK)).length < MAX_ATTEMPTS)
     .filter(givenToMender)
     .filter((i) => !(i.children?.nodes ?? []).some((c) => OPEN.includes(c.state.type)))
+    .filter((i) => !waitingForAnswer(i))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
+}
+
+/**
+ * Comments written by the machinery, not by someone answering: Mender's own
+ * reports, the gate's and the watch's bookkeeping, and the monitor's counts.
+ */
+const MACHINE = [ATTEMPT_MARK, ROUND_MARK, "\n— Mender · ", "Still happening: ", "Re-filed from CheckMyApp", "**Merged", "**Reverted", "**Mender's pull request ", "**Caused by a deploy"];
+
+/**
+ * Mender ended with MENDER_BLOCKED: it needs something it cannot get itself
+ * (.mender/MENDER.md). The ticket waits for an answer, any newer comment that
+ * is not the machinery's, instead of being taken again at once with nothing
+ * new. CHE-488, 2026-10-17: two identical "owner decision" attempts two minutes
+ * apart, the second one spent before anyone could answer. A pinned run (TICKET)
+ * still takes it.
+ */
+export function waitingForAnswer(issue) {
+  const nodes = [...issue.comments.nodes].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+  const asked = nodes.map((c) => c.body.includes("MENDER_BLOCKED")).lastIndexOf(true);
+  return asked >= 0 && !nodes.slice(asked + 1).some((c) => !MACHINE.some((m) => c.body.includes(m)));
 }
 
 /** Paths whose change a user sees: screens and emails. The owner sees them before merge. */
@@ -179,7 +201,7 @@ async function findWork({ release = true } = {}) {
     const pending = pendingReview({ reviewComments: [...inline, ...reviews], lastCommitAt, lastRoundAt: rounds.at(-1)?.createdAt ?? "", roundsUsed: rounds.length });
     if (pending.length) return { kind: "review", pr, pending, round: rounds.length + 1, ticket: pr.headRefName.match(/^mender\/(che-\d+)/i)?.[1]?.toUpperCase() ?? null };
   }
-  const fields = "id identifier title url createdAt state{type name} comments{nodes{body}} parent{identifier labels{nodes{name}}} children{nodes{state{type}}}";
+  const fields = "id identifier title url createdAt state{type name} comments{nodes{body createdAt}} parent{identifier labels{nodes{name}}} children{nodes{state{type}}}";
   const pinned = process.env.TICKET;
   if (pinned) {
     const d = await linear(`query($i:String!){issue(id:$i){${fields}}}`, { i: pinned });
