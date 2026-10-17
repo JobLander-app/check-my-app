@@ -44,6 +44,11 @@ check("nothing labelled → nothing taken", chooseTicket([]) === null);
     waits() && waits("Still happening: 11 occurrence(s) since …") && waits("Re-filed from CheckMyApp — still present in run #9") &&
       !waits("Here is the data you asked for: the rows are …") && waitingForAnswer(blocked("CHE-1", "2026-10-01")) &&
       !waitingForAnswer(issue("CHE-3", "2026-10-03")));
+  // Codex, #368: a person's answer may quote the marker or a machine phrase.
+  check("…an answer that quotes MENDER_BLOCKED or a machine phrase is still an answer",
+    !waits("For MENDER_BLOCKED: owner decision — cancel it.") && !waits("The \"Still happening: \" comments are scanners; treat it as settled."));
+  const src = read("scripts/mender/agent.mjs");
+  check("…and the comments read are Linear's largest page, not the default 50", /comments\(first:250\)\{nodes\{body createdAt\}\}/.test(src));
 }
 // Ticket rules (owner, 2026-10-12).
 const inEpic = (identifier, createdAt, epicLabels) => ({ ...issue(identifier, createdAt), parent: { identifier: "CHE-100", labels: { nodes: epicLabels.map((name) => ({ name })) } } });
