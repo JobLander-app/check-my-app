@@ -84,24 +84,82 @@ async function removeApps(env: AgentEnv, ids: string[]): Promise<void> {
 // The ledger row is the evidence of what the checker made, and the marker it
 // carries is unique to one run ("CheckMyApp test r<N>"), so the app is found by
 // that marker — never by "looks like a test" — inside the account that ran the
-// check. Only records of kind "app" are removed: the App table is the one place
-// such a record lives, so finding no match means it is already gone and the
-// ledger can say so. Every other kind of record stays open, because we cannot
-// reach it from here and closing it would hide a real leftover.
-const LEFTOVER_KIND = "app";
+// check. Only records that are an app (see leftoverKind) are removed: the App
+// table is the one place such a record lives. Every other kind of record stays
+// open, because we cannot reach it from here and closing it would hide a real
+// leftover.
 const MARKER_PREFIX = "CheckMyApp test r";
 const LEFTOVER_BATCH = 200;
+
+// Written on an app-like row before its app is removed, and never by anything
+// else. Removing the app and closing the row are two writes that cannot be one
+// transaction here; if the second fails, the app is gone and a later sweep can
+// no longer find it to prove the row was its record. The note is that proof,
+// kept on the row itself, so a retry closes it instead of leaving it open for
+// good (and the ticket filed again by every run after).
+export const REMOVAL_PENDING_NOTE = "its app was removed by the janitor; the row is closed on the next sweep";
 
 export interface LeftoverSweepResult {
   appsRemoved: number;
   ledgerClosed: number;
 }
 
+// The agent writes the kind in the product's own words, so the same record
+// arrives as "app", "app (monitored site)" or "daily-watch monitored app" (runs
+// #219 and #242 on checkmyapp.dev). The first version of this sweep compared the
+// kind to the single word "app", which let every one of those through for good:
+// the ticket was filed again by every run that came after. The kind is judged
+// by its words instead.
+//   - "app": names an app outright. The App table is the one place such a
+//     record lives, so finding no match means it is already gone and the row
+//     can close.
+//   - "app-like": a site, extension or watch — an App row is probably what the
+//     checker made, but a match is the only proof. Without one the row stays
+//     open, because closing it would hide a real leftover we cannot reach.
+// Anything else ("story", "job application") is not ours to touch.
+const APP_WORDS = ["app", "apps"];
+// Each word form is listed because the kind is matched by whole words (so that
+// "application" is not "app"): "monitoring" is in the SQL filter by way of
+// "monitor" and would otherwise be selected and then ignored for good.
+const APP_LIKE_WORDS = [
+  "site", "sites", "website", "websites",
+  "extension", "extensions",
+  "watch", "watches", "watched", "watching",
+  "monitor", "monitors", "monitored", "monitoring",
+];
+
+export function leftoverKind(kind: string): "app" | "app-like" | null {
+  const w = new Set(words(kind).split("-"));
+  if (APP_WORDS.some((x) => w.has(x))) return "app";
+  if (APP_LIKE_WORDS.some((x) => w.has(x))) return "app-like";
+  return null;
+}
+
+// What SQL can tell about a kind: any of those words as a substring. The words
+// above decide; this only keeps the rows that cannot be ours out of the batch.
+const KIND_SUBSTRINGS = ["app", ...APP_LIKE_WORDS];
+
 // Both a marker and a name/slug are folded to lower-case words so that
 // "CheckMyApp test r113" is found in "checkmyapp-test-r113.example.com" — and
 // r11 is not found in r113: the marker must end where a word ends.
 function words(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+// Whether a ledger row's location points at this app: its id or its slug, as a
+// whole token — "…r11.example.com" is not found in "…r113.example.com".
+function locationNames(url: string | null, app: { id: string; appSlug: string }): boolean {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  return [app.id, app.appSlug].some((needle) => {
+    const n = needle.toLowerCase();
+    for (let i = u.indexOf(n); i >= 0; i = u.indexOf(n, i + 1)) {
+      const before = u[i - 1];
+      const after = u[i + n.length];
+      if (!(before && /[a-z0-9-]/.test(before)) && !(after && /[a-z0-9-]/.test(after))) return true;
+    }
+    return false;
+  });
 }
 
 export function carriesMarker(text: string, marker: string): boolean {
@@ -130,13 +188,15 @@ export async function sweepSelfCheckLeftovers(env: AgentEnv, now: Date = new Dat
         deletedAt: null,
         createdAt: { lt: cutoff },
         marker: { startsWith: MARKER_PREFIX },
-        kind: { contains: LEFTOVER_KIND },
+        OR: KIND_SUBSTRINGS.map((k) => ({ kind: { contains: k } })),
         run: { ownerId: { not: null } },
       },
       select: {
         id: true,
         kind: true,
         marker: true,
+        locationUrl: true,
+        cleanupNote: true,
         run: { select: { targetUrl: true, ownerId: true, teamId: true } },
       },
       // The id breaks ties, so the cursor names one place in the order.
@@ -159,13 +219,15 @@ interface LedgerRow {
   id: string;
   kind: string;
   marker: string;
+  locationUrl: string | null;
+  cleanupNote: string | null;
   run: { targetUrl: string; ownerId: string | null; teamId: string | null };
 }
 
 async function sweepLeftoverBatch(env: AgentEnv, open: LedgerRow[], now: Date): Promise<LeftoverSweepResult> {
   const ours = open.filter(
     (r) =>
-      r.kind.trim().toLowerCase() === LEFTOVER_KIND &&
+      leftoverKind(r.kind) !== null &&
       r.run.ownerId !== null &&
       isSelfUrl(r.run.targetUrl, env.bindings.SELF_CHECK_HOSTS),
   );
@@ -185,28 +247,54 @@ async function sweepLeftoverBatch(env: AgentEnv, open: LedgerRow[], now: Date): 
 
   const removeIds = new Set<string>();
   const removedSlugs: string[] = [];
+  const matched = new Set<string>();
   for (const r of ours) {
+    const kind = leftoverKind(r.kind);
     for (const a of candidates) {
       if (a.ownerId !== r.run.ownerId) continue;
       if (r.run.teamId && a.teamId && a.teamId !== r.run.teamId) continue;
       if (!carriesMarker(a.appSlug, r.marker) && !(a.name && carriesMarker(a.name, r.marker))) continue;
+      // A marker and an owner are shared by every record one run made — an app
+      // and an extension carry the same "CheckMyApp test r113". For a row that
+      // only sounds like an app, they prove the app is the run's, not that this
+      // row is the app: its own location has to name it, or it stays open.
+      if (kind === "app-like" && !locationNames(r.locationUrl, a)) continue;
       if (!removeIds.has(a.id)) removedSlugs.push(a.appSlug);
       removeIds.add(a.id);
+      matched.add(r.id);
     }
+  }
+
+  // The proof is written before the app goes, so an interrupted sweep leaves it
+  // behind (see REMOVAL_PENDING_NOTE).
+  const pending = ours.filter((r) => leftoverKind(r.kind) === "app-like" && matched.has(r.id) && r.cleanupNote !== REMOVAL_PENDING_NOTE);
+  if (pending.length > 0) {
+    await env.db.createdResource.updateMany({
+      where: { id: { in: pending.map((r) => r.id) } },
+      data: { cleanupNote: REMOVAL_PENDING_NOTE },
+    });
   }
   if (removeIds.size > 0) await removeApps(env, [...removeIds]);
 
+  // A row that names an app closes with or without a match; one that only
+  // sounds like one closes only when its app was found and removed — in this
+  // sweep or in an earlier one that was cut short.
+  const closable = ours.filter(
+    (r) => leftoverKind(r.kind) === "app" || matched.has(r.id) || r.cleanupNote === REMOVAL_PENDING_NOTE,
+  );
+  if (closable.length === 0) return { appsRemoved: removeIds.size, ledgerClosed: 0 };
+
   // Closed with what happened, so the ledger stays a record and not a blank.
   await env.db.createdResource.updateMany({
-    where: { id: { in: ours.map((r) => r.id) } },
+    where: { id: { in: closable.map((r) => r.id) } },
     data: { deletedAt: now, cleanupNote: "removed by the janitor — a record of a past self-check" },
   });
 
   console.log(
-    `[janitor] closed ${ours.length} self-check ledger row(s), removed ${removeIds.size} app(s)` +
+    `[janitor] closed ${closable.length} self-check ledger row(s), removed ${removeIds.size} app(s)` +
       `${removedSlugs.length ? `: ${removedSlugs.join(", ")}` : ""}`,
   );
-  return { appsRemoved: removeIds.size, ledgerClosed: ours.length };
+  return { appsRemoved: removeIds.size, ledgerClosed: closable.length };
 }
 
 // CHE-132: a signed-in one-off check has an owner but no App row, so the
