@@ -497,8 +497,14 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
+  // The machine's trail outranks the model's sentence: a link the trail proves
+  // opened elsewhere is new_tab even when the words only say the destination is
+  // outside the partner's product, or the same interaction would file under two
+  // tickets depending on phrasing.
+  const fromTrail = trailClass(evidence.actions ?? []);
+  if (fromTrail) return fromTrail;
   if (outsideProduct(text, evidence)) return "outside_product";
-  return trailClass(evidence.actions ?? []) ?? "unclassified";
+  return "unclassified";
 }
 
 // CHE-373: the evidence a walked step is classified on, built from the walk's

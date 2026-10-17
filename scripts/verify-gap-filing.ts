@@ -993,6 +993,14 @@ async function main() {
       ["a new tab beside the same words keeps new_tab", { text: "The link opens in a new tab and the page is outside the app.", targetOrigin: T }, "new_tab"],
       ["a challenge on a foreign host stays third_party_block", { text: "https://apps.shopify.com returned 403; the page is outside the app.", targetOrigin: T }, "third_party_block"],
     ];
+    check(
+      "outside product: a link the trail proves opened a new tab stays new_tab beside outside-the-product words",
+      classifyGap({
+        text: "The partner's billing console lives outside the product, so its plan table was not reviewed.",
+        targetOrigin: T,
+        actions: JSON.parse(NEW_TAB_154.actions ?? "[]"),
+      }) === "new_tab",
+    );
     for (const [name, ev, want] of op) {
       const got = classifyGap(ev);
       check(`outside product: ${name}`, got === want, got);
