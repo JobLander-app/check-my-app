@@ -50,8 +50,14 @@ export const SESSION_OUTAGE_MESSAGE =
 // say "target answers a plain request but not our browser", which sent the
 // reader looking at the customer's site, and no feed line said the check
 // stopped on our side.
+//
+// It is the code `page.goto` reports, not the text anywhere in the message: the
+// message carries the target URL after it, and a URL that happens to contain the
+// code must not turn a plain reset into our outage (and skip the target probe).
+// The first `page.goto:` names the error; whatever follows it is the customer's.
+const GOTO_ERROR = /page\.goto: net::(ERR_[A-Z_]+)/;
 export function egressTunnelFailed(message: string): boolean {
-  return /net::ERR_TUNNEL_CONNECTION_FAILED/.test(message);
+  return GOTO_ERROR.exec(message)?.[1] === "ERR_TUNNEL_CONNECTION_FAILED";
 }
 
 export const SESSION_EGRESS_SIGNATURE = "Session host egress could not tunnel to the target (ERR_TUNNEL_CONNECTION_FAILED)";
