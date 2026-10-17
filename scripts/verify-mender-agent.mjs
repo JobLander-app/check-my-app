@@ -394,6 +394,10 @@ check("…from main's files, with the personal token (a GITHUB_TOKEN merge start
   check("…and mergePr asks it before every merge, with production's running checks",
     /async function mergePr[\s\S]*?const hold = running \? [^\n]*: mergeHold\(mainState\(\)\);\s*\n\s*if \(!hold\) break;[\s\S]*?"pr", "merge"/.test(src) &&
       /timeout-minutes: 50/.test(read(".github/workflows/mender-gate.yml")));
+  // #366, 2026-10-17: a round pushed during the wait turned the run red. After
+  // the wait the head is read again, and a moved one is left to its own events.
+  check("…and after the wait, a head that moved is left to its own CI and review, never merged or failed on",
+    /if \(!hold\) break;[\s\S]*?\n\s*\}\s*\n[\s\S]*?const now = gh\(\["pr", "view", String\(pr\.number\), "--json", "headRefOid"[^\n]*\n\s*if \(now !== pr\.headRefOid\) return say\([\s\S]*?"pr", "merge"/.test(src));
 }
 // revertOnMain on a real repository: a bare "origin", a person's commit and a
 // Mender commit on main; the watch's checkout reverts Mender's alone.

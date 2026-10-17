@@ -781,6 +781,11 @@ async function mergePr(pr, reason) {
     say(`#${pr.number}: ${hold} — waiting before the merge`);
     await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
+  // Mender may push a round during that wait (#366, 2026-10-17: a round at
+  // 11:21, the merge refused at 11:32, the run red). The new head is not the one
+  // the gate read: it is left for the event its CI and review will send.
+  const now = gh(["pr", "view", String(pr.number), "--json", "headRefOid", "--jq", ".headRefOid"]);
+  if (now !== pr.headRefOid) return say(`#${pr.number}: a round was pushed during the wait (${now.slice(0, 7)}) — its own CI and review decide`);
   // The personal token, so the push to main starts CI and the deploy (a merge by
   // GITHUB_TOKEN starts no workflow). Pinned to the head the gate inspected: a
   // round pushed meanwhile makes this fail rather than merge unread code (Codex, #356).
