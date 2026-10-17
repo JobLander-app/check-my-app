@@ -46,9 +46,19 @@ export type GapClass =
   | "shopify_admin"
   | "target_door"
   | "unrecorded_walk"
+  | "outside_product"
   | "unclassified";
 
 export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
+  // The step that filed this (run #412, securification.ai): "Review the Shopify
+  // App Store listing (description, ratings)" — the CTA's address answered 200
+  // and named the right app, and the step was left unchecked because the page
+  // itself belongs to Shopify. Nothing named that, so it landed on the bucket
+  // nobody learns from.
+  outside_product: {
+    label: "Checker is asked to review a page that belongs to another product",
+    why: "A journey follows the visitor to a page the product does not own — a marketplace listing, a partner's console — and a step there asks for a review of that page's own content. Whether the hand-off lands on the right page is the product's to answer and the link check can; what the other page says is not, so the step has to be written as the hand-off, or the check must stop planning steps inside pages the owner cannot change.",
+  },
   // CHE-420: run cmuvu9xhl walked "Review the Block Log" and recorded nothing.
   unrecorded_walk: {
     label: "Checker walks a journey without recording a single step",
@@ -256,6 +266,15 @@ const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = 
   {
     match: /could not be (?:driven|exercised)|\bundriven\b|could not (?:drive|reach) (?:the |this )?(?:control|field|button)/i,
     cls: "undriven_control",
+  },
+  // Last, so every named capability above still wins. The walker's own
+  // sentence that the page it was sent to is not the product ("the Shopify App
+  // Store page itself is outside the Securify app"). It needs the page to be
+  // outside, never the bare word: "outside the viewport" or "outside the
+  // dialog" says nothing of the kind.
+  {
+    match: /\b(?:is|are|lies|lie|sits|sit|lives|live|remains?|stays?)\s+outside\s+(?:of\s+)?(?:the\s+)?(?:[\w'-]+\s+){0,3}?(?:app|product|site|website)\b/i,
+    cls: "outside_product",
   },
 ];
 

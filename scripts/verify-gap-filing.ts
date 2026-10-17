@@ -968,6 +968,33 @@ async function main() {
     check("rate_limited is a class with its own label (its own ticket)", GAP_CLASSES.rate_limited.label.length > 0 && keyFor("rate_limited") !== PROD_KEYS.unclassified.key);
   }
 
+  // ─── CHE-491: a step that reviews a page the product does not own ────────
+  // Run #412 (securification.ai): "Review the Shopify App Store listing" ended
+  // with the walker saying the page "is outside the Securify app". No class
+  // named it, so it filed on the unclassified bucket.
+  {
+    console.log("\noutside the product — a page that belongs to someone else\n");
+    const T = "https://securification.ai";
+    const op: [string, GapEvidence, GapClass][] = [
+      [
+        "run #412: the listing answers 200 but is outside the app",
+        { text: 'Review the Shopify App Store listing (description, ratings) The listing URL answers with HTTP 200 and the slug is the app the CTA names ("easy-block-customer-ip-country"), but the Shopify App Store page itself is outside the Securify app and', targetOrigin: T },
+        "outside_product",
+      ],
+      ["a partner console that lives outside the product", { text: "The partner's billing console lives outside the product, so its plan table was not reviewed.", targetOrigin: T }, "outside_product"],
+      // What must not move.
+      ["outside the viewport is not another product", { text: "The banner is outside the viewport on small screens.", targetOrigin: T }, "unclassified"],
+      ["outside the dialog is not another product", { text: "The close button sits outside the dialog frame.", targetOrigin: T }, "unclassified"],
+      ["a new tab beside the same words keeps new_tab", { text: "The link opens in a new tab and the page is outside the app.", targetOrigin: T }, "new_tab"],
+      ["a challenge on a foreign host stays third_party_block", { text: "https://apps.shopify.com returned 403; the page is outside the app.", targetOrigin: T }, "third_party_block"],
+    ];
+    for (const [name, ev, want] of op) {
+      const got = classifyGap(ev);
+      check(`outside product: ${name}`, got === want, got);
+    }
+    check("outside_product is a class with its own label (its own ticket)", GAP_CLASSES.outside_product.label.length > 0 && keyFor("outside_product") !== PROD_KEYS.unclassified.key);
+  }
+
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
   process.exit(failures ? 1 : 0);
 }
