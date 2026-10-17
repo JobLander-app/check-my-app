@@ -11,8 +11,9 @@
 // Usage: npx tsx --tsconfig tsconfig.json scripts/verify-session-outage.ts
 
 import ts from "typescript";
-import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing, type WalkedJourney } from "../src/agent/session-outage";
-import { calls, source } from "./fixtures/ts-source";
+import { egressTunnelFailed, SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing, type WalkedJourney } from "../src/agent/session-outage";
+import { classifyRunFailure } from "../src/agent/run-failures";
+import { calls, initializerOf, source } from "./fixtures/ts-source";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -34,6 +35,33 @@ check("a step checked inside a skipped journey is a run about the app", !session
 check("no journey of its own, only carried ones, is not this rule's", !sessionWalkReachedNothing([journey(ours(3), "skipped", "earlier")]));
 check("no step at all is not this rule's", !sessionWalkReachedNothing([journey([])]));
 check("the internal reason is internal and names the ticket", SESSION_OUTAGE_MESSAGE.startsWith("internal:") && SESSION_OUTAGE_MESSAGE.includes("CHE-453"));
+
+const WORKFLOW_PATH = "src/agent/workflow.ts";
+const real = source(WORKFLOW_PATH);
+
+// 1b. CHE-455: runs #375/#376/#411 — admin.shopify.com, a signed-in session, the
+// first page never loaded: the proxy would not open the tunnel. The message is
+// byte for byte from the ticket.
+const TUNNEL =
+  'page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country\nCall log:\n  - navigating to "https://admin.shopify.com/store/prod-release-1/apps/easy-block-customer-ip-country", waiting until "domcontentloaded"\n';
+check("a tunnel the proxy would not open is recognised", egressTunnelFailed(TUNNEL));
+check("…and a site that merely reset the connection is not", !egressTunnelFailed("page.goto: net::ERR_CONNECTION_RESET at https://shop.example.org/") &&
+  !egressTunnelFailed("page.goto: net::ERR_CONNECTION_RESET at https://shop.example.org/?e=net::ERR_TUNNEL_CONNECTION_FAILED\nCall log:\n  - navigating to \"https://shop.example.org/?e=net::ERR_TUNNEL_CONNECTION_FAILED\"") && !egressTunnelFailed("page.goto: Timeout 30000ms exceeded."));
+const facts = { budget: false, isExtension: false, afterVerdict: false, ourTarget: false, message: TUNNEL };
+for (const targetAnswers of [true, false, null]) {
+  const c = classifyRunFailure({ ...facts, targetAnswers });
+  check(
+    `the failure is ours whatever a plain request got (${String(targetAnswers)}), and says it is our egress`,
+    c.kind === "ours" && /egress/.test(c.signature) && !/answers a plain request/.test(c.signature),
+    JSON.stringify(c),
+  );
+}
+// The initializer, as syntax: a comment holding the same words is not a call.
+const callsTunnelCheck = (wf: ts.SourceFile) => {
+  const init = initializerOf(wf, "sessionOutage");
+  return init !== undefined && calls(wf, init).some((c) => c.callee === "egressTunnelFailed" && c.args.join(",") === "msg");
+};
+check("the workflow's fail path treats it as the session outage (feed line, watch retried)", callsTunnelCheck(real));
 
 // 2. Wiring, read as syntax — every call site, and the fail branch's actions.
 // Returns what is wrong; run on the real workflow, then on mutants of it, so
@@ -77,8 +105,7 @@ function wiringFaults(wf: ts.SourceFile): string[] {
   return faults;
 }
 
-const WORKFLOW = "src/agent/workflow.ts";
-const real = source(WORKFLOW);
+const WORKFLOW = WORKFLOW_PATH;
 const faults = wiringFaults(real);
 check("the workflow asks it inside the writing step, only for a session run, and throws our outage; the fail path writes the feed line and retries the watch", faults.length === 0, faults.join("; "));
 
@@ -95,6 +122,8 @@ const mutants: [string, ts.SourceFile][] = [
   ["the fail branch loses its feed line", mutant("await appendEvent(env, runId, \"connecting\", {\n            icon: \"warn\",", "await Promise.resolve({\n            icon: \"warn\",")],
   ["the fail branch stops retrying the watch", mutant("data: { nextRunAt: new Date(Date.now() + 2 * 60 * 60 * 1000) },\n              })\n              .catch(() => {});\n          }\n        }\n        return { phase: before?.status ?? null", "data: {},\n              })\n              .catch(() => {});\n          }\n        }\n        return { phase: before?.status ?? null")],
 ];
+const noCall = mutant("          egressTunnelFailed(msg);\n        if (teamKeyDry)", "          false; // const sessionOutage = egressTunnelFailed(msg)\n        if (teamKeyDry)");
+check("…and the tunnel check fails when the call is gone and only a comment names it", !callsTunnelCheck(noCall));
 for (const [name, sf] of mutants) check(`…and fails when ${name}`, wiringFaults(sf).length > 0, wiringFaults(sf).join("; ") || "still green");
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

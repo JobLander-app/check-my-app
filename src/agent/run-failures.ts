@@ -27,7 +27,9 @@
 //      fileRouteRefusal (CHE-330) did file says so in its message
 //      (ROUTE_REFUSAL_FILED) and is not filed twice; one whose filing failed
 //      carries no mark and is filed here.
-//   4. The target's page not loading in our browser:
+//   4. Our session egress refusing to tunnel (ERR_TUNNEL_CONNECTION_FAILED,
+//      CHE-455) is ours whatever the target is, and is not probed.
+//      The target's page not loading in our browser:
 //        - on a target that is ours (our host on our run, or a self-check
 //          account's placeholder app — silenceReason, CLAUDE.md §6) it is ours:
 //          we pointed our own checker at something that does not answer;
@@ -47,6 +49,7 @@
 import { fileFindingTicket, type TicketFinding } from "@/lib/tracker/file";
 import { MENDER_LABEL, ourBoard, ROUTE_REFUSAL_FILED, selfPolicy, type CapabilityNote, type GapBoard } from "./capability-gaps";
 import { isOwnRun, silenceReason } from "./notify-verdict";
+import { egressTunnelFailed, SESSION_EGRESS_SIGNATURE } from "./session-outage";
 import type { AgentEnv } from "./env";
 import { noteCreated, wakeMender, watchDeploy } from "./mender-dispatch";
 
@@ -120,6 +123,9 @@ export function classifyRunFailure(f: FailureFacts): FailureOwner {
   }
   const http = PROVIDER_HTTP.exec(msg);
   if (http) return { kind: "ours", signature: `Model provider answered HTTP ${http[1]}` };
+  // CHE-455: a tunnel the proxy would not open is our egress, on any target —
+  // what a plain request would get from the target does not enter into it.
+  if (egressTunnelFailed(msg)) return { kind: "ours", signature: SESSION_EGRESS_SIGNATURE };
   const nav = navigationFailure(msg);
   if (nav) {
     if (f.ourTarget) return { kind: "ours", signature: `Our own check target does not load (${nav})` };
@@ -187,7 +193,7 @@ export async function fileRunFailure(
         ownedByTestAccount: Boolean(run.owner?.isTestAccount),
         selfCheckHosts: env.bindings.SELF_CHECK_HOSTS,
       }) !== null;
-    const needsProbe = navigationFailure(facts.message) !== null && !ourTarget;
+    const needsProbe = navigationFailure(facts.message) !== null && !ourTarget && !egressTunnelFailed(facts.message);
     const targetAnswers = needsProbe
       ? await (opts.probe ?? targetAnswersPlainRequest)(run.targetUrl)
       : null;
