@@ -968,6 +968,54 @@ async function main() {
     check("rate_limited is a class with its own label (its own ticket)", GAP_CLASSES.rate_limited.label.length > 0 && keyFor("rate_limited") !== PROD_KEYS.unclassified.key);
   }
 
+  // ─── CHE-491: a step that reviews a page the product does not own ────────
+  // Run #412 (securification.ai): "Review the Shopify App Store listing" ended
+  // with the walker saying the page "is outside the Securify app". No class
+  // named it, so it filed on the unclassified bucket.
+  {
+    console.log("\noutside the product — a page that belongs to someone else\n");
+    const T = "https://securification.ai";
+    const op: [string, GapEvidence, GapClass][] = [
+      [
+        "run #412: the listing answers 200 but is outside the app",
+        { text: 'Review the Shopify App Store listing (description, ratings) The listing URL answers with HTTP 200 and the slug is the app the CTA names ("easy-block-customer-ip-country"), but the Shopify App Store page itself is outside the Securify app and', targetOrigin: T },
+        "outside_product",
+      ],
+      ["a partner console that lives outside the product", { text: "The partner's billing console lives outside the product, so its plan table was not reviewed.", targetOrigin: T }, "outside_product"],
+      // What must not move.
+      ["outside the viewport is not another product", { text: "The banner is outside the viewport on small screens.", targetOrigin: T }, "unclassified"],
+      ["outside the dialog is not another product", { text: "The close button sits outside the dialog frame.", targetOrigin: T }, "unclassified"],
+      ["layout wording alone is not another owner (app shell)", { text: "The pricing page lives outside the app shell.", targetOrigin: T }, "unclassified"],
+      ["layout wording alone is not another owner (site header)", { text: "The button sits outside the site header.", targetOrigin: T }, "unclassified"],
+      ["a bare 'outside the app' names no owner", { text: "The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["a partner page that timed out stays egress_unreachable", { text: "The partner site lives outside the app and timed out.", targetOrigin: T }, "egress_unreachable"],
+      // A 429 from the partner's page is the partner's limit, not the target's, so
+      // it is reported as we-could-not-reach-it, as a foreign host's 429 is.
+      ["a partner page answering 429 is egress_unreachable, not the target's limit", { text: "The partner site lives outside the app; the request returned HTTP 429.", targetOrigin: T }, "egress_unreachable"],
+      ["a 429 on the target's own page beside layout wording stays rate_limited", { text: "The pricing page lives outside the app shell; the request returned HTTP 429.", targetOrigin: T }, "rate_limited"],
+      // The ownership word must belong to the outside page, not to a neighbouring
+      // phrase of the same step.
+      ["a partner named elsewhere in the step does not own the outside page", { text: "Review partner integrations The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["a partner named elsewhere, then the outside page, in separate sentences", { text: "Review partner integrations. The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["the owner in the outside phrase itself counts", { text: "The checkout page is outside the partner's app.", targetOrigin: T }, "outside_product"],
+      ["a new tab beside the same words keeps new_tab", { text: "The link opens in a new tab and the page is outside the app.", targetOrigin: T }, "new_tab"],
+      ["a challenge on a foreign host stays third_party_block", { text: "https://apps.shopify.com returned 403; the page is outside the app.", targetOrigin: T }, "third_party_block"],
+    ];
+    check(
+      "outside product: a link the trail proves opened a new tab stays new_tab beside outside-the-product words",
+      classifyGap({
+        text: "The partner's billing console lives outside the product, so its plan table was not reviewed.",
+        targetOrigin: T,
+        actions: JSON.parse(NEW_TAB_154.actions ?? "[]"),
+      }) === "new_tab",
+    );
+    for (const [name, ev, want] of op) {
+      const got = classifyGap(ev);
+      check(`outside product: ${name}`, got === want, got);
+    }
+    check("outside_product is a class with its own label (its own ticket)", GAP_CLASSES.outside_product.label.length > 0 && keyFor("outside_product") !== PROD_KEYS.unclassified.key);
+  }
+
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
   process.exit(failures ? 1 : 0);
 }

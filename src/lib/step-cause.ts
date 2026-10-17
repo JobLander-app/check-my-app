@@ -134,6 +134,7 @@ export const CAPABILITY_PHRASE: Record<CapabilityClass, string> = {
   range_input: "drag a slider",
   third_party_block: "open a page on another site that turned the check away",
   egress_unreachable: "reach an address this step points to",
+  outside_product: "review a page that belongs to another product",
   rate_limited: "get past the limit this app puts on repeated requests",
   undriven_control: "operate a control on the page",
   extension_runtime: "finish checking the installed extension",

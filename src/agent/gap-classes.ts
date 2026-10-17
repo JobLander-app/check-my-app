@@ -46,9 +46,19 @@ export type GapClass =
   | "shopify_admin"
   | "target_door"
   | "unrecorded_walk"
+  | "outside_product"
   | "unclassified";
 
 export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
+  // The step that filed this (run #412, securification.ai): "Review the Shopify
+  // App Store listing (description, ratings)" — the CTA's address answered 200
+  // and named the right app, and the step was left unchecked because the page
+  // itself belongs to Shopify. Nothing named that, so it landed on the bucket
+  // nobody learns from.
+  outside_product: {
+    label: "Checker is asked to review a page that belongs to another product",
+    why: "A journey follows the visitor to a page the product does not own — a marketplace listing, a partner's console — and a step there asks for a review of that page's own content. Whether the hand-off lands on the right page is the product's to answer and the link check can; what the other page says is not the product's to answer, so the step goes unchecked and the journey it belongs to stays unconfirmed.",
+  },
   // CHE-420: run cmuvu9xhl walked "Review the Block Log" and recorded nothing.
   unrecorded_walk: {
     label: "Checker walks a journey without recording a single step",
@@ -259,6 +269,43 @@ const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = 
   },
 ];
 
+// The walker's own sentence that the page it was sent to is not the product
+// ("the Shopify App Store page itself is outside the Securify app"). Two things
+// are needed, never one: the page is said to be outside, and the text names
+// whose it is. "Outside the app shell" or "outside the site header" is layout
+// and says nothing of ownership, and such a page can be the customer's own.
+// Not in TEXT_RULES: those outrank the reachability classes, and a partner page
+// that timed out or answered 429 is egress_unreachable / rate_limited, not a
+// page to review.
+const OUTSIDE_PRODUCT =
+  /\b(?:is|are|lies|lie|sits|sit|lives|live|remains?|stays?)\s+outside\s+(?:of\s+)?(?:the\s+)?(?:[\w'-]+\s+){0,3}?(?:app|product|site|website)(?![\w'-]|\s+(?:shell|header|footer|layout|chrome|navigation|nav|menu|bar|frame)\b)/i;
+const FOREIGN_OWNER =
+  /\b(?:app store|marketplace|partners?|third[- ]party|another (?:company|vendor|product|team|site)|someone else|external|vendor)\b/i;
+
+// The ownership word has to belong to the page said to be outside: in the words
+// that form its subject (from the nearest determiner to the verb) or in the
+// "outside ..." phrase itself. "Review partner integrations" in a step's label
+// beside "The pricing page lives outside the app" in its observation names a
+// partner and an outside page that are not the same thing — the pricing page
+// would be filed, and later described to the customer, as someone else's.
+const SUBJECT_START = /\b(?:the|this|that|these|those|its|their|our)\b(?![\s\S]*\b(?:the|this|that|these|those|its|their|our)\b)/i;
+
+function outsidePageOwner(text: string): boolean {
+  const global = new RegExp(OUTSIDE_PRODUCT.source, "gi");
+  for (const m of text.matchAll(global)) {
+    const before = text.slice(0, m.index).split(/[.;:!?()\n"]/).pop() ?? "";
+    const start = before.search(SUBJECT_START);
+    const subject = start >= 0 ? before.slice(start) : before.trim().split(/\s+/).slice(-4).join(" ");
+    if (FOREIGN_OWNER.test(`${subject} ${m[0]}`)) return true;
+  }
+  return false;
+}
+
+function outsideProduct(text: string, evidence: GapEvidence): boolean {
+  if (!OUTSIDE_PRODUCT.test(text)) return false;
+  return outsidePageOwner(text) || foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0;
+}
+
 // A host turning us away: a challenge page, or the statuses a host uses for
 // traffic it does not like (CHE-190). With a host other than the target named
 // it is the third party's door; on the target itself it is the CAPTCHA class.
@@ -465,11 +512,21 @@ export function classifyGap(evidence: GapEvidence): GapClass {
     // Named, so it is not the target's limit: without this branch the words
     // "returned HTTP 429" match neither CHALLENGE nor EGRESS and fall through
     // to unclassified, which is the bucket CHE-86 was.
-    return foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length === 0 ? "rate_limited" : "egress_unreachable";
+    // A partner page identified only by its words (no host) is just as much
+    // someone else's limit as one identified by its address.
+    const foreign = foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0 || outsideProduct(text, evidence);
+    return foreign ? "egress_unreachable" : "rate_limited";
   }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
-  return trailClass(evidence.actions ?? []) ?? "unclassified";
+  // The machine's trail outranks the model's sentence: a link the trail proves
+  // opened elsewhere is new_tab even when the words only say the destination is
+  // outside the partner's product, or the same interaction would file under two
+  // tickets depending on phrasing.
+  const fromTrail = trailClass(evidence.actions ?? []);
+  if (fromTrail) return fromTrail;
+  if (outsideProduct(text, evidence)) return "outside_product";
+  return "unclassified";
 }
 
 // CHE-373: the evidence a walked step is classified on, built from the walk's
