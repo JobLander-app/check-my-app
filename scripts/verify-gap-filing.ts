@@ -989,7 +989,15 @@ async function main() {
       ["layout wording alone is not another owner (site header)", { text: "The button sits outside the site header.", targetOrigin: T }, "unclassified"],
       ["a bare 'outside the app' names no owner", { text: "The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
       ["a partner page that timed out stays egress_unreachable", { text: "The partner site lives outside the app and timed out.", targetOrigin: T }, "egress_unreachable"],
-      ["a partner page answering 429 stays rate_limited", { text: "The partner site lives outside the app; the request returned HTTP 429.", targetOrigin: T }, "rate_limited"],
+      // A 429 from the partner's page is the partner's limit, not the target's, so
+      // it is reported as we-could-not-reach-it, as a foreign host's 429 is.
+      ["a partner page answering 429 is egress_unreachable, not the target's limit", { text: "The partner site lives outside the app; the request returned HTTP 429.", targetOrigin: T }, "egress_unreachable"],
+      ["a 429 on the target's own page beside layout wording stays rate_limited", { text: "The pricing page lives outside the app shell; the request returned HTTP 429.", targetOrigin: T }, "rate_limited"],
+      // The ownership word must belong to the outside page, not to a neighbouring
+      // phrase of the same step.
+      ["a partner named elsewhere in the step does not own the outside page", { text: "Review partner integrations The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["a partner named elsewhere, then the outside page, in separate sentences", { text: "Review partner integrations. The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["the owner in the outside phrase itself counts", { text: "The checkout page is outside the partner's app.", targetOrigin: T }, "outside_product"],
       ["a new tab beside the same words keeps new_tab", { text: "The link opens in a new tab and the page is outside the app.", targetOrigin: T }, "new_tab"],
       ["a challenge on a foreign host stays third_party_block", { text: "https://apps.shopify.com returned 403; the page is outside the app.", targetOrigin: T }, "third_party_block"],
     ];

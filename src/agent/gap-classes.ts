@@ -57,7 +57,7 @@ export const GAP_CLASSES: Record<GapClass, { label: string; why: string }> = {
   // nobody learns from.
   outside_product: {
     label: "Checker is asked to review a page that belongs to another product",
-    why: "A journey follows the visitor to a page the product does not own — a marketplace listing, a partner's console — and a step there asks for a review of that page's own content. Whether the hand-off lands on the right page is the product's to answer and the link check can; what the other page says is not, so the step has to be written as the hand-off, or the check must stop planning steps inside pages the owner cannot change.",
+    why: "A journey follows the visitor to a page the product does not own — a marketplace listing, a partner's console — and a step there asks for a review of that page's own content. Whether the hand-off lands on the right page is the product's to answer and the link check can; what the other page says is not the product's to answer, so the step goes unchecked and the journey it belongs to stays unconfirmed.",
   },
   // CHE-420: run cmuvu9xhl walked "Review the Block Log" and recorded nothing.
   unrecorded_walk: {
@@ -282,9 +282,28 @@ const OUTSIDE_PRODUCT =
 const FOREIGN_OWNER =
   /\b(?:app store|marketplace|partners?|third[- ]party|another (?:company|vendor|product|team|site)|someone else|external|vendor)\b/i;
 
+// The ownership word has to belong to the page said to be outside: in the words
+// that form its subject (from the nearest determiner to the verb) or in the
+// "outside ..." phrase itself. "Review partner integrations" in a step's label
+// beside "The pricing page lives outside the app" in its observation names a
+// partner and an outside page that are not the same thing — the pricing page
+// would be filed, and later described to the customer, as someone else's.
+const SUBJECT_START = /\b(?:the|this|that|these|those|its|their|our)\b(?![\s\S]*\b(?:the|this|that|these|those|its|their|our)\b)/i;
+
+function outsidePageOwner(text: string): boolean {
+  const global = new RegExp(OUTSIDE_PRODUCT.source, "gi");
+  for (const m of text.matchAll(global)) {
+    const before = text.slice(0, m.index).split(/[.;:!?()\n"]/).pop() ?? "";
+    const start = before.search(SUBJECT_START);
+    const subject = start >= 0 ? before.slice(start) : before.trim().split(/\s+/).slice(-4).join(" ");
+    if (FOREIGN_OWNER.test(`${subject} ${m[0]}`)) return true;
+  }
+  return false;
+}
+
 function outsideProduct(text: string, evidence: GapEvidence): boolean {
   if (!OUTSIDE_PRODUCT.test(text)) return false;
-  return FOREIGN_OWNER.test(text) || foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0;
+  return outsidePageOwner(text) || foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0;
 }
 
 // A host turning us away: a challenge page, or the statuses a host uses for
@@ -493,7 +512,10 @@ export function classifyGap(evidence: GapEvidence): GapClass {
     // Named, so it is not the target's limit: without this branch the words
     // "returned HTTP 429" match neither CHALLENGE nor EGRESS and fall through
     // to unclassified, which is the bucket CHE-86 was.
-    return foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length === 0 ? "rate_limited" : "egress_unreachable";
+    // A partner page identified only by its words (no host) is just as much
+    // someone else's limit as one identified by its address.
+    const foreign = foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0 || outsideProduct(text, evidence);
+    return foreign ? "egress_unreachable" : "rate_limited";
   }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
