@@ -34,6 +34,7 @@ import { settleStepGap } from "./gap-classes";
 import { cutUndrivenClaims, type GateStep } from "./findings-gate";
 import { cutSelfCheckRefusalClaims, summaryFallback, walkSummaryOnly } from "@/lib/verdict-language";
 import { summarizeWalk, unrecordedWalkStep, unrecordedWalkSummary } from "./summary";
+import { priceUnpricedWalk } from "./walk-pricing";
 import { conversionEarned, journeyMetric, leftOurGap, normalizeScenario, recordWalk, resolveJourney } from "./journey-catalog";
 import { normalizeSurface } from "@/lib/journey-key";
 import { parseAllowedOrigins } from "@/lib/allowed-origins";
@@ -169,7 +170,7 @@ export async function walkOneJourney(args: {
     // against the stored value, so a number only moves when the model named
     // what changed; `null` when this run had nothing to say (a re-walk, a
     // model that skipped the field).
-    const metric = await journeyMetric(env, identity.appJourneyId, proposed.metric);
+    let metric = await journeyMetric(env, identity.appJourneyId, proposed.metric);
     const seeded = proposed.metric?.seedOnly === true;
 
     const journey = await env.db.journey.create({
@@ -492,6 +493,26 @@ export async function walkOneJourney(args: {
         }
         await persistGeneratedTest(env, { appSlug: run.appSlug, journeyId: journey.id, title: proposed.title,
           content: await extension.exportSpec(proposed.title) });
+      }
+      // CHE-490: a journey that reached this walk by rotation or a partial
+      // re-check came with no numbers, and one with no stored price would be
+      // filed as our gap on every run from here on. The walk has just done it:
+      // it prices it, under the same rules as any other price.
+      if (!metric) {
+        const walkPrice = await priceUnpricedWalk({
+          env,
+          llm,
+          messages: result.messages,
+          usage,
+          appJourneyId: identity.appJourneyId,
+          recordedSteps: stepStatuses.length,
+        });
+        if (walkPrice) {
+          metric = walkPrice;
+          await env.db.journey
+            .update({ where: { id: journey.id }, data: { price: walkPrice.price, conversion: walkPrice.conversion } })
+            .catch((err) => console.warn(`[journey] walk price not stored on the run's journey: ${errText(err)}`));
+        }
       }
       // CHE-231: the catalog learns what this walk found — the status, the plan
       // the next walk starts from, the failure streak. After the extension
