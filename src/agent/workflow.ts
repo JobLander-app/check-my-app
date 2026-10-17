@@ -45,7 +45,7 @@ import { RUN_CANCELED } from "@/lib/run-cancel";
 import { askForSession, isSessionTarget, releaseSession, runSessionSlot, SESSION_NO_SLOT, sessionHost, slotHolderOnTeam, waitForSession } from "./session-browser";
 import { prepareExtensionPublication } from "./extension-publication";
 import { LlmBudgetError } from "./core";
-import { SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
+import { egressTunnelFailed, SESSION_OUTAGE_MESSAGE, sessionWalkReachedNothing } from "./session-outage";
 import { isTeamKeyDry, recordTeamKeyDry } from "@/lib/byok-credit";
 import { dedupKeyForFinding } from "@/lib/tracker/file";
 import { findingSignature } from "@/lib/finding-signature";
@@ -1624,7 +1624,10 @@ export class CheckRunWorkflow extends WorkflowEntrypoint<AgentBindings, CheckRun
         }
         // CHE-453: the session host's egress dying is the same kind of outage —
         // ours, said in the feed the same way, and the watch tries again.
-        const sessionOutage = err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE);
+        // CHE-455: so is a first page our proxy would not tunnel to.
+        const sessionOutage =
+          (err instanceof Error && (err.name === "SessionOutageError" || msg === SESSION_OUTAGE_MESSAGE)) ||
+          egressTunnelFailed(msg);
         if (teamKeyDry) {
           console.warn(`[byok] run ${runId} stopped: team ${run.teamId}'s OpenRouter key has no credit`);
           // The key paused (only if it is still the team's) and the feed told —

@@ -39,3 +39,19 @@ export function sessionWalkReachedNothing(journeys: readonly WalkedJourney[]): b
 export const SESSION_OUTAGE_MESSAGE =
   "internal: the session browser reached nothing during the walk (every step our_capability, no journey walked) — " +
   "an outage of our session host or its egress; no verdict may be published (CHE-453)";
+
+// CHE-455: the other face of the same outage. Runs #375, #376 and #411
+// (admin.shopify.com, a signed-in session) never loaded their first page:
+// `page.goto: net::ERR_TUNNEL_CONNECTION_FAILED`. Chrome gives that code only
+// when the proxy it was told to tunnel through refuses or drops the CONNECT —
+// and the only proxy any run of ours has is the session host's residential
+// egress. So the code is the proof: no page was reached because OUR egress
+// failed, whatever the target would have answered. The failure ticket used to
+// say "target answers a plain request but not our browser", which sent the
+// reader looking at the customer's site, and no feed line said the check
+// stopped on our side.
+export function egressTunnelFailed(message: string): boolean {
+  return /net::ERR_TUNNEL_CONNECTION_FAILED/.test(message);
+}
+
+export const SESSION_EGRESS_SIGNATURE = "Session host egress could not tunnel to the target (ERR_TUNNEL_CONNECTION_FAILED)";
