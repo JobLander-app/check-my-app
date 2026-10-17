@@ -62,6 +62,9 @@ const MUST_LOG: [string, string][] = [
   // CHE-236: ending the team's analytics access. "Why did the funnel numbers
   // stop" must have a name and a date behind it, not a reconstruction.
   ["src/app/dashboard/actions.ts", "disconnectPostHog"],
+  // CHE-469: ending the team's Linear or Jira — every app of the team stops
+  // filing at once; "why did tickets stop" has a name and a date.
+  ["src/app/dashboard/actions.ts", "disconnectTracker"],
   // CHE-315: the app settings rules moved into a library function shared with
   // the MCP update_app tool — the audit line moved with them, so an agent's
   // change is traced exactly like one made on the settings page.

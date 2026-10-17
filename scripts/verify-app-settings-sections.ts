@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import {
   JIRA_NO_PROJECT,
   SETTINGS_SECTIONS,
+  TEAM_TRACKER_LINE,
   jiraAccountLine,
   jiraBlockedLine,
   sectionsFor,
@@ -26,6 +27,8 @@ import {
   trackerHealth,
   trackerIdleLine,
   trackerSummary,
+  trackerTeamIdleLine,
+  trackerUnanswered,
   type TrackerHealth,
 } from "../src/lib/app-settings-sections";
 import { updateAppForTeam } from "../src/lib/app-settings";
@@ -173,7 +176,26 @@ check("…and the escalation address is gone from it", !page.includes("notifyEma
 check("…the named accounts' rows too", ["label", "email", "password", "remove"].every((f) => page.includes("name={`account:${account.id}:" + f + "`}")));
 check("…the frequency, pause and cancel are the schedule's own controls", /<WatchSettings\s+slug=\{watch\.appSlug\}/.test(page) && /frequency: watch\.frequency/.test(page));
 check("…and the pieces with their own actions: tracker team, analytics project, extension options, removal",
-  /<TeamSelect appId=\{app\.id\}/.test(page) && /<AnalyticsProject/.test(page) && /<ExtensionSettings/.test(page) && /<DeleteAppSection/.test(page) && /\/api\/integrations\/linear\/start\?appId=\$\{app\.id\}/.test(page));
+  /<TeamSelect appId=\{app\.id\}/.test(page) && /<AnalyticsProject/.test(page) && /<ExtensionSettings/.test(page) && /<DeleteAppSection/.test(page) &&
+    /`\/api\/integrations\/\$\{kind\}\/start\?appId=\$\{appId\}`/.test(page) && /connectHref\("linear", app\.id, /.test(page) && /connectHref\("jira", app\.id, /.test(page));
+// CHE-469: a tracker the team connected is the team's. Its row offers the
+// choice of team or project from the team's grant, and Connect only when the
+// team has none of that kind, or its token needs a new consent.
+check("a team's tracker offers no second Connect: only where none is connected, or the token is bad",
+  /return !team \|\| \(health && health\.tone !== "ok"\) \? `\/api\/integrations/.test(page) && /\{href && \(/.test(page));
+check("…the pickers read the team's grant, not the app's row",
+  /freshLinearToken\(db, connectionGrant\(teamTrackers\.linear\)/.test(page) && /jiraChoices\(db, connectionGrant\(teamTrackers\.jira\)/.test(page) &&
+    /const teamTrackers = await teamConnections\(db, teamId\)/.test(page));
+// Codex P2 on #347: a grant revoked on the provider's side still looks ok
+// here. A tracker that gave nothing for it turns the row to Reconnect.
+check("a team tracker that gave no teams or projects is offered Reconnect, whatever the stored token says",
+  /teamTrackers\.linear && linearTeams\.length === 0 && trackerHealth\(teamTrackers\.linear, now\)\?\.tone === "ok"\s*\?\s*trackerUnanswered\("Linear"\)/.test(page) &&
+    /teamTrackers\.jira && jiraProjects\.length === 0 && trackerHealth\(teamTrackers\.jira, now\)\?\.tone === "ok"\s*\?\s*trackerUnanswered\("Jira"\)/.test(page) &&
+    /health=\{tracker \|\| \(health && health\.tone !== "ok"\) \? health : null\}/.test(page) &&
+    trackerUnanswered("Jira").tone !== "ok");
+check("…and are shown whenever the team has that tracker, for an app that files elsewhere too",
+  /\{teamTrackers\.linear && linearTeams\.length > 0 && \(/.test(page) && /current=\{tracker\?\.teamId \?\? null\}/.test(page) &&
+    /\{teamTrackers\.jira && jiraProjects\.length > 0 && \(/.test(page));
 // CHE-438: Linear and Jira are the same job, so they are drawn the same way.
 // The owner, 2026-10-13: "why should Jira be different?" — Jira had grown its
 // own card without the contract, and Linear's card said problems stay on the
@@ -189,10 +211,12 @@ check("the ticket contract sits under both trackers, in neither row",
 // The card's sentences come from one pure module, so every variant can be
 // checked — Codex P1 on #337: sentences assembled in JSX escaped the gate.
 check("the card's sentences are the module's: the page types none of them",
-  /trackerSummary\(app\.tracker, jira \? jiraHealth : health, jiraBlockers\)/.test(page) &&
-    /idle=\{trackerIdleLine\("Linear", /.test(page) && /idle=\{trackerIdleLine\("Jira", /.test(page) &&
-    /\{jiraAccountLine\(jira !== null\)\}/.test(page) && /\{JIRA_NO_PROJECT\}/.test(page) && /jiraBlockedLine\(jira\.teamId, jiraBlockers\)/.test(page) &&
-    !/Problems stay on the check|become tickets in|Not connected\.|uses the Atlassian account|No project chosen|can&apos;t be filed/.test(page));
+  /trackerSummary\(app\.tracker, jira \? jiraHealth : health, jiraBlockers, Boolean\(teamTrackers\.linear \|\| teamTrackers\.jira\)\)/.test(page) &&
+    /trackerTeamIdleLine\("Linear", "team", /.test(page) && /trackerIdleLine\("Linear", /.test(page) &&
+    /trackerTeamIdleLine\("Jira", "project", /.test(page) && /trackerIdleLine\("Jira", /.test(page) &&
+    /\{TEAM_TRACKER_LINE\}/.test(page) &&
+    /\{jiraAccountLine\(teamTrackers\.jira !== null\)\}/.test(page) && /\{JIRA_NO_PROJECT\}/.test(page) && /jiraBlockedLine\(jira\.teamId, jiraBlockers\)/.test(page) &&
+    !/Problems stay on the check|become tickets in|Not connected\.|Connected for your team|uses the Atlassian account|No project chosen|can&apos;t be filed/.test(page));
 // What the first line says, case by case — never a promise the rows below
 // contradict (Codex P2 on #337: an expired token or a blocked project).
 const ok: TrackerHealth = { tone: "ok", text: "" }, bad: TrackerHealth = { tone: "bad", text: "" };
@@ -202,7 +226,12 @@ eq("summary: Linear filing", trackerSummary({ type: "linear", teamId: "t" }, ok,
 eq("summary: Jira without a project", trackerSummary({ type: "jira", teamId: null }, ok, []), "Problems stay on the check's page until a project is chosen below.");
 eq("summary: an expired token files nothing", trackerSummary({ type: "linear", teamId: "t" }, bad, []), "Problems stay on the check's page until Linear is reconnected.");
 eq("summary: a project that refuses our tickets files nothing", trackerSummary({ type: "jira", teamId: "SEC" }, ok, ["Team"]), "Problems stay on the check's page until another project is chosen below.");
-eq("idle: the other tracker is named", trackerIdleLine("Linear", "Jira"), "Not connected. Connecting Linear moves this app's tickets from Jira to Linear.");
+eq("idle: the other tracker is named", trackerIdleLine("Linear", "Jira"), "Not connected. Connecting Linear connects it for your whole team and moves this app's tickets from Jira to Linear.");
+// CHE-469: connected once, for the team; an app then only chooses.
+eq("summary: the team has a tracker this app does not file into yet", trackerSummary(null, null, [], true), "Problems stay on the check's page until this app picks where its tickets go below.");
+eq("idle: nothing connected says it serves the whole team", trackerIdleLine("Jira", null), "Not connected. Connected once, it serves every app of your team; each app picks where its tickets go.");
+eq("team idle: the team's Jira, this app nowhere yet", trackerTeamIdleLine("Jira", "project", null), "Connected for your team. Choose a project below and this app's problems become tickets in Jira.");
+eq("team idle: the team's Linear, this app on Jira", trackerTeamIdleLine("Linear", "team", "Jira"), "Connected for your team. Choosing a team below moves this app's tickets from Jira to Linear.");
 // Codex P2 on #337: Reconnect starts the same consent as Connect.
 check("the Atlassian account is named before Reconnect too", /^Reconnect uses the Atlassian account/.test(jiraAccountLine(true)) && /^Connect uses/.test(jiraAccountLine(false)));
 // Every sentence the card can show describes the customer's tools only
@@ -210,8 +239,11 @@ check("the Atlassian account is named before Reconnect too", /^Reconnect uses th
 const healths = [null, ok, { tone: "warn", text: "" } as TrackerHealth, bad];
 const trackers = [null, ...["linear", "jira"].flatMap((type) => [{ type, teamId: null }, { type, teamId: "SEC" }])];
 const everySentence = [
-  ...trackers.flatMap((t) => healths.flatMap((h) => [[], ["Team", "Sprint"]].map((b) => trackerSummary(t, h, b)))),
+  ...trackers.flatMap((t) => healths.flatMap((h) => [[], ["Team", "Sprint"]].flatMap((b) => [false, true].map((team) => trackerSummary(t, h, b, team))))),
   ...["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerIdleLine(name, other))),
+  ...(["team", "project"] as const).flatMap((where) => ["Linear", "Jira"].flatMap((name) => [null, name === "Linear" ? "Jira" : "Linear"].map((other) => trackerTeamIdleLine(name, where, other)))),
+  TEAM_TRACKER_LINE,
+  trackerUnanswered("Linear").text, trackerUnanswered("Jira").text,
   jiraAccountLine(false), jiraAccountLine(true), JIRA_NO_PROJECT, jiraBlockedLine("SEC", ["Team", "Sprint"]),
   "Linear or Jira, one at a time",
 ];

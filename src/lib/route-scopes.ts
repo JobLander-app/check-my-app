@@ -140,6 +140,8 @@ export const ACTION_RULES: Record<string, RouteRule> = {
   // CHE-236: disconnecting is the same authority as connecting — whoever may
   // grant a team's analytics access may end it.
   "src/app/dashboard/actions.ts#disconnectPostHog": { kind: "team", action: "integration.connect" },
+  // CHE-469: the team's Linear or Jira, by the same authority.
+  "src/app/dashboard/actions.ts#disconnectTracker": { kind: "team", action: "integration.connect" },
   "src/app/dashboard/actions.ts#createApiKey": { kind: "team", action: "apikey.manage" },
   "src/app/dashboard/actions.ts#revokeApiKey": { kind: "team", action: "apikey.manage" },
   "src/app/dashboard/actions.ts#updateAppSettings": { kind: "team", action: "app.settings.write" },

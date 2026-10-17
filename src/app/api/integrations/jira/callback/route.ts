@@ -1,6 +1,7 @@
 // Jira OAuth callback (CHE-438). Verifies the CSRF state, exchanges the code,
 // picks the site the grant reaches and a project in it, and stores the grant
-// (encrypted) as the app's TrackerIntegration of type "jira".
+// (encrypted) as the team's Jira connection, with the app filing into it
+// (CHE-469).
 import { NextResponse, type NextRequest } from "next/server";
 import { can, refusal } from "@/lib/scopes";
 import { cookies } from "next/headers";

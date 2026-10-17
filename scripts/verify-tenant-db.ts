@@ -32,8 +32,8 @@ const SCANNED = ["src/app", "src/lib"];
 // The models a team owns. A row of one of these can belong to somebody else,
 // which is what makes an unscoped query a leak rather than a slow query.
 // CHE-322: testAccount holds another team's passwords — the row a leak would
-// cost the most.
-const TENANT_MODELS = ["app", "run", "watch", "apiKey", "settledSignature", "testAccount"] as const;
+// cost the most. CHE-469: trackerConnection holds a team's tracker tokens.
+const TENANT_MODELS = ["app", "run", "watch", "apiKey", "settledSignature", "testAccount", "trackerConnection"] as const;
 
 // Files that may talk to these models without a declaration, each with its
 // reason. Two, and both are about the plumbing rather than a tenant.

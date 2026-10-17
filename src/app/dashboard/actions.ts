@@ -22,31 +22,57 @@ import { alreadyScoped, teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
 import { appRepoFromForm, mappingEventSummary, saveAppRepo } from "@/lib/github-mapping";
 import { chooseJiraProject } from "@/lib/tracker/jira-connect";
+import { chooseLinearTeam } from "@/lib/tracker/linear-connect";
+import { disconnectTeamTracker } from "@/lib/tracker/connection";
+import { trackerName } from "@/lib/tracker/name";
 
-// Re-point an app's tracker to a different team (CHE-31 team picker). The default
+// Which Linear team an app's tickets go to (CHE-31 team picker). The default
 // at connect time is the first team; JobLander must target the JobLander team,
-// not whatever happens to be first.
-export async function setTrackerTeam(appId: string, teamId: string, teamName: string) {
+// not whatever happens to be first. CHE-469: an app of a team with Linear
+// connected picks its team here without connecting again.
+export async function setTrackerTeam(appId: string, teamId: string) {
   await refuseSelfCheck(appPath.page(appId));
   const { user, db, team } = await requireActionScope("integration.connect");
   // CHE-417: the app is the team's, whoever added it — the scope table above
   // decided who may act; ownerId is attribution, not access.
   const app = await db.app.findFirst({
     where: { ...teamOwned(team.id), id: appId },
-    include: { tracker: true },
+    select: { id: true, appSlug: true },
   });
-  if (!app?.tracker) throw new Error("tracker not connected");
-  await db.trackerIntegration.update({
-    where: { appId },
-    data: { teamId, externalOrg: teamName },
-  });
+  if (!app) throw new Error("app not found");
+  // Only the id travels from the client; chooseLinearTeam checks it against
+  // what the team's grant reaches now and takes the name from Linear.
+  const env = getCloudflareContext().env as Record<string, string | undefined>;
+  const chosen = await chooseLinearTeam(db, app.id, teamId, { clientId: env.LINEAR_CLIENT_ID, clientSecret: env.LINEAR_CLIENT_SECRET });
+  if (chosen.outcome !== "chosen") throw new Error(`tracker team not set: ${chosen.outcome}`);
   await recordTeamEvent(db, {
     teamId: team.id,
     actorUserId: user.id,
     action: "integration.connected",
     subject: app.appSlug,
-    summary: `pointed ${app.appSlug}'s tickets at ${teamName}`,
+    summary: `pointed ${app.appSlug}'s tickets at ${chosen.team.name}`,
   });
+  revalidatePath(appPath.section(app.id, "integrations"));
+}
+
+// CHE-469: a tracker is the team's, so disconnecting it is the team's act: the
+// grant is deleted (a stored token nothing reads is still a stored token), and
+// every app that filed into it stops — each app's in-flight links are retired,
+// since their keys would mean nothing in a tracker connected later.
+export async function disconnectTracker(kind: string): Promise<void> {
+  await refuseSelfCheck("/settings/integrations");
+  const { user, db, team } = await requireActionScope("integration.connect");
+  if (kind !== "linear" && kind !== "jira") throw new Error("unknown tracker");
+  const apps = await disconnectTeamTracker(db, team.id, kind);
+  if (apps === null) return;
+  await recordTeamEvent(db, {
+    teamId: team.id,
+    actorUserId: user.id,
+    action: "integration.disconnected",
+    subject: trackerName(kind),
+    summary: `disconnected ${trackerName(kind)}${apps.length > 0 ? ` (${apps.join(", ")} stop filing tickets)` : ""}`,
+  });
+  revalidatePath("/settings/integrations");
 }
 
 // Which Jira project (and site) an app's tickets go to (CHE-438). Only the

@@ -1,12 +1,13 @@
 // Linear OAuth callback (CHE-31). Verifies CSRF state, exchanges the code for an
-// access token, and stores it (encrypted) as the App's TrackerIntegration.
+// access token, and stores it (encrypted) as the team's Linear connection, with
+// the app filing into it (CHE-469).
 import { NextResponse, type NextRequest } from "next/server";
 import { can, refusal } from "@/lib/scopes";
 import { cookies } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { requireUser } from "@/lib/auth";
 import { activeTeamContext } from "@/lib/teams";
-import { exchangeCode, fetchFirstTeam } from "@/lib/tracker/linear-oauth";
+import { exchangeCode, fetchTeams } from "@/lib/tracker/linear-oauth";
 import { saveLinearGrant } from "@/lib/tracker/linear-connect";
 import { teamOwned } from "@/lib/tenant-db";
 import { appPath } from "@/lib/app-shell";
@@ -77,9 +78,10 @@ export async function GET(req: NextRequest) {
     return fail(req, app.id);
   }
 
-  // The team kept on a reconnect, the type set on a switch from Jira, and the
-  // Jira links retired: src/lib/tracker/linear-connect.ts (CHE-438).
-  await saveLinearGrant(db, app, token, () => fetchFirstTeam(token.access_token));
+  // The grant stored as the team's (CHE-469), the team kept on a reconnect,
+  // the type set on a switch from Jira, and the Jira links retired:
+  // src/lib/tracker/linear-connect.ts (CHE-438).
+  await saveLinearGrant(db, app, token, () => fetchTeams(token.access_token));
 
   return back(req, "linear_connected", app.id);
 }

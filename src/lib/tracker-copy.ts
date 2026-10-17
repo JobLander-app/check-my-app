@@ -16,6 +16,40 @@ export function trackerOffer(scheduled: boolean): string {
     : "Connect Linear or Jira and send any problem from a check's page to it as a ticket.";
 }
 
+/**
+ * The app page's card when the team has already connected a tracker (CHE-469):
+ * no second connect, only where this app's tickets go. `names` are the team's
+ * trackers, in the card's order.
+ */
+export function teamTrackerOffer(names: string[]): { text: string; action: string } {
+  if (names.length === 1) {
+    const where = names[0] === "Jira" ? "project" : "team";
+    return { text: `Your team's ${names[0]} is connected. Choose the ${where} this app's problems go to.`, action: `Choose a ${where}` };
+  }
+  return { text: `Your team's ${names.join(" and ")} are connected. Choose where this app's problems go.`, action: "Choose where" };
+}
+
+// The team's trackers on Team integrations (CHE-469): connected once, used by
+// every app that picks where its tickets go, ended for all of them at once.
+export const TEAM_TRACKERS_NONE =
+  "No issue tracker connected. Connect Linear or Jira from any app's Integrations — once, for the whole team; every other app then only picks where its tickets go.";
+
+export function teamTrackerApps(apps: string[]): string {
+  if (apps.length === 0) return "No app files into it yet — each app picks its team or project on its Integrations.";
+  return `${apps.length === 1 ? "1 app files" : `${apps.length} apps file`} into it: ${apps.join(", ")}.`;
+}
+
+/**
+ * Apps that use the team's tracker but file nowhere yet (Codex on #347): a
+ * grant that reaches several projects, or a reconnect that no longer reaches
+ * the one chosen, leaves an app waiting for a choice.
+ */
+export function teamTrackerWaiting(apps: string[], where: "team" | "project"): string {
+  return `Waiting for a ${where} to be chosen: ${apps.join(", ")}.`;
+}
+
+export const TEAM_TRACKER_DISCONNECT = "Disconnecting is for the whole team: every app that files into it stops filing tickets.";
+
 /** "Which trackers are supported?" — from the plans' own limits, so it cannot go stale. */
 export function trackerFaqAnswer(limits: Record<string, { trackerIntegration: boolean }>): string {
   const plans = Object.keys(limits);

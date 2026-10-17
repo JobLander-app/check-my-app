@@ -5,6 +5,12 @@ import { teamOwned } from "@/lib/tenant-db";
 import { isStranded } from "@/lib/posthog/token";
 import { missingScopes } from "@/lib/posthog/oauth";
 import { AnalyticsConnection } from "@/components/analytics-connection";
+import { TeamTrackers, type TeamTrackersProps } from "@/components/team-trackers";
+import { TRACKER_KINDS, connectionApps, teamConnections } from "@/lib/tracker/connection";
+import { trackerName } from "@/lib/tracker/name";
+import { trackerHealth, trackerUnanswered } from "@/lib/app-settings-sections";
+import { trackerAnswers } from "@/lib/tracker/answers";
+import { trackerCreds } from "@/lib/tracker/factory";
 import { integrationNotice } from "@/lib/integration-notice";
 import { appPath } from "@/lib/app-shell";
 import { appKind, appLabel } from "@/lib/app-label";
@@ -50,12 +56,48 @@ async function analyticsConnection(
   };
 }
 
+/**
+ * The team's issue trackers as the screen needs them (CHE-469): which are
+ * connected, whether the tracker still answers the grant, and which apps file
+ * into each. Tokens never leave this function.
+ */
+async function teamTrackers(db: Awaited<ReturnType<typeof requireUser>>["db"], teamId: string): Promise<TeamTrackersProps["trackers"]> {
+  const connections = await teamConnections(db, teamId);
+  const creds = trackerCreds(getCloudflareContext().env as unknown as Record<string, unknown>);
+  const now = new Date();
+  const loaded = await Promise.all(
+    TRACKER_KINDS.map(async (kind) => {
+      const connection = connections[kind];
+      if (!connection) return null;
+      const [apps, answers] = await Promise.all([connectionApps(db, teamId, kind), trackerAnswers(db, kind, connection, creds)]);
+      // The stored health, unless the tracker gave nothing for the grant: one
+      // revoked on its side still has a refresh token here (Codex on #347).
+      const stored = trackerHealth(connection, now);
+      const health = !answers && stored?.tone === "ok" ? trackerUnanswered(trackerName(kind)) : stored;
+      // Only an app with somewhere to file files into it (Codex on #347); one
+      // still waiting for its project or team is named as waiting.
+      const routed = (a: (typeof apps)[number]) => Boolean(a.teamId && (kind !== "jira" || a.externalOrg));
+      return {
+        kind,
+        name: trackerName(kind),
+        health,
+        // A new consent replaces the team's grant; it starts from one of the
+        // apps that use it, which the connect flow needs to come back to.
+        reconnect: health?.tone !== "ok" && apps[0] ? `/api/integrations/${kind}/start?appId=${apps[0].appId}` : null,
+        apps: apps.filter(routed).map(({ app }) => appLabel(app)),
+        waiting: apps.filter((a) => !routed(a)).map(({ app }) => appLabel(app)),
+      };
+    }),
+  );
+  return loaded.filter((t) => t !== null);
+}
+
 // Integrations (CHE-351 shell, CHE-356): the connections the whole team
-// shares — the analytics connection, and GitHub, where a release's check comes
-// from (CHE-413). The PostHog flow comes back here with ?integration=…. What
-// is set per app — the tracker and its board, the analytics project, webhooks
-// — is on that app's Integrations section, and every app is one click away
-// from here, connected or not.
+// shares — the analytics connection, the issue trackers (CHE-469), and GitHub,
+// where a release's check comes from (CHE-413). The PostHog flow comes back
+// here with ?integration=…. What is set per app — where its tickets go, the
+// analytics project, webhooks — is on that app's Integrations section, and
+// every app is one click away from here, connected or not.
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -74,8 +116,9 @@ export default async function IntegrationsPage({
   const installable = Boolean(getGitHubAppEnv(env as Record<string, unknown>).GITHUB_APP_SLUG);
   // GitHub twice: once for the team's card, and per app for the list — the
   // same fact the app's own card states.
-  const [posthog, apps, fromAction, actionApps, github] = await Promise.all([
+  const [posthog, trackers, apps, fromAction, actionApps, github] = await Promise.all([
     analyticsConnection(db, team.id),
+    teamTrackers(db, team.id),
     db.app.findMany({
       where: { ...teamOwned(team.id) },
       orderBy: { createdAt: "desc" },
@@ -109,6 +152,8 @@ export default async function IntegrationsPage({
 
       <AnalyticsConnection connection={posthog} />
 
+      <TeamTrackers trackers={trackers} canDisconnect={can(scope, "integration.connect")} />
+
       <div className="mt-6">
         <GitHubAppPanel github={github} canConnect={can(scope, "integration.connect")} installable={installable} />
       </div>
@@ -121,8 +166,8 @@ export default async function IntegrationsPage({
         <section className="card mt-6 p-5">
           <h2 className="text-lg font-medium">Per app</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            The tracker, the analytics project and webhooks are each app&apos;s own. Open an app to connect or change
-            them.
+            Where an app&apos;s tickets go, its analytics project and its webhooks are set on the app. Open an app to
+            choose or change them.
           </p>
           <ul className="mt-3 divide-y divide-ink-700">
             {apps.map((app) => (
@@ -140,7 +185,8 @@ export default async function IntegrationsPage({
                     })}
                   </span>
                   <Link href={appPath.section(app.id, "integrations")} className="whitespace-nowrap text-xs text-accent hover:underline">
-                    {app.tracker ? "Open →" : "Connect →"}
+                    {/* CHE-469: with the team's tracker connected, an app only chooses where. */}
+                    {app.tracker ? "Open →" : trackers.length > 0 ? "Choose →" : "Connect →"}
                   </Link>
                 </span>
               </li>
