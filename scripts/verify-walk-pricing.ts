@@ -133,6 +133,10 @@ async function main() {
   const execution = readFileSync(join(__dirname, "../src/agent/execution.ts"), "utf8");
   check("walkOneJourney asks for a price when the journey arrived with none", /priceUnpricedWalk\(/.test(execution) && /if \(!metric\)/.test(execution));
   check("the price lands on the run's journey row too", /walkPrice\.price/.test(execution) && /walkPrice\.conversion/.test(execution));
+  check(
+    "the pricing call's spend is added to the journey's costUsd, not only to usage",
+    /spentBeforePricing = usage\.costUsd/.test(execution) && /costUsd \+= usage\.costUsd - spentBeforePricing/.test(execution),
+  );
 
   if (failures) {
     console.log(`\n${failures} check(s) failed`);

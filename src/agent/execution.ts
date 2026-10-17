@@ -499,6 +499,10 @@ export async function walkOneJourney(args: {
       // filed as our gap on every run from here on. The walk has just done it:
       // it prices it, under the same rules as any other price.
       if (!metric) {
+        // finalizeJson adds its spend to `usage` only; the journey's total
+        // (Journey/AppJourney/Run.costUsd and the runaway fuse) reads `costUsd`,
+        // so the pricing call's share is carried over by the difference.
+        const spentBeforePricing = usage.costUsd;
         const walkPrice = await priceUnpricedWalk({
           env,
           llm,
@@ -507,6 +511,7 @@ export async function walkOneJourney(args: {
           appJourneyId: identity.appJourneyId,
           recordedSteps: stepStatuses.length,
         });
+        costUsd += usage.costUsd - spentBeforePricing;
         if (walkPrice) {
           metric = walkPrice;
           await env.db.journey
