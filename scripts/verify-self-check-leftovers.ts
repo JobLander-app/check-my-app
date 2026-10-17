@@ -20,7 +20,7 @@
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { findOrphans } from "@/agent/cleanup";
-import { carriesMarker, leftoverKind, sweepSelfCheckLeftovers } from "@/agent/janitor";
+import { REMOVAL_PENDING_NOTE, carriesMarker, leftoverKind, sweepSelfCheckLeftovers } from "@/agent/janitor";
 import type { AgentEnv } from "@/agent/env";
 
 let failures = 0;
@@ -71,6 +71,7 @@ function build() {
     { id: "run242", appId: "ours", runNumber: 242, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     { id: "run260", appId: "ours", runNumber: 260, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     { id: "run261", appId: "ours", runNumber: 261, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
+    { id: "run270", appId: "ours", runNumber: 270, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     { id: "runCust", appId: "cust", runNumber: 200, targetUrl: "https://joblander.app", ownerId: "owner", teamId: "t1" },
   ];
   const apps: AppRow[] = [
@@ -83,6 +84,7 @@ function build() {
     { id: "r219", appSlug: "checkmyapp-test-r219.example.com", name: "CheckMyApp test r219", ownerId: "owner", teamId: "t1" },
     { id: "r260", appSlug: "checkmyapp-test-r260.example.com", name: "CheckMyApp test r260", ownerId: "owner", teamId: "t1" },
     { id: "r261", appSlug: "checkmyapp-test-r261.example.com", name: "CheckMyApp test r261", ownerId: "owner", teamId: "t1" },
+    { id: "r270", appSlug: "checkmyapp-test-r270.example.com", name: "CheckMyApp test r270", ownerId: "owner", teamId: "t1" },
     { id: "cust", appSlug: "joblander.app", name: null, ownerId: "owner", teamId: "t1" },
     { id: "custTest", appSlug: "checkmyapp-test-r200.example.com", name: null, ownerId: "owner", teamId: "t1" },
   ];
@@ -97,8 +99,13 @@ function build() {
     { id: "L219", runId: "run219", appId: "ours", kind: "app (monitored site)", marker: "CheckMyApp test r219", locationUrl: "https://checkmyapp.dev/dashboard/r219", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 20) },
     { id: "L242", runId: "run242", appId: "ours", kind: "app (daily-watch monitored app)", marker: "CheckMyApp test r242", locationUrl: "https://checkmyapp.dev/dashboard", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 18) },
     // Only sounds like an app: removed when its app is found, left open when not.
-    { id: "L260", runId: "run260", appId: "ours", kind: "extension", marker: "CheckMyApp test r260", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
+    { id: "L260", runId: "run260", appId: "ours", kind: "extension", marker: "CheckMyApp test r260", locationUrl: "https://checkmyapp.dev/dashboard?added=checkmyapp-test-r260.example.com", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
     { id: "L261", runId: "run261", appId: "ours", kind: "extension", marker: "CheckMyApp test r261-x", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
+    // Shares run #113's marker and owner with L113, whose app is removed — but
+    // nothing on this row says it is that app, so it is not closed on its word.
+    { id: "Lext113", runId: "run113", appId: "ours", kind: "extension", marker: "CheckMyApp test r113", locationUrl: "https://checkmyapp.dev/dashboard/extensions", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 44) },
+    // Another word form of the same idea, located by the app's id.
+    { id: "L270", runId: "run270", appId: "ours", kind: "site monitoring", marker: "CheckMyApp test r270", locationUrl: "https://checkmyapp.dev/dashboard/r270", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
     // "application" is not an app of ours: a job application is someone's record.
     { id: "Ljob", runId: "run113", appId: "ours", kind: "job application", marker: "CheckMyApp test r113", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 44) },
     // Inside the grace period: the run is still inspectable.
@@ -172,6 +179,29 @@ function build() {
   return { env, apps, ledger };
 }
 
+// The sweep is cut short between removing the app and closing the row. The
+// app is gone, so the next sweep cannot find it; the row must still close.
+async function interrupted() {
+  const { env, apps, ledger } = build();
+  const real = env.db.createdResource.updateMany;
+  let armed = true;
+  (env.db.createdResource as { updateMany: typeof real }).updateMany = async (args: Parameters<typeof real>[0]) => {
+    if (armed && (args.data as { deletedAt?: Date }).deletedAt) throw new Error("ledger write failed");
+    return real(args);
+  };
+  let threw = false;
+  await sweepSelfCheckLeftovers(env, NOW).catch(() => { threw = true; });
+  const l260 = ledger.find((r) => r.id === "L260")!;
+  check("interrupted: the sweep failed at the ledger write", threw);
+  check("interrupted: the extension's app is already gone", !apps.some((a) => a.id === "r260"));
+  check("interrupted: its row is open and carries the pending note", l260.deletedAt === null && l260.cleanupNote === REMOVAL_PENDING_NOTE);
+  check("interrupted: a row with no proof carries no note", ledger.find((r) => r.id === "Lext113")!.cleanupNote === null);
+  armed = false;
+  await sweepSelfCheckLeftovers(env, NOW);
+  check("interrupted: the next sweep closes it though its app can no longer be found", l260.deletedAt !== null);
+  check("interrupted: and still leaves the row with no proof open", ledger.find((r) => r.id === "Lext113")!.deletedAt === null);
+}
+
 async function main() {
   // The marker must end where a word ends: r11 is not r113.
   check("marker r11 is not found in an r113 slug", !carriesMarker("checkmyapp-test-r113.example.com", "CheckMyApp test r11"));
@@ -183,6 +213,9 @@ async function main() {
   check("kind 'app (monitored site)' names an app", leftoverKind("app (monitored site)") === "app");
   check("kind 'daily-watch monitored app' names an app", leftoverKind("daily-watch monitored app") === "app");
   check("kind 'extension' only sounds like one", leftoverKind("extension") === "app-like");
+  for (const k of ["monitoring", "site monitoring", "monitors", "extensions", "watches", "websites"]) {
+    check(`kind '${k}' only sounds like an app`, leftoverKind(k) === "app-like");
+  }
   check("kind 'job application' is not an app", leftoverKind("job application") === null);
   check("kind 'story' is not an app", leftoverKind("story") === null);
 
@@ -212,7 +245,9 @@ async function main() {
   check("an extension record whose app was found is removed and closed", !apps.some((a) => a.id === "r260") && row("L260").deletedAt !== null);
   check("an extension record with no app found stays open", row("L261").deletedAt === null);
   check("r261's neighbour app survives r260's sweep", apps.some((a) => a.id === "r261"));
-  check("counts: three apps removed, five rows closed", result.appsRemoved === 3 && result.ledgerClosed === 5, JSON.stringify(result));
+  check("an extension row that shares an app's marker, but does not name the app, stays open", row("Lext113").deletedAt === null);
+  check("a 'site monitoring' row whose location names the app is removed and closed", !apps.some((a) => a.id === "r270") && row("L270").deletedAt !== null);
+  check("counts: four apps removed, six rows closed", result.appsRemoved === 4 && result.ledgerClosed === 6, JSON.stringify(result));
 
   // After: the same later run is handed only what is really still there.
   const after = await findOrphans(env, "run378");
@@ -245,6 +280,7 @@ async function atRealSize() {
         app("leftB", "shop.example.com", { name: "My CheckMyApp test r901" }),
         app("leftC", "checkmyapp-test-r902.example.com", { name: "CheckMyApp test r902" }),
         app("keep", "checkmyapp-test-r9000.example.com"),
+        app("leftD", "checkmyapp-test-r903.example.com"),
       ] as never,
     });
     const run = (id: string, n: number, appId: string, targetUrl: string) => ({
@@ -259,12 +295,15 @@ async function atRealSize() {
         run("rC", 4, "ours", "https://checkmyapp.dev"),
       ] as never,
     });
-    const row = (id: string, runId: string, kind: string, marker: string, d: Date) => ({ id, runId, kind, marker, createdAt: d });
+    const row = (id: string, runId: string, kind: string, marker: string, d: Date, locationUrl: string | null = null) => ({ id, runId, kind, marker, createdAt: d, locationUrl });
     const ineligible = Array.from({ length: 250 }, (_, i) =>
       i % 5 === 0 ? row(`n${i}`, "rA", "story", `CheckMyApp test r${i}`, day(2)) : row(`n${i}`, "rCust", "app", `CheckMyApp test r${i}`, day(2)),
     );
     await db.createdResource.createMany({
-      data: [...ineligible, row("eA", "rA", "app", "CheckMyApp test r900", day(3)), row("eB", "rB", "app", "CheckMyApp test r901", day(3)), row("eC", "rC", "app (monitored site)", "CheckMyApp test r902", day(3))],
+      data: [...ineligible, row("eA", "rA", "app", "CheckMyApp test r900", day(3)), row("eB", "rB", "app", "CheckMyApp test r901", day(3)), row("eC", "rC", "app (monitored site)", "CheckMyApp test r902", day(3)),
+        // One run, one marker, two records: the one that names the app is closed with it.
+        row("eD", "rC", "site monitoring", "CheckMyApp test r903", day(3), "https://checkmyapp.dev/dashboard/leftD"),
+        row("eE", "rC", "extension", "CheckMyApp test r903", day(3))],
     });
 
     const env = { db, bindings: {} } as unknown as AgentEnv;
@@ -280,7 +319,9 @@ async function atRealSize() {
     check("real D1: our own app and a customer's survive", (await stillThere("ours")) && (await stillThere("cust")));
     const stillOpen = await db.createdResource.count({ where: { id: { startsWith: "n" }, deletedAt: null } });
     check("real D1: none of the 250 rows that are not ours was closed", stillOpen === 250, `${stillOpen} open`);
-    check("real D1: counts: three apps removed, three rows closed", result.appsRemoved === 3 && result.ledgerClosed === 3, JSON.stringify(result));
+    check("real D1: a 'site monitoring' row that names its app closes with it", (await open("eD")) !== null && !(await stillThere("leftD")));
+    check("real D1: a row sharing its marker without naming the app stays open", (await open("eE")) === null);
+    check("real D1: counts: four apps removed, four rows closed", result.appsRemoved === 4 && result.ledgerClosed === 4, JSON.stringify(result));
     const again = await sweepSelfCheckLeftovers(env, NOW);
     check("real D1: a second sweep changes nothing", again.appsRemoved === 0 && again.ledgerClosed === 0, JSON.stringify(again));
   } finally {
@@ -288,7 +329,7 @@ async function atRealSize() {
   }
 }
 
-main().then(atRealSize).then(
+main().then(interrupted).then(atRealSize).then(
   () => {
     console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
     process.exit(failures === 0 ? 0 : 1);
