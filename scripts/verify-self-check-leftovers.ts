@@ -20,7 +20,7 @@
 import "./fixtures/wasm-module-loader.mjs";
 import { realD1 } from "./fixtures/real-d1";
 import { findOrphans } from "@/agent/cleanup";
-import { carriesMarker, sweepSelfCheckLeftovers } from "@/agent/janitor";
+import { carriesMarker, leftoverKind, sweepSelfCheckLeftovers } from "@/agent/janitor";
 import type { AgentEnv } from "@/agent/env";
 
 let failures = 0;
@@ -66,6 +66,11 @@ function build() {
     { id: "run11", appId: "ours", runNumber: 11, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     { id: "run378", appId: "ours", runNumber: 378, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     // A customer's product: nothing of theirs is ever ours to remove.
+    // Runs whose records the agent worded as it liked (#219, #242, #260, #261).
+    { id: "run219", appId: "ours", runNumber: 219, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
+    { id: "run242", appId: "ours", runNumber: 242, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
+    { id: "run260", appId: "ours", runNumber: 260, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
+    { id: "run261", appId: "ours", runNumber: 261, targetUrl: "https://checkmyapp.dev", ownerId: "owner", teamId: "t1" },
     { id: "runCust", appId: "cust", runNumber: 200, targetUrl: "https://joblander.app", ownerId: "owner", teamId: "t1" },
   ];
   const apps: AppRow[] = [
@@ -75,6 +80,9 @@ function build() {
     { id: "r1130", appSlug: "checkmyapp-test-r1130.example.com", name: null, ownerId: "owner", teamId: "t1" },
     // Someone else's app that happens to carry r113 in its name.
     { id: "other", appSlug: "checkmyapp-test-r113.example.org", name: null, ownerId: "stranger", teamId: "t9" },
+    { id: "r219", appSlug: "checkmyapp-test-r219.example.com", name: "CheckMyApp test r219", ownerId: "owner", teamId: "t1" },
+    { id: "r260", appSlug: "checkmyapp-test-r260.example.com", name: "CheckMyApp test r260", ownerId: "owner", teamId: "t1" },
+    { id: "r261", appSlug: "checkmyapp-test-r261.example.com", name: "CheckMyApp test r261", ownerId: "owner", teamId: "t1" },
     { id: "cust", appSlug: "joblander.app", name: null, ownerId: "owner", teamId: "t1" },
     { id: "custTest", appSlug: "checkmyapp-test-r200.example.com", name: null, ownerId: "owner", teamId: "t1" },
   ];
@@ -84,6 +92,15 @@ function build() {
     { id: "L11", runId: "run11", appId: "ours", kind: "app", marker: "CheckMyApp test r11", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 50) },
     // A record of a kind we cannot reach from here stays open — it is real.
     { id: "Lstory", runId: "run113", appId: "ours", kind: "story", marker: "CheckMyApp test r113", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 44) },
+    // The same records, worded the way the agent worded them in runs #219 and
+    // #242: the kind is the product's own phrase, not the word "app".
+    { id: "L219", runId: "run219", appId: "ours", kind: "app (monitored site)", marker: "CheckMyApp test r219", locationUrl: "https://checkmyapp.dev/dashboard/r219", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 20) },
+    { id: "L242", runId: "run242", appId: "ours", kind: "app (daily-watch monitored app)", marker: "CheckMyApp test r242", locationUrl: "https://checkmyapp.dev/dashboard", cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 18) },
+    // Only sounds like an app: removed when its app is found, left open when not.
+    { id: "L260", runId: "run260", appId: "ours", kind: "extension", marker: "CheckMyApp test r260", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
+    { id: "L261", runId: "run261", appId: "ours", kind: "extension", marker: "CheckMyApp test r261-x", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 10) },
+    // "application" is not an app of ours: a job application is someone's record.
+    { id: "Ljob", runId: "run113", appId: "ours", kind: "job application", marker: "CheckMyApp test r113", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(24 * 44) },
     // Inside the grace period: the run is still inspectable.
     { id: "Lfresh", runId: "run378", appId: "ours", kind: "app", marker: "CheckMyApp test r378", locationUrl: null, cleanupNote: null, deletedAt: null, createdAt: hoursAgo(1) },
     // A customer's run: not ours, whatever the marker says.
@@ -100,8 +117,8 @@ function build() {
     marker?: { startsWith: string };
     ownerId?: { in: string[] };
     kind?: { contains: string };
+    OR?: Array<{ kind?: { contains: string }; appSlug?: { contains: string }; name?: { contains: string } }>;
     run?: { ownerId: { not: null } };
-    OR?: Array<{ appSlug?: { contains: string }; name?: { contains: string } }>;
   };
   const contains = (v: string | null, p: string) => (v ?? "").toLowerCase().includes(p.toLowerCase());
   const db = {
@@ -115,6 +132,7 @@ function build() {
           .filter((r) => (where.createdAt?.lt ? r.createdAt < where.createdAt.lt : true))
           .filter((r) => (where.marker?.startsWith ? r.marker.startsWith(where.marker.startsWith) : true))
           .filter((r) => (where.kind?.contains ? contains(r.kind, where.kind.contains) : true))
+          .filter((r) => (where.OR ? where.OR.some((c) => contains(r.kind, c.kind?.contains ?? "\0")) : true))
           .filter((r) => (where.run ? runs.find((x) => x.id === r.runId)!.ownerId !== null : true))
           .map((r) => ({ ...r, run: runs.find((x) => x.id === r.runId)! })),
       updateMany: async ({ where, data }: { where: Where; data: Partial<Ledger> }) => {
@@ -160,6 +178,14 @@ async function main() {
   check("marker r113 is found in its slug", carriesMarker("checkmyapp-test-r113.example.com", "CheckMyApp test r113"));
   check("marker r113 is found in the app's name", carriesMarker("CheckMyApp test r113", "CheckMyApp test r113"));
 
+  // The kind is judged by its words, not compared to one of them.
+  check("kind 'app' names an app", leftoverKind("app") === "app");
+  check("kind 'app (monitored site)' names an app", leftoverKind("app (monitored site)") === "app");
+  check("kind 'daily-watch monitored app' names an app", leftoverKind("daily-watch monitored app") === "app");
+  check("kind 'extension' only sounds like one", leftoverKind("extension") === "app-like");
+  check("kind 'job application' is not an app", leftoverKind("job application") === null);
+  check("kind 'story' is not an app", leftoverKind("story") === null);
+
   const { env, apps, ledger } = build();
 
   // Before: the next run of our own product still sees run #113's record.
@@ -179,7 +205,14 @@ async function main() {
   check("a customer's run's ledger row stays open", row("Lcust").deletedAt === null);
   check("a record inside the grace period stays open", row("Lfresh").deletedAt === null);
   check("a record of a kind we cannot reach stays open", row("Lstory").deletedAt === null);
-  check("counts: one app removed, two rows closed", result.appsRemoved === 1 && result.ledgerClosed === 2, JSON.stringify(result));
+  check("a 'job application' record stays open", row("Ljob").deletedAt === null);
+  check("run #219's app, worded 'app (monitored site)', is removed", !apps.some((a) => a.id === "r219"));
+  check("its ledger row is closed", row("L219").deletedAt !== null && Boolean(row("L219").cleanupNote));
+  check("run #242's 'daily-watch monitored app' row is closed though its app is gone", row("L242").deletedAt !== null);
+  check("an extension record whose app was found is removed and closed", !apps.some((a) => a.id === "r260") && row("L260").deletedAt !== null);
+  check("an extension record with no app found stays open", row("L261").deletedAt === null);
+  check("r261's neighbour app survives r260's sweep", apps.some((a) => a.id === "r261"));
+  check("counts: three apps removed, five rows closed", result.appsRemoved === 3 && result.ledgerClosed === 5, JSON.stringify(result));
 
   // After: the same later run is handed only what is really still there.
   const after = await findOrphans(env, "run378");
@@ -210,6 +243,7 @@ async function atRealSize() {
         // Named as the agent liked, not starting with the marker; its slug is
         // not marker-shaped at all.
         app("leftB", "shop.example.com", { name: "My CheckMyApp test r901" }),
+        app("leftC", "checkmyapp-test-r902.example.com", { name: "CheckMyApp test r902" }),
         app("keep", "checkmyapp-test-r9000.example.com"),
       ] as never,
     });
@@ -222,6 +256,7 @@ async function atRealSize() {
         run("rCust", 1, "cust", "https://joblander.app"),
         run("rA", 2, "ours", "https://checkmyapp.dev"),
         run("rB", 3, "ours", "https://checkmyapp.dev"),
+        run("rC", 4, "ours", "https://checkmyapp.dev"),
       ] as never,
     });
     const row = (id: string, runId: string, kind: string, marker: string, d: Date) => ({ id, runId, kind, marker, createdAt: d });
@@ -229,7 +264,7 @@ async function atRealSize() {
       i % 5 === 0 ? row(`n${i}`, "rA", "story", `CheckMyApp test r${i}`, day(2)) : row(`n${i}`, "rCust", "app", `CheckMyApp test r${i}`, day(2)),
     );
     await db.createdResource.createMany({
-      data: [...ineligible, row("eA", "rA", "app", "CheckMyApp test r900", day(3)), row("eB", "rB", "app", "CheckMyApp test r901", day(3))],
+      data: [...ineligible, row("eA", "rA", "app", "CheckMyApp test r900", day(3)), row("eB", "rB", "app", "CheckMyApp test r901", day(3)), row("eC", "rC", "app (monitored site)", "CheckMyApp test r902", day(3))],
     });
 
     const env = { db, bindings: {} } as unknown as AgentEnv;
@@ -239,12 +274,13 @@ async function atRealSize() {
     const result = await sweepSelfCheckLeftovers(env, NOW);
     check("real D1: 250 rows of someone else's sort before ours, and ours is still found", (await open("eA")) !== null && (await open("eB")) !== null, JSON.stringify(result));
     check("real D1: the apps of those rows are removed", !(await stillThere("leftA")) && !(await stillThere("leftB")));
+    check("real D1: a row worded 'app (monitored site)' is found and its app removed", (await open("eC")) !== null && !(await stillThere("leftC")));
     check("real D1: an app named around the marker, not starting with it, is removed", !(await stillThere("leftB")));
     check("real D1: r900 does not take r9000 with it", await stillThere("keep"));
     check("real D1: our own app and a customer's survive", (await stillThere("ours")) && (await stillThere("cust")));
     const stillOpen = await db.createdResource.count({ where: { id: { startsWith: "n" }, deletedAt: null } });
     check("real D1: none of the 250 rows that are not ours was closed", stillOpen === 250, `${stillOpen} open`);
-    check("real D1: counts: two apps removed, two rows closed", result.appsRemoved === 2 && result.ledgerClosed === 2, JSON.stringify(result));
+    check("real D1: counts: three apps removed, three rows closed", result.appsRemoved === 3 && result.ledgerClosed === 3, JSON.stringify(result));
     const again = await sweepSelfCheckLeftovers(env, NOW);
     check("real D1: a second sweep changes nothing", again.appsRemoved === 0 && again.ledgerClosed === 0, JSON.stringify(again));
   } finally {
