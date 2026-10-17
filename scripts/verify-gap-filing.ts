@@ -985,6 +985,11 @@ async function main() {
       // What must not move.
       ["outside the viewport is not another product", { text: "The banner is outside the viewport on small screens.", targetOrigin: T }, "unclassified"],
       ["outside the dialog is not another product", { text: "The close button sits outside the dialog frame.", targetOrigin: T }, "unclassified"],
+      ["layout wording alone is not another owner (app shell)", { text: "The pricing page lives outside the app shell.", targetOrigin: T }, "unclassified"],
+      ["layout wording alone is not another owner (site header)", { text: "The button sits outside the site header.", targetOrigin: T }, "unclassified"],
+      ["a bare 'outside the app' names no owner", { text: "The pricing page lives outside the app.", targetOrigin: T }, "unclassified"],
+      ["a partner page that timed out stays egress_unreachable", { text: "The partner site lives outside the app and timed out.", targetOrigin: T }, "egress_unreachable"],
+      ["a partner page answering 429 stays rate_limited", { text: "The partner site lives outside the app; the request returned HTTP 429.", targetOrigin: T }, "rate_limited"],
       ["a new tab beside the same words keeps new_tab", { text: "The link opens in a new tab and the page is outside the app.", targetOrigin: T }, "new_tab"],
       ["a challenge on a foreign host stays third_party_block", { text: "https://apps.shopify.com returned 403; the page is outside the app.", targetOrigin: T }, "third_party_block"],
     ];

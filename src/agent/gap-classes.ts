@@ -267,16 +267,25 @@ const TEXT_RULES: { match: { test(text: string): boolean }; cls: GapClass }[] = 
     match: /could not be (?:driven|exercised)|\bundriven\b|could not (?:drive|reach) (?:the |this )?(?:control|field|button)/i,
     cls: "undriven_control",
   },
-  // Last, so every named capability above still wins. The walker's own
-  // sentence that the page it was sent to is not the product ("the Shopify App
-  // Store page itself is outside the Securify app"). It needs the page to be
-  // outside, never the bare word: "outside the viewport" or "outside the
-  // dialog" says nothing of the kind.
-  {
-    match: /\b(?:is|are|lies|lie|sits|sit|lives|live|remains?|stays?)\s+outside\s+(?:of\s+)?(?:the\s+)?(?:[\w'-]+\s+){0,3}?(?:app|product|site|website)\b/i,
-    cls: "outside_product",
-  },
 ];
+
+// The walker's own sentence that the page it was sent to is not the product
+// ("the Shopify App Store page itself is outside the Securify app"). Two things
+// are needed, never one: the page is said to be outside, and the text names
+// whose it is. "Outside the app shell" or "outside the site header" is layout
+// and says nothing of ownership, and such a page can be the customer's own.
+// Not in TEXT_RULES: those outrank the reachability classes, and a partner page
+// that timed out or answered 429 is egress_unreachable / rate_limited, not a
+// page to review.
+const OUTSIDE_PRODUCT =
+  /\b(?:is|are|lies|lie|sits|sit|lives|live|remains?|stays?)\s+outside\s+(?:of\s+)?(?:the\s+)?(?:[\w'-]+\s+){0,3}?(?:app|product|site|website)(?![\w'-]|\s+(?:shell|header|footer|layout|chrome|navigation|nav|menu|bar|frame)\b)/i;
+const FOREIGN_OWNER =
+  /\b(?:app store|marketplace|partners?|third[- ]party|another (?:company|vendor|product|team|site)|someone else|external|vendor)\b/i;
+
+function outsideProduct(text: string, evidence: GapEvidence): boolean {
+  if (!OUTSIDE_PRODUCT.test(text)) return false;
+  return FOREIGN_OWNER.test(text) || foreignHosts(text, evidence.targetOrigin, evidence.allowedOrigins).length > 0;
+}
 
 // A host turning us away: a challenge page, or the statuses a host uses for
 // traffic it does not like (CHE-190). With a host other than the target named
@@ -488,6 +497,7 @@ export function classifyGap(evidence: GapEvidence): GapClass {
   }
   if (CHALLENGE.test(text)) return "captcha";
   if (EGRESS.test(text)) return "egress_unreachable";
+  if (outsideProduct(text, evidence)) return "outside_product";
   return trailClass(evidence.actions ?? []) ?? "unclassified";
 }
 
